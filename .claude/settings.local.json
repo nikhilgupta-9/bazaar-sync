@@ -3,7 +3,24 @@
     "allow": [
       "Bash(npm -v)",
       "Bash(gh auth *)",
-      "Bash(git --version)"
+      "Bash(git --version)",
+      "Bash(/Applications/XAMPP/xamppfiles/bin/mysql --version)",
+      "Bash(/Applications/XAMPP/xamppfiles/bin/mysqladmin -u root status)",
+      "Bash(/Applications/XAMPP/xamppfiles/bin/mysql -u root -e \"SHOW DATABASES;\")",
+      "Bash(/Applications/XAMPP/xamppfiles/bin/mysql -u root -e \"CREATE DATABASE IF NOT EXISTS bazaar_sync CHARACTER SET utf8mb4;\")",
+      "Bash(/Applications/XAMPP/xamppfiles/bin/mysql -u root bazaar_sync)",
+      "Bash(/Applications/XAMPP/xamppfiles/bin/mysql -u root bazaar_sync -e \"SHOW TABLES;\")",
+      "Bash(npm install *)",
+      "Bash(curl -s http://localhost:5000/health)",
+      "Bash(curl -s http://localhost:5000/)",
+      "Bash(curl -sv http://localhost:5000/)",
+      "Bash(curl -s http://localhost:5001/health)",
+      "Bash(curl -s http://localhost:5001/)",
+      "Bash(npm view *)",
+      "Bash(npm search *)",
+      "Bash(npm audit *)",
+      "Bash(node -e \"require\\('./services/breeze.js'\\); console.log\\('breeze.js loads OK'\\)\")",
+      "Bash(node -e ' *)"
     ]
   }
 }
