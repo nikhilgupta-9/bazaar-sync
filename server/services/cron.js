@@ -65,12 +65,18 @@ async function storeOptionChainMinutes(symbol, expiryDate, strike, callRows, put
     );
 }
 
+// `symbol` here is always our display name (NIFTY/BANKNIFTY/FINNIFTY) — every
+// breeze.* call below resolves it to Breeze's real internal code first (see
+// SYMBOL_CODES in breeze.js; BankNifty/FinNifty use different codes entirely
+// and silently error with the display name). Storage always uses the display
+// name so schema/queries stay consistent regardless of Breeze's naming.
 async function pullOHLCVForDate(symbol, dateStr) {
+    const stockCode = breeze.SYMBOL_CODES[symbol];
     const ohlcv = await breeze.getHistoricalData({
         interval: "1minute",
         fromDate: `${dateStr}T00:00:00.000Z`,
         toDate: `${dateStr}T23:59:59.000Z`,
-        stockCode: symbol,
+        stockCode,
         exchangeCode: "NSE",
         productType: "cash",
     });
@@ -82,7 +88,8 @@ async function pullOHLCVForDate(symbol, dateStr) {
 // call/put contract's history individually (the live snapshot endpoint
 // can't give historical/intraday data, only "right now").
 async function pullOptionChainForExpiry(symbol, expiryDateApi, expiryDateSql, dateStr) {
-    const liveChain = await breeze.getFullOptionChain({ stockCode: symbol, expiryDate: expiryDateApi });
+    const stockCode = breeze.SYMBOL_CODES[symbol];
+    const liveChain = await breeze.getFullOptionChain({ stockCode, expiryDate: expiryDateApi });
     const strikes = liveChain.map((r) => r.strike);
 
     const fromDate = `${dateStr}T00:00:00.000Z`;
@@ -91,11 +98,11 @@ async function pullOptionChainForExpiry(symbol, expiryDateApi, expiryDateSql, da
     for (const strike of strikes) {
         const [callResp, putResp] = await Promise.all([
             breeze.getContractHistory({
-                stockCode: symbol, expiryDate: expiryDateApi, right: "call",
+                stockCode, expiryDate: expiryDateApi, right: "call",
                 strikePrice: String(strike), fromDate, toDate,
             }),
             breeze.getContractHistory({
-                stockCode: symbol, expiryDate: expiryDateApi, right: "put",
+                stockCode, expiryDate: expiryDateApi, right: "put",
                 strikePrice: String(strike), fromDate, toDate,
             }),
         ]);
@@ -135,4 +142,4 @@ function start() {
     console.log("[cron] nightly historical data pull scheduled for 23:00 IST (Mon-Fri)");
 }
 
-module.exports = { start, runNightlyPull };
+module.exports = { start, runNightlyPull, pullOHLCVForDate, pullOptionChainForExpiry };
