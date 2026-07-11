@@ -1,3 +1,4 @@
+// utils/format.js
 // Indian numbering (lakh/crore) is a hard project rule — see CLAUDE.md.
 // Matches the Cr/L notation used across stockmojo.in's option chain tables.
 export function formatOi(value) {
@@ -23,4 +24,28 @@ export function formatPercent(value) {
 export function formatRupees(value) {
     if (value == null || Number.isNaN(value)) return "-";
     return "₹" + formatPrice(value);
+}
+
+// Add these helper functions
+export function formatDateTime(dateString) {
+    if (!dateString) return "-";
+    try {
+        const date = new Date(dateString);
+        return date.toLocaleString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: true,
+        });
+    } catch {
+        return dateString;
+    }
+}
+
+export function formatNumber(value) {
+    if (value == null || Number.isNaN(value)) return "-";
+    return value.toLocaleString("en-IN");
 }

@@ -31,6 +31,17 @@ function legFromRow(row, right, action) {
     };
 }
 
+function Stat({ label, value, tone, hint }) {
+    return (
+        <div title={hint} className="border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+            <div className="text-[11px] font-medium text-gray-400 uppercase tracking-wider">{label}</div>
+            <div className={`text-sm font-bold tabular-nums mt-0.5 ${tone === "positive" ? "text-emerald-600" : tone === "negative" ? "text-rose-600" : "text-gray-800"}`}>
+                {value}
+            </div>
+        </div>
+    );
+}
+
 export default function StrategyBuilder() {
     const { symbol, setSymbol, data, loading, error, load } = useOptionChain();
     const [legs, setLegs] = useState([]);
@@ -38,7 +49,7 @@ export default function StrategyBuilder() {
 
     function addLeg(row, right, action) {
         setLegs((prev) => {
-            if (prev.length >= 6) return prev; // up to 6 legs
+            if (prev.length >= 6) return prev; 
             return [...prev, legFromRow(row, right, action)];
         });
     }
@@ -59,12 +70,10 @@ export default function StrategyBuilder() {
         setLegs(presetLegs.map((l) => ({ ...l, id: ++legIdCounter })));
     }
 
-    // Live premium lookup for each leg's strike, from the currently loaded
-    // chain — this is the *real* current LTP (not a Black-Scholes estimate),
-    // used for the per-leg P&L column in the Positions table.
     const rowByStrike = useMemo(() => {
         const map = new Map();
-        data?.rows.forEach((r) => map.set(r.strike, r));
+        if (!data || !data.rows) return map;
+        data.rows.forEach((r) => map.set(r.strike, r));
         return map;
     }, [data]);
 
@@ -77,86 +86,106 @@ export default function StrategyBuilder() {
     }
 
     const { curve, breakevens, maxProfit, maxLoss, netGreeks, currentPnl, pop, expectedMove } = useMemo(() => {
-        if (!legs.length || !data) {
+        if (!legs.length || !data || !data.spotPrice) {
             return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, currentPnl: null, pop: null, expectedMove: null };
         }
-        const spread = data.spotPrice * 0.08;
-        let curve = computePayoffCurve(legs, { minPrice: data.spotPrice - spread, maxPrice: data.spotPrice + spread });
-        const breakevens = computeBreakevens(curve);
-        const { maxProfit, maxLoss } = computeMaxProfitLoss(legs, curve);
-        const netGreeks = computeNetGreeks(legs);
+        
+        try {
+            const spread = data.spotPrice * 0.08;
+            let curveData = computePayoffCurve(legs, { minPrice: data.spotPrice - spread, maxPrice: data.spotPrice + spread }) || [];
+            const breakEvs = computeBreakevens(curveData) || [];
+            const { maxProfit: mxProf, maxLoss: mxLoss } = computeMaxProfitLoss(legs, curveData);
+            const netGrks = computeNetGreeks(legs);
 
-        const yearsRemaining = yearsToExpiry(data.selectedExpiry);
-        const atmRow = data.rows.find((r) => r.strike === data.atmStrike);
-        const atmIv = atmRow?.iv ?? null;
+            const yearsRemaining = yearsToExpiry(data.selectedExpiry);
+            const atmRow = data.rows ? data.rows.find((r) => r.strike === data.atmStrike) : null;
+            const atmIv = atmRow?.iv ?? null;
 
-        curve = atmIv ? addMarkToMarketCurve(curve, legs, yearsRemaining) : curve;
-        const expectedMove = atmIv ? computeExpectedMove(data.spotPrice, atmIv, yearsRemaining) : null;
-        const pop = atmIv ? computePOP(curve, data.spotPrice, atmIv, yearsRemaining) : null;
+            curveData = (atmIv && typeof addMarkToMarketCurve === "function") ? addMarkToMarketCurve(curveData, legs, yearsRemaining) : curveData;
+            const expMv = (atmIv && typeof computeExpectedMove === "function") ? computeExpectedMove(data.spotPrice, atmIv, yearsRemaining) : null;
+            const popVal = (atmIv && typeof computePOP === "function") ? computePOP(curveData, data.spotPrice, atmIv, yearsRemaining) : null;
 
-        const closest = curve.reduce((a, b) => (Math.abs(b.price - data.spotPrice) < Math.abs(a.price - data.spotPrice) ? b : a));
-        return { curve, breakevens, maxProfit, maxLoss, netGreeks, currentPnl: closest.pnl, pop, expectedMove };
+            const closest = curveData.length > 0 
+                ? curveData.reduce((a, b) => (Math.abs(b.price - data.spotPrice) < Math.abs(a.price - data.spotPrice) ? b : a))
+                : { pnl: 0 };
+
+            return { curve: curveData, breakevens: breakEvs, maxProfit: mxProf, maxLoss: mxLoss, netGreeks: netGrks, currentPnl: closest.pnl, pop: popVal, expectedMove: expMv };
+        } catch (err) {
+            console.error(err);
+            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, currentPnl: null, pop: null, expectedMove: null };
+        }
     }, [legs, data]);
 
     return (
-        <div className="mx-auto flex max-w-[1500px] gap-4 px-4 py-4">
-            {/* Left: compact option chain with inline Buy/Sell */}
-            <div className="w-[420px] shrink-0">
-                <div className="mb-3 flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2">
-                    {SYMBOLS.map((s) => (
-                        <button
-                            key={s}
-                            onClick={() => { setSymbol(s); resetLegs(); }}
-                            className={`rounded-md px-2 py-1 text-xs font-semibold ${
-                                symbol === s ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                            }`}
-                        >
-                            {s}
-                        </button>
-                    ))}
-                    {data && (
+        <div className="mx-auto flex max-w-[1600px] gap-5 px-5 py-5 bg-gray-50/40 min-h-screen">
+            {/* Left Column: Option Chain Window */}
+            <div className="w-[460px] shrink-0 flex flex-col">
+                <div className="mb-3 flex items-center justify-between rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+                    <div className="flex gap-1.5 bg-gray-100 p-1 rounded-lg">
+                        {SYMBOLS.map((s) => (
+                            <button
+                                key={s}
+                                onClick={() => { setSymbol(s); resetLegs(); }}
+                                className={`rounded-md px-3 py-1.5 text-xs font-bold transition-all ${
+                                    symbol === s ? "bg-white text-blue-600 shadow-sm" : "text-gray-600 hover:text-gray-900"
+                                }`}
+                            >
+                                {s}
+                            </button>
+                        ))}
+                    </div>
+                    {data && data.expiries && (
                         <select
-                            value={data.selectedExpiry}
+                            value={data.selectedExpiry || ""}
                             onChange={(e) => load(symbol, e.target.value)}
-                            className="ml-auto rounded-md border border-gray-300 px-2 py-1 text-xs"
+                            className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs font-medium bg-gray-50 text-gray-700 outline-none focus:border-blue-500"
                         >
                             {data.expiries.map((exp) => (
-                                <option key={exp} value={exp}>{exp} ({daysUntilExpiry(exp)}d)</option>
+                                <option key={exp} value={exp}>{exp} ({daysUntilExpiry ? daysUntilExpiry(exp) : 0}d)</option>
                             ))}
                         </select>
                     )}
                 </div>
 
                 {error && <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>}
-                {loading && !data && <div className="rounded-lg border border-gray-200 bg-white px-3 py-6 text-center text-xs text-gray-500">Loading…</div>}
+                {loading && !data && <div className="rounded-xl border border-gray-200 bg-white px-3 py-12 text-center text-xs text-gray-400">Fetching option matrix...</div>}
 
-                {data && (
-                    <div className="max-h-[70vh] overflow-y-auto rounded-lg border border-gray-200 bg-white">
+                {data && data.rows && (
+                    <div className="max-h-[82vh] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-sm custom-scrollbar">
                         <table className="w-full border-collapse text-[11px]">
-                            <thead className="sticky top-0 bg-gray-50">
+                            <thead className="sticky top-0 bg-gray-50 border-b border-gray-200 z-10 shadow-[0_1px_0_0_rgba(229,231,235,1)]">
                                 <tr>
-                                    <th className="border-b border-gray-200 px-2 py-1.5 text-left font-medium text-gray-500">Call LTP</th>
-                                    <th className="border-b border-gray-200 px-2 py-1.5 font-semibold text-gray-700">Strike</th>
-                                    <th className="border-b border-gray-200 px-2 py-1.5 text-right font-medium text-gray-500">Put LTP</th>
+                                    <th className="px-3 py-2 text-left font-semibold text-gray-400 w-[38%]">Call LTP</th>
+                                    <th className="py-2 text-center font-bold text-gray-700 bg-gray-100/80 w-[24%] border-x border-gray-200">Strike</th>
+                                    <th className="px-3 py-2 text-right font-semibold text-gray-400 w-[38%]">Put LTP</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {data.rows.map((row) => (
-                                    <tr key={row.strike} className={row.strike === data.atmStrike ? "bg-blue-50" : "hover:bg-gray-50"}>
-                                        <td className="group relative px-2 py-1 tabular-nums">
-                                            {formatPrice(row.ce.ltp)}
-                                            <span className="ml-1 hidden gap-0.5 group-hover:inline-flex">
-                                                <button onClick={() => addLeg(row, "CE", "buy")} className="rounded bg-emerald-500 px-1 text-[10px] font-bold text-white">B</button>
-                                                <button onClick={() => addLeg(row, "CE", "sell")} className="rounded bg-rose-500 px-1 text-[10px] font-bold text-white">S</button>
-                                            </span>
+                                    <tr key={row.strike} className={`border-b border-gray-100/70 transition-colors ${row.strike === data.atmStrike ? "bg-blue-50/60 font-semibold" : "hover:bg-gray-50/80"}`}>
+                                        {/* CALL SIDE */}
+                                        <td className="group px-3 py-1.5 tabular-nums relative">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-gray-700">{formatPrice(row.ce?.ltp)}</span>
+                                                <div className="opacity-0 group-hover:opacity-100 flex gap-0.5 transition-opacity duration-150 pl-1 bg-gradient-to-l from-gray-50 via-gray-50 to-transparent">
+                                                    <button onClick={() => addLeg(row, "CE", "buy")} className="rounded bg-emerald-500 hover:bg-emerald-600 shadow-sm px-1.5 py-0.5 text-[9px] font-extrabold text-white">B</button>
+                                                    <button onClick={() => addLeg(row, "CE", "sell")} className="rounded bg-rose-500 hover:bg-rose-600 shadow-sm px-1.5 py-0.5 text-[9px] font-extrabold text-white">S</button>
+                                                </div>
+                                            </div>
                                         </td>
-                                        <td className="px-2 py-1 text-center font-semibold tabular-nums">{row.strike}</td>
-                                        <td className="group relative px-2 py-1 text-right tabular-nums">
-                                            <span className="mr-1 hidden gap-0.5 group-hover:inline-flex">
-                                                <button onClick={() => addLeg(row, "PE", "buy")} className="rounded bg-emerald-500 px-1 text-[10px] font-bold text-white">B</button>
-                                                <button onClick={() => addLeg(row, "PE", "sell")} className="rounded bg-rose-500 px-1 text-[10px] font-bold text-white">S</button>
-                                            </span>
-                                            {formatPrice(row.pe.ltp)}
+                                        
+                                        {/* STRIKE PRICE */}
+                                        <td className="py-1.5 text-center font-bold text-gray-900 bg-gray-50/40 border-x border-gray-100 text-xs tabular-nums">{row.strike}</td>
+                                        
+                                        {/* PUT SIDE */}
+                                        <td className="group px-3 py-1.5 text-right tabular-nums relative">
+                                            <div className="flex items-center justify-between direction-rtl">
+                                                <div className="opacity-0 group-hover:opacity-100 flex gap-0.5 transition-opacity duration-150 pr-1 bg-gradient-to-r from-gray-50 via-gray-50 to-transparent">
+                                                    <button onClick={() => addLeg(row, "PE", "buy")} className="rounded bg-emerald-500 hover:bg-emerald-600 shadow-sm px-1.5 py-0.5 text-[9px] font-extrabold text-white">B</button>
+                                                    <button onClick={() => addLeg(row, "PE", "sell")} className="rounded bg-rose-500 hover:bg-rose-600 shadow-sm px-1.5 py-0.5 text-[9px] font-extrabold text-white">S</button>
+                                                </div>
+                                                <span className="text-gray-700 ml-auto">{formatPrice(row.pe?.ltp)}</span>
+                                            </div>
                                         </td>
                                     </tr>
                                 ))}
@@ -166,10 +195,12 @@ export default function StrategyBuilder() {
                 )}
             </div>
 
-            {/* Right: presets, payoff, positions/greeks */}
-            <div className="flex-1">
+            {/* Right Column: Analytics, Chart, Profiles */}
+            <div className="flex-1 flex flex-col">
                 {legs.length === 0 ? (
-                    <PresetStrategies data={data} onApply={applyPreset} />
+                    <div className="flex-1 bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
+                        <PresetStrategies data={data} onApply={applyPreset} />
+                    </div>
                 ) : (
                     <>
                         <div className="mb-3 flex items-center justify-end gap-2">
@@ -177,88 +208,88 @@ export default function StrategyBuilder() {
                                 itemLabel="strategy"
                                 onSave={(token, name) => saveStrategy(token, { name, underlying: symbol, legs })}
                             />
-                            <button onClick={resetLegs} className="rounded-md border border-gray-300 px-3 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50">
-                                Reset
+                            <button onClick={resetLegs} className="rounded-xl border border-gray-300 px-4 py-1.5 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition">
+                                Reset Workspace
                             </button>
                         </div>
 
-                        <div className="mb-3 flex gap-3">
-                            {/* Vertical stats sidebar, matching stockmojo's layout (not horizontal cards) */}
-                            <div className="w-44 shrink-0 space-y-3 rounded-lg border border-gray-200 bg-white p-3">
-                                <Stat label="P&L" value={formatPrice(currentPnl)} tone={currentPnl >= 0 ? "positive" : "negative"} />
-                                <Stat label="Est. Margin" value="—" hint="Not computed — needs broker SPAN margin data" />
-                                <Stat label="POP" value={pop != null ? `${pop.toFixed(0)}%` : "—"} hint="Approximate — assumes a normal price distribution" />
-                                <Stat label="Max Profit" value={typeof maxProfit === "number" ? formatPrice(maxProfit) : maxProfit} tone="positive" />
-                                <Stat label="Max Loss" value={typeof maxLoss === "number" ? formatPrice(maxLoss) : maxLoss} tone="negative" />
-                                <Stat label="Breakevens" value={breakevens.length ? breakevens.join(", ") : "-"} />
-                                <Stat label="Legs" value={`${legs.length} / 6`} />
+                        <div className="mb-4 flex gap-4 items-stretch">
+                            {/* StockMojo Matched Vertical Status Column */}
+                            <div className="w-48 shrink-0 flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
+                                <Stat label="Strategy P&L" value={formatPrice(currentPnl)} tone={currentPnl >= 0 ? "positive" : "negative"} />
+                                <Stat label="Probability of Profit (POP)" value={pop != null ? `${pop.toFixed(0)}%` : "—"} hint="Normal distribution assumption breakdown strategy" />
+                                <Stat label="Max Profit Potential" value={typeof maxProfit === "number" ? formatPrice(maxProfit) : (maxProfit || "Unlimited")} tone="positive" />
+                                <Stat label="Max Loss Risk" value={typeof maxLoss === "number" ? formatPrice(maxLoss) : (maxLoss || "Unlimited")} tone="negative" />
+                                <Stat label="Breakeven Thresholds" value={breakevens && breakevens.length ? breakevens.join(", ") : "None"} />
+                                <Stat label="Workspace Constraints" value={`${legs.length} of 6 active legs`} />
                             </div>
 
-                            <div className="flex-1 rounded-lg border border-gray-200 bg-white p-4">
+                            <div className="flex-1 rounded-xl border border-gray-200 bg-white p-4 shadow-sm flex flex-col justify-center">
                                 <PayoffChart curve={curve} spotPrice={data?.spotPrice} breakevens={breakevens} expectedMove={expectedMove} />
                             </div>
                         </div>
 
-                        <div className="rounded-lg border border-gray-200 bg-white">
-                            <div className="flex border-b border-gray-200 text-sm">
+                        {/* Interactive Position and Greeks Segment Control */}
+                        <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+                            <div className="flex border-b border-gray-200 bg-gray-50/50 text-xs font-semibold">
                                 <button
                                     onClick={() => setTab("positions")}
-                                    className={`px-4 py-2 font-medium ${tab === "positions" ? "border-b-2 border-blue-600 text-blue-600" : "text-gray-500"}`}
+                                    className={`px-5 py-3 transition-colors ${tab === "positions" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
                                 >
-                                    Positions
+                                    Active Positions ({legs.length})
                                 </button>
                                 <button
                                     onClick={() => setTab("greeks")}
-                                    className={`px-4 py-2 font-medium ${tab === "greeks" ? "border-b-2 border-blue-600 text-blue-600" : "text-gray-500"}`}
+                                    className={`px-5 py-3 transition-colors ${tab === "greeks" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
                                 >
-                                    Greeks
+                                    Portfolio Greeks
                                 </button>
                             </div>
 
                             {tab === "positions" ? (
                                 <table className="w-full border-collapse text-xs">
                                     <thead>
-                                        <tr className="text-gray-500">
-                                            <th className="px-3 py-2 text-left font-medium">Action</th>
-                                            <th className="px-3 py-2 text-left font-medium">Type</th>
-                                            <th className="px-3 py-2 text-right font-medium">Strike</th>
-                                            <th className="px-3 py-2 text-right font-medium">Entry</th>
-                                            <th className="px-3 py-2 text-right font-medium">LTP</th>
-                                            <th className="px-3 py-2 text-right font-medium">P&L</th>
-                                            <th className="px-3 py-2 text-right font-medium">Qty</th>
-                                            <th className="px-3 py-2"></th>
+                                        <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-100">
+                                            <th className="px-4 py-2.5 text-left font-medium">Action</th>
+                                            <th className="px-4 py-2.5 text-left font-medium">Type</th>
+                                            <th className="px-4 py-2.5 text-right font-medium">Strike</th>
+                                            <th className="px-4 py-2.5 text-right font-medium">Entry Price</th>
+                                            <th className="px-4 py-2.5 text-right font-medium">LTP</th>
+                                            <th className="px-4 py-2.5 text-right font-medium">Live P&L</th>
+                                            <th className="px-4 py-2.5 text-right font-medium">Lot Qty</th>
+                                            <th className="px-4 py-2.5 w-10"></th>
                                         </tr>
                                     </thead>
-                                    <tbody>
+                                    <tbody className="divide-y divide-gray-100">
                                         {legs.map((leg) => {
                                             const row = rowByStrike.get(leg.strike);
-                                            const currentLtp = row ? (leg.type === "CE" ? row.ce.ltp : row.pe.ltp) : null;
+                                            const currentLtp = row ? (leg.type === "CE" ? row.ce?.ltp : row.pe?.ltp) : null;
                                             const livePnl = legLivePnl(leg);
                                             return (
-                                                <tr key={leg.id} className="border-t border-gray-100">
-                                                    <td className="px-3 py-2">
-                                                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold text-white ${leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"}`}>
+                                                <tr key={leg.id} className="hover:bg-gray-50/40 transition-colors">
+                                                    <td className="px-4 py-2.5">
+                                                        <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold text-white shadow-sm ${leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"}`}>
                                                             {leg.action === "buy" ? "BUY" : "SELL"}
                                                         </span>
                                                     </td>
-                                                    <td className="px-3 py-2">{leg.type}</td>
-                                                    <td className="px-3 py-2 text-right tabular-nums">{leg.strike}</td>
-                                                    <td className="px-3 py-2 text-right tabular-nums">{formatPrice(leg.premium)}</td>
-                                                    <td className="px-3 py-2 text-right tabular-nums">{currentLtp != null ? formatPrice(currentLtp) : "-"}</td>
-                                                    <td className={`px-3 py-2 text-right font-medium tabular-nums ${livePnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                                                    <td className="px-4 py-2.5 font-medium text-gray-700">{leg.type}</td>
+                                                    <td className="px-4 py-2.5 text-right font-bold tabular-nums text-gray-900">{leg.strike}</td>
+                                                    <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{formatPrice(leg.premium)}</td>
+                                                    <td className="px-4 py-2.5 text-right tabular-nums text-gray-900">{currentLtp != null ? formatPrice(currentLtp) : "-"}</td>
+                                                    <td className={`px-4 py-2.5 text-right font-bold tabular-nums ${livePnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
                                                         {livePnl != null ? formatPrice(livePnl) : "-"}
                                                     </td>
-                                                    <td className="px-3 py-2 text-right">
+                                                    <td className="px-4 py-2.5 text-right">
                                                         <input
                                                             type="number"
                                                             min={1}
                                                             value={leg.qty}
                                                             onChange={(e) => updateQty(leg.id, Number(e.target.value))}
-                                                            className="w-16 rounded border border-gray-300 px-1 py-0.5 text-right tabular-nums"
+                                                            className="w-16 rounded-lg border border-gray-200 px-2 py-1 text-right font-medium text-gray-800 focus:border-blue-500 outline-none"
                                                         />
                                                     </td>
-                                                    <td className="px-3 py-2 text-right">
-                                                        <button onClick={() => removeLeg(leg.id)} className="text-gray-400 hover:text-rose-600">✕</button>
+                                                    <td className="px-4 py-2.5 text-center">
+                                                        <button onClick={() => removeLeg(leg.id)} className="text-gray-400 hover:text-rose-600 font-bold transition">✕</button>
                                                     </td>
                                                 </tr>
                                             );
@@ -268,34 +299,34 @@ export default function StrategyBuilder() {
                             ) : (
                                 <table className="w-full border-collapse text-xs">
                                     <thead>
-                                        <tr className="text-gray-500">
-                                            <th className="px-3 py-2 text-left font-medium">Leg</th>
-                                            <th className="px-3 py-2 text-right font-medium">IV</th>
-                                            <th className="px-3 py-2 text-right font-medium">Delta</th>
-                                            <th className="px-3 py-2 text-right font-medium">Gamma</th>
-                                            <th className="px-3 py-2 text-right font-medium">Theta</th>
-                                            <th className="px-3 py-2 text-right font-medium">Vega</th>
+                                        <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-100">
+                                            <th className="px-4 py-2.5 text-left font-medium">Leg Matrix</th>
+                                            <th className="px-4 py-2.5 text-right font-medium">IV %</th>
+                                            <th className="px-4 py-2.5 text-right font-medium">Delta</th>
+                                            <th className="px-4 py-2.5 text-right font-medium">Gamma</th>
+                                            <th className="px-4 py-2.5 text-right font-medium">Theta</th>
+                                            <th className="px-4 py-2.5 text-right font-medium">Vega</th>
                                         </tr>
                                     </thead>
-                                    <tbody>
+                                    <tbody className="divide-y divide-gray-100">
                                         {legs.map((leg) => (
-                                            <tr key={leg.id} className="border-t border-gray-100">
-                                                <td className="px-3 py-2">{leg.action === "buy" ? "B" : "S"} {leg.strike} {leg.type}</td>
-                                                <td className="px-3 py-2 text-right tabular-nums">{leg.iv ?? "-"}</td>
-                                                <td className="px-3 py-2 text-right tabular-nums">{leg.delta ?? "-"}</td>
-                                                <td className="px-3 py-2 text-right tabular-nums">{leg.gamma ?? "-"}</td>
-                                                <td className="px-3 py-2 text-right tabular-nums">{leg.theta ?? "-"}</td>
-                                                <td className="px-3 py-2 text-right tabular-nums">{leg.vega ?? "-"}</td>
+                                            <tr key={leg.id} className="hover:bg-gray-50/40 transition-colors">
+                                                <td className="px-4 py-2.5 font-medium text-gray-700">{leg.action === "buy" ? "B" : "S"} {leg.strike} {leg.type}</td>
+                                                <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.iv ?? "-"}</td>
+                                                <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.delta ?? "-"}</td>
+                                                <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.gamma ?? "-"}</td>
+                                                <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.theta ?? "-"}</td>
+                                                <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.vega ?? "-"}</td>
                                             </tr>
                                         ))}
                                         {netGreeks && (
-                                            <tr className="border-t-2 border-gray-300 font-semibold">
-                                                <td className="px-3 py-2">Net</td>
-                                                <td className="px-3 py-2"></td>
-                                                <td className="px-3 py-2 text-right tabular-nums">{netGreeks.delta.toFixed(3)}</td>
-                                                <td className="px-3 py-2 text-right tabular-nums">{netGreeks.gamma.toFixed(6)}</td>
-                                                <td className="px-3 py-2 text-right tabular-nums">{netGreeks.theta.toFixed(3)}</td>
-                                                <td className="px-3 py-2 text-right tabular-nums">{netGreeks.vega.toFixed(3)}</td>
+                                            <tr className="font-bold bg-blue-50/30 border-t-2 border-gray-200 text-gray-900">
+                                                <td className="px-4 py-3">Net Risk Aggregates</td>
+                                                <td className="px-4 py-3"></td>
+                                                <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.delta || 0).toFixed(3)}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.gamma || 0).toFixed(6)}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.theta || 0).toFixed(3)}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.vega || 0).toFixed(3)}</td>
                                             </tr>
                                         )}
                                     </tbody>
@@ -304,17 +335,6 @@ export default function StrategyBuilder() {
                         </div>
                     </>
                 )}
-            </div>
-        </div>
-    );
-}
-
-function Stat({ label, value, tone, hint }) {
-    return (
-        <div title={hint}>
-            <div className="text-[11px] text-gray-500">{label}</div>
-            <div className={`text-sm font-bold tabular-nums ${tone === "positive" ? "text-emerald-600" : tone === "negative" ? "text-rose-600" : "text-gray-900"}`}>
-                {value}
             </div>
         </div>
     );
