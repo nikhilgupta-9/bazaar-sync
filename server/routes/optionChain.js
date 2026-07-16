@@ -259,12 +259,16 @@ async function getOptionChainData(symbol, expiry) {
         const actualSymbol = symbolMatch[0].symbol;
         console.log(`[DEBUG] Matched to: "${actualSymbol}"`);
         
-        // Get latest snapshot
+        // Get latest snapshot with a real spot price. underlying_price is backfilled
+        // from ohlcv_data by trade_date+trade_time (see cron.js's backfillUnderlyingPrice)
+        // and can trail the option chain's own latest minute by one tick, so anchor
+        // on the latest minute that actually has a spot price rather than the
+        // latest minute overall — otherwise ATM/max-pain/PCR all silently break.
         const latestRows = await db.query(
-            `SELECT trade_date, trade_time, underlying_price 
-             FROM option_chain_history 
-             WHERE symbol = ? 
-             ORDER BY trade_date DESC, trade_time DESC 
+            `SELECT trade_date, trade_time, underlying_price
+             FROM option_chain_history
+             WHERE symbol = ? AND underlying_price IS NOT NULL
+             ORDER BY trade_date DESC, trade_time DESC
              LIMIT 1`,
             [actualSymbol]
         );

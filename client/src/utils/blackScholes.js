@@ -30,31 +30,28 @@ export function bsPrice({ spot, strike, t, vol, right, r = RISK_FREE_RATE }) {
 }
 
 // Years remaining until expiry, using 15:30 IST as the cutoff. Expiry comes
-// in as "07-Jul-2026" (Breeze's display format) — parsed manually, not via
-// `new Date(nonISOString)`, which is timezone-dependent and has caused a
-// real off-by-one-day bug elsewhere in this project (see CLAUDE.md Gotcha #12
-// — never use ambient Date parsing on non-ISO date strings).
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// in as plain "YYYY-MM-DD" (the DB's dateStrings-mode format — see CLAUDE.md
+// Gotcha #12) — parsed manually, not via `new Date(nonISOString)`, which is
+// timezone-dependent and has caused a real off-by-one-day bug elsewhere in
+// this project.
 
 // Calendar-day difference (not fractional years) between today and expiry,
 // for the "(0d)", "(7d)" labels next to each expiry — matches stockmojo's
 // expiry selector. Same manual-parsing approach as yearsToExpiry, so today
 // vs. expiry-day both show "0d" regardless of the time of day.
-export function daysUntilExpiry(expiryDisplayStr) {
-    const [day, mon, year] = expiryDisplayStr.split("-");
-    const month = MONTHS.indexOf(mon);
-    const expiryUtcMidnight = Date.UTC(Number(year), month, Number(day));
+export function daysUntilExpiry(expiryStr) {
+    const [year, month, day] = expiryStr.split("-").map(Number);
+    const expiryUtcMidnight = Date.UTC(year, month - 1, day);
     const now = new Date();
     const todayUtcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     return Math.round((expiryUtcMidnight - todayUtcMidnight) / (24 * 60 * 60 * 1000));
 }
 
-export function yearsToExpiry(expiryDisplayStr) {
-    const [day, mon, year] = expiryDisplayStr.split("-");
-    const month = MONTHS.indexOf(mon);
+export function yearsToExpiry(expiryStr) {
+    const [year, month, day] = expiryStr.split("-").map(Number);
     // IST is UTC+5:30; 15:30 IST = 10:00 UTC. Built via Date.UTC so this
     // doesn't depend on the browser's local timezone.
-    const expiryUtcMs = Date.UTC(Number(year), month, Number(day), 10, 0, 0);
+    const expiryUtcMs = Date.UTC(year, month - 1, day, 10, 0, 0);
     const ms = expiryUtcMs - Date.now();
     return Math.max(ms / (365 * 24 * 60 * 60 * 1000), 1 / (365 * 24 * 4));
 }

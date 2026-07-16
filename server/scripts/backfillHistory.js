@@ -62,6 +62,7 @@ async function main() {
         try {
             await cron.pullOHLCVForDate(symbol, dateStr);
             await cron.pullOptionChainForExpiry(symbol, expiryApi, expirySql, dateStr);
+            await cron.backfillUnderlyingPrice(symbol, dateStr);
             console.log(`[backfill] done ${symbol} ${dateStr}`);
         } catch (err) {
             console.error(`[backfill] failed ${symbol} ${dateStr}:`, err.message);

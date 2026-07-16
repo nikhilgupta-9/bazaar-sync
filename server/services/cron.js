@@ -114,6 +114,21 @@ async function pullOptionChainForExpiry(symbol, expiryDateApi, expiryDateSql, da
     }
 }
 
+// option_chain_history has no underlying_price of its own — pullOptionChainForExpiry
+// only stores per-contract CE/PE rows. Backfilled separately from ohlcv_data (the
+// index's own OHLCV, pulled by pullOHLCVForDate) by matching trade_date+trade_time,
+// so it works whether called right after a fresh pull or against already-stored rows.
+async function backfillUnderlyingPrice(symbol, dateStr) {
+    await pool.query(
+        `UPDATE option_chain_history och
+         JOIN ohlcv_data ohl
+           ON och.symbol = ohl.symbol AND och.trade_date = ohl.trade_date AND och.trade_time = ohl.trade_time
+         SET och.underlying_price = ohl.close
+         WHERE och.symbol = ? AND och.trade_date = ? AND och.underlying_price IS NULL`,
+        [symbol, dateStr]
+    );
+}
+
 // TODO: derive real active expiries (nearest weekly/monthly, holiday-aware)
 // instead of a hardcoded lookahead. For now this needs the caller to know
 // valid expiry dates in both Breeze's "DD-MMM-YYYY" API format and SQL "YYYY-MM-DD".
@@ -122,6 +137,7 @@ async function pullSymbolForDate(symbol, dateStr, expiries) {
     for (const { api, sql } of expiries) {
         await pullOptionChainForExpiry(symbol, api, sql, dateStr);
     }
+    await backfillUnderlyingPrice(symbol, dateStr);
 }
 
 async function runNightlyPull(expiriesBySymbol) {
@@ -142,4 +158,4 @@ function start() {
     console.log("[cron] nightly historical data pull scheduled for 23:00 IST (Mon-Fri)");
 }
 
-module.exports = { start, runNightlyPull, pullOHLCVForDate, pullOptionChainForExpiry };
+module.exports = { start, runNightlyPull, pullOHLCVForDate, pullOptionChainForExpiry, backfillUnderlyingPrice };

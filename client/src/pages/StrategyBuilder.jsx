@@ -9,7 +9,12 @@ import { yearsToExpiry, daysUntilExpiry } from "../utils/blackScholes";
 import PayoffChart from "../components/PayoffChart";
 import PresetStrategies from "../components/PresetStrategies";
 import SaveButton from "../components/SaveButton";
+import OiBar from "../components/OiBar";
 import { saveStrategy } from "../services/strategiesApi";
+
+function formatDelta(value) {
+    return value == null || Number.isNaN(value) ? "-" : Number(value).toFixed(2);
+}
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 let legIdCounter = 0;
@@ -77,6 +82,17 @@ export default function StrategyBuilder() {
         return map;
     }, [data]);
 
+    const { maxCeOi, maxPeOi } = useMemo(() => {
+        if (!data || !data.rows) return { maxCeOi: 0, maxPeOi: 0 };
+        return data.rows.reduce(
+            (acc, r) => ({
+                maxCeOi: Math.max(acc.maxCeOi, r.ce?.oi || 0),
+                maxPeOi: Math.max(acc.maxPeOi, r.pe?.oi || 0),
+            }),
+            { maxCeOi: 0, maxPeOi: 0 }
+        );
+    }, [data]);
+
     function legLivePnl(leg) {
         const row = rowByStrike.get(leg.strike);
         const currentLtp = row ? (leg.type === "CE" ? row.ce.ltp : row.pe.ltp) : null;
@@ -119,7 +135,7 @@ export default function StrategyBuilder() {
     return (
         <div className="mx-auto flex max-w-[1600px] gap-5 px-5 py-5 bg-gray-50/40 min-h-screen">
             {/* Left Column: Option Chain Window */}
-            <div className="w-[460px] shrink-0 flex flex-col">
+            <div className="w-[540px] shrink-0 flex flex-col">
                 <div className="mb-3 flex items-center justify-between rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
                     <div className="flex gap-1.5 bg-gray-100 p-1 rounded-lg">
                         {SYMBOLS.map((s) => (
@@ -155,40 +171,57 @@ export default function StrategyBuilder() {
                         <table className="w-full border-collapse text-[11px]">
                             <thead className="sticky top-0 bg-gray-50 border-b border-gray-200 z-10 shadow-[0_1px_0_0_rgba(229,231,235,1)]">
                                 <tr>
-                                    <th className="px-3 py-2 text-left font-semibold text-gray-400 w-[38%]">Call LTP</th>
-                                    <th className="py-2 text-center font-bold text-gray-700 bg-gray-100/80 w-[24%] border-x border-gray-200">Strike</th>
-                                    <th className="px-3 py-2 text-right font-semibold text-gray-400 w-[38%]">Put LTP</th>
+                                    <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[13%]">Call Δ</th>
+                                    <th className="px-1.5 py-2 text-right font-semibold text-gray-400 w-[15%]">LTP</th>
+                                    <th className="px-1.5 py-2 text-right font-semibold text-gray-400 w-[18%]">OI</th>
+                                    <th className="py-2 text-center font-bold text-gray-700 bg-gray-100/80 w-[16%] border-x border-gray-200">Strike</th>
+                                    <th className="px-1.5 py-2 text-left font-semibold text-gray-400 w-[18%]">OI</th>
+                                    <th className="px-1.5 py-2 text-left font-semibold text-gray-400 w-[18%]">LTP</th>
+                                    <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Put Δ</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {data.rows.map((row) => (
-                                    <tr key={row.strike} className={`border-b border-gray-100/70 transition-colors ${row.strike === data.atmStrike ? "bg-blue-50/60 font-semibold" : "hover:bg-gray-50/80"}`}>
-                                        {/* CALL SIDE */}
-                                        <td className="group px-3 py-1.5 tabular-nums relative">
-                                            <div className="flex items-center justify-between">
-                                                <span className="text-gray-700">{formatPrice(row.ce?.ltp)}</span>
-                                                <div className="opacity-0 group-hover:opacity-100 flex gap-0.5 transition-opacity duration-150 pl-1 bg-gradient-to-l from-gray-50 via-gray-50 to-transparent">
+                                {data.rows.map((row) => {
+                                    const ceItm = row.strike < data.spotPrice;
+                                    const peItm = row.strike > data.spotPrice;
+                                    const isAtm = row.strike === data.atmStrike;
+                                    return (
+                                        <tr key={row.strike} className={`border-b border-gray-100/70 transition-colors ${isAtm ? "bg-blue-50/60 font-semibold" : "hover:bg-gray-50/80"}`}>
+                                            <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                {formatDelta(row.ce?.delta)}
+                                            </td>
+                                            {/* CALL SIDE */}
+                                            <td className={`group px-1.5 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                <span className="text-gray-700 group-hover:invisible">{formatPrice(row.ce?.ltp)}</span>
+                                                <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-0.5 bg-white">
                                                     <button onClick={() => addLeg(row, "CE", "buy")} className="rounded bg-emerald-500 hover:bg-emerald-600 shadow-sm px-1.5 py-0.5 text-[9px] font-extrabold text-white">B</button>
                                                     <button onClick={() => addLeg(row, "CE", "sell")} className="rounded bg-rose-500 hover:bg-rose-600 shadow-sm px-1.5 py-0.5 text-[9px] font-extrabold text-white">S</button>
                                                 </div>
-                                            </div>
-                                        </td>
-                                        
-                                        {/* STRIKE PRICE */}
-                                        <td className="py-1.5 text-center font-bold text-gray-900 bg-gray-50/40 border-x border-gray-100 text-xs tabular-nums">{row.strike}</td>
-                                        
-                                        {/* PUT SIDE */}
-                                        <td className="group px-3 py-1.5 text-right tabular-nums relative">
-                                            <div className="flex items-center justify-between direction-rtl">
-                                                <div className="opacity-0 group-hover:opacity-100 flex gap-0.5 transition-opacity duration-150 pr-1 bg-gradient-to-r from-gray-50 via-gray-50 to-transparent">
+                                            </td>
+                                            <td className={`p-0 tabular-nums ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                <OiBar value={row.ce?.oi} max={maxCeOi} side="ce" />
+                                            </td>
+
+                                            {/* STRIKE PRICE */}
+                                            <td className="py-1.5 text-center font-bold text-gray-900 bg-gray-50/40 border-x border-gray-100 text-xs tabular-nums">{row.strike}</td>
+
+                                            {/* PUT SIDE */}
+                                            <td className={`p-0 tabular-nums ${peItm ? "bg-amber-50/60" : ""}`}>
+                                                <OiBar value={row.pe?.oi} max={maxPeOi} side="pe" />
+                                            </td>
+                                            <td className={`group px-1.5 py-1.5 text-left tabular-nums relative ${peItm ? "bg-amber-50/60" : ""}`}>
+                                                <span className="text-gray-700 group-hover:invisible">{formatPrice(row.pe?.ltp)}</span>
+                                                <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-0.5 bg-white">
                                                     <button onClick={() => addLeg(row, "PE", "buy")} className="rounded bg-emerald-500 hover:bg-emerald-600 shadow-sm px-1.5 py-0.5 text-[9px] font-extrabold text-white">B</button>
                                                     <button onClick={() => addLeg(row, "PE", "sell")} className="rounded bg-rose-500 hover:bg-rose-600 shadow-sm px-1.5 py-0.5 text-[9px] font-extrabold text-white">S</button>
                                                 </div>
-                                                <span className="text-gray-700 ml-auto">{formatPrice(row.pe?.ltp)}</span>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                ))}
+                                            </td>
+                                            <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-amber-50/60" : ""}`}>
+                                                {formatDelta(row.pe?.delta)}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>
