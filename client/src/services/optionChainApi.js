@@ -95,6 +95,24 @@ export async function getHistoricalSnapshots(symbol, from, to) {
 }
 
 /**
+ * Fetch LTP history for a single contract (strike + expiry + right), for the
+ * hover "view chart" action on the option chain LTP cells.
+ */
+export async function fetchContractHistory(symbol, { strike, expiry, right }) {
+    const url = new URL(`${API_URL}/api/option-chain/${symbol.toLowerCase()}/contract-history`);
+    url.searchParams.set("strike", strike);
+    url.searchParams.set("expiry", expiry);
+    url.searchParams.set("right", right);
+
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Contract history fetch failed (${res.status})`);
+    }
+    return res.json();
+}
+
+/**
  * Test connection to backend
  */
 export async function testConnection() {
