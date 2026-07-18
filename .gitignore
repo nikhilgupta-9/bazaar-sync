@@ -8,6 +8,10 @@ node_modules/
 
 # Logs
 *.log
+server/logs/
+
+# Angel One scrip-master disk cache (large, refreshed daily)
+server/data/
 
 # Mac
 .DS_Store

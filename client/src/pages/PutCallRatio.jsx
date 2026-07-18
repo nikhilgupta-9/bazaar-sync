@@ -6,28 +6,40 @@ import { useOptionChain } from "../hooks/useOptionChain";
 import SettingsSidebar from "../components/SettingsSidebar";
 import { formatPrice, formatOi } from "../utils/format";
 
-const POLL_MS = 15000;
+const SAMPLE_MS = 15000; // one trend point per 15s (live frames arrive ~1/s)
 const MAX_POINTS = 200; // cap memory for a long-running session
 
 export default function PutCallRatio() {
+    // Live updates arrive through the shared hook's socket.io feed (with a
+    // slow REST fallback when the market's closed) — no page-level polling.
     const { symbol, setSymbol, data, error, load } = useOptionChain();
     const [history, setHistory] = useState([]);
     const expiryRef = useRef(null);
+    const lastPointAtRef = useRef(0);
 
     // New symbol/expiry starts a fresh trend line rather than mixing series.
     function handleSymbolChange(sym) {
         setHistory([]);
+        lastPointAtRef.current = 0;
         setSymbol(sym);
     }
     function handleExpiryChange(exp) {
         setHistory([]);
+        lastPointAtRef.current = 0;
         load(symbol, exp);
     }
 
     useEffect(() => {
         if (!data) return;
-        if (expiryRef.current && expiryRef.current !== data.selectedExpiry) setHistory([]);
+        if (expiryRef.current && expiryRef.current !== data.selectedExpiry) {
+            setHistory([]);
+            lastPointAtRef.current = 0;
+        }
         expiryRef.current = data.selectedExpiry;
+
+        // Sample at most one point per SAMPLE_MS — socket frames tick ~1/s.
+        if (Date.now() - lastPointAtRef.current < SAMPLE_MS) return;
+        lastPointAtRef.current = Date.now();
 
         const totalCeOi = data.rows.reduce((s, r) => s + (r.ce.oi || 0), 0);
         const totalPeOi = data.rows.reduce((s, r) => s + (r.pe.oi || 0), 0);
@@ -40,11 +52,6 @@ export default function PutCallRatio() {
         };
         setHistory((prev) => [...prev, point].slice(-MAX_POINTS));
     }, [data]);
-
-    useEffect(() => {
-        const id = setInterval(() => load(symbol, expiryRef.current), POLL_MS);
-        return () => clearInterval(id);
-    }, [symbol, load]);
 
     const latest = history[history.length - 1];
 
@@ -62,8 +69,8 @@ export default function PutCallRatio() {
                 <div className="mb-3 rounded-lg border border-gray-200 bg-white px-5 py-4">
                     <h1 className="text-base font-semibold text-gray-900">Put-Call Ratio</h1>
                     <p className="mt-1 text-xs text-gray-500">
-                        Live, polled every {POLL_MS / 1000}s — this trend accumulates from when you opened this page,
-                        it isn't full trading-day history (we don't store intraday snapshots yet).
+                        Live via socket push, sampled every {SAMPLE_MS / 1000}s — this trend accumulates from when you
+                        opened this page, it isn't full trading-day history.
                     </p>
                     {latest && (
                         <div className="mt-2 flex gap-8 text-sm">

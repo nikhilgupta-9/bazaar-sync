@@ -1,18 +1,44 @@
 // services/optionChainService.js
-const breeze = require("../services/breeze");
+//
+// Decides live-vs-historical for GET /api/option-chain/:symbol.
+//
+//   LIVE       — read from services/marketCache.js (the in-memory Map fed by
+//                the market worker's IPC summaries). No broker call happens
+//                here; Express never talks to Angel One directly.
+//   HISTORICAL — read from MySQL (option_chain_history), exactly as before.
+//                This is a legitimate mode (market closed / worker down),
+//                not an error path.
+//
+// The old MySQL `option_chain_cache` table this service used to read/write
+// was never in schema.sql (it only ever existed if someone created it by
+// hand). It's gone: live data now comes from the in-memory cache, and the
+// historical payload gets a small in-process TTL cache instead.
+
 const bs = require("../utils/blackScholes");
 const db = require("../config/db");
+const marketCache = require("./marketCache");
 const { marketHours } = require("../utils/marketUtils");
 
 const SYMBOL_MAP = { nifty: "NIFTY", banknifty: "BANKNIFTY", finnifty: "FINNIFTY" };
-const CACHE_TTL_MS = 3000;
-const LIVE_CACHE_TTL_SECONDS = 60;
+const HISTORICAL_CACHE_TTL_MS = 60 * 1000;
+
+// Plain-string date helpers (CLAUDE.md Gotcha #12 — no local-timezone Date math)
+function utcMidnight(dateStr) {
+    const [y, m, d] = String(dateStr).slice(0, 10).split("-").map(Number);
+    return Date.UTC(y, m - 1, d);
+}
+function todayIstStr() {
+    const d = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+function daysToExpiry(expirySql, fromDateStr) {
+    if (!expirySql || !fromDateStr) return null;
+    return Math.max(0, Math.round((utcMidnight(expirySql) - utcMidnight(fromDateStr)) / 86400000));
+}
 
 class OptionChainService {
     constructor() {
-        this.activeWebSocketConnections = new Map();
-        this.liveDataSubscriptions = new Map();
-        this.inMemoryCache = new Map();
+        this.historicalCache = new Map(); // key -> { payload, cachedAt }
     }
 
     isMarketOpen() {
@@ -25,71 +51,139 @@ class OptionChainService {
             throw new Error("symbol must be one of nifty, banknifty, finnifty");
         }
 
-        const isOpen = this.isMarketOpen();
-
-        if (isOpen || forceLive) {
-            return await this.getLiveOptionChain(displaySymbol, expiry);
-        } else {
-            return await this.getHistoricalOptionChain(displaySymbol, expiry);
+        if (this.isMarketOpen() || forceLive) {
+            const live = this.getLiveOptionChain(displaySymbol, expiry);
+            if (live) return live;
+            // Worker down / cache stale / requested expiry not subscribed —
+            // fall through to historical rather than failing.
         }
+        return this.getHistoricalOptionChain(displaySymbol, expiry);
     }
 
-    async getLiveOptionChain(displaySymbol, expiry) {
-        const cacheKey = `live_${displaySymbol}_${expiry || 'latest'}`;
-        
-        try {
-            // Check MySQL cache first
-            const cachedData = await this.getCachedData(cacheKey);
-            if (cachedData) {
-                const cacheAge = (Date.now() - new Date(cachedData.cached_at).getTime()) / 1000;
-                if (cacheAge < LIVE_CACHE_TTL_SECONDS) {
-                    console.log('[Cache] Using cached live data for', displaySymbol);
-                    return JSON.parse(cachedData.payload);
-                }
-            }
-        } catch (err) {
-            console.warn('[Cache] Failed to read cache, fetching fresh data:', err.message);
-        }
+    /**
+     * Build the option-chain payload from the in-memory live cache.
+     * Synchronous — no DB, no broker. Returns null when the cache can't
+     * serve this request (stale, empty, or a different expiry was asked for).
+     */
+    getLiveOptionChain(displaySymbol, requestedExpiry) {
+        if (!marketCache.isFresh()) return null;
+        const chain = marketCache.getChain(displaySymbol);
+        if (!chain || !chain.rows.length || !chain.spot) return null;
+        // The worker subscribes only the nearest expiry; other expiries must
+        // come from historical data.
+        if (requestedExpiry && chain.expiry && requestedExpiry !== chain.expiry) return null;
 
-        // Fetch fresh data from Breeze
-        console.log('[API] Fetching live data for', displaySymbol);
-        const payload = await this.buildOptionChainPayload(displaySymbol, expiry);
-        
-        // Cache in MySQL
-        try {
-            await this.saveCachedData(cacheKey, payload);
-            // Save to historical table
-            await this.saveToHistoricalTable(displaySymbol, payload);
-        } catch (err) {
-            console.warn('[Cache] Failed to save cache:', err.message);
-        }
+        const spotPrice = chain.spot;
+        const t = chain.expiry ? bs.yearsToExpiry(chain.expiry) : null;
 
-        return payload;
+        const rows = chain.rows.map((r) => {
+            const ceIv =
+                t && r.ce && r.ce.ltp
+                    ? bs.impliedVolatility({ marketPrice: r.ce.ltp, spot: spotPrice, strike: r.strike, t, right: "call" })
+                    : null;
+            const peIv =
+                t && r.pe && r.pe.ltp
+                    ? bs.impliedVolatility({ marketPrice: r.pe.ltp, spot: spotPrice, strike: r.strike, t, right: "put" })
+                    : null;
+            const ceGreeks = ceIv ? bs.greeks({ spot: spotPrice, strike: r.strike, t, vol: ceIv, right: "call" }) : null;
+            const peGreeks = peIv ? bs.greeks({ spot: spotPrice, strike: r.strike, t, vol: peIv, right: "put" }) : null;
+
+            return {
+                strike: r.strike,
+                iv: ceIv && peIv ? Number((((ceIv + peIv) / 2) * 100).toFixed(1)) : null,
+                ce: {
+                    ltp: r.ce ? r.ce.ltp : null,
+                    changePercent: null, // live feed carries no prev-close per contract
+                    oi: r.ce ? r.ce.oi : null,
+                    oiChange: null,
+                    oiChangePercent: r.ce ? r.ce.oiChangePercent ?? null : null,
+                    volume: r.ce ? r.ce.volume : null,
+                    iv: ceIv ? Number((ceIv * 100).toFixed(1)) : null,
+                    delta: ceGreeks ? Number(ceGreeks.delta.toFixed(3)) : null,
+                    gamma: ceGreeks ? Number(ceGreeks.gamma.toFixed(6)) : null,
+                    theta: ceGreeks ? Number(ceGreeks.theta.toFixed(3)) : null,
+                    vega: ceGreeks ? Number(ceGreeks.vega.toFixed(3)) : null,
+                    buildup: null,
+                },
+                pe: {
+                    ltp: r.pe ? r.pe.ltp : null,
+                    changePercent: null,
+                    oi: r.pe ? r.pe.oi : null,
+                    oiChange: null,
+                    oiChangePercent: r.pe ? r.pe.oiChangePercent ?? null : null,
+                    volume: r.pe ? r.pe.volume : null,
+                    iv: peIv ? Number((peIv * 100).toFixed(1)) : null,
+                    delta: peGreeks ? Number(peGreeks.delta.toFixed(3)) : null,
+                    gamma: peGreeks ? Number(peGreeks.gamma.toFixed(6)) : null,
+                    theta: peGreeks ? Number(peGreeks.theta.toFixed(3)) : null,
+                    vega: peGreeks ? Number(peGreeks.vega.toFixed(3)) : null,
+                    buildup: null,
+                },
+            };
+        });
+
+        const atmStrike = this.computeAtmStrike(rows.map((r) => r.strike), spotPrice);
+        const maxPainStrike = this.computeMaxPain(rows.map((r) => ({ strike: r.strike, ceOi: r.ce.oi, peOi: r.pe.oi })));
+        const pcr = this.computePcr(rows.map((r) => ({ ceOi: r.ce.oi, peOi: r.pe.oi })));
+
+        return {
+            symbol: displaySymbol,
+            spotPrice,
+            atmStrike,
+            maxPainStrike,
+            pcr,
+            expiries: chain.expiry ? [chain.expiry] : [],
+            selectedExpiry: chain.expiry,
+            daysToExpiry: daysToExpiry(chain.expiry, todayIstStr()),
+            rows,
+            isHistorical: false,
+            timestamp: new Date().toISOString(),
+        };
     }
 
+    /**
+     * Historical chain from MySQL. Anchors on the latest snapshot that has a
+     * real underlying_price (it's backfilled from ohlcv_data and can trail
+     * the newest option rows by one tick — see services/cron.js), discovers
+     * the available expiries at that snapshot, and scopes the chain to that
+     * exact trade_date+trade_time (otherwise the query returns every stored
+     * row ever and the O(n^2) max-pain loop hangs the event loop).
+     */
     async getHistoricalOptionChain(displaySymbol, expiry) {
-        const cacheKey = `historical_${displaySymbol}_${expiry || 'latest'}`;
-        
-        // Check MySQL cache
-        try {
-            const cachedData = await this.getCachedData(cacheKey);
-            if (cachedData) {
-                const cacheAge = (Date.now() - new Date(cachedData.cached_at).getTime()) / 1000;
-                if (cacheAge < 3600) {
-                    console.log('[Cache] Using cached historical data for', displaySymbol);
-                    return JSON.parse(cachedData.payload);
-                }
-            }
-        } catch (err) {
-            console.warn('[Cache] Failed to read cache:', err.message);
+        const cacheKey = `${displaySymbol}_${expiry || "latest"}`;
+        const cached = this.historicalCache.get(cacheKey);
+        if (cached && Date.now() - cached.cachedAt < HISTORICAL_CACHE_TTL_MS) {
+            return cached.payload;
         }
 
         try {
-            console.log('[DB] Fetching historical data for', displaySymbol, expiry);
-            
-            // Query database for historical data
-            const sql = `
-                SELECT 
+            const latestRows = await db.query(
+                `SELECT trade_date, trade_time, underlying_price
+                 FROM option_chain_history
+                 WHERE symbol = ? AND underlying_price IS NOT NULL
+                 ORDER BY trade_date DESC, trade_time DESC
+                 LIMIT 1`,
+                [displaySymbol]
+            );
+            if (!latestRows || latestRows.length === 0) {
+                return await this.getFallbackHistoricalData(displaySymbol);
+            }
+            const { trade_date, trade_time, underlying_price } = latestRows[0];
+
+            const expiryRows = await db.query(
+                `SELECT DISTINCT expiry FROM option_chain_history
+                 WHERE symbol = ? AND trade_date = ?
+                 ORDER BY expiry ASC`,
+                [displaySymbol, trade_date]
+            );
+            const expiries = (expiryRows || []).map((r) => r.expiry);
+            const selectedExpiry = expiry && expiries.includes(expiry) ? expiry : expiries[0] || null;
+            if (!selectedExpiry) {
+                return await this.getFallbackHistoricalData(displaySymbol);
+            }
+
+            let rows = await db.query(
+                `SELECT
                     strike,
                     underlying_price as spotPrice,
                     ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume,
@@ -97,49 +191,49 @@ class OptionChainService {
                     pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume,
                     pe_delta, pe_gamma, pe_theta, pe_vega,
                     trade_date, trade_time
-                FROM option_chain_history
-                WHERE symbol = ?
-                    AND expiry = ?
-                    AND trade_date = (
-                        SELECT MAX(trade_date) 
-                        FROM option_chain_history 
-                        WHERE symbol = ? AND expiry = ?
-                    )
-                ORDER BY strike ASC
-            `;
-
-            const rows = await db.query(sql, [displaySymbol, expiry || '', displaySymbol, expiry || '']);
-
-            // Check if rows exist and have length
+                 FROM option_chain_history
+                 WHERE symbol = ? AND expiry = ? AND trade_date = ? AND trade_time = ?
+                 ORDER BY strike ASC`,
+                [displaySymbol, selectedExpiry, trade_date, trade_time]
+            );
             if (!rows || rows.length === 0) {
-                console.log('[DB] No historical data for exact match, trying fallback...');
+                rows = await db.query(
+                    `SELECT
+                        strike,
+                        underlying_price as spotPrice,
+                        ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume,
+                        ce_delta, ce_gamma, ce_theta, ce_vega,
+                        pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume,
+                        pe_delta, pe_gamma, pe_theta, pe_vega,
+                        trade_date, trade_time
+                     FROM option_chain_history
+                     WHERE symbol = ? AND expiry = ? AND trade_date = ?
+                     ORDER BY strike ASC
+                     LIMIT 200`,
+                    [displaySymbol, selectedExpiry, trade_date]
+                );
+            }
+            if (!rows || rows.length === 0) {
                 return await this.getFallbackHistoricalData(displaySymbol);
             }
 
-            console.log(`[DB] Found ${rows.length} rows for ${displaySymbol}`);
-            const payload = this.formatHistoricalPayload(displaySymbol, rows);
-            
-            // Cache in MySQL for 1 hour
-            try {
-                await this.saveCachedData(cacheKey, payload, 3600);
-            } catch (err) {
-                console.warn('[Cache] Failed to save cache:', err.message);
-            }
-            
+            const payload = this.formatHistoricalPayload(displaySymbol, rows, {
+                expiries,
+                selectedExpiry,
+                spotOverride: Number(underlying_price) || null,
+            });
+            this.historicalCache.set(cacheKey, { payload, cachedAt: Date.now() });
             return payload;
         } catch (err) {
-            console.error('[Historical] Error:', err);
-            // Fallback to latest available data
+            console.error("[Historical] Error:", err);
             return await this.getFallbackHistoricalData(displaySymbol);
         }
     }
 
     async getFallbackHistoricalData(displaySymbol) {
         try {
-            console.log('[DB] Fetching latest fallback data for', displaySymbol);
-            
             const fallbackSQL = `
-                SELECT 
+                SELECT
                     strike,
                     underlying_price as spotPrice,
                     ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume,
@@ -152,39 +246,25 @@ class OptionChainService {
                 ORDER BY trade_date DESC, trade_time DESC
                 LIMIT 100
             `;
-            
+
             const rows = await db.query(fallbackSQL, [displaySymbol]);
-            
+
             if (!rows || rows.length === 0) {
-                // No data at all - return empty payload
-                console.warn('[DB] No historical data found for', displaySymbol);
                 return this.createEmptyPayload(displaySymbol);
             }
-            
-            console.log(`[DB] Found ${rows.length} rows in fallback for ${displaySymbol}`);
-            
-            // Group by strike for latest data
+
+            // Latest row per strike
             const strikeMap = new Map();
-            rows.forEach(row => {
-                if (!strikeMap.has(row.strike)) {
-                    strikeMap.set(row.strike, row);
-                }
+            rows.forEach((row) => {
+                if (!strikeMap.has(row.strike)) strikeMap.set(row.strike, row);
             });
-            
-            const mappedRows = Array.from(strikeMap.values()).sort((a, b) => a.strike - b.strike);
+
+            const mappedRows = [...strikeMap.values()].sort((a, b) => a.strike - b.strike);
             const payload = this.formatHistoricalPayload(displaySymbol, mappedRows);
-            
-            // Cache for 1 hour
-            const cacheKey = `historical_${displaySymbol}_fallback`;
-            try {
-                await this.saveCachedData(cacheKey, payload, 3600);
-            } catch (err) {
-                console.warn('[Cache] Failed to save fallback cache:', err.message);
-            }
-            
+            this.historicalCache.set(`${displaySymbol}_fallback`, { payload, cachedAt: Date.now() });
             return payload;
         } catch (err) {
-            console.error('[Fallback] Error:', err);
+            console.error("[Fallback] Error:", err);
             return this.createEmptyPayload(displaySymbol);
         }
     }
@@ -201,132 +281,22 @@ class OptionChainService {
             timestamp: new Date().toISOString(),
             tradeDate: null,
             tradeTime: null,
-            error: 'No historical data available'
+            error: "No historical data available",
         };
     }
 
-    async getCachedData(cacheKey) {
-        try {
-            const sql = `
-                SELECT payload, cached_at 
-                FROM option_chain_cache 
-                WHERE cache_key = ? AND expires_at > NOW()
-            `;
-            
-            const rows = await db.query(sql, [cacheKey]);
-            
-            // Check if rows is an array
-            if (!Array.isArray(rows)) {
-                console.warn('[Cache] Unexpected response format:', typeof rows);
-                return null;
-            }
-            
-            return rows && rows.length > 0 ? rows[0] : null;
-        } catch (err) {
-            console.error('[Cache] Get error:', err);
-            return null;
-        }
-    }
-
-    async saveCachedData(cacheKey, payload, ttlSeconds = LIVE_CACHE_TTL_SECONDS) {
-        try {
-            const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
-            
-            const sql = `
-                INSERT INTO option_chain_cache (cache_key, payload, expires_at, cached_at)
-                VALUES (?, ?, ?, NOW())
-                ON DUPLICATE KEY UPDATE
-                    payload = VALUES(payload),
-                    expires_at = VALUES(expires_at),
-                    cached_at = NOW()
-            `;
-            
-            await db.query(sql, [cacheKey, JSON.stringify(payload), expiresAt]);
-        } catch (err) {
-            console.error('[Cache] Save error:', err);
-            throw err;
-        }
-    }
-
-    async saveToHistoricalTable(displaySymbol, payload) {
-        try {
-            // Check if we already have this data
-            const checkSQL = `
-                SELECT COUNT(*) as count 
-                FROM option_chain_history 
-                WHERE symbol = ? AND expiry = ? AND trade_date = CURDATE()
-            `;
-            
-            const checkResult = await db.query(checkSQL, [displaySymbol, payload.selectedExpiry || '']);
-            
-            if (checkResult && checkResult[0] && checkResult[0].count > 0) {
-                console.log('[DB] Data already saved for today, skipping');
-                return;
-            }
-
-            const insertSQL = `
-                INSERT INTO option_chain_history (
-                    symbol, trade_date, trade_time, expiry, strike, underlying_price,
-                    ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume,
-                    ce_delta, ce_gamma, ce_theta, ce_vega,
-                    pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume,
-                    pe_delta, pe_gamma, pe_theta, pe_vega
-                ) VALUES ?
-            `;
-            
-            const now = new Date();
-            const tradeDate = now.toISOString().split('T')[0];
-            const tradeTime = now.toTimeString().split(' ')[0];
-            
-            const values = payload.rows.map(row => [
-                displaySymbol,
-                tradeDate,
-                tradeTime,
-                payload.selectedExpiry || '',
-                row.strike,
-                payload.spotPrice || 0,
-                row.ce.ltp || 0,
-                row.ce.oi || 0,
-                row.ce.oiChange || 0,
-                row.ce.iv || null,
-                row.ce.volume || 0,
-                row.ce.delta || null,
-                row.ce.gamma || null,
-                row.ce.theta || null,
-                row.ce.vega || null,
-                row.pe.ltp || 0,
-                row.pe.oi || 0,
-                row.pe.oiChange || 0,
-                row.pe.iv || null,
-                row.pe.volume || 0,
-                row.pe.delta || null,
-                row.pe.gamma || null,
-                row.pe.theta || null,
-                row.pe.vega || null
-            ]);
-            
-            if (values.length > 0) {
-                await db.query(insertSQL, [values]);
-                console.log(`[DB] Saved ${values.length} rows for ${displaySymbol}`);
-            }
-        } catch (err) {
-            console.error('[Historical] Save error:', err);
-            // Don't throw - this is non-critical
-        }
-    }
-
-    formatHistoricalPayload(displaySymbol, rows) {
+    formatHistoricalPayload(displaySymbol, rows, { expiries = [], selectedExpiry = null, spotOverride = null } = {}) {
         if (!rows || rows.length === 0) {
             return this.createEmptyPayload(displaySymbol);
         }
 
-        const strikes = rows.map(r => r.strike).filter(s => s != null);
-        const spotPrice = rows[0]?.spotPrice || 0;
+        const strikes = rows.map((r) => r.strike).filter((s) => s != null);
+        const spotPrice = spotOverride || Number(rows[0]?.spotPrice) || 0;
         const atmStrike = strikes.length > 0 ? this.computeAtmStrike(strikes, spotPrice) : 0;
-        
-        const mappedRows = rows.map(r => ({
+
+        const mappedRows = rows.map((r) => ({
             strike: r.strike,
-            iv: null,
+            iv: r.ce_iv ?? r.pe_iv ?? null,
             ce: {
                 ltp: r.ce_ltp ?? 0,
                 oi: r.ce_oi ?? 0,
@@ -338,7 +308,7 @@ class OptionChainService {
                 theta: r.ce_theta ?? null,
                 vega: r.ce_vega ?? null,
                 buildup: null,
-                changePercent: null
+                changePercent: null,
             },
             pe: {
                 ltp: r.pe_ltp ?? 0,
@@ -351,19 +321,14 @@ class OptionChainService {
                 theta: r.pe_theta ?? null,
                 vega: r.pe_vega ?? null,
                 buildup: null,
-                changePercent: null
-            }
+                changePercent: null,
+            },
         }));
 
-        const maxPainStrike = this.computeMaxPain(mappedRows.map(r => ({ 
-            strike: r.strike, 
-            ceOi: r.ce.oi, 
-            peOi: r.pe.oi 
-        })));
-        const pcr = this.computePcr(mappedRows.map(r => ({ 
-            ceOi: r.ce.oi, 
-            peOi: r.pe.oi 
-        })));
+        const maxPainStrike = this.computeMaxPain(
+            mappedRows.map((r) => ({ strike: r.strike, ceOi: r.ce.oi, peOi: r.pe.oi }))
+        );
+        const pcr = this.computePcr(mappedRows.map((r) => ({ ceOi: r.ce.oi, peOi: r.pe.oi })));
 
         return {
             symbol: displaySymbol,
@@ -371,110 +336,20 @@ class OptionChainService {
             atmStrike,
             maxPainStrike,
             pcr,
+            expiries,
+            selectedExpiry,
+            daysToExpiry: daysToExpiry(selectedExpiry, rows[0]?.trade_date || todayIstStr()),
             rows: mappedRows,
             isHistorical: true,
             timestamp: new Date().toISOString(),
             tradeDate: rows[0]?.trade_date || null,
-            tradeTime: rows[0]?.trade_time || null
+            tradeTime: rows[0]?.trade_time || null,
         };
-    }
-
-    // ... rest of your existing methods (buildOptionChainPayload, classifyBuildup, computeAtmStrike, computeMaxPain, computePcr)
-    // These should remain unchanged from your original code
-    
-    async buildOptionChainPayload(displaySymbol, requestedExpiry) {
-        // Your existing implementation here
-        // Make sure this method is complete
-        const stockCode = breeze.SYMBOL_CODES[displaySymbol];
-        await breeze.connect();
-        const { spotPrice, expiries } = await breeze.discoverChain({ stockCode });
-        
-        if (!expiries || !expiries.length) {
-            throw new Error("No expiries returned by Breeze");
-        }
-
-        const selectedExpiry = expiries.includes(requestedExpiry) ? requestedExpiry : expiries[0];
-        const apiExpiry = breeze.expiryDisplayToApi(selectedExpiry);
-
-        const rawRows = await breeze.getFullOptionChain({ stockCode, expiryDate: apiExpiry });
-        const t = bs.yearsToExpiry(breeze.expiryApiToSql(apiExpiry));
-
-        const rows = rawRows
-            .filter((r) => r.strike)
-            .sort((a, b) => a.strike - b.strike)
-            .map((r) => {
-                const spot = r.underlyingPrice || spotPrice;
-                const ceIv = bs.impliedVolatility({ marketPrice: r.ceLtp, spot, strike: r.strike, t, right: "call" });
-                const peIv = bs.impliedVolatility({ marketPrice: r.peLtp, spot, strike: r.strike, t, right: "put" });
-                const ceGreeks = ceIv ? bs.greeks({ spot, strike: r.strike, t, vol: ceIv, right: "call" }) : null;
-                const peGreeks = peIv ? bs.greeks({ spot, strike: r.strike, t, vol: peIv, right: "put" }) : null;
-
-                return {
-                    strike: r.strike,
-                    iv: ceIv && peIv ? Number((((ceIv + peIv) / 2) * 100).toFixed(1)) : null,
-                    ce: {
-                        ltp: r.ceLtp ?? null,
-                        changePercent: r.ceLtpChangePercent ?? null,
-                        oi: r.ceOi ?? null,
-                        oiChange: r.ceOiChange ?? null,
-                        volume: r.ceVolume ?? null,
-                        iv: ceIv ? Number((ceIv * 100).toFixed(1)) : null,
-                        delta: ceGreeks ? Number(ceGreeks.delta.toFixed(3)) : null,
-                        gamma: ceGreeks ? Number(ceGreeks.gamma.toFixed(6)) : null,
-                        theta: ceGreeks ? Number(ceGreeks.theta.toFixed(3)) : null,
-                        vega: ceGreeks ? Number(ceGreeks.vega.toFixed(3)) : null,
-                        buildup: this.classifyBuildup(r.ceLtpChangePercent, r.ceOiChange),
-                    },
-                    pe: {
-                        ltp: r.peLtp ?? null,
-                        changePercent: r.peLtpChangePercent ?? null,
-                        oi: r.peOi ?? null,
-                        oiChange: r.peOiChange ?? null,
-                        volume: r.peVolume ?? null,
-                        iv: peIv ? Number((peIv * 100).toFixed(1)) : null,
-                        delta: peGreeks ? Number(peGreeks.delta.toFixed(3)) : null,
-                        gamma: peGreeks ? Number(peGreeks.gamma.toFixed(6)) : null,
-                        theta: peGreeks ? Number(peGreeks.theta.toFixed(3)) : null,
-                        vega: peGreeks ? Number(peGreeks.vega.toFixed(3)) : null,
-                        buildup: this.classifyBuildup(r.peLtpChangePercent, r.peOiChange),
-                    },
-                };
-            });
-
-        const atmStrike = this.computeAtmStrike(rows.map((r) => r.strike), spotPrice);
-        const maxPainStrike = this.computeMaxPain(rows.map((r) => ({ strike: r.strike, ceOi: r.ce.oi, peOi: r.pe.oi })));
-        const pcr = this.computePcr(rows.map((r) => ({ ceOi: r.ce.oi, peOi: r.pe.oi })));
-
-        return { 
-            symbol: displaySymbol, 
-            spotPrice, 
-            atmStrike, 
-            maxPainStrike, 
-            pcr, 
-            expiries, 
-            selectedExpiry, 
-            rows,
-            isHistorical: false,
-            timestamp: new Date().toISOString()
-        };
-    }
-
-    classifyBuildup(priceChangePercent, oiChange) {
-        if (priceChangePercent == null || oiChange == null) return null;
-        const priceUp = priceChangePercent > 0;
-        const oiUp = oiChange > 0;
-        if (priceUp && oiUp) return "L";
-        if (!priceUp && oiUp) return "S";
-        if (priceUp && !oiUp) return "SC";
-        return "LU";
     }
 
     computeAtmStrike(strikes, spot) {
         if (!strikes || strikes.length === 0) return 0;
-        return strikes.reduce((best, s) => 
-            (Math.abs(s - spot) < Math.abs(best - spot) ? s : best), 
-            strikes[0]
-        );
+        return strikes.reduce((best, s) => (Math.abs(s - spot) < Math.abs(best - spot) ? s : best), strikes[0]);
     }
 
     computeMaxPain(rows) {

@@ -1,9 +1,11 @@
 // Pure P&L/Greeks math for the Strategy Builder. Legs are:
 // { action: 'buy'|'sell', type: 'CE'|'PE', strike, premium, qty, iv, delta, gamma, theta, vega }
 // premium = entry LTP at the time the leg was added (from the option chain).
-// qty is a raw contract count, not lots — Breeze doesn't return real lot
-// sizes in our current calls, and lot sizes change periodically by exchange
+// qty is a raw contract count, not lots — the option-chain payload doesn't
+// carry lot size today, and lot sizes change periodically by exchange
 // circular, so we don't fabricate one; the user enters quantity directly.
+// (Angel One's instrument master does have lotsize — wiring it through the
+// chain payload is a possible follow-up.)
 
 import { bsPrice, normCdf } from "./blackScholes";
 

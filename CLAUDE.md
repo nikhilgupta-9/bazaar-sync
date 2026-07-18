@@ -4,7 +4,7 @@ This file is read automatically by Claude Code whenever it opens this repo, on a
 
 ## Goal
 
-Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting Platform for a confidential client. Traders view live options data, build multi-leg strategies, and backtest them on years of historical NSE data (Nifty/BankNifty/FinNifty/F&O). Market data comes from the client's own ICICI Direct Breeze Connect API.
+Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting Platform for a confidential client. Traders view live options data, build multi-leg strategies, and backtest them on years of historical NSE data (Nifty/BankNifty/FinNifty/F&O). Market data comes from the client's own **Angel One SmartAPI** account (this fully replaced ICICI Direct Breeze Connect in Phase 6, 2026-07-18 — a deliberate user decision, not a parallel integration).
 
 ## Business Terms
 
@@ -13,22 +13,23 @@ Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting
 - Timeline: 8 weeks
 - Repo: https://github.com/nikhilgupta-9/bazaar-sync (private)
 
-## Tech Stack (current — updated 2026-07-02)
+## Tech Stack (current — updated 2026-07-18)
 
 - Frontend: React (Vite) + Tailwind CSS — `client/`
 - Backend: Express.js (Express 5, Node) — `server/`
-- Database: **MySQL/MariaDB only.** MongoDB and Redis were both dropped from the original plan — everything (option_chain_history, ohlcv_data, users, strategies, backtest_results, backtest_trades) lives in MySQL. No live-data cache layer decided yet — revisit when building the live dashboard.
-- Real-time: Socket.io (planned, not yet built)
+- Database: **MySQL/MariaDB only.** MongoDB and Redis were both dropped from the original plan — everything (option_chain_history, ohlcv_data, users, strategies, backtest_results, backtest_trades, plus the Phase 6 live-tier tables) lives in MySQL. The live-data cache layer is the in-memory `services/marketCache.js` Map in the Express process — no Redis.
+- Real-time: **Socket.io (built, Phase 6)** — React connects only to our socket.io server; the backend broadcasts `latestTicks` frames every ~1s from the in-memory market cache.
 - Auth: JWT + bcrypt built and working (email/password). Google OAuth still planned — needs a Google Cloud project + OAuth client credentials from the user, not started.
 - Payments: Razorpay, Free vs Pro ₹499/mo (planned)
-- Market data: ICICI Direct Breeze Connect API, via the `breezeconnect` npm package (see Gotchas below — it has real bugs)
+- Market data: **Angel One SmartAPI**, implemented directly against the documented REST + WebSocket 2.0 endpoints (no SDK dependency — Angel One has no well-maintained official npm package the way Breeze did). TOTP login is fully automated via `otplib` — no daily manual session step. All Breeze code (`breezeconnect`, `adm-zip`, the axios CVE override, `services/breeze.js`, `services/sessionManager.js`) was removed in Phase 6.
 
 ## Hard Rules — always follow
 
 - Never change the tech stack without explicit discussion
-- Backtesting engine always reads from MySQL — never the live Breeze API
-- Breeze API credentials always loaded from `.env` — never hardcoded, never committed (check `.env.example` too — see Gotchas)
-- Frontend must NEVER hold Breeze credentials. Vite bundles every `VITE_`-prefixed env var into the public browser JS — a `VITE_BREEZE_API_KEY` briefly existed in `client/.env` and was removed. The frontend only ever talks to our own backend (`VITE_API_URL`).
+- Backtesting engine always reads from MySQL — never a live broker API
+- Broker (Angel One) credentials always loaded from `.env` — never hardcoded, never committed (check `.env.example` too — see Gotchas)
+- Frontend must NEVER hold broker credentials. Vite bundles every `VITE_`-prefixed env var into the public browser JS — a `VITE_BREEZE_API_KEY` briefly existed in `client/.env` once (Breeze era) and was removed; don't repeat that with `ANGEL_*`. The frontend only ever talks to our own backend (`VITE_API_URL`, REST + socket.io).
+- Nothing under `server/workers/` may require express or touch `req`/`res` — the market worker is a standalone process whose only outbound surfaces are MySQL and IPC (`process.send`)
 - Historical data ingestion is a background cron job — never blocking
 - All Indian number formatting (₹, lakh/crore) in the UI (see `client/src/utils/format.js`)
 - Mobile responsive is mandatory — native app is out of scope
@@ -41,20 +42,21 @@ Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting
 3. **Week 5 (done):** Strategy Builder — multi-leg builder, payoff diagram, net Greeks, 7 preset strategies, all verified against real Breeze data (2026-07-06)
 4. **Weeks 6-7 (done):** Backtesting Engine — simulation engine + API + frontend done, fully verified end-to-end against real multi-day Breeze data (2026-07-07)
 5. **Week 8 (in progress):** JWT auth + Free/Pro tier gating done (2026-07-07). Still needed: Google OAuth, Razorpay, QA, deploy to Hostinger VPS, handover.
+6. **Phase 6 (done, 2026-07-18):** Full Breeze → Angel One SmartAPI migration + real-time architecture: standalone market-worker process (auto TOTP login, WebSocket feed, tick validation, buffered bulk MySQL writes in tiers), in-memory market cache in Express fed over IPC, socket.io push to React, 08:45/15:35 IST worker lifecycle crons, nightly historical cron rewritten on Angel One's candle/OI APIs, Winston logging, PM2 config, deployment guide in README.
 
 ## What's Already Done
 
 **Phase 1 (2026-07-02):**
 - `server/config/schema.sql` — full MySQL schema: `option_chain_history`, `ohlcv_data`, `users`, `strategies`, `backtest_results`, `backtest_trades` (the last three replace what was originally planned as MongoDB collections)
 - `server/config/db.js` — pooled MySQL connection (`mysql2`)
-- `server/services/breeze.js` — Breeze Connect wrapper: session auth, live option chain (merged CE/PE), per-contract historical data, live WebSocket feed stub
-- `server/services/cron.js` — nightly 23:00 IST (Mon-Fri) job that pulls OHLCV + loops per-contract historical option data into MySQL with upserts
+- ~~`server/services/breeze.js`~~ — the Breeze Connect wrapper built here was **deleted in Phase 6** (replaced by the Angel One worker + `services/angelOneHistorical.js`)
+- `server/services/cron.js` — nightly 23:00 IST (Mon-Fri) job that pulls OHLCV + loops per-contract historical option data into MySQL with upserts (**rewritten in Phase 6** to use Angel One's `getCandleData`/`getOIData` per-token APIs; same tables, same upsert model)
 - `/health` endpoint confirms DB connectivity
 - Server runs on **port 5001** (not 5000 — macOS AirPlay Receiver squats on 5000)
 
 **Phase 2, Live Options Dashboard (2026-07-06) — all 6 Module 1 tools done:**
 - `server/utils/blackScholes.js` — IV solver (bisection) + delta/gamma/theta/vega, since Breeze provides neither
-- `server/controllers/optionChainController.js` + `server/routes/optionChain.js` — the one backend endpoint powering every page below: `GET /api/option-chain/:symbol` (nifty/banknifty/finnifty), `?expiry=` optional. Discovers live expiries, computes ATM strike/max pain/PCR/IV/delta/buildup classification server-side. Has request coalescing + short TTL cache (Gotcha #9) and retry/backoff (Gotcha #8).
+- `server/controllers/optionChainController.js` + `server/routes/optionChain.js` — the one backend endpoint powering every page below: `GET /api/option-chain/:symbol` (nifty/banknifty/finnifty), `?expiry=` optional. Discovers live expiries, computes ATM strike/max pain/PCR/IV/delta/buildup classification server-side. (The Breeze-era request-coalescing/retry mitigations it carried are gone since Phase 6 — live data now comes from the in-memory market cache, no broker call in the request path.)
 - `client/src/hooks/useOptionChain.js` — shared fetch hook (request-id race guard) used by every dashboard page.
 - `client/src/pages/OptionChain.jsx` — full option chain table (buildup badges, OI bars, ITM/ATM highlighting, Max Pain tag), styled after stockmojo.in.
 - `client/src/pages/MaxPain.jsx` — per-strike option-writer payout curve (recharts bar chart), max pain strike highlighted. Computed entirely client-side from data already in the option-chain response.
@@ -64,7 +66,7 @@ Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting
 - `client/src/pages/OiHeatmap.jsx` — Call vs Put OI bar chart by strike.
 - `client/src/components/{TopNav,BuildupBadge,OiBar,SettingsSidebar}.jsx` + `utils/format.js` (Cr/L/K Indian formatting) + `services/optionChainApi.js` + `utils/maxPain.js` — shared building blocks across all pages.
 - All pages verified visually via Chrome screenshots against real Breeze data, and cross-checked against the stockmojo.in reference (see design reference in memory).
-- End-to-end verified against a real Breeze account for **all three symbols** (NIFTY, BANKNIFTY, FINNIFTY) — see Gotcha #10, this wasn't true before today.
+- End-to-end verified against a real Breeze account for **all three symbols** (NIFTY, BANKNIFTY, FINNIFTY) — a Breeze-era stock-code bug had silently limited ingestion to NIFTY before this.
 - `client/.claude/launch.json` configured for `preview_start`/`preview_screenshot` tools (client dev server, port 5173).
 
 **Phase 3, Strategy Builder (2026-07-06):**
@@ -91,11 +93,11 @@ Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting
 - Weekly vs monthly expiry classification is inferred from the data itself (last expiry in a calendar month = monthly, others = weekly) — with only one expiry currently stored, it gets classified as "monthly" by definition; will resolve correctly once more expiries are backfilled.
 - `server/controllers/backtestController.js` + `server/routes/backtest.js` — `POST /api/backtest`.
 - `client/src/pages/Backtest.jsx` + `utils/csv.js` — parameter form (symbol/expiry-type/date range/entry time/DTE/SL%/target%), relative-strike leg builder, equity curve chart, summary stats, trade log table, CSV export.
-- `server/scripts/backfillHistory.js` — resumable backfill (reuses cron.js's per-day pull functions), `node scripts/backfillHistory.js SYMBOL DAYS`. **Real limitation:** can only backfill expiries still live-listed right now (strike discovery needs the live snapshot endpoint — Breeze has no historical option-chain-listing API), so this is scoped to days/weeks of real history, not years. A true multi-year backfill needs the NSE securities master file for historical strike discovery — separate, heavier work, not started.
+- `server/scripts/backfillHistory.js` — resumable backfill (reuses cron.js's per-day pull functions), `node scripts/backfillHistory.js SYMBOL DAYS`. **Real limitation (still true under Angel One):** contract/token discovery uses the *current* instrument master, which only lists currently-live contracts — so this reaches days/weeks back (the current nearest expiry's lifetime), not years. A true multi-year backfill needs an archived securities/instrument master for historical contract discovery — separate, heavier work, not started.
 - **Fully verified against real multi-day data (2026-07-07):** ran `backfillHistory.js NIFTY 10`, which pulled 7 real trading days (2026-06-29 through 2026-07-07, ~22k option-chain rows/day) into MySQL. A 7-day backtest then correctly found all 7 trades, and every stat was manually cross-checked against the trade log by hand: Net P&L (-51.50) = exact sum of the 7 trade P&Ls; Win Rate (57.14%) = exactly 4/7; Max Drawdown (-90.00) = the exact lowest point of cumulative P&L. The expiry-day trade (2026-07-07) correctly showed exit reason "expiry" while all others showed "eod". Re-ran with a 10% stop-loss: 5 of 7 trades correctly exited early at realistic threshold-crossing prices (small overshoot expected from per-minute, not continuous, checking), while the 2 already-profitable trades were untouched and matched their no-SL P&L exactly.
 - **"Save backtest" is now implemented** (2026-07-07, see Phase 5 below) — was blocked on auth at the time this was written, since resolved. **At the time of writing this, backtesting itself was NOT gated to Pro users** (only saving was) — this under-gated the feature relative to the hard rule "Free tier is live dashboard only (no backtest...)"; fixed in Phase 5, see below.
 - Found and fixed a second instance of the timezone-parsing bug class (see Gotcha #12): `backtestEngine.js` and `backfillHistory.js` both originally used local-`Date`-object arithmetic; rewritten to do all date math on plain `'YYYY-MM-DD'` strings instead (see Gotcha #12). Caught before ever running, by checking that `config/db.js` uses `dateStrings: true`.
-- `breeze.js`'s `connect()` memoizes the session promise but never retries after a failure — if the very first call fails (e.g. stale session), every subsequent call in that same process reuses the same rejected promise forever, even after `.env` is updated. The server process must be restarted after refreshing `BREEZE_API_SESSION`, not just re-triggered. Minor hardening opportunity, not fixed yet.
+- (A Breeze-era session-memoization footgun documented here was made moot by Phase 6 — `workers/login.js` deliberately does NOT memoize failed logins; a failed login retries from scratch on the next call.)
 
 **Phase 5, Auth + tier gating (2026-07-07) — email/password done, Google OAuth/Razorpay not started:**
 - `server/middleware/auth.js` (`requireAuth`, JWT verify) + `server/middleware/requirePro.js` (`requirePro`, **re-checks the live DB tier on every call rather than trusting the JWT payload** — a Pro subscription lapsing via `pro_expires_at` shouldn't have to wait up to 7 days for the token itself to expire).
@@ -107,22 +109,39 @@ Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting
 - `client/src/pages/Auth.jsx` (combined login/register toggle) + `client/src/components/SaveButton.jsx` (shared 3-state Save button: logged-out → "Log in to save", free → disabled "Save (Pro only)", Pro → name prompt then save) — used in both Strategy Builder and Backtest.
 - `client/src/pages/Backtest.jsx`'s Run button mirrors the same 3-state pattern (logged-out → "Log in to run a backtest", free → disabled "Run Backtest (Pro only)", Pro → normal).
 - **Fully verified end-to-end**, both via curl (register/login/me, free-tier 403 on save and on run, Pro 201/200, wrong-password 401) and via the actual UI (screenshots): a Pro user's saved strategy and saved backtest result both landed correctly in MySQL (`strategies`, `backtest_results`, `backtest_trades` tables all checked directly), and a free-tier user correctly sees disabled "Pro only" buttons for both Save and Run rather than a failed API call.
-- **Not started:** Google OAuth (needs the user to create a Google Cloud project and provide OAuth client ID/secret — same kind of external-credential dependency as Breeze, ask when picking this up), Razorpay integration, tier upgrade flow (currently only testable by manually setting `tier='pro'` in MySQL).
+- **Not started:** Google OAuth (needs the user to create a Google Cloud project and provide OAuth client ID/secret — same kind of external-credential dependency as the broker keys, ask when picking this up), Razorpay integration, tier upgrade flow (currently only testable by manually setting `tier='pro'` in MySQL).
 
-## Gotchas — read before touching Breeze integration
+**Phase 6, Breeze → Angel One SmartAPI migration + real-time architecture (2026-07-18):** the user explicitly decided to fully replace Breeze with Angel One SmartAPI (not run both). Everything Breeze is gone; the new live pipeline is:
+- **Deleted:** `services/breeze.js`, `services/sessionManager.js`, and from package.json: `breezeconnect`, `adm-zip` (only breezeconnect needed it), the `axios` override (only covered breezeconnect's CVE). New deps: `otplib`, `ws`, `socket.io`, `winston` (server) and `socket.io-client` (client). No Angel One SDK — the REST login and WS 2.0 feed are implemented directly against the documented endpoints.
+- **`workers/marketWorker.js`** — a genuine separate OS process (forked via `child_process.fork` from Express, or run standalone / under PM2). Does its own SmartAPI login (`workers/login.js`: TOTP via `otplib` from `ANGEL_TOTP_SECRET`, tokens in-memory only, never logged/persisted/IPC'd), connects `workers/websocket.js` (raw `ws` wrapper: auth headers, JSON subscribe frames, "ping" heartbeat + dead-connection detection, exponential-backoff reconnect, binary tick decoding), validates ticks (rejects zero/negative/non-finite prices), and buffers writes. Nothing in `workers/` touches express/req/res.
+- **`workers/buffer.js` + `workers/databaseWriter.js`** — flush at 100 records or 2000ms (whichever first), always multi-row bulk `INSERT ... VALUES ?` (never row-by-row), retry with exponential backoff, batch dropped (loudly logged) after final failure so memory can't grow unboundedly.
+- **Tiered live storage** (new tables in schema.sql, all written only by the worker): `live_index_ticks` (every index tick), `live_option_ticks` (per contract, ≤ every 2s), `live_greeks_snapshots` (every 5s — worker computes IV/greeks via `utils/blackScholes.js`; this finally persists the historical IV series IV Percentile Rank needs), `pcr_snapshots` + `oi_summary_snapshots` (every minute). `option_chain_history`/`ohlcv_data` keep their exact shape — the backtest engine is untouched.
+- **IPC → cache → socket.io:** the worker `process.send()`s latest-tick summaries (~1/s, changed tokens only, market data + instrument metadata only — never auth tokens). `services/workerManager.js` (in Express) forks/supervises it and feeds `services/marketCache.js` (in-memory Map). `services/socketBroadcast.js` emits `latestTicks` per symbol room every ~1s off that cache (never a DB query on a timer). `server.js` now uses explicit `http.createServer(app)` so socket.io can attach (Express 5).
+- **Worker lifecycle:** `cron/marketStart.js` (08:45 IST Mon-Fri, forks) + `cron/marketStop.js` (15:35 IST, graceful IPC shutdown → WS close → buffer flush → pool close → exit 0; SIGTERM fallback runs the same flush path). Crash recovery: unexpected worker exit during market hours is reforked with backoff and logged loudly; outside hours it waits for the next 08:45. server.js also starts the worker on boot if already inside market hours (mid-day Express restart recovers the feed).
+- **Instrument tokens:** `services/instrumentMaster.js` downloads Angel One's public daily scrip master JSON (~33MB, cached on disk under `server/data/`, gitignored), filters NFO OPTIDX for our three underlyings, parses `"31JUL2026"` expiries to `'YYYY-MM-DD'` by hand (Gotcha rule on dates). Verified against the real file: 1,618 NIFTY / 1,026 BANKNIFTY / 488 FINNIFTY contracts parsed. The worker subscribes indices first (well-known NSE tokens 26000/26009/26037, env-overridable), learns spot from the first index tick, then subscribes ±15 strikes around ATM for the nearest expiry (SnapQuote mode for OI) — well inside the 1000-token/connection quota.
+- **Historical:** `services/angelOneHistorical.js` (paced ~2.5 req/s, retry/backoff, re-login-once-on-401) + rewritten `services/cron.js` (23:00 IST nightly: index candles → `ohlcv_data`; per-contract candles + OI → `option_chain_history` CE/PE-merged per minute; underlying_price backfill join unchanged) + rewritten `scripts/backfillHistory.js` (same CLI, same resumable upserts).
+- **Frontend:** `client/src/services/liveSocket.js` (shared socket.io-client singleton, per-symbol subscribe) replaced the old half-built raw-WebSocket path (deleted from `optionChainApi.js` — exactly one live-data path now). `useOptionChain` merges `latestTicks` frames into loaded rows and keeps a slow REST polling fallback for market-closed/worker-down (historical mode is legitimate). PCR/IV/Straddle pages no longer self-poll every 15s — they sample the live feed at most every 15s for their trend charts.
+- **Logging:** `config/logger.js` — Winston, separate files (`login.log`, `worker.log`, `socket.log`, `database.log`, `error.log`) with a redaction formatter that strips JWT-shaped strings and every env secret from every line.
+- **Deploy:** `server/ecosystem.config.js` (PM2: `bazaar-sync-api` normally the only app — it owns the worker lifecycle; `bazaar-sync-worker` exists for standalone/ingestion-only runs) + full Hostinger VPS deployment guide in the root README.
+- **Verified without live credentials** (none exist in this environment): all modules load; server boots and serves the historical chain from real MySQL data; worker starts, downloads+parses the real scrip master, handles missing/failed login with clean exponential backoff (1s/2s/4s/8s...) without crashing, and exits 0 on IPC shutdown with pool cleanly closed; a synthetic mode-3 binary tick round-tripped parse → buffer → bulk INSERT → MySQL row correctly; a socket.io client connected, subscribed, and received `marketStatus` heartbeats; client `npm run build` passes; schema.sql applied cleanly (new tables created, old ones untouched).
+- **NOT verified (needs real credentials):** the actual SmartAPI login response, the live WS handshake, and the byte-level binary tick layout — the offsets in `workers/websocket.js parseBinaryTick` follow the published WS 2.0 field order (LTP at 43, OI at 131 in SnapQuote, prices in paise/100) but if a real feed comes back shifted, that one function is the only place to fix. Same for `getOIData`'s response field names (handled defensively).
 
-1. **`breezeconnect` v1.0.31's `getOptionChainQuotes()` is broken** — its exchange-code validation (`x!=="nfo" || x!=="bfo"`) is always true, rejecting every call. Don't call it directly. Use `breeze.getOptionChainSide()` / `breeze.getFullOptionChain()` in `services/breeze.js`, which bypass it via the package's own `generateHeaders`/`makeRequest` internals.
-2. **`breezeconnect` disables TLS certificate verification globally on import** (`NODE_TLS_REJECT_UNAUTHORIZED='0'`). `services/breeze.js` resets it to `'1'` immediately after requiring the package — do not remove that line.
-3. **`breezeconnect` is missing `adm-zip` as a declared dependency** — it's installed explicitly in `server/package.json`. Also pinned `axios` to a patched version via `overrides` (the declared `^0.27.2` has known SSRF/auth-bypass CVEs).
-4. **Breeze provides no IV or Greeks anywhere** (live or historical) — computed ourselves via `server/utils/blackScholes.js`.
-5. **The live `optionchain` endpoint is a snapshot only** — no historical params. Historical option data (including open interest) comes from `getHistoricalDatav2`, called per contract (stockCode+expiryDate+right+strikePrice). Building a full multi-year backfill means looping every strike/expiry/day — that's separate, heavier work from the nightly incremental cron.
-6. **`BREEZE_API_SESSION`** expires daily and must be regenerated by hand (2FA blocks pure API login): visit `https://api.icicidirect.com/apiuser/login?api_key=<url-encoded key>`, log in, copy the `API_Session` value from the redirect URL — just the raw value, not `apisession=...`.
-7. **Check both `.env` and `.env.example` after any credential update** — real secrets have landed in `.env.example` (not gitignored!) more than once by accident.
-8. **`makeRequest()`'s own error handler is buggy** — it references a `let url` from the `try` block inside the `catch` block, where it's out of scope, throwing `ReferenceError: url is not defined` that masks whatever the real error was. If you see that exact message from a breeze.* call, the real cause is something else (rate-limiting, or a bad stock code — see #9). Mitigated with retry/backoff in `breeze.js`.
-9. **BankNifty and FinNifty use different internal Breeze stock codes than their common names** — totally undocumented. `NIFTY` works as-is, but literal `"BANKNIFTY"`/`"FINNIFTY"` fail on every endpoint with the generic "Error while calling service, Please contact admin". Real codes (found by brute-force probing): **BankNifty = `CNXBAN`**, **FinNifty = `NIFFIN`**. Centralized in `breeze.SYMBOL_CODES` — any code working with display symbols (cron.js, optionChainController.js) must resolve through this map before calling breeze.*, then map back to the display name for storage/responses.
-10. **cron.js had been silently only ingesting NIFTY data** because of Gotcha #9 (its per-symbol try/catch just logged BankNifty/FinNifty failures and moved on) — fixed 2026-07-06, not verified again yet against a real nightly run (only via direct function calls).
-11. **Concurrent/rapid identical requests get rate-limited** — retry/backoff alone wasn't sufficient (verified: 6 concurrent requests still produced failures with retry-only). `optionChainController.js` adds request coalescing + a 3s TTL cache on top, which fixed it. Apply the same pattern to any other endpoint that fans out into multiple breeze.* calls.
-12. **Don't do date arithmetic with `new Date(nonISOString)` or local-timezone `Date` methods (`.getDate()`, `.setDate()`, `.toISOString().slice(0,10)`) anywhere in this codebase** — this has caused a real, silent off-by-one-day bug twice now (once in `expiryDisplayToApi`, once in the first draft of `backtestEngine.js`/`backfillHistory.js`). The pool is also configured with `dateStrings: true` (`config/db.js`), so MySQL DATE columns come back as plain `'YYYY-MM-DD'` strings, not `Date` objects — code that assumes otherwise (e.g. calling `.getFullYear()` on a query result) will throw. Always do date math on plain date strings using explicit `Date.UTC(...)` (see `backtestEngine.js`'s `addDays`/`daysBetween` helpers), never ambient local-timezone `Date` parsing.
+## Gotchas — read before touching the Angel One integration
+
+(The old #1-11 were all Breeze/`breezeconnect`-specific — broken SDK methods, TLS-off-on-import, missing deps, daily manual sessions, undocumented `CNXBAN`/`NIFFIN` stock codes, request-coalescing for rate limits. All dead history since Phase 6; git history has them if ever needed.)
+
+1. **`ANGEL_PASSWORD` is the SmartAPI login PIN, and `ANGEL_TOTP_SECRET` is the base32 QR secret** from smartapi.angelbroking.com/enable-totp — NOT a 6-digit code. If login returns "invalid totp", first suspect clock drift on the server (TOTP is time-based) or a secret that was copied as the 6-digit code.
+2. **Login is per-process and in-memory.** Each process (Express, worker, backfill script) does its own `workers/login.js` login; tokens are never shared across processes, never written to disk, never logged (the Winston redaction formatter strips JWT-shaped strings as a backstop), and never sent over IPC or to React. A failed login is NOT memoized — the next call retries (this was a real Breeze-era footgun, deliberately avoided).
+3. **The WS binary tick layout in `workers/websocket.js parseBinaryTick` is from the published SmartAPI WebSocket 2.0 docs but has never been checked against a live feed from this codebase** (no credentials in the dev environment when it was written). Little-endian; token = 25-byte null-padded ASCII at offset 2; LTP int64 paise at 43; SnapQuote OI int64 at 131. If real ticks decode garbage, fix offsets in that ONE function — everything downstream consumes plain JS objects.
+4. **Angel One provides no IV or Greeks either** (same as Breeze) — computed ourselves via `server/utils/blackScholes.js`, live in the worker (every 5s → `live_greeks_snapshots`) and on-demand in `optionChainService`.
+5. **Instrument tokens come from the daily public scrip master** (`services/instrumentMaster.js`, ~33MB JSON, disk-cached in `server/data/`, refreshed after 20h). Option strikes in it are ×100 (paise-style); expiries are `"31JUL2026"` strings. Index tokens (NIFTY 26000, BANKNIFTY 26009, FINNIFTY 26037) are long-stable but env-overridable (`ANGEL_TOKEN_*`) if Angel One ever renumbers.
+6. **The historical candle/OI API is per-token and rate-limited (~3 req/s)** — `services/angelOneHistorical.js` self-paces (400ms gap) with retry/backoff; the nightly cron bounds call volume via `HIST_STRIKES_PER_SIDE` (default 20 strikes each side of the day's close). Don't add new callers that bypass its pacing.
+7. **Check both `.env` and `.env.example` after any credential update** — real secrets have landed in `.env.example` (not gitignored!) more than once by accident (Breeze era, but the failure mode is broker-agnostic).
+8. **Worker subscriptions bootstrap off the first index tick** (spot → ATM → ±15 strikes). If the option chain never subscribes, check `worker.log` for index ticks first — no index tick means no option subscriptions, by design (it retries on later ticks).
+9. **The live REST path serves only the worker-subscribed (nearest) expiry.** `GET /api/option-chain/:symbol?expiry=<other>` intentionally falls back to MySQL history — that's correct behavior, not a bug.
+10. **Don't run PM2's `bazaar-sync-worker` app and the API's own cron-managed worker at the same time** — double WS subscriptions and double DB writes. Normal deployments run only `bazaar-sync-api`.
+11. **Two orphaned tables may exist in older DBs** — `option_chain_cache` (was read/written by the old optionChainService but never in schema.sql) and `option_chain_snapshots`. Nothing references them anymore; safe to drop.
+12. **Don't do date arithmetic with `new Date(nonISOString)` or local-timezone `Date` methods (`.getDate()`, `.setDate()`, `.toISOString().slice(0,10)`) anywhere in this codebase** — this has caused a real, silent off-by-one-day bug twice now (once in the old Breeze expiry converter, once in the first draft of `backtestEngine.js`/`backfillHistory.js`). The pool is also configured with `dateStrings: true` (`config/db.js`), so MySQL DATE columns come back as plain `'YYYY-MM-DD'` strings, not `Date` objects — code that assumes otherwise (e.g. calling `.getFullYear()` on a query result) will throw. Always do date math on plain date strings using explicit `Date.UTC(...)` (see `backtestEngine.js`'s `addDays`/`daysBetween` helpers, `instrumentMaster.js`'s `expiryToSql`/`todayIst`, and the worker's `istParts`), never ambient local-timezone `Date` parsing. Scrip-master expiries and WS timestamps are converted the same string-first way.
 
 ## Local Dev Setup (any machine)
 
@@ -137,25 +156,29 @@ mysql -u root bazaar_sync < server/config/schema.sql
 
 # server/.env — copy from .env.example, fill in real values by hand (never via git)
 cd server && cp .env.example .env
-# then set BREEZE_API_KEY, BREEZE_API_SECRET, DB_USER/PASSWORD, and generate
-# BREEZE_API_SESSION for today (see Gotcha #6 above)
+# then set ANGEL_API_KEY, ANGEL_CLIENT_ID, ANGEL_PASSWORD (login PIN),
+# ANGEL_TOTP_SECRET (see Gotcha #1), JWT_SECRET, DB_USER/PASSWORD.
+# No daily session step — TOTP login is fully automatic.
 
 npm run dev        # server, port 5001
 cd ../client && npm run dev   # separate terminal, Vite dev server
+
+# optional: run the market worker manually outside the 08:45-15:35 cron window
+cd ../server && npm run worker
 ```
 
-Verify: `curl http://localhost:5001/health` should return `{"status":"ok","database":"connected"}`.
+Verify: `curl http://localhost:5001/health` should return `{"status":"ok","database":"connected",...}` (also reports worker/live-cache state). Full deployment guide (Hostinger VPS, PM2, nginx): see README.md.
 
 ## Next Steps (pick up here)
 
-- All of Phases 1-4 plus JWT auth/tier-gating (Phase 5) are built and verified against real Breeze/MySQL data as of 2026-07-07. **Remaining for Phase 5: Google OAuth, Razorpay integration, QA, deploy to Hostinger VPS, handover.**
-- Google OAuth needs the user to create a Google Cloud project and provide OAuth client ID/secret before it can be wired up — ask for these when picking this phase up, same as Breeze credentials were needed upfront.
+- Phases 1-6 are built. Phases 1-5 were verified against real Breeze/MySQL data (2026-07-07); Phase 6 (Angel One migration + real-time architecture) is verified everywhere it can be without live credentials — **first task when real Angel One credentials exist: run the worker during market hours and validate the login response, the WS handshake, and the binary tick decode (`workers/websocket.js parseBinaryTick` — see Gotcha #3), then a real 23:00 nightly cron run (including `getOIData`'s response shape).**
+- **Remaining for delivery: Google OAuth, Razorpay integration, QA, deploy to Hostinger VPS (guide in README.md), handover.**
+- Google OAuth needs the user to create a Google Cloud project and provide OAuth client ID/secret before it can be wired up — ask for these when picking this phase up, same external-credential dependency as the Angel One keys.
 - Razorpay integration needs the user's Razorpay account/API keys similarly, plus a decision on the actual upgrade flow (currently `tier='pro'` can only be set by hand in MySQL for testing).
-- `BREEZE_API_SESSION` needs a fresh daily refresh (Gotcha #6) each time work resumes — and remember to restart the server process after updating it, not just re-trigger a request (see the `connect()` memoization note above).
-- When adding new Pro-gated features, check both the write path AND the "use" path need gating (see the backtest-run gap above) — don't assume gating the save/write endpoint alone satisfies a rule like "Free tier cannot access X" when X itself (not just saving X) is meant to be restricted.
-- Consider persisting IV/Greeks in the nightly cron so IV Percentile Rank becomes buildable later (currently skipped — no historical IV stored).
-- Socket.io wiring for real live push — the dashboard pages currently client-side poll every 15s (PCR/IV/Straddle) or fetch-once (Option Chain/Max Pain/OI Heatmap), not true push.
-- True multi-year historical backfill needs the NSE securities master file for historical strike discovery (see Phase 4 notes above) — `backfillHistory.js` as written only reaches back as far as the current nearest expiry's lifetime allows (days/weeks). This is separate, heavier work, not started.
-- Re-verify a real nightly cron run end-to-end now that the BankNifty/FinNifty stock-code bug (Gotcha #9) is fixed
-- Symbol selector currently skips the lot-size badge stockmojo shows (e.g. "50 NIFTY") since Breeze doesn't return lot size in our current calls — revisit if that's needed
-- Local dev note: the backend node process (and separately, the Vite preview dev server) has died silently more than once during a session (no crash logged) — fine for local dev, but Phase 5 deployment needs a process manager (PM2 or similar) to auto-restart it in production.
+- When adding new Pro-gated features, check both the write path AND the "use" path need gating (see the backtest-run gap in Phase 5) — don't assume gating the save/write endpoint alone satisfies a rule like "Free tier cannot access X" when X itself (not just saving X) is meant to be restricted.
+- IV Percentile Rank is now buildable: the worker persists `live_greeks_snapshots` every 5s (historical IV series). Needs a few days of accumulated data plus a small API + UI addition on IvChart.
+- True multi-year historical backfill still needs an archived securities/instrument master for historical contract discovery — `backfillHistory.js` only reaches back as far as the current nearest expiry's lifetime (days/weeks). Separate, heavier work, not started.
+- Lot-size badge (stockmojo shows e.g. "50 NIFTY"): Angel One's instrument master DOES carry `lotsize` and the worker already keeps it per contract — wiring it through the chain payload to the symbol selector is now a small task.
+- Live buildup classification (L/S/SC/LU) and per-contract change% are null in the live path — the WS feed carries no per-contract previous close. Could be derived by joining yesterday's close from `option_chain_history` into the live payload; follow-up.
+- The worker subscribes a fixed ±15-strike window around ATM at subscribe time — if spot drifts far intraday, edge strikes fall out of the live window (REST falls back to history for them). A rolling re-subscription is a possible refinement.
+- Old `option_chain_cache` / `option_chain_snapshots` tables can be dropped from any DB that has them (see Gotcha #11).

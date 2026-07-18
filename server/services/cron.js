@@ -1,24 +1,34 @@
+// services/cron.js — nightly historical pull via Angel One SmartAPI.
+//
+// Runs 23:00 IST Mon-Fri (after close + settlement), never blocking a
+// request path. Feeds the SAME two tables the backtesting engine reads
+// (option_chain_history + ohlcv_data, unchanged shape) — the engine itself
+// still reads only MySQL, never a broker API.
+//
+// Flow per symbol:
+//   1. index 1-minute candles (getCandleData, NSE)          -> ohlcv_data
+//   2. nearest-expiry option contracts (instrument master),
+//      per contract: 1-minute candles + per-minute OI (NFO) -> option_chain_history
+//      (CE/PE merged per strike per minute, like the old Breeze cron did)
+//   3. backfill option_chain_history.underlying_price from ohlcv_data
+//
+// All date math on plain 'YYYY-MM-DD' strings (CLAUDE.md Gotcha #12).
+
 const cron = require("node-cron");
 const { pool } = require("../config/db");
-const breeze = require("./breeze");
+const instrumentMaster = require("./instrumentMaster");
+const angelHist = require("./angelOneHistorical");
+const { dbLogger } = require("../config/logger");
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
-// Small delay between contract-level API calls to stay well under Breeze's
-// rate limits (see project rule: retry/backoff and request queuing required).
-const REQUEST_GAP_MS = 250;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function splitDatetime(datetime) {
-    const [date, time] = datetime.split(" ");
-    return { date, time };
-}
+// Bound the per-night API-call volume: only pull contracts within this many
+// strikes of the day's closing spot (each contract = 2 API calls: candles+OI).
+const HIST_STRIKES_PER_SIDE = Number(process.env.HIST_STRIKES_PER_SIDE || 20);
 
-async function storeOHLCV(symbol, rows) {
-    if (!rows.length) return;
-    const values = rows.map((r) => {
-        const { date, time } = splitDatetime(r.datetime);
-        return [symbol, date, time, r.open, r.high, r.low, r.close, r.volume];
-    });
+async function storeOHLCV(symbol, candles) {
+    if (!candles.length) return;
+    const values = candles.map((c) => [symbol, c.date, c.time, c.open, c.high, c.low, c.close, c.volume]);
     await pool.query(
         `INSERT INTO ohlcv_data (symbol, trade_date, trade_time, open, high, low, close, volume)
          VALUES ?
@@ -28,28 +38,27 @@ async function storeOHLCV(symbol, rows) {
     );
 }
 
-// Merges same-minute call/put rows for one contract pair into option_chain_history
-// rows. IV/Greeks are not provided by Breeze at all (live or historical) — left
-// null here, to be filled in by a Black-Scholes calculator (server/utils, TODO).
-async function storeOptionChainMinutes(symbol, expiryDate, strike, callRows, putRows) {
+// Merge same-minute CE/PE candle+OI rows for one strike into
+// option_chain_history rows (IV/greeks stay null here — historical greeks
+// would need a historical IV series; the live worker persists live greeks
+// separately in live_greeks_snapshots).
+async function storeOptionChainMinutes(symbol, expirySql, strike, ceCandles, ceOi, peCandles, peOi) {
     const byTime = new Map();
-    for (const r of callRows) {
-        const { date, time } = splitDatetime(r.datetime);
-        byTime.set(time, { date, time, ceLtp: r.close, ceOi: r.open_interest, ceVolume: r.volume });
+    for (const c of ceCandles) {
+        byTime.set(c.time, { date: c.date, time: c.time, ceLtp: c.close, ceVolume: c.volume, ceOi: ceOi.get(c.time) ?? null });
     }
-    for (const r of putRows) {
-        const { date, time } = splitDatetime(r.datetime);
-        const row = byTime.get(time) ?? { date, time };
-        row.peLtp = r.close;
-        row.peOi = r.open_interest;
-        row.peVolume = r.volume;
-        byTime.set(time, row);
+    for (const c of peCandles) {
+        const row = byTime.get(c.time) ?? { date: c.date, time: c.time };
+        row.peLtp = c.close;
+        row.peVolume = c.volume;
+        row.peOi = peOi.get(c.time) ?? null;
+        byTime.set(c.time, row);
     }
-    const rows = Array.from(byTime.values());
+    const rows = [...byTime.values()];
     if (!rows.length) return;
 
     const values = rows.map((r) => [
-        symbol, r.date, r.time, expiryDate, strike,
+        symbol, r.date, r.time, expirySql, strike,
         r.ceLtp ?? null, r.ceOi ?? null, r.ceVolume ?? null,
         r.peLtp ?? null, r.peOi ?? null, r.peVolume ?? null,
     ]);
@@ -65,59 +74,77 @@ async function storeOptionChainMinutes(symbol, expiryDate, strike, callRows, put
     );
 }
 
-// `symbol` here is always our display name (NIFTY/BANKNIFTY/FINNIFTY) — every
-// breeze.* call below resolves it to Breeze's real internal code first (see
-// SYMBOL_CODES in breeze.js; BankNifty/FinNifty use different codes entirely
-// and silently error with the display name). Storage always uses the display
-// name so schema/queries stay consistent regardless of Breeze's naming.
 async function pullOHLCVForDate(symbol, dateStr) {
-    const stockCode = breeze.SYMBOL_CODES[symbol];
-    const ohlcv = await breeze.getHistoricalData({
-        interval: "1minute",
-        fromDate: `${dateStr}T00:00:00.000Z`,
-        toDate: `${dateStr}T23:59:59.000Z`,
-        stockCode,
-        exchangeCode: "NSE",
-        productType: "cash",
+    const token = instrumentMaster.getIndexToken(symbol);
+    if (!token) throw new Error(`No index token for ${symbol}`);
+    const candles = await angelHist.getDayCandles({ exchange: "NSE", symboltoken: token, dateStr });
+    await storeOHLCV(symbol, candles);
+    dbLogger.info(`[cron] ${symbol} ${dateStr}: ${candles.length} index candles stored`);
+    return candles;
+}
+
+/** Closing spot for the day from ohlcv_data (used to center the strike window). */
+async function dayClose(symbol, dateStr) {
+    const [rows] = await pool.query(
+        `SELECT close FROM ohlcv_data WHERE symbol = ? AND trade_date = ?
+         ORDER BY trade_time DESC LIMIT 1`,
+        [symbol, dateStr]
+    );
+    return rows.length ? Number(rows[0].close) : null;
+}
+
+/**
+ * Full-day minute-by-minute option chain (price + OI) for one expiry, by
+ * looping every in-window strike and pulling each CE/PE contract's candles
+ * and OI series individually (Angel One's historical API is per-token, same
+ * per-contract model as Breeze's was).
+ */
+async function pullOptionChainForExpiry(symbol, expirySql, dateStr) {
+    const center = await dayClose(symbol, dateStr);
+    const contracts = await instrumentMaster.getOptionContracts(symbol, expirySql, {
+        centerPrice: center,
+        strikesPerSide: center != null ? HIST_STRIKES_PER_SIDE : null,
     });
-    await storeOHLCV(symbol, ohlcv?.Success ?? []);
-}
-
-// Pulls the full day's minute-by-minute option chain (price + OI) for one
-// expiry, by looping every currently-listed strike and fetching each
-// call/put contract's history individually (the live snapshot endpoint
-// can't give historical/intraday data, only "right now").
-async function pullOptionChainForExpiry(symbol, expiryDateApi, expiryDateSql, dateStr) {
-    const stockCode = breeze.SYMBOL_CODES[symbol];
-    const liveChain = await breeze.getFullOptionChain({ stockCode, expiryDate: expiryDateApi });
-    const strikes = liveChain.map((r) => r.strike);
-
-    const fromDate = `${dateStr}T00:00:00.000Z`;
-    const toDate = `${dateStr}T23:59:59.000Z`;
-
-    for (const strike of strikes) {
-        const [callResp, putResp] = await Promise.all([
-            breeze.getContractHistory({
-                stockCode, expiryDate: expiryDateApi, right: "call",
-                strikePrice: String(strike), fromDate, toDate,
-            }),
-            breeze.getContractHistory({
-                stockCode, expiryDate: expiryDateApi, right: "put",
-                strikePrice: String(strike), fromDate, toDate,
-            }),
-        ]);
-        await storeOptionChainMinutes(
-            symbol, expiryDateSql, strike,
-            callResp?.Success ?? [], putResp?.Success ?? []
-        );
-        await sleep(REQUEST_GAP_MS);
+    if (!contracts.length) {
+        dbLogger.warn(`[cron] ${symbol} ${dateStr}: no contracts in scrip master for expiry ${expirySql}`);
+        return;
     }
+
+    // Pair CE/PE per strike
+    const byStrike = new Map();
+    for (const c of contracts) {
+        const entry = byStrike.get(c.strike) || {};
+        entry[c.right] = c;
+        byStrike.set(c.strike, entry);
+    }
+
+    let stored = 0;
+    for (const [strike, pair] of byStrike) {
+        try {
+            const ce = pair.CE
+                ? await angelHist.getDayCandles({ exchange: "NFO", symboltoken: pair.CE.token, dateStr })
+                : [];
+            const ceOi = pair.CE
+                ? await angelHist.getDayOpenInterest({ exchange: "NFO", symboltoken: pair.CE.token, dateStr })
+                : new Map();
+            const pe = pair.PE
+                ? await angelHist.getDayCandles({ exchange: "NFO", symboltoken: pair.PE.token, dateStr })
+                : [];
+            const peOi = pair.PE
+                ? await angelHist.getDayOpenInterest({ exchange: "NFO", symboltoken: pair.PE.token, dateStr })
+                : new Map();
+
+            await storeOptionChainMinutes(symbol, expirySql, strike, ce, ceOi, pe, peOi);
+            stored += 1;
+        } catch (err) {
+            dbLogger.error(`[cron] ${symbol} ${dateStr} strike ${strike}: ${err.message}`);
+        }
+    }
+    dbLogger.info(`[cron] ${symbol} ${dateStr}: option data stored for ${stored}/${byStrike.size} strikes (expiry ${expirySql})`);
 }
 
-// option_chain_history has no underlying_price of its own — pullOptionChainForExpiry
-// only stores per-contract CE/PE rows. Backfilled separately from ohlcv_data (the
-// index's own OHLCV, pulled by pullOHLCVForDate) by matching trade_date+trade_time,
-// so it works whether called right after a fresh pull or against already-stored rows.
+// option_chain_history has no underlying_price of its own — backfilled from
+// ohlcv_data by matching trade_date+trade_time (same as the old Breeze cron).
 async function backfillUnderlyingPrice(symbol, dateStr) {
     await pool.query(
         `UPDATE option_chain_history och
@@ -129,33 +156,51 @@ async function backfillUnderlyingPrice(symbol, dateStr) {
     );
 }
 
-// TODO: derive real active expiries (nearest weekly/monthly, holiday-aware)
-// instead of a hardcoded lookahead. For now this needs the caller to know
-// valid expiry dates in both Breeze's "DD-MMM-YYYY" API format and SQL "YYYY-MM-DD".
-async function pullSymbolForDate(symbol, dateStr, expiries) {
+async function pullSymbolForDate(symbol, dateStr, expiries = null) {
     await pullOHLCVForDate(symbol, dateStr);
-    for (const { api, sql } of expiries) {
-        await pullOptionChainForExpiry(symbol, api, sql, dateStr);
+    const expiryList = expiries && expiries.length ? expiries : (await instrumentMaster.getExpiries(symbol)).slice(0, 1);
+    for (const expirySql of expiryList) {
+        await pullOptionChainForExpiry(symbol, expirySql, dateStr);
     }
     await backfillUnderlyingPrice(symbol, dateStr);
 }
 
-async function runNightlyPull(expiriesBySymbol) {
-    const dateStr = new Date().toISOString().slice(0, 10);
+async function runNightlyPull() {
+    const dateStr = instrumentMaster.todayIst();
+    dbLogger.info(`[cron] nightly pull starting for ${dateStr}`);
     for (const symbol of SYMBOLS) {
         try {
-            await pullSymbolForDate(symbol, dateStr, expiriesBySymbol?.[symbol] ?? []);
-            console.log(`[cron] stored ${symbol} data for ${dateStr}`);
+            await pullSymbolForDate(symbol, dateStr);
+            dbLogger.info(`[cron] stored ${symbol} data for ${dateStr}`);
         } catch (err) {
-            console.error(`[cron] failed to pull ${symbol} for ${dateStr}:`, err.message);
+            dbLogger.error(`[cron] failed to pull ${symbol} for ${dateStr}: ${err.message}`);
         }
     }
+    dbLogger.info(`[cron] nightly pull finished for ${dateStr}`);
 }
+
+let task = null;
 
 // Runs 23:00 IST, Mon-Fri, after market close and settlement.
 function start() {
-    cron.schedule("0 23 * * 1-5", () => runNightlyPull(), { timezone: "Asia/Kolkata" });
-    console.log("[cron] nightly historical data pull scheduled for 23:00 IST (Mon-Fri)");
+    if (task) return;
+    task = cron.schedule("0 23 * * 1-5", () => runNightlyPull(), { timezone: "Asia/Kolkata" });
+    dbLogger.info("[cron] nightly historical data pull scheduled for 23:00 IST (Mon-Fri)");
 }
 
-module.exports = { start, runNightlyPull, pullOHLCVForDate, pullOptionChainForExpiry, backfillUnderlyingPrice };
+function stop() {
+    if (task) {
+        task.stop();
+        task = null;
+    }
+}
+
+module.exports = {
+    start,
+    stop,
+    runNightlyPull,
+    pullSymbolForDate,
+    pullOHLCVForDate,
+    pullOptionChainForExpiry,
+    backfillUnderlyingPrice,
+};

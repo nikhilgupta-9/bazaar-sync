@@ -1,289 +1,193 @@
 // hooks/useOptionChain.js
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchOptionChain, refreshOptionChain, createWebSocketConnection } from "../services/optionChainApi";
+import { fetchOptionChain, refreshOptionChain } from "../services/optionChainApi";
+import { subscribeLiveTicks } from "../services/liveSocket";
 
-// Polling intervals (in milliseconds)
+// Polling fallback intervals (only used when the live socket has nothing to
+// say — market closed, worker down, or historical data being shown; that
+// historical mode is legitimate, not a bug).
 const POLLING_INTERVALS = {
-    MARKET_OPEN: 10000,    // 10 seconds when market is open
-    MARKET_CLOSED: 300000, // 5 minutes when market is closed
-    EXTENDED_HOURS: 60000, // 1 minute during pre/post market
+    MARKET_CLOSED: 300000, // 5 minutes
+    EXTENDED_HOURS: 60000, // 1 minute
+    LIVE_FALLBACK: 15000, // market open but no socket frames arriving
 };
+const LIVE_FRAME_STALE_MS = 20000;
 
 /**
- * Shared fetch logic for every page built on top of /api/option-chain
- * (Option Chain, Max Pain, PCR, IV chart, Straddle chart). Guards against
- * out-of-order responses — React StrictMode double-invokes effects in dev,
- * and without this a slow, superseded request could overwrite a newer,
- * already-rendered result.
- * 
- * Enhanced with market awareness, WebSocket streaming, and auto-polling.
+ * Shared fetch + live-update logic for every page built on top of
+ * /api/option-chain (Option Chain, Max Pain, PCR, IV chart, Straddle chart,
+ * OI Heatmap, Strategy Builder).
+ *
+ * Flow:
+ *   1. REST fetch gives the full payload (rows, ATM, max pain, PCR, greeks).
+ *   2. While the market is open, socket.io "latestTicks" frames (broadcast
+ *      from the backend's in-memory market cache ~1/s) are merged into the
+ *      loaded rows — LTP/OI/volume/spot move live without re-fetching.
+ *   3. When the market is closed or no frames arrive, a slow REST poll keeps
+ *      the page from going permanently stale.
+ *
+ * Keeps the request-id race guard: React StrictMode double-invokes effects
+ * in dev, and a slow superseded request must not overwrite a newer result.
  */
 export function useOptionChain(initialSymbol = "NIFTY") {
     const [symbol, setSymbol] = useState(initialSymbol);
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
-    const [marketStatus, setMarketStatus] = useState({
-        isOpen: false,
-        nextOpen: null,
-        timestamp: null,
-    });
+    const [marketStatus, setMarketStatus] = useState({ isOpen: false, nextOpen: null, timestamp: null });
     const [isLive, setIsLive] = useState(false);
     const [lastUpdated, setLastUpdated] = useState(null);
-    
-    const requestIdRef = useRef(0);
-    const wsRef = useRef(null);
-    const pollingIntervalRef = useRef(null);
-    const reconnectTimeoutRef = useRef(null);
 
-    /**
-     * Core load function - maintains the original behavior with enhancements
-     */
+    const requestIdRef = useRef(0);
+    const expiryRef = useRef(null);
+    const lastFrameAtRef = useRef(0);
+    const pollingRef = useRef(null);
+
     const load = useCallback(async (sym, expiry, forceLive = false) => {
         const requestId = ++requestIdRef.current;
         setLoading(true);
-        
         try {
             const d = await fetchOptionChain(sym, expiry, forceLive);
-            
-            // Guard against out-of-order responses
-            if (requestId !== requestIdRef.current) return;
-            
+            if (requestId !== requestIdRef.current) return; // superseded
+
+            expiryRef.current = expiry ?? d.selectedExpiry ?? null;
             setData(d);
             setMarketStatus(d.marketStatus || { isOpen: false });
             setIsLive(!d.isHistorical);
             setLastUpdated(new Date().toISOString());
             setError(null);
-            
-            // Setup WebSocket or polling based on market status
-            if (d.marketStatus?.isOpen) {
-                setupWebSocket(sym);
-            } else {
-                closeWebSocket();
-                setupPolling(sym, expiry);
-            }
-            
         } catch (e) {
             if (requestId !== requestIdRef.current) return;
             setError(e.message);
             setData(null);
         } finally {
-            if (requestId === requestIdRef.current) {
-                setLoading(false);
-            }
+            if (requestId === requestIdRef.current) setLoading(false);
         }
     }, []);
 
-    /**
-     * Setup WebSocket connection for live updates
-     */
-    const setupWebSocket = useCallback((sym) => {
-        // Close existing connection
-        closeWebSocket();
-        
-        const ws = createWebSocketConnection(
-            sym,
-            // On message - update specific strikes in real-time
-            (tick) => {
-                if (tick.type === 'live_tick') {
-                    setData(prevData => {
-                        if (!prevData) return prevData;
-                        
-                        // Update the specific strike
-                        const updatedRows = prevData.rows.map(row => {
-                            if (row.strike === tick.data.strike) {
-                                return {
-                                    ...row,
-                                    ce: {
-                                        ...row.ce,
-                                        ltp: tick.data.ceLtp ?? row.ce.ltp,
-                                        oi: tick.data.ceOi ?? row.ce.oi,
-                                        changePercent: tick.data.ceChangePercent ?? row.ce.changePercent,
-                                        oiChange: tick.data.ceOiChange ?? row.ce.oiChange,
-                                    },
-                                    pe: {
-                                        ...row.pe,
-                                        ltp: tick.data.peLtp ?? row.pe.ltp,
-                                        oi: tick.data.peOi ?? row.pe.oi,
-                                        changePercent: tick.data.peChangePercent ?? row.pe.changePercent,
-                                        oiChange: tick.data.peOiChange ?? row.pe.oiChange,
-                                    },
-                                };
-                            }
-                            return row;
-                        });
-                        
+    // --- socket.io live merge -------------------------------------------
+    useEffect(() => {
+        const unsubscribe = subscribeLiveTicks(
+            symbol,
+            (frame) => {
+                lastFrameAtRef.current = Date.now();
+                setIsLive(true);
+                setLastUpdated(new Date().toISOString());
+                setData((prev) => {
+                    if (!prev || !prev.rows || prev.rows.length === 0) return prev;
+                    // Frames carry the nearest expiry only — don't smear live
+                    // ticks over a different expiry's historical rows.
+                    if (frame.expiry && prev.selectedExpiry && String(frame.expiry) !== String(prev.selectedExpiry)) {
+                        return prev;
+                    }
+                    const byStrike = new Map(frame.ticks.map((t) => [Number(t.strike), t]));
+                    const rows = prev.rows.map((row) => {
+                        const t = byStrike.get(Number(row.strike));
+                        if (!t) return row;
                         return {
-                            ...prevData,
-                            rows: updatedRows,
-                            spotPrice: tick.data.spotPrice ?? prevData.spotPrice,
-                            timestamp: new Date().toISOString(),
+                            ...row,
+                            ce: {
+                                ...row.ce,
+                                ltp: t.ceLtp ?? row.ce.ltp,
+                                oi: t.ceOi ?? row.ce.oi,
+                                volume: t.ceVolume ?? row.ce.volume,
+                            },
+                            pe: {
+                                ...row.pe,
+                                ltp: t.peLtp ?? row.pe.ltp,
+                                oi: t.peOi ?? row.pe.oi,
+                                volume: t.peVolume ?? row.pe.volume,
+                            },
                         };
                     });
-                    setLastUpdated(new Date().toISOString());
-                }
+                    return {
+                        ...prev,
+                        rows,
+                        spotPrice: frame.spot ?? prev.spotPrice,
+                        isHistorical: false,
+                        timestamp: new Date().toISOString(),
+                    };
+                });
             },
-            // On error - attempt to reconnect
-            (error) => {
-                console.error('[WebSocket Error]', error);
-                if (reconnectTimeoutRef.current) {
-                    clearTimeout(reconnectTimeoutRef.current);
-                }
-                reconnectTimeoutRef.current = setTimeout(() => {
-                    if (marketStatus.isOpen) {
-                        setupWebSocket(sym);
-                    }
-                }, 5000);
-            },
-            // On close - attempt to reconnect
-            () => {
-                console.log('[WebSocket] Closed, reconnecting...');
-                if (reconnectTimeoutRef.current) {
-                    clearTimeout(reconnectTimeoutRef.current);
-                }
-                reconnectTimeoutRef.current = setTimeout(() => {
-                    if (marketStatus.isOpen) {
-                        setupWebSocket(sym);
-                    }
-                }, 3000);
+            (status) => {
+                setMarketStatus((prev) => ({ ...prev, isOpen: status.marketOpen, feedConnected: status.feedConnected }));
             }
         );
-        
-        wsRef.current = ws;
-    }, [marketStatus.isOpen]);
+        return unsubscribe;
+    }, [symbol]);
 
-    /**
-     * Close WebSocket connection
-     */
-    const closeWebSocket = useCallback(() => {
-        if (wsRef.current) {
-            try {
-                wsRef.current.close();
-            } catch (err) {
-                console.error('[WebSocket] Close error:', err);
-            }
-            wsRef.current = null;
-        }
-        if (reconnectTimeoutRef.current) {
-            clearTimeout(reconnectTimeoutRef.current);
-            reconnectTimeoutRef.current = null;
-        }
-    }, []);
+    // --- polling fallback ------------------------------------------------
+    useEffect(() => {
+        if (pollingRef.current) clearInterval(pollingRef.current);
 
-    /**
-     * Setup polling for when market is closed
-     */
-    const setupPolling = useCallback((sym, expiry) => {
-        // Clear existing polling
-        if (pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current);
-            pollingIntervalRef.current = null;
-        }
-        
-        // Determine polling interval based on market status
-        let interval = POLLING_INTERVALS.MARKET_CLOSED;
-        if (marketStatus.isOpen) {
-            interval = POLLING_INTERVALS.MARKET_OPEN;
-        } else if (marketStatus.extendedHours) {
-            interval = POLLING_INTERVALS.EXTENDED_HOURS;
-        }
-        
-        pollingIntervalRef.current = setInterval(async () => {
-            try {
-                const result = await fetchOptionChain(sym, expiry);
-                
-                // Only update if data has changed
-                if (result.timestamp !== data?.timestamp) {
-                    setData(result);
-                    setMarketStatus(result.marketStatus || { isOpen: false });
-                    setLastUpdated(new Date().toISOString());
-                }
-            } catch (err) {
-                console.error('[Polling] Error:', err);
-            }
+        const interval = marketStatus.isOpen ? POLLING_INTERVALS.LIVE_FALLBACK : POLLING_INTERVALS.MARKET_CLOSED;
+
+        pollingRef.current = setInterval(() => {
+            const framesFresh = Date.now() - lastFrameAtRef.current < LIVE_FRAME_STALE_MS;
+            if (framesFresh) return; // socket is doing the job — no REST churn
+            if (marketStatus.isOpen) setIsLive(false);
+            load(symbol, expiryRef.current);
         }, interval);
-    }, [data?.timestamp, marketStatus.isOpen, marketStatus.extendedHours]);
 
-    /**
-     * Manual refresh - forces live data fetch and updates cache
-     */
+        return () => {
+            if (pollingRef.current) clearInterval(pollingRef.current);
+        };
+    }, [symbol, marketStatus.isOpen, load]);
+
+    // --- public API (kept compatible with all existing pages) ------------
     const refresh = useCallback(async () => {
         try {
             await refreshOptionChain(symbol);
-            // Reload data with forceLive=true
-            await load(symbol, data?.selectedExpiry, true);
+            await load(symbol, expiryRef.current, true);
             return true;
         } catch (err) {
             setError(err.message);
             return false;
         }
-    }, [symbol, data?.selectedExpiry, load]);
-
-    /**
-     * Change expiry - maintains original behavior
-     */
-    const changeExpiry = useCallback((expiry) => {
-        load(symbol, expiry);
     }, [symbol, load]);
 
-    /**
-     * Change symbol - maintains original behavior
-     */
-    const changeSymbol = useCallback((newSymbol) => {
-        if (newSymbol !== symbol) {
-            setSymbol(newSymbol);
-            closeWebSocket();
-            load(newSymbol);
-        }
-    }, [symbol, load, closeWebSocket]);
+    const changeExpiry = useCallback(
+        (sym, expiry) => {
+            // Existing pages call this as load(symbol, expiry)
+            load(sym ?? symbol, expiry);
+        },
+        [symbol, load]
+    );
 
-    /**
-     * Force disconnect WebSocket (useful for cleanup)
-     */
+    const changeSymbol = useCallback(
+        (newSymbol) => {
+            if (newSymbol !== symbol) {
+                setSymbol(newSymbol);
+                expiryRef.current = null;
+                load(newSymbol);
+            }
+        },
+        [symbol, load]
+    );
+
     const disconnect = useCallback(() => {
-        closeWebSocket();
-        if (pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current);
-            pollingIntervalRef.current = null;
+        if (pollingRef.current) {
+            clearInterval(pollingRef.current);
+            pollingRef.current = null;
         }
-    }, [closeWebSocket]);
+    }, []);
 
-    // Initial load - maintains original behavior
+    // Initial load
     useEffect(() => {
         load(initialSymbol);
-        
-        // Cleanup on unmount
-        return () => {
-            closeWebSocket();
-            if (pollingIntervalRef.current) {
-                clearInterval(pollingIntervalRef.current);
-            }
-        };
-    }, [initialSymbol, load, closeWebSocket]);
+    }, [initialSymbol, load]);
 
-    // Reconnect WebSocket when market opens
-    useEffect(() => {
-        if (marketStatus.isOpen && data) {
-            setupWebSocket(symbol);
-        }
-    }, [marketStatus.isOpen, symbol, data, setupWebSocket]);
-
-    // Return enhanced API while maintaining backward compatibility
     return {
-        // Original fields (maintains compatibility)
         symbol,
         setSymbol: changeSymbol,
         data,
         loading,
         error,
         load: changeExpiry,
-        
-        // New fields for enhanced functionality
         marketStatus,
         isLive,
         lastUpdated,
         refresh,
         disconnect,
-        closeWebSocket, // Exposed for manual control if needed
     };
 }

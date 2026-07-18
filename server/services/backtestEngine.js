@@ -1,7 +1,7 @@
 const { pool } = require("../config/db");
 
-// Reads ONLY from MySQL (option_chain_history + ohlcv_data) — never the live
-// Breeze API, per project hard rule. `option_chain_history.underlying_price`
+// Reads ONLY from MySQL (option_chain_history + ohlcv_data) — never a live
+// broker API, per project hard rule. `option_chain_history.underlying_price`
 // isn't populated by cron.js's ingestion (see CLAUDE.md), so spot price at
 // any timestamp comes from a join with ohlcv_data instead.
 //

@@ -75,26 +75,6 @@ export async function refreshOptionChain(symbol, expiry = null) {
 }
 
 /**
- * Get historical snapshots
- */
-export async function getHistoricalSnapshots(symbol, from, to) {
-    try {
-        const url = new URL(`${API_URL}/api/option-chain/history/${symbol.toLowerCase()}`);
-        if (from) url.searchParams.set("from", from);
-        if (to) url.searchParams.set("to", to);
-
-        const res = await fetch(url);
-        if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error(body.error || `History fetch failed (${res.status})`);
-        }
-        return res.json();
-    } catch (err) {
-        throw new Error(`Failed to fetch history: ${err.message}`);
-    }
-}
-
-/**
  * Fetch LTP history for a single contract (strike + expiry + right), for the
  * hover "view chart" action on the option chain LTP cells.
  */
@@ -125,37 +105,6 @@ export async function testConnection() {
     }
 }
 
-/**
- * Create WebSocket connection for live streaming
- */
-export function createWebSocketConnection(symbol, onMessage, onError, onClose) {
-    // Convert HTTP to WebSocket protocol
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsHost = import.meta.env.VITE_WS_URL || `${wsProtocol}//${window.location.host}`;
-    const ws = new WebSocket(`${wsHost}/stream/option-chain/${symbol.toLowerCase()}`);
-
-    ws.onopen = () => {
-        console.log('[WebSocket] Connected to', symbol);
-    };
-
-    ws.onmessage = (event) => {
-        try {
-            const data = JSON.parse(event.data);
-            if (onMessage) onMessage(data);
-        } catch (err) {
-            console.error('[WebSocket] Parse error:', err);
-        }
-    };
-
-    ws.onerror = (error) => {
-        console.error('[WebSocket] Error:', error);
-        if (onError) onError(error);
-    };
-
-    ws.onclose = (event) => {
-        console.log('[WebSocket] Disconnected:', event.code, event.reason);
-        if (onClose) onClose(event);
-    };
-
-    return ws;
-}
+// Live streaming moved to socket.io — see services/liveSocket.js
+// (subscribeLiveTicks). The old raw-WebSocket path was removed so there is
+// exactly one live-data path in the codebase.

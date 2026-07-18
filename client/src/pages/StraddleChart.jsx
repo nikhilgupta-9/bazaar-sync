@@ -4,20 +4,25 @@ import { useOptionChain } from "../hooks/useOptionChain";
 import SettingsSidebar from "../components/SettingsSidebar";
 import { formatPrice } from "../utils/format";
 
-const POLL_MS = 15000;
+const SAMPLE_MS = 15000; // one trend point per 15s (live frames arrive ~1/s)
 const MAX_POINTS = 200;
 
 export default function StraddleChart() {
+    // Live updates arrive through the shared hook's socket.io feed (with a
+    // slow REST fallback when the market's closed) — no page-level polling.
     const { symbol, setSymbol, data, error, load } = useOptionChain();
     const [history, setHistory] = useState([]);
     const expiryRef = useRef(null);
+    const lastPointAtRef = useRef(0);
 
     function handleSymbolChange(sym) {
         setHistory([]);
+        lastPointAtRef.current = 0;
         setSymbol(sym);
     }
     function handleExpiryChange(exp) {
         setHistory([]);
+        lastPointAtRef.current = 0;
         load(symbol, exp);
     }
 
@@ -30,8 +35,14 @@ export default function StraddleChart() {
 
     useEffect(() => {
         if (!data || straddle == null) return;
-        if (expiryRef.current && expiryRef.current !== data.selectedExpiry) setHistory([]);
+        if (expiryRef.current && expiryRef.current !== data.selectedExpiry) {
+            setHistory([]);
+            lastPointAtRef.current = 0;
+        }
         expiryRef.current = data.selectedExpiry;
+
+        if (Date.now() - lastPointAtRef.current < SAMPLE_MS) return;
+        lastPointAtRef.current = Date.now();
 
         const point = {
             time: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
@@ -40,11 +51,6 @@ export default function StraddleChart() {
         };
         setHistory((prev) => [...prev, point].slice(-MAX_POINTS));
     }, [data, straddle]);
-
-    useEffect(() => {
-        const id = setInterval(() => load(symbol, expiryRef.current), POLL_MS);
-        return () => clearInterval(id);
-    }, [symbol, load]);
 
     return (
         <div className="mx-auto flex max-w-[1400px] gap-4 px-4 py-4">
@@ -60,8 +66,8 @@ export default function StraddleChart() {
                 <div className="mb-3 rounded-lg border border-gray-200 bg-white px-5 py-4">
                     <h1 className="text-base font-semibold text-gray-900">Straddle Chart</h1>
                     <p className="mt-1 text-xs text-gray-500">
-                        ATM straddle cost (Call LTP + Put LTP at the ATM strike) vs underlying price, polled every{" "}
-                        {POLL_MS / 1000}s — accumulates from when you opened this page.
+                        ATM straddle cost (Call LTP + Put LTP at the ATM strike) vs underlying price, live via socket
+                        push, sampled every {SAMPLE_MS / 1000}s — accumulates from when you opened this page.
                     </p>
                     {straddle != null && (
                         <div className="mt-2 flex gap-8 text-sm">

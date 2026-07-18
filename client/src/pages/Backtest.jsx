@@ -75,7 +75,7 @@ export default function Backtest() {
             <div className="mb-3 rounded-lg border border-gray-200 bg-white p-4">
                 <h1 className="mb-3 text-base font-semibold text-gray-900">Backtest</h1>
                 <p className="mb-4 text-xs text-gray-500">
-                    Reads only from stored historical data (MySQL) — never the live Breeze API, per project rule.
+                    Reads only from stored historical data (MySQL) — never the live broker API, per project rule.
                     Legs are defined relative to that day's ATM strike (offset in strike-gap multiples), since the
                     actual ATM strike moves across the date range.
                 </p>

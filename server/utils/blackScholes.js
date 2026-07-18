@@ -1,6 +1,6 @@
-// Black-Scholes IV solver + Greeks. Breeze provides neither IV nor Greeks
-// anywhere (live or historical) — see CLAUDE.md gotchas — so these are
-// computed from LTP + spot + strike + time-to-expiry ourselves.
+// Black-Scholes IV solver + Greeks. The broker feed provides neither IV nor
+// Greeks (true of Angel One SmartAPI today, and of Breeze before it) — so
+// these are computed from LTP + spot + strike + time-to-expiry ourselves.
 
 const RISK_FREE_RATE = 0.065; // approx Indian short-term rate, configurable later
 
