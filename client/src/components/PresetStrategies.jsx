@@ -21,16 +21,8 @@ function buildPresets(data) {
 
     return [
         {
-            name: "Long Straddle", bias: "Neutral", shape: "long-straddle",
-            legs: compact([leg(atm, "CE", "buy"), leg(atm, "PE", "buy")]),
-        },
-        {
             name: "Short Straddle", bias: "Neutral", shape: "short-straddle",
             legs: compact([leg(atm, "CE", "sell"), leg(atm, "PE", "sell")]),
-        },
-        {
-            name: "Long Strangle", bias: "Neutral", shape: "long-strangle",
-            legs: compact([leg(atm + 2 * gap, "CE", "buy"), leg(atm - 2 * gap, "PE", "buy")]),
         },
         {
             name: "Short Iron Condor", bias: "Neutral", shape: "short-iron-condor",
@@ -55,12 +47,42 @@ function buildPresets(data) {
                 leg(atm + 4 * gap, "CE", "buy"),
             ]),
         },
+        {
+            name: "Long Straddle", bias: "Other", shape: "long-straddle",
+            legs: compact([leg(atm, "CE", "buy"), leg(atm, "PE", "buy")]),
+        },
+        {
+            name: "Long Strangle", bias: "Other", shape: "long-strangle",
+            legs: compact([leg(atm + 2 * gap, "CE", "buy"), leg(atm - 2 * gap, "PE", "buy")]),
+        },
+        {
+            name: "Long Iron Condor", bias: "Other", shape: "long-iron-condor",
+            legs: compact([
+                leg(atm + 2 * gap, "CE", "buy"), leg(atm + 4 * gap, "CE", "sell"),
+                leg(atm - 2 * gap, "PE", "buy"), leg(atm - 4 * gap, "PE", "sell"),
+            ]),
+        },
+        {
+            name: "Long Iron Butterfly", bias: "Other", shape: "long-iron-butterfly",
+            legs: compact([
+                leg(atm, "CE", "buy"), leg(atm, "PE", "buy"),
+                leg(atm + 4 * gap, "CE", "sell"), leg(atm - 4 * gap, "PE", "sell"),
+            ]),
+        },
+        {
+            name: "Call Ratio Spread", bias: "Other", shape: "call-ratio-spread",
+            legs: compact([leg(atm, "CE", "buy"), leg(atm + 3 * gap, "CE", "sell", 2)]),
+        },
+        {
+            name: "Put Ratio Spread", bias: "Other", shape: "put-ratio-spread",
+            legs: compact([leg(atm, "PE", "buy"), leg(atm - 3 * gap, "PE", "sell", 2)]),
+        },
     ];
 }
 
 export default function PresetStrategies({ data, onApply }) {
     const presets = useMemo(() => buildPresets(data), [data]);
-    const [category, setCategory] = useState("Neutral");
+    const [category, setCategory] = useState("Other");
 
     const visible = presets.filter((p) => p.bias === category);
 
