@@ -19,7 +19,18 @@ const db = require("../config/db");
 const marketCache = require("./marketCache");
 const { marketHours } = require("../utils/marketUtils");
 
-const SYMBOL_MAP = { nifty: "NIFTY", banknifty: "BANKNIFTY", finnifty: "FINNIFTY" };
+// The market worker only ever subscribes these 3 (see instrumentMaster.js) —
+// everything else in option_chain_history (the other NSE/BSE indices, the
+// 200+ F&O stocks from Bhavcopy/Breeze) has no live path and is ALWAYS
+// served from history, live market hours or not. Historical-only is a
+// legitimate, correct mode for those symbols, not a fallback/error.
+const LIVE_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY"]);
+// Every index symbol that can show up in option_chain_history, across both
+// NSE bhavcopy (services/nseBhavcopy.js NSE_INDEX_SYMBOLS) and BSE bhavcopy
+// (services/bseBhavcopy.js BSE_INDEX_SYMBOLS) — kept as a flat list here
+// (rather than importing both) since this is purely a display-grouping
+// concern for the symbol picker, not a data-source decision.
+const INDEX_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX", "SENSEX50"]);
 const HISTORICAL_CACHE_TTL_MS = 60 * 1000;
 
 // Plain-string date helpers (CLAUDE.md Gotcha #12 — no local-timezone Date math)
@@ -46,13 +57,13 @@ class OptionChainService {
     }
 
     async getOptionChain(symbol, expiry, forceLive = false) {
-        const displaySymbol = SYMBOL_MAP[symbol.toLowerCase()];
+        const displaySymbol = String(symbol || "").toUpperCase();
         if (!displaySymbol) {
-            throw new Error("symbol must be one of nifty, banknifty, finnifty");
+            throw new Error("symbol is required");
         }
 
-        if (this.isMarketOpen() || forceLive) {
-            const live = this.getLiveOptionChain(displaySymbol, expiry);
+        if (LIVE_SYMBOLS.has(displaySymbol) && (this.isMarketOpen() || forceLive)) {
+            const live = await this.getLiveOptionChain(displaySymbol, expiry);
             if (live) return live;
             // Worker down / cache stale / requested expiry not subscribed —
             // fall through to historical rather than failing.
@@ -61,11 +72,91 @@ class OptionChainService {
     }
 
     /**
-     * Build the option-chain payload from the in-memory live cache.
-     * Synchronous — no DB, no broker. Returns null when the cache can't
-     * serve this request (stale, empty, or a different expiry was asked for).
+     * Every symbol that actually has data in option_chain_history, split into
+     * indices vs stocks — powers the Option Chain page's "Select Asset"
+     * dropdown. Historical-data-driven (not a hardcoded "210 companies"
+     * list) so it's automatically correct as Bhavcopy/Breeze coverage grows.
      */
-    getLiveOptionChain(displaySymbol, requestedExpiry) {
+    async listSymbols() {
+        const rows = await db.query(`SELECT DISTINCT symbol FROM option_chain_history ORDER BY symbol ASC`);
+        const all = (rows || []).map((r) => r.symbol);
+        const indices = all.filter((s) => INDEX_SYMBOLS.has(s));
+        const stocks = all.filter((s) => !INDEX_SYMBOLS.has(s));
+        // Indices in a sensible fixed order (not alphabetical — NIFTY first
+        // matters more than list-order purity), any newly-seen index symbol
+        // not in INDEX_SYMBOLS yet just falls through to the stocks list
+        // rather than being dropped.
+        const indexOrder = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX", "SENSEX50"];
+        indices.sort((a, b) => indexOrder.indexOf(a) - indexOrder.indexOf(b));
+        return { indices, stocks, liveSymbols: [...LIVE_SYMBOLS] };
+    }
+
+    /**
+     * Previous trading day's EOD LTP/IV per (strike) for a symbol+expiry —
+     * used to compute the LTP%/IV% "change vs previous close" columns the
+     * stockmojo.in reference shows next to every LTP/IV cell (2026-07-20).
+     * Two-step lookup (find the date, then the latest snapshot on that date)
+     * mirrors the anchor pattern already used in getHistoricalOptionChain,
+     * rather than one correlated-subquery mega-query. Returns a plain object
+     * keyed by strike, never throws — a lookup miss just means no % shown,
+     * not a broken chain.
+     */
+    async getPreviousCloseMap(displaySymbol, expiry, beforeDateStr) {
+        try {
+            const dateRows = await db.query(
+                `SELECT MAX(trade_date) AS d FROM option_chain_history WHERE symbol = ? AND expiry = ? AND trade_date < ?`,
+                [displaySymbol, expiry, beforeDateStr]
+            );
+            const prevDate = dateRows?.[0]?.d;
+            if (!prevDate) return {};
+
+            const timeRows = await db.query(
+                `SELECT MAX(trade_time) AS t FROM option_chain_history WHERE symbol = ? AND expiry = ? AND trade_date = ?`,
+                [displaySymbol, expiry, prevDate]
+            );
+            const prevTime = timeRows?.[0]?.t;
+            if (!prevTime) return {};
+
+            const rows = await db.query(
+                `SELECT strike, ce_ltp, ce_iv, pe_ltp, pe_iv FROM option_chain_history
+                 WHERE symbol = ? AND expiry = ? AND trade_date = ? AND trade_time = ?`,
+                [displaySymbol, expiry, prevDate, prevTime]
+            );
+            const map = {};
+            for (const r of rows || []) {
+                map[r.strike] = { ceLtp: r.ce_ltp, ceIv: r.ce_iv, peLtp: r.pe_ltp, peIv: r.pe_iv };
+            }
+            return map;
+        } catch (err) {
+            console.error("[PrevClose] Error:", err);
+            return {};
+        }
+    }
+
+    pctChange(current, previous) {
+        if (current == null || previous == null || !previous) return null;
+        return Number((((current - previous) / previous) * 100).toFixed(1));
+    }
+
+    // Long Buildup / Short Buildup / Short Covering / Long Unwinding — the
+    // classic 2x2 read of price direction vs OI direction. Was previously
+    // hardcoded to null everywhere (no price-change signal existed yet to
+    // classify against) — now that changePercent (vs previous close) is
+    // computed above, this can actually run. Matches BuildupBadge.jsx's
+    // codes: L, SC, S, LU.
+    classifyBuildup(priceChangePercent, oiChangePercent) {
+        if (priceChangePercent == null || oiChangePercent == null) return null;
+        if (priceChangePercent >= 0) return oiChangePercent >= 0 ? "L" : "SC";
+        return oiChangePercent >= 0 ? "S" : "LU";
+    }
+
+    /**
+     * Build the option-chain payload from the in-memory live cache. Returns
+     * null when the cache can't serve this request (stale, empty, or a
+     * different expiry was asked for). Async now (was sync) — needs one DB
+     * round-trip for the previous-close %-change map above.
+     */
+    async getLiveOptionChain(displaySymbol, requestedExpiry) {
         if (!marketCache.isFresh()) return null;
         const chain = marketCache.getChain(displaySymbol);
         if (!chain || !chain.rows.length || !chain.spot) return null;
@@ -75,6 +166,7 @@ class OptionChainService {
 
         const spotPrice = chain.spot;
         const t = chain.expiry ? bs.yearsToExpiry(chain.expiry) : null;
+        const prevClose = chain.expiry ? await this.getPreviousCloseMap(displaySymbol, chain.expiry, todayIstStr()) : {};
 
         const rows = chain.rows.map((r) => {
             const ceIv =
@@ -87,37 +179,55 @@ class OptionChainService {
                     : null;
             const ceGreeks = ceIv ? bs.greeks({ spot: spotPrice, strike: r.strike, t, vol: ceIv, right: "call" }) : null;
             const peGreeks = peIv ? bs.greeks({ spot: spotPrice, strike: r.strike, t, vol: peIv, right: "put" }) : null;
+            const ceIvPct = ceIv ? Number((ceIv * 100).toFixed(1)) : null;
+            const peIvPct = peIv ? Number((peIv * 100).toFixed(1)) : null;
+            const prev = prevClose[r.strike];
+            const ceLtp = r.ce ? r.ce.ltp : null;
+            const peLtp = r.pe ? r.pe.ltp : null;
+            // Vol/OI ratio and absolute OI-change aren't in the live tick feed
+            // (which only carries oiChangePercent) — approximate the absolute
+            // change from the % the feed does give us, same info either way.
+            const ceOiChange =
+                r.ce && r.ce.oiChangePercent != null && r.ce.oi != null
+                    ? Math.round(r.ce.oi - r.ce.oi / (1 + r.ce.oiChangePercent / 100))
+                    : null;
+            const peOiChange =
+                r.pe && r.pe.oiChangePercent != null && r.pe.oi != null
+                    ? Math.round(r.pe.oi - r.pe.oi / (1 + r.pe.oiChangePercent / 100))
+                    : null;
 
             return {
                 strike: r.strike,
                 iv: ceIv && peIv ? Number((((ceIv + peIv) / 2) * 100).toFixed(1)) : null,
                 ce: {
-                    ltp: r.ce ? r.ce.ltp : null,
-                    changePercent: null, // live feed carries no prev-close per contract
+                    ltp: ceLtp,
+                    changePercent: this.pctChange(ceLtp, prev?.ceLtp),
                     oi: r.ce ? r.ce.oi : null,
-                    oiChange: null,
+                    oiChange: ceOiChange,
                     oiChangePercent: r.ce ? r.ce.oiChangePercent ?? null : null,
                     volume: r.ce ? r.ce.volume : null,
-                    iv: ceIv ? Number((ceIv * 100).toFixed(1)) : null,
+                    iv: ceIvPct,
+                    ivChangePercent: this.pctChange(ceIvPct, prev?.ceIv),
                     delta: ceGreeks ? Number(ceGreeks.delta.toFixed(3)) : null,
                     gamma: ceGreeks ? Number(ceGreeks.gamma.toFixed(6)) : null,
                     theta: ceGreeks ? Number(ceGreeks.theta.toFixed(3)) : null,
                     vega: ceGreeks ? Number(ceGreeks.vega.toFixed(3)) : null,
-                    buildup: null,
+                    buildup: this.classifyBuildup(this.pctChange(ceLtp, prev?.ceLtp), r.ce ? r.ce.oiChangePercent : null),
                 },
                 pe: {
-                    ltp: r.pe ? r.pe.ltp : null,
-                    changePercent: null,
+                    ltp: peLtp,
+                    changePercent: this.pctChange(peLtp, prev?.peLtp),
                     oi: r.pe ? r.pe.oi : null,
-                    oiChange: null,
+                    oiChange: peOiChange,
                     oiChangePercent: r.pe ? r.pe.oiChangePercent ?? null : null,
                     volume: r.pe ? r.pe.volume : null,
-                    iv: peIv ? Number((peIv * 100).toFixed(1)) : null,
+                    iv: peIvPct,
+                    ivChangePercent: this.pctChange(peIvPct, prev?.peIv),
                     delta: peGreeks ? Number(peGreeks.delta.toFixed(3)) : null,
                     gamma: peGreeks ? Number(peGreeks.gamma.toFixed(6)) : null,
                     theta: peGreeks ? Number(peGreeks.theta.toFixed(3)) : null,
                     vega: peGreeks ? Number(peGreeks.vega.toFixed(3)) : null,
-                    buildup: null,
+                    buildup: this.classifyBuildup(this.pctChange(peLtp, prev?.peLtp), r.pe ? r.pe.oiChangePercent : null),
                 },
             };
         });
@@ -217,10 +327,13 @@ class OptionChainService {
                 return await this.getFallbackHistoricalData(displaySymbol);
             }
 
+            const prevClose = await this.getPreviousCloseMap(displaySymbol, selectedExpiry, trade_date);
+
             const payload = this.formatHistoricalPayload(displaySymbol, rows, {
                 expiries,
                 selectedExpiry,
                 spotOverride: Number(underlying_price) || null,
+                prevClose,
             });
             this.historicalCache.set(cacheKey, { payload, cachedAt: Date.now() });
             return payload;
@@ -285,7 +398,7 @@ class OptionChainService {
         };
     }
 
-    formatHistoricalPayload(displaySymbol, rows, { expiries = [], selectedExpiry = null, spotOverride = null } = {}) {
+    formatHistoricalPayload(displaySymbol, rows, { expiries = [], selectedExpiry = null, spotOverride = null, prevClose = {} } = {}) {
         if (!rows || rows.length === 0) {
             return this.createEmptyPayload(displaySymbol);
         }
@@ -294,36 +407,45 @@ class OptionChainService {
         const spotPrice = spotOverride || Number(rows[0]?.spotPrice) || 0;
         const atmStrike = strikes.length > 0 ? this.computeAtmStrike(strikes, spotPrice) : 0;
 
-        const mappedRows = rows.map((r) => ({
-            strike: r.strike,
-            iv: r.ce_iv ?? r.pe_iv ?? null,
-            ce: {
-                ltp: r.ce_ltp ?? 0,
-                oi: r.ce_oi ?? 0,
-                oiChange: r.ce_oi_change ?? 0,
-                volume: r.ce_volume ?? 0,
-                iv: r.ce_iv ?? null,
-                delta: r.ce_delta ?? null,
-                gamma: r.ce_gamma ?? null,
-                theta: r.ce_theta ?? null,
-                vega: r.ce_vega ?? null,
-                buildup: null,
-                changePercent: null,
-            },
-            pe: {
-                ltp: r.pe_ltp ?? 0,
-                oi: r.pe_oi ?? 0,
-                oiChange: r.pe_oi_change ?? 0,
-                volume: r.pe_volume ?? 0,
-                iv: r.pe_iv ?? null,
-                delta: r.pe_delta ?? null,
-                gamma: r.pe_gamma ?? null,
-                theta: r.pe_theta ?? null,
-                vega: r.pe_vega ?? null,
-                buildup: null,
-                changePercent: null,
-            },
-        }));
+        const mappedRows = rows.map((r) => {
+            const prev = prevClose[r.strike];
+            const ceOiChangePercent = r.ce_oi_change && r.ce_oi ? this.pctChange(r.ce_oi, r.ce_oi - r.ce_oi_change) : null;
+            const peOiChangePercent = r.pe_oi_change && r.pe_oi ? this.pctChange(r.pe_oi, r.pe_oi - r.pe_oi_change) : null;
+            return {
+                strike: r.strike,
+                iv: r.ce_iv ?? r.pe_iv ?? null,
+                ce: {
+                    ltp: r.ce_ltp ?? 0,
+                    changePercent: this.pctChange(r.ce_ltp, prev?.ceLtp),
+                    oi: r.ce_oi ?? 0,
+                    oiChange: r.ce_oi_change ?? 0,
+                    oiChangePercent: ceOiChangePercent,
+                    volume: r.ce_volume ?? 0,
+                    iv: r.ce_iv ?? null,
+                    ivChangePercent: this.pctChange(r.ce_iv, prev?.ceIv),
+                    delta: r.ce_delta ?? null,
+                    gamma: r.ce_gamma ?? null,
+                    theta: r.ce_theta ?? null,
+                    vega: r.ce_vega ?? null,
+                    buildup: this.classifyBuildup(this.pctChange(r.ce_ltp, prev?.ceLtp), ceOiChangePercent),
+                },
+                pe: {
+                    ltp: r.pe_ltp ?? 0,
+                    changePercent: this.pctChange(r.pe_ltp, prev?.peLtp),
+                    oi: r.pe_oi ?? 0,
+                    oiChange: r.pe_oi_change ?? 0,
+                    oiChangePercent: peOiChangePercent,
+                    volume: r.pe_volume ?? 0,
+                    iv: r.pe_iv ?? null,
+                    ivChangePercent: this.pctChange(r.pe_iv, prev?.peIv),
+                    delta: r.pe_delta ?? null,
+                    gamma: r.pe_gamma ?? null,
+                    theta: r.pe_theta ?? null,
+                    vega: r.pe_vega ?? null,
+                    buildup: this.classifyBuildup(this.pctChange(r.pe_ltp, prev?.peLtp), peOiChangePercent),
+                },
+            };
+        });
 
         const maxPainStrike = this.computeMaxPain(
             mappedRows.map((r) => ({ strike: r.strike, ceOi: r.ce.oi, peOi: r.pe.oi }))

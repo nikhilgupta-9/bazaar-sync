@@ -28,10 +28,15 @@ const CACHE_MAX_AGE_MS = 20 * 60 * 60 * 1000; // refresh daily (20h to be safe)
 
 // Well-known NSE index tokens (stable for years; overridable via env).
 // These come from the same scrip master (exch_seg NSE, index entries).
+// NOTE (2026-07-19): the original "26000/26009/26037" tokens here were wrong —
+// confirmed via a real getCandleData call returning status:true, data:[] (no
+// error, just silently empty). Angel One's actual index tokens for
+// quote/historical/WS purposes are the "999260xx" series. See SmartAPI forum:
+// smartapi.angelone.in/smartapi/forum/topic/5183 and .../topic/2156.
 const INDEX_TOKENS = {
-    NIFTY: process.env.ANGEL_TOKEN_NIFTY || "26000",
-    BANKNIFTY: process.env.ANGEL_TOKEN_BANKNIFTY || "26009",
-    FINNIFTY: process.env.ANGEL_TOKEN_FINNIFTY || "26037",
+    NIFTY: process.env.ANGEL_TOKEN_NIFTY || "99926000",
+    BANKNIFTY: process.env.ANGEL_TOKEN_BANKNIFTY || "99926009",
+    FINNIFTY: process.env.ANGEL_TOKEN_FINNIFTY || "99926037",
 };
 
 const MONTHS = { JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06", JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12" };

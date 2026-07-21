@@ -1,8 +1,11 @@
 // pages/OptionChain.jsx
-import { useMemo, useState, useRef } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import { useOptionChain } from "../hooks/useOptionChain";
 import { formatPrice, formatPercent, formatDateTime, formatOi } from "../utils/format";
+import { fetchSymbolList } from "../services/optionChainApi";
 import ContractChartModal from "../components/ContractChartModal";
+import OiBar from "../components/OiBar";
+import BuildupBadge from "../components/BuildupBadge";
 
 // Small chart icon shown on hover over an LTP cell
 function ChartIcon() {
@@ -14,39 +17,57 @@ function ChartIcon() {
     );
 }
 
-const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
-
-function oiChangePercent(oi, oiChange) {
-    if (oi == null || oiChange == null) return null;
-    const prevOi = oi - oiChange;
-    if (!prevOi) return null;
-    return (oiChange / prevOi) * 100;
-}
-
-// Custom Stock Mojo style badge renderer
-function RenderMojoBuildup({ code }) {
-    if (!code) return <span className="text-gray-400">-</span>;
-
-    const styles = {
-        SC: { bg: "bg-emerald-50", text: "text-emerald-700", label: "⇡ SC" },
-        LU: { bg: "bg-rose-50", text: "text-rose-700", label: "⇣ LU" },
-        L: { bg: "bg-emerald-100", text: "text-emerald-800", label: "↗ L" },
-        S: { bg: "bg-rose-100", text: "text-rose-800", label: "↘ S" },
-    };
-
-    const current = styles[code.toUpperCase()] || { bg: "bg-gray-100", text: "text-gray-700", label: code };
-
-    return (
-        <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${current.bg} ${current.text}`}>
-            {current.label}
-        </span>
-    );
-}
+// Fallback shown for the brief moment before /symbols/list resolves (or if
+// it fails) — the 3 symbols the live worker actually covers.
+const FALLBACK_SYMBOLS = { indices: ["NIFTY", "BANKNIFTY", "FINNIFTY"], stocks: [], liveSymbols: ["NIFTY", "BANKNIFTY", "FINNIFTY"] };
 
 // Format Greeks with proper decimal places
 function formatGreek(value, decimals = 2) {
     if (value == null || isNaN(value)) return "-";
     return Number(value).toFixed(decimals);
+}
+
+// Ratio helper for the Vol/OI column — how much of today's open interest
+// traded hands today, a liquidity/freshness signal stockmojo shows per row.
+function formatRatio(volume, oi) {
+    if (!oi) return "-";
+    return ((volume || 0) / oi).toFixed(2);
+}
+
+// Per-strike PCR / PCR(Vol) — the ratio at THIS strike only (not the chain-
+// wide PCR shown in the header), matching stockmojo's middle-zone columns.
+// Guards against near-empty-OI strikes producing meaningless triple-digit
+// ratios (e.g. 5 contracts of OI on one side) — below MIN_BASE it's noise,
+// not a real ratio, so show "-" instead of a distorted number.
+const MIN_RATIO_BASE = 10;
+function formatStrikeRatio(numerator, denominator) {
+    if (!denominator || denominator < MIN_RATIO_BASE) return "-";
+    return (numerator / denominator).toFixed(2);
+}
+
+// Big value on top, small colored %-change underneath — the LTP/IV cell
+// pattern stockmojo uses everywhere (e.g. "364.00" / "-14%").
+function ValueWithChange({ value, change, formatValue = formatPrice, align = "right" }) {
+    return (
+        <div className={`flex flex-col ${align === "right" ? "items-end" : "items-center"} leading-tight`}>
+            <span className="tabular-nums">{formatValue(value)}</span>
+            <span className={`text-[9px] tabular-nums ${change >= 0 ? "text-emerald-600" : change < 0 ? "text-rose-600" : "text-gray-300"}`}>
+                {change != null ? formatPercent(change) : "-"}
+            </span>
+        </div>
+    );
+}
+
+// Heatmap background for Volume/OI-Chg cells — intensity scales with
+// magnitude relative to the max seen in the currently loaded chain, mirrors
+// stockmojo's darker-green-for-bigger-numbers treatment.
+function heatStyle(value, maxAbs) {
+    if (value == null || !maxAbs) return {};
+    const intensity = Math.min(1, Math.abs(value) / maxAbs);
+    if (intensity < 0.05) return {};
+    const alpha = 0.12 + intensity * 0.45;
+    const color = value >= 0 ? `rgba(16,185,129,${alpha.toFixed(2)})` : `rgba(244,63,94,${alpha.toFixed(2)})`;
+    return { backgroundColor: color };
 }
 
 export default function OptionChain() {
@@ -65,7 +86,24 @@ export default function OptionChain() {
 
     const [expiryFilter, setExpiryFilter] = useState(null);
     const [chartTarget, setChartTarget] = useState(null); // { strike, right } | null
+    const [symbolList, setSymbolList] = useState(FALLBACK_SYMBOLS);
     const tableContainerRef = useRef(null);
+
+    // Every symbol with real historical data (indices + 200+ F&O stocks from
+    // Bhavcopy/Breeze) — fetched once, not the old hardcoded 3-index list.
+    useEffect(() => {
+        let cancelled = false;
+        fetchSymbolList()
+            .then((list) => {
+                if (!cancelled) setSymbolList(list);
+            })
+            .catch(() => {
+                /* keep FALLBACK_SYMBOLS — the dropdown still works with just the 3 live symbols */
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     // Group into ITM, OTM, and Grand Totals
     const totals = useMemo(() => {
@@ -99,6 +137,21 @@ export default function OptionChain() {
         };
     }, [data]);
 
+    // Scaling references for the OI inline bars and the Volume/OI-Chg heatmap
+    // shading — recomputed whenever the loaded chain changes, shared across
+    // both call and put sides so the two halves of the table stay visually
+    // comparable (a bigger bar always means a bigger number, same scale).
+    const scale = useMemo(() => {
+        if (!data || !data.rows) return { maxOi: 0, maxVolume: 0, maxOiChange: 0 };
+        let maxOi = 0, maxVolume = 0, maxOiChange = 0;
+        data.rows.forEach((r) => {
+            maxOi = Math.max(maxOi, r.ce.oi || 0, r.pe.oi || 0);
+            maxVolume = Math.max(maxVolume, r.ce.volume || 0, r.pe.volume || 0);
+            maxOiChange = Math.max(maxOiChange, Math.abs(r.ce.oiChange || 0), Math.abs(r.pe.oiChange || 0));
+        });
+        return { maxOi, maxVolume, maxOiChange };
+    }, [data]);
+
     const handleExpiryChange = (e) => {
         const expiry = e.target.value;
         setExpiryFilter(expiry);
@@ -120,13 +173,25 @@ export default function OptionChain() {
                                 id="asset-select"
                                 value={symbol}
                                 onChange={(e) => setSymbol(e.target.value)}
-                                className="rounded border border-gray-300 bg-white appearance-none text-black-700 text-sm font-semibold rounded-md px-3 py-1 outline-hidden cursor-pointer transition-all shadow-sm"
+                                className="rounded border border-gray-300 bg-white appearance-none text-black-700 text-sm font-semibold rounded-md px-3 py-1 outline-hidden cursor-pointer transition-all shadow-sm max-w-[160px]"
                             >
-                                {SYMBOLS.map((s) => (
-                                    <option key={s} value={s} className="bg-white text-black-700">
-                                        {s.toUpperCase()}
-                                    </option>
-                                ))}
+                                <optgroup label="Indices">
+                                    {symbolList.indices.map((s) => (
+                                        <option key={s} value={s} className="bg-white text-black-700">
+                                            {s}
+                                            {!symbolList.liveSymbols.includes(s) ? " (Historical)" : ""}
+                                        </option>
+                                    ))}
+                                </optgroup>
+                                {symbolList.stocks.length > 0 && (
+                                    <optgroup label="F&O Stocks">
+                                        {symbolList.stocks.map((s) => (
+                                            <option key={s} value={s} className="bg-white text-black-700">
+                                                {s}
+                                            </option>
+                                        ))}
+                                    </optgroup>
+                                )}
                             </select>
                             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-gray-400">
                                 <svg className="size-4" viewBox="0 0 20 20" fill="currentColor">
@@ -196,32 +261,29 @@ export default function OptionChain() {
                         <table className="w-full text-left border-collapse text-[11px]">
                             <thead>
                                 <tr className="text-center font-bold text-sm">
-                                    <th colSpan={10} className="bg-emerald-50 text-emerald-800 border-b border-gray-200 py-2">CALLS</th>
-                                    <th className="bg-gray-100 border-b border-gray-200 w-20">STRIKE</th>
-                                    <th colSpan={10} className="bg-rose-50 text-rose-800 border-b border-gray-200 py-2">PUTS</th>
+                                    <th colSpan={9} className="bg-emerald-50 text-emerald-800 border-b border-gray-200 py-2">CALLS</th>
+                                    <th colSpan={4} className="bg-gray-100 border-b border-gray-200"></th>
+                                    <th colSpan={5} className="bg-rose-50 text-rose-800 border-b border-gray-200 py-2">PUTS</th>
                                 </tr>
                                 <tr className="bg-gray-50 text-gray-500 font-semibold border-b border-gray-200 text-center">
+                                    <th className="p-1.5">Delta</th>
                                     <th className="p-1.5">Buildup</th>
+                                    <th className="p-1.5 text-right">Vol/OI</th>
                                     <th className="p-1.5 text-right">Volume</th>
                                     <th className="p-1.5 text-right">OI Chg%</th>
+                                    <th className="p-1.5 text-right">OI Chg</th>
                                     <th className="p-1.5 text-right">OI</th>
+                                    <th className="p-1.5 text-right">IV</th>
                                     <th className="p-1.5 text-right">LTP</th>
-                                    <th className="p-1.5 text-center">IV</th>
-                                    <th className="p-1.5 text-center">Delta</th>
-                                    <th className="p-1.5 text-center">Gamma</th>
-                                    <th className="p-1.5 text-center">Theta</th>
-                                    <th className="p-1.5 text-center">Vega</th>
-                                    <th className="bg-gray-100 text-gray-800 font-bold p-1.5"></th>
-                                    <th className="p-1.5 text-center">Vega</th>
-                                    <th className="p-1.5 text-center">Theta</th>
-                                    <th className="p-1.5 text-center">Gamma</th>
-                                    <th className="p-1.5 text-center">Delta</th>
-                                    <th className="p-1.5 text-center">IV</th>
+                                    <th className="bg-gray-100 text-gray-800 font-bold p-1.5">Strike</th>
+                                    <th className="p-1.5 text-right">IV</th>
+                                    <th className="p-1.5 text-right">PCR</th>
+                                    <th className="p-1.5 text-right">PCR(Vol)</th>
                                     <th className="p-1.5 text-right">LTP</th>
+                                    <th className="p-1.5 text-right">IV</th>
                                     <th className="p-1.5 text-right">OI</th>
+                                    <th className="p-1.5 text-right">OI Chg</th>
                                     <th className="p-1.5 text-right">OI Chg%</th>
-                                    <th className="p-1.5 text-right">Volume</th>
-                                    <th className="p-1.5">Buildup</th>
                                 </tr>
                             </thead>
 
@@ -229,34 +291,54 @@ export default function OptionChain() {
                                 {data.rows.map((row) => {
                                     const ceItm = row.strike < data.spotPrice;
                                     const peItm = row.strike > data.spotPrice;
-                                    const ceChgPct = oiChangePercent(row.ce.oi, row.ce.oiChange);
-                                    const peChgPct = oiChangePercent(row.pe.oi, row.pe.oiChange);
                                     const isMaxPain = row.strike === data.maxPainStrike;
-
-                                    // Calculate buildup if not provided
-                                    const ceBuildup = row.ce.buildup || null;
-                                    const peBuildup = row.pe.buildup || null;
+                                    const isAtm = row.strike === data.atmStrike;
 
                                     return (
-                                        <tr key={row.strike} className="hover:bg-slate-50 transition-colors text-center font-medium">
+                                        <tr
+                                            key={row.strike}
+                                            className={`hover:bg-slate-50 transition-colors text-center font-medium ${
+                                                isAtm ? "ring-1 ring-inset ring-blue-400" : ""
+                                            }`}
+                                        >
                                             {/* CALL SIDE */}
+                                            <td className={`p-1 tabular-nums font-mono ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                {formatGreek(row.ce.delta)}
+                                            </td>
                                             <td className={`p-1 ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                <RenderMojoBuildup code={ceBuildup} />
+                                                <BuildupBadge code={row.ce.buildup} />
                                             </td>
-                                            <td className={`p-1 text-right tabular-nums ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                {row.ce.volume?.toLocaleString("en-IN") || "-"}
+                                            <td className={`p-1 text-right tabular-nums text-gray-500 ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                {formatRatio(row.ce.volume, row.ce.oi)}
                                             </td>
-                                            <td className={`p-1 text-right tabular-nums ${ceItm ? "bg-amber-50/60" : ""} ${
-                                                ceChgPct >= 0 ? "text-emerald-600" : "text-rose-600"
-                                            }`}>
-                                                {ceChgPct != null ? formatPercent(ceChgPct) : "-"}
+                                            <td
+                                                className={`p-1 text-right tabular-nums ${ceItm ? "bg-amber-50/60" : ""}`}
+                                                style={heatStyle(row.ce.volume, scale.maxVolume)}
+                                            >
+                                                {formatOi(row.ce.volume)}
                                             </td>
-                                            <td className={`p-1 text-right tabular-nums font-semibold ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                {formatOi(row.ce.oi)}
+                                            <td
+                                                className={`p-1 text-right tabular-nums ${ceItm ? "bg-amber-50/60" : ""} ${
+                                                    row.ce.oiChangePercent >= 0 ? "text-emerald-600" : "text-rose-600"
+                                                }`}
+                                            >
+                                                {row.ce.oiChangePercent != null ? formatPercent(row.ce.oiChangePercent) : "-"}
                                             </td>
-                                            <td className={`group p-1 text-right tabular-nums font-bold text-blue-700 ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                <span className="inline-flex items-center justify-end gap-1">
-                                                    {formatPrice(row.ce.ltp)}
+                                            <td
+                                                className={`p-1 text-right tabular-nums ${ceItm ? "bg-amber-50/60" : ""}`}
+                                                style={heatStyle(row.ce.oiChange, scale.maxOiChange)}
+                                            >
+                                                {row.ce.oiChange != null ? formatOi(row.ce.oiChange) : "-"}
+                                            </td>
+                                            <td className={`p-1 ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                <OiBar value={row.ce.oi} max={scale.maxOi} side="ce" />
+                                            </td>
+                                            <td className={`p-1 ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                <ValueWithChange value={row.ce.iv} change={row.ce.ivChangePercent} formatValue={(v) => (v != null ? v : "-")} />
+                                            </td>
+                                            <td className={`group p-1 ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                <span className="inline-flex items-center justify-end gap-1 w-full">
+                                                    <ValueWithChange value={row.ce.ltp} change={row.ce.changePercent} />
                                                     <button
                                                         type="button"
                                                         onClick={() => setChartTarget({ strike: row.strike, right: "CE" })}
@@ -267,50 +349,25 @@ export default function OptionChain() {
                                                     </button>
                                                 </span>
                                             </td>
-                                            <td className={`p-1 text-center text-gray-500 tabular-nums ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                {row.ce.iv || row.iv || "-"}
-                                            </td>
-                                            <td className={`p-1 text-center tabular-nums font-mono ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                {formatGreek(row.ce.delta)}
-                                            </td>
-                                            <td className={`p-1 text-center tabular-nums font-mono ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                {formatGreek(row.ce.gamma, 4)}
-                                            </td>
-                                            <td className={`p-1 text-center tabular-nums font-mono ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                {formatGreek(row.ce.theta)}
-                                            </td>
-                                            <td className={`p-1 text-center tabular-nums font-mono ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                {formatGreek(row.ce.vega)}
-                                            </td>
 
                                             {/* STRIKE PRICE */}
-                                            <td className={`p-1 text-center font-bold bg-gray-100 border-x border-gray-200 text-gray-900 text-xs relative min-w-[70px]`}>
+                                            <td className="p-1 text-center font-bold bg-gray-100 border-x border-gray-200 text-gray-900 text-xs relative min-w-[70px]">
                                                 {row.strike}
                                                 {isMaxPain && (
-                                                    <span className="absolute right-0 top-0 bg-orange-500 text-white text-[8px] px-0.5 rounded-bl">
-                                                        MP
-                                                    </span>
+                                                    <span className="block text-[8px] font-bold text-orange-600 leading-tight">Max Pain</span>
                                                 )}
                                             </td>
 
+                                            {/* NEUTRAL MIDDLE ZONE — put IV shown early (matches stockmojo), plus per-strike PCR */}
+                                            <td className="p-1">
+                                                <ValueWithChange value={row.pe.iv} change={row.pe.ivChangePercent} formatValue={(v) => (v != null ? v : "-")} align="center" />
+                                            </td>
+                                            <td className="p-1 text-right tabular-nums text-gray-600">{formatStrikeRatio(row.pe.oi, row.ce.oi)}</td>
+                                            <td className="p-1 text-right tabular-nums text-gray-600">{formatStrikeRatio(row.pe.volume, row.ce.volume)}</td>
+
                                             {/* PUT SIDE */}
-                                            <td className={`p-1 text-center tabular-nums font-mono ${peItm ? "bg-amber-50/60" : ""}`}>
-                                                {formatGreek(row.pe.vega)}
-                                            </td>
-                                            <td className={`p-1 text-center tabular-nums font-mono ${peItm ? "bg-amber-50/60" : ""}`}>
-                                                {formatGreek(row.pe.theta)}
-                                            </td>
-                                            <td className={`p-1 text-center tabular-nums font-mono ${peItm ? "bg-amber-50/60" : ""}`}>
-                                                {formatGreek(row.pe.gamma, 4)}
-                                            </td>
-                                            <td className={`p-1 text-center tabular-nums font-mono ${peItm ? "bg-amber-50/60" : ""}`}>
-                                                {formatGreek(row.pe.delta)}
-                                            </td>
-                                            <td className={`p-1 text-center text-gray-500 tabular-nums ${peItm ? "bg-amber-50/60" : ""}`}>
-                                                {row.pe.iv || row.iv || "-"}
-                                            </td>
-                                            <td className={`group p-1 text-right tabular-nums font-bold text-blue-700 ${peItm ? "bg-amber-50/60" : ""}`}>
-                                                <span className="inline-flex items-center justify-end gap-1">
+                                            <td className={`group p-1 ${peItm ? "bg-amber-50/60" : ""}`}>
+                                                <span className="inline-flex items-center justify-end gap-1 w-full">
                                                     <button
                                                         type="button"
                                                         onClick={() => setChartTarget({ strike: row.strike, right: "PE" })}
@@ -319,22 +376,27 @@ export default function OptionChain() {
                                                     >
                                                         <ChartIcon />
                                                     </button>
-                                                    {formatPrice(row.pe.ltp)}
+                                                    <ValueWithChange value={row.pe.ltp} change={row.pe.changePercent} />
                                                 </span>
                                             </td>
-                                            <td className={`p-1 text-right tabular-nums font-semibold ${peItm ? "bg-amber-50/60" : ""}`}>
-                                                {formatOi(row.pe.oi)}
-                                            </td>
-                                            <td className={`p-1 text-right tabular-nums ${peItm ? "bg-amber-50/60" : ""} ${
-                                                peChgPct >= 0 ? "text-emerald-600" : "text-rose-600"
-                                            }`}>
-                                                {peChgPct != null ? formatPercent(peChgPct) : "-"}
-                                            </td>
-                                            <td className={`p-1 text-right tabular-nums ${peItm ? "bg-amber-50/60" : ""}`}>
-                                                {row.pe.volume?.toLocaleString("en-IN") || "-"}
+                                            <td className={`p-1 ${peItm ? "bg-amber-50/60" : ""}`}>
+                                                <ValueWithChange value={row.pe.iv} change={row.pe.ivChangePercent} formatValue={(v) => (v != null ? v : "-")} />
                                             </td>
                                             <td className={`p-1 ${peItm ? "bg-amber-50/60" : ""}`}>
-                                                <RenderMojoBuildup code={peBuildup} />
+                                                <OiBar value={row.pe.oi} max={scale.maxOi} side="pe" />
+                                            </td>
+                                            <td
+                                                className={`p-1 text-right tabular-nums ${peItm ? "bg-amber-50/60" : ""}`}
+                                                style={heatStyle(row.pe.oiChange, scale.maxOiChange)}
+                                            >
+                                                {row.pe.oiChange != null ? formatOi(row.pe.oiChange) : "-"}
+                                            </td>
+                                            <td
+                                                className={`p-1 text-right tabular-nums ${peItm ? "bg-amber-50/60" : ""} ${
+                                                    row.pe.oiChangePercent >= 0 ? "text-emerald-600" : "text-rose-600"
+                                                }`}
+                                            >
+                                                {row.pe.oiChangePercent != null ? formatPercent(row.pe.oiChangePercent) : "-"}
                                             </td>
                                         </tr>
                                     );
@@ -345,25 +407,25 @@ export default function OptionChain() {
                             {totals && (
                                 <tfoot className="bg-slate-100 text-[11px] font-bold border-t-2 border-gray-300 text-right divide-y divide-gray-200">
                                     <tr>
-                                        <td colSpan={4} className="p-1.5 text-emerald-700">ITM Total</td>
+                                        <td colSpan={3} className="p-1.5 text-emerald-700 text-left">ITM Total</td>
                                         <td colSpan={6} className="p-1.5 text-emerald-700">{formatOi(totals.ceItm.oi)}</td>
                                         <td className="bg-gray-200 p-1.5 text-center">ITM</td>
-                                        <td colSpan={4} className="p-1.5 text-left text-rose-700">{formatOi(totals.peItm.oi)}</td>
-                                        <td colSpan={6} className="p-1.5 text-left text-rose-700">ITM Total</td>
+                                        <td colSpan={3} className="p-1.5 text-left text-rose-700">{formatOi(totals.peItm.oi)}</td>
+                                        <td colSpan={5} className="p-1.5 text-left text-rose-700">ITM Total</td>
                                     </tr>
                                     <tr>
-                                        <td colSpan={4} className="p-1.5 text-gray-600">OTM Total</td>
+                                        <td colSpan={3} className="p-1.5 text-gray-600 text-left">OTM Total</td>
                                         <td colSpan={6} className="p-1.5 text-gray-600">{formatOi(totals.ceOtm.oi)}</td>
                                         <td className="bg-gray-200 p-1.5 text-center">OTM</td>
-                                        <td colSpan={4} className="p-1.5 text-left text-gray-600">{formatOi(totals.peOtm.oi)}</td>
-                                        <td colSpan={6} className="p-1.5 text-left text-gray-600">OTM Total</td>
+                                        <td colSpan={3} className="p-1.5 text-left text-gray-600">{formatOi(totals.peOtm.oi)}</td>
+                                        <td colSpan={5} className="p-1.5 text-left text-gray-600">OTM Total</td>
                                     </tr>
                                     <tr className="bg-slate-200 text-gray-900">
-                                        <td colSpan={4} className="p-2">Grand Total OI</td>
+                                        <td colSpan={3} className="p-2 text-left">Grand Total OI</td>
                                         <td colSpan={6} className="p-2 text-sm font-black">{formatOi(totals.totalCeOi)}</td>
                                         <td className="bg-gray-300 p-2 text-center text-xs">TOTALS</td>
-                                        <td colSpan={4} className="p-2 text-sm font-black">{formatOi(totals.totalPeOi)}</td>
-                                        <td colSpan={6} className="p-2 text-left">Grand Total OI</td>
+                                        <td colSpan={3} className="p-2 text-sm font-black">{formatOi(totals.totalPeOi)}</td>
+                                        <td colSpan={5} className="p-2 text-left">Grand Total OI</td>
                                     </tr>
                                 </tfoot>
                             )}
