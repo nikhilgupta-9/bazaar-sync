@@ -48,6 +48,17 @@ async function withMarketExtras(payload, displaySymbol) {
     };
 }
 
+/** GET /api/option-chain/symbols/list — every symbol with real data, for the Select Asset dropdown. */
+async function listSymbols(req, res) {
+    try {
+        const result = await optionChainService.listSymbols();
+        res.json(result);
+    } catch (err) {
+        console.error("[ListSymbols Error]", err);
+        res.status(500).json({ error: err.message || "Failed to list symbols" });
+    }
+}
+
 async function getOptionChain(req, res) {
     try {
         const { symbol } = req.params;
@@ -94,4 +105,4 @@ async function refreshOptionChain(req, res) {
     }
 }
 
-module.exports = { getOptionChain, refreshOptionChain };
+module.exports = { getOptionChain, refreshOptionChain, listSymbols };

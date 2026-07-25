@@ -2,7 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../config/db");
-const { getOptionChain, refreshOptionChain } = require("../controllers/optionChainController");
+const { getOptionChain, refreshOptionChain, listSymbols } = require("../controllers/optionChainController");
 
 // ============================================
 // SPECIFIC ROUTES - MUST COME BEFORE /:symbol
@@ -10,6 +10,9 @@ const { getOptionChain, refreshOptionChain } = require("../controllers/optionCha
 
 // Manual refresh (frontend "refresh" button)
 router.post("/refresh", refreshOptionChain);
+
+// Every symbol with real data — powers the Select Asset dropdown
+router.get("/symbols/list", listSymbols);
 
 // Contract price history — powers the "view chart" hover action on LTP cells.
 // Reads option_chain_history (MySQL) only.

@@ -54,6 +54,21 @@ function impliedVolatility({ marketPrice, spot, strike, t, right, r = RISK_FREE_
     return (lo + hi) / 2;
 }
 
+// Near expiry (t -> the 15-minute floor in yearsToExpiry) the 1/sqrt(t) terms
+// in gamma/theta blow up numerically — harmless mathematically, but a real
+// problem for callers: MySQL's DECIMAL(8,6)/DECIMAL(8,4) columns
+// (option_chain_history, live_greeks_snapshots) reject out-of-range values
+// and abort the whole insert, and workers/marketWorker.js calls
+// `.toFixed()` on these directly assuming a finite number, which would throw
+// and crash the live worker. Clamping here (not returning null) keeps every
+// existing caller — live and historical — safe without needing to touch them.
+function clampFinite(value, cap) {
+    if (!Number.isFinite(value)) return 0;
+    if (value > cap) return cap;
+    if (value < -cap) return -cap;
+    return value;
+}
+
 function greeks({ spot, strike, t, vol, right, r = RISK_FREE_RATE }) {
     if (!vol || vol <= 0 || t <= 0) {
         return { delta: right === "call" ? (spot > strike ? 1 : 0) : (spot < strike ? -1 : 0), gamma: 0, theta: 0, vega: 0 };
@@ -67,7 +82,12 @@ function greeks({ spot, strike, t, vol, right, r = RISK_FREE_RATE }) {
     const theta = right === "call"
         ? (-(spot * normPdf(d1) * vol) / (2 * sqrtT) - r * strike * Math.exp(-r * t) * normCdf(d2)) / 365
         : (-(spot * normPdf(d1) * vol) / (2 * sqrtT) + r * strike * Math.exp(-r * t) * normCdf(-d2)) / 365;
-    return { delta, gamma, theta, vega };
+    return {
+        delta: clampFinite(delta, 1), // theoretically already in [-1,1], clamped defensively too
+        gamma: clampFinite(gamma, 50), // DECIMAL(8,6) column, real gammas are never remotely this big
+        theta: clampFinite(theta, 5000), // DECIMAL(8,4) column
+        vega: clampFinite(vega, 5000), // DECIMAL(8,4) column
+    };
 }
 
 module.exports = { yearsToExpiry, bsPrice, impliedVolatility, greeks, RISK_FREE_RATE };

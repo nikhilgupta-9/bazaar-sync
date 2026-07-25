@@ -47,6 +47,17 @@ export async function fetchOptionChain(symbol, expiry, forceLive = false) {
 }
 
 /**
+ * Every symbol with real data in option_chain_history (indices + stocks),
+ * for the Select Asset dropdown — replaces the old hardcoded 3-symbol list
+ * now that Bhavcopy/Breeze backfills cover ~280 symbols.
+ */
+export async function fetchSymbolList() {
+    const res = await fetch(`${API_URL}/api/option-chain/symbols/list`, { headers: { Accept: "application/json" } });
+    if (!res.ok) throw new Error(`Symbol list fetch failed (${res.status})`);
+    return res.json(); // { indices: [...], stocks: [...], liveSymbols: [...] }
+}
+
+/**
  * Force refresh and save snapshot
  */
 export async function refreshOptionChain(symbol, expiry = null) {
