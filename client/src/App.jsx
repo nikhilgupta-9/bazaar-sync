@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import TopNav from "./components/TopNav";
+import Home from "./pages/Home";
 import OptionChain from "./pages/OptionChain";
 import MaxPain from "./pages/MaxPain";
 import PutCallRatio from "./pages/PutCallRatio";
@@ -15,7 +16,7 @@ function App() {
         <div className="min-h-screen bg-gray-50">
             <TopNav />
             <Routes>
-                <Route path="/" element={<Navigate to="/option-chain" replace />} />
+                <Route path="/" element={<Home />} />
                 <Route path="/option-chain" element={<OptionChain />} />
                 <Route path="/strategy-builder" element={<StrategyBuilder />} />
                 <Route path="/max-pain" element={<MaxPain />} />
