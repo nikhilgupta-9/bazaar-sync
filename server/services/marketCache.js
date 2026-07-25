@@ -51,6 +51,32 @@ function getSpot(underlying) {
     return null;
 }
 
+/** India VIX entry ({ ltp, timestamp, ... }), or null if not yet ticked. */
+function getVix() {
+    for (const [, e] of cache) {
+        if (e.kind === "vix") return e;
+    }
+    return null;
+}
+
+/** Nearest-future entry for an underlying ({ ltp, expiry, lotSize, ... }), or null. */
+function getFuture(underlying) {
+    const sym = underlying.toUpperCase();
+    for (const [, e] of cache) {
+        if (e.kind === "future" && e.underlying === sym) return e;
+    }
+    return null;
+}
+
+/** lotSize for an underlying's option contracts, from any cached option entry. */
+function getLotSize(underlying) {
+    const sym = underlying.toUpperCase();
+    for (const [, e] of cache) {
+        if (e.kind === "option" && e.underlying === sym && e.lotSize) return e.lotSize;
+    }
+    return null;
+}
+
 /**
  * All live option entries for an underlying, grouped per strike:
  *   { spot, expiry, rows: [{ strike, ce: {...}|null, pe: {...}|null }] }
@@ -95,10 +121,15 @@ function getChain(underlying) {
 function getBroadcastPayload(underlying) {
     const chain = getChain(underlying);
     if (!chain) return null;
+    const vix = getVix();
+    const future = getFuture(underlying);
     return {
         symbol: underlying.toUpperCase(),
         spot: chain.spot,
         expiry: chain.expiry,
+        vix: vix ? vix.ltp : null,
+        futurePrice: future ? future.ltp : null,
+        futureExpiry: future ? future.expiry : null,
         ticks: chain.rows.map((r) => ({
             strike: r.strike,
             ceLtp: r.ce ? r.ce.ltp : null,
@@ -112,4 +143,16 @@ function getBroadcastPayload(underlying) {
     };
 }
 
-module.exports = { applyTicks, setFeedConnected, clear, isFresh, getStatus, getSpot, getChain, getBroadcastPayload };
+module.exports = {
+    applyTicks,
+    setFeedConnected,
+    clear,
+    isFresh,
+    getStatus,
+    getSpot,
+    getVix,
+    getFuture,
+    getLotSize,
+    getChain,
+    getBroadcastPayload,
+};

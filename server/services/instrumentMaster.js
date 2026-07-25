@@ -26,12 +26,17 @@ const CACHE_DIR = process.env.SCRIP_MASTER_CACHE_DIR || path.join(__dirname, "..
 const CACHE_FILE = path.join(CACHE_DIR, "OpenAPIScripMaster.json");
 const CACHE_MAX_AGE_MS = 20 * 60 * 60 * 1000; // refresh daily (20h to be safe)
 
-// Well-known NSE index tokens (stable for years; overridable via env).
-// These come from the same scrip master (exch_seg NSE, index entries).
+// Well-known NSE index tokens (overridable via env). Angel One migrated
+// these to a new "999260xx" series and is deprecating the old bare-number
+// tokens (26000/26009/26037) that were hardcoded here before — confirmed via
+// Angel One's own SmartAPI forum announcement. If live spot/VIX data ever
+// silently stops updating, check whether Angel One has fully cut over and
+// these need another update.
 const INDEX_TOKENS = {
-    NIFTY: process.env.ANGEL_TOKEN_NIFTY || "26000",
-    BANKNIFTY: process.env.ANGEL_TOKEN_BANKNIFTY || "26009",
-    FINNIFTY: process.env.ANGEL_TOKEN_FINNIFTY || "26037",
+    NIFTY: process.env.ANGEL_TOKEN_NIFTY || "99926000",
+    BANKNIFTY: process.env.ANGEL_TOKEN_BANKNIFTY || "99926009",
+    FINNIFTY: process.env.ANGEL_TOKEN_FINNIFTY || "99926037",
+    INDIAVIX: process.env.ANGEL_TOKEN_INDIAVIX || "99926017",
 };
 
 const MONTHS = { JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06", JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12" };
@@ -95,38 +100,58 @@ async function ensureLoaded({ force = false } = {}) {
     const all = JSON.parse(raw);
 
     const options = new Map();
-    for (const u of OPTION_UNDERLYINGS) options.set(u, []);
+    const futures = new Map();
+    for (const u of OPTION_UNDERLYINGS) {
+        options.set(u, []);
+        futures.set(u, []);
+    }
 
     for (const row of all) {
-        if (row.exch_seg !== "NFO" || row.instrumenttype !== "OPTIDX") continue;
+        if (row.exch_seg !== "NFO") continue;
         const name = (row.name || "").toUpperCase();
         if (!OPTION_UNDERLYINGS.has(name)) continue;
 
-        const expirySql = expiryToSql(row.expiry);
-        if (!expirySql) continue;
+        if (row.instrumenttype === "OPTIDX") {
+            const expirySql = expiryToSql(row.expiry);
+            if (!expirySql) continue;
 
-        // strike arrives multiplied by 100 (e.g. "2400000.000000" = 24000)
-        const strike = Number(row.strike) / 100;
-        if (!Number.isFinite(strike) || strike <= 0) continue;
+            // strike arrives multiplied by 100 (e.g. "2400000.000000" = 24000)
+            const strike = Number(row.strike) / 100;
+            if (!Number.isFinite(strike) || strike <= 0) continue;
 
-        const sym = (row.symbol || "").toUpperCase();
-        const right = sym.endsWith("CE") ? "CE" : sym.endsWith("PE") ? "PE" : null;
-        if (!right) continue;
+            const sym = (row.symbol || "").toUpperCase();
+            const right = sym.endsWith("CE") ? "CE" : sym.endsWith("PE") ? "PE" : null;
+            if (!right) continue;
 
-        options.get(name).push({
-            token: String(row.token),
-            underlying: name,
-            strike,
-            right,
-            expiry: expirySql,
-            lotSize: Number(row.lotsize) || null,
-        });
+            options.get(name).push({
+                token: String(row.token),
+                underlying: name,
+                strike,
+                right,
+                expiry: expirySql,
+                lotSize: Number(row.lotsize) || null,
+            });
+        } else if (row.instrumenttype === "FUTIDX") {
+            const expirySql = expiryToSql(row.expiry);
+            if (!expirySql) continue;
+
+            futures.get(name).push({
+                token: String(row.token),
+                underlying: name,
+                expiry: expirySql,
+                lotSize: Number(row.lotsize) || null,
+            });
+        }
     }
 
     for (const [name, list] of options) {
         workerLogger.info(`Scrip master: ${list.length} index option contracts for ${name}`);
     }
-    parsed = { loadedAt: Date.now(), options };
+    for (const [name, list] of futures) {
+        list.sort((a, b) => a.expiry.localeCompare(b.expiry));
+        workerLogger.info(`Scrip master: ${list.length} index future contracts for ${name}`);
+    }
+    parsed = { loadedAt: Date.now(), options, futures };
     return parsed;
 }
 
@@ -167,4 +192,26 @@ function getIndexToken(underlying) {
     return INDEX_TOKENS[underlying.toUpperCase()] || null;
 }
 
-module.exports = { ensureLoaded, getExpiries, getOptionContracts, getIndexToken, expiryToSql, todayIst, INDEX_TOKENS };
+function getVixToken() {
+    return INDEX_TOKENS.INDIAVIX;
+}
+
+/** Nearest (front-month) future contract for an underlying, or null. */
+async function getNearestFuture(underlying) {
+    const { futures } = await ensureLoaded();
+    const today = todayIst();
+    const list = (futures.get(underlying.toUpperCase()) || []).filter((f) => f.expiry >= today);
+    return list[0] || null;
+}
+
+module.exports = {
+    ensureLoaded,
+    getExpiries,
+    getOptionContracts,
+    getIndexToken,
+    getVixToken,
+    getNearestFuture,
+    expiryToSql,
+    todayIst,
+    INDEX_TOKENS,
+};

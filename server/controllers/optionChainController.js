@@ -7,12 +7,37 @@
 
 const optionChainService = require("../services/optionChainService");
 const marketCache = require("../services/marketCache");
+const instrumentMaster = require("../services/instrumentMaster");
 const { marketHours } = require("../utils/marketUtils");
 
-function withMarketStatus(payload) {
+// Attaches data that's independent of whether the option ROWS came back live
+// or historical: VIX, the nearest future's price, lot size (all read from
+// the same in-memory cache the worker feeds), plus the full expiry list from
+// the instrument master. The worker only ever live-subscribes the nearest
+// expiry's option chain (see marketWorker.js's token-budget comment), so
+// `expiries` here can list more dates than are actually live right now —
+// selecting a non-live one falls back to historical data automatically
+// (optionChainService.getOptionChain already does this).
+async function withMarketExtras(payload, displaySymbol) {
     const cacheStatus = marketCache.getStatus();
+    const vixEntry = marketCache.getVix();
+    const futureEntry = marketCache.getFuture(displaySymbol);
+
+    let expiries = payload.expiries;
+    try {
+        const allExpiries = await instrumentMaster.getExpiries(displaySymbol);
+        if (allExpiries.length) expiries = allExpiries;
+    } catch (err) {
+        console.error("[optionChain] expiry list lookup failed, using payload's own list:", err.message);
+    }
+
     return {
         ...payload,
+        expiries,
+        vix: vixEntry ? vixEntry.ltp : null,
+        futurePrice: futureEntry ? futureEntry.ltp : null,
+        futureExpiry: futureEntry ? futureEntry.expiry : null,
+        lotSize: marketCache.getLotSize(displaySymbol),
         marketStatus: {
             isOpen: marketHours.isTradingTime(),
             nextOpen: marketHours.getNextMarketOpen(),
@@ -29,7 +54,7 @@ async function getOptionChain(req, res) {
         const { expiry, forceLive = false } = req.query;
 
         const payload = await optionChainService.getOptionChain(symbol, expiry, forceLive === "true");
-        res.json(withMarketStatus(payload));
+        res.json(await withMarketExtras(payload, payload.symbol));
     } catch (err) {
         console.error("[OptionChain Error]", err);
         res.status(err.status || 500).json({
