@@ -7,6 +7,8 @@ import {
 } from "../utils/payoff";
 import { yearsToExpiry, daysUntilExpiry } from "../utils/blackScholes";
 import PayoffChart from "../components/PayoffChart";
+import StrategyValueChart from "../components/StrategyValueChart";
+import UnderlyingChart from "../components/UnderlyingChart";
 import PresetStrategies from "../components/PresetStrategies";
 import SaveButton from "../components/SaveButton";
 import OiBar from "../components/OiBar";
@@ -51,6 +53,7 @@ export default function StrategyBuilder() {
     const { symbol, setSymbol, data, loading, error, load } = useOptionChain();
     const [legs, setLegs] = useState([]);
     const [tab, setTab] = useState("positions"); // 'positions' | 'greeks'
+    const [chartTab, setChartTab] = useState("payoff"); // 'payoff' | 'strategy' | 'underlying'
 
     function addLeg(row, right, action) {
         setLegs((prev) => {
@@ -100,6 +103,19 @@ export default function StrategyBuilder() {
         const diff = leg.action === "buy" ? currentLtp - leg.premium : leg.premium - currentLtp;
         return diff * leg.qty;
     }
+
+    // Combined live P&L across all legs, for the Strategy Chart tab's
+    // session trend line — null until every leg's current LTP is known.
+    const totalLivePnl = useMemo(() => {
+        if (!legs.length) return null;
+        let sum = 0;
+        for (const leg of legs) {
+            const v = legLivePnl(leg);
+            if (v == null) return null;
+            sum += v;
+        }
+        return sum;
+    }, [legs, rowByStrike]);
 
     const { curve, breakevens, maxProfit, maxLoss, netGreeks, currentPnl, pop, expectedMove } = useMemo(() => {
         if (!legs.length || !data || !data.spotPrice) {
@@ -257,8 +273,35 @@ export default function StrategyBuilder() {
                                 <Stat label="Workspace Constraints" value={`${legs.length} of 6 active legs`} />
                             </div>
 
-                            <div className="flex-1 rounded-xl border border-gray-200 bg-white p-4 shadow-sm flex flex-col justify-center">
-                                <PayoffChart curve={curve} spotPrice={data?.spotPrice} breakevens={breakevens} expectedMove={expectedMove} />
+                            <div className="flex-1 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col">
+                                <div className="flex gap-1 border-b border-gray-100 bg-gray-50/50 px-3 pt-2">
+                                    {[
+                                        ["payoff", "Payoff"],
+                                        ["strategy", "Strategy Chart"],
+                                        ["underlying", "Underlying Chart"],
+                                    ].map(([key, label]) => (
+                                        <button
+                                            key={key}
+                                            onClick={() => setChartTab(key)}
+                                            className={`rounded-t-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                                                chartTab === key
+                                                    ? "bg-white text-blue-600 border border-b-0 border-gray-200"
+                                                    : "text-gray-500 hover:text-gray-800"
+                                            }`}
+                                        >
+                                            {label}
+                                        </button>
+                                    ))}
+                                </div>
+                                <div className="flex-1 p-4 flex flex-col justify-center">
+                                    {chartTab === "payoff" && (
+                                        <PayoffChart curve={curve} spotPrice={data?.spotPrice} breakevens={breakevens} expectedMove={expectedMove} />
+                                    )}
+                                    {chartTab === "strategy" && (
+                                        <StrategyValueChart totalPnl={totalLivePnl} resetKey={legs.map((l) => l.id).join(",")} />
+                                    )}
+                                    {chartTab === "underlying" && <UnderlyingChart symbol={symbol} />}
+                                </div>
                             </div>
                         </div>
 

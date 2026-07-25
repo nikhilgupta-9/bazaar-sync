@@ -67,6 +67,48 @@ router.get("/:symbol/contract-history", async (req, res) => {
     }
 });
 
+// Underlying (index/stock) OHLCV history — powers the Strategy Builder's
+// "Underlying" chart tab. Reads ohlcv_data (MySQL) only; symbol is stored as
+// plain uppercase text there (see services/cron.js), same convention as
+// contract-history's symbol matching above.
+router.get("/:symbol/underlying-history", async (req, res) => {
+    try {
+        const { symbol } = req.params;
+        const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
+
+        const rows = await db.query(
+            `SELECT trade_date, trade_time, open, high, low, close, volume
+             FROM ohlcv_data
+             WHERE UPPER(symbol) = UPPER(?) AND trade_date >= CURDATE() - INTERVAL ? DAY
+             ORDER BY trade_date ASC, trade_time ASC`,
+            [symbol, days]
+        );
+
+        const points = rows
+            .filter((r) => r.close != null)
+            .map((r) => {
+                // trade_date/trade_time are plain strings (dateStrings:true) —
+                // string-first date math per CLAUDE.md Gotcha #12, never
+                // new Date(nonISOString).
+                const [y, m, d] = String(r.trade_date).slice(0, 10).split("-").map(Number);
+                const [hh, mm, ss] = String(r.trade_time).split(":").map(Number);
+                return {
+                    time: Math.floor(Date.UTC(y, m - 1, d, hh, mm, ss) / 1000),
+                    open: parseFloat(r.open),
+                    high: parseFloat(r.high),
+                    low: parseFloat(r.low),
+                    close: parseFloat(r.close),
+                    volume: r.volume != null ? parseInt(r.volume) : null,
+                };
+            });
+
+        res.json({ symbol: symbol.toUpperCase(), days, points });
+    } catch (error) {
+        console.error("[UnderlyingHistory Error]", error);
+        res.status(500).json({ error: error.message || "Internal Server Error" });
+    }
+});
+
 // ============================================
 // MAIN ROUTES
 // ============================================

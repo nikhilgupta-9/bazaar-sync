@@ -55,6 +55,45 @@ function buildPresets(data) {
                 leg(atm + 4 * gap, "CE", "buy"),
             ]),
         },
+        {
+            name: "Short Strangle", bias: "Neutral", shape: "short-strangle",
+            legs: compact([leg(atm + 2 * gap, "CE", "sell"), leg(atm - 2 * gap, "PE", "sell")]),
+        },
+        {
+            name: "Short Iron Butterfly", bias: "Neutral", shape: "short-iron-butterfly",
+            legs: compact([
+                leg(atm, "CE", "sell"), leg(atm, "PE", "sell"),
+                leg(atm + 4 * gap, "CE", "buy"), leg(atm - 4 * gap, "PE", "buy"),
+            ]),
+        },
+        // Jade Lizard: short OTM put + short call vertical (short call, long
+        // further-OTM call) — standard, well-documented 3-leg structure. No
+        // upside risk as long as the net credit exceeds the call spread width.
+        {
+            name: "Jade Lizard", bias: "Neutral", shape: "jade-lizard",
+            legs: compact([
+                leg(atm - 3 * gap, "PE", "sell"),
+                leg(atm + 2 * gap, "CE", "sell"), leg(atm + 4 * gap, "CE", "buy"),
+            ]),
+        },
+        // Batman & Double Plateau are retail-glossary names (twin-peak /
+        // twin-plateau payoff shapes), not standardized textbook structures —
+        // these are reasonable constructions matching the named shape, not
+        // independently verified against stockmojo's exact leg selection.
+        {
+            name: "Batman", bias: "Neutral", shape: "batman",
+            legs: compact([
+                leg(atm, "CE", "buy"), leg(atm + 2 * gap, "CE", "sell", 2), leg(atm + 4 * gap, "CE", "buy"),
+                leg(atm, "PE", "buy"), leg(atm - 2 * gap, "PE", "sell", 2), leg(atm - 4 * gap, "PE", "buy"),
+            ]),
+        },
+        {
+            name: "Double Plateau", bias: "Neutral", shape: "double-plateau",
+            legs: compact([
+                leg(atm + gap, "CE", "sell"), leg(atm + 3 * gap, "CE", "buy"),
+                leg(atm - gap, "PE", "sell"), leg(atm - 3 * gap, "PE", "buy"),
+            ]),
+        },
     ];
 }
 
