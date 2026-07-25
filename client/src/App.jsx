@@ -8,6 +8,7 @@ import IvChart from "./pages/IvChart";
 import StraddleChart from "./pages/StraddleChart";
 import OiHeatmap from "./pages/OiHeatmap";
 import StrategyBuilder from "./pages/StrategyBuilder";
+import Simulator from "./pages/Simulator";
 import Backtest from "./pages/Backtest";
 import Auth from "./pages/Auth";
 
@@ -19,6 +20,7 @@ function App() {
                 <Route path="/" element={<Home />} />
                 <Route path="/option-chain" element={<OptionChain />} />
                 <Route path="/strategy-builder" element={<StrategyBuilder />} />
+                <Route path="/simulator" element={<Simulator />} />
                 <Route path="/max-pain" element={<MaxPain />} />
                 <Route path="/put-call-ratio" element={<PutCallRatio />} />
                 <Route path="/iv-chart" element={<IvChart />} />

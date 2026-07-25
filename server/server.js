@@ -32,6 +32,7 @@ const optionChainRoutes = require("./routes/optionChain");
 const backtestRoutes = require("./routes/backtest");
 const authRoutes = require("./routes/auth");
 const strategyRoutes = require("./routes/strategies");
+const simulatorRoutes = require("./routes/simulator");
 
 const app = express();
 
@@ -83,6 +84,7 @@ app.use("/api/option-chain", optionChainRoutes);
 app.use("/api/backtest", backtestRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/strategies", strategyRoutes);
+app.use("/api/simulator", simulatorRoutes);
 
 // 404 handler
 app.use((req, res) => {

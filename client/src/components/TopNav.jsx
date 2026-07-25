@@ -3,6 +3,7 @@ import { useAuth } from "../context/AuthContext";
 
 const links = [
     { to: "/strategy-builder", label: "Strategy Builder" },
+    { to: "/simulator", label: "Simulator" },
     { to: "/option-chain", label: "Option Chain" },
     { to: "/max-pain", label: "Max Pain" },
     { to: "/put-call-ratio", label: "PCR" },

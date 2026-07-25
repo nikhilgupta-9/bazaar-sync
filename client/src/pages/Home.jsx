@@ -11,6 +11,7 @@ import ToolIcon from "../components/ToolIcon";
 const TOOLS = [
     { to: "/option-chain", title: "Option Chain", icon: "chain", desc: "Full chain with OI, buildup, Greeks" },
     { to: "/strategy-builder", title: "Strategy Builder", icon: "strategy", desc: "Multi-leg payoff + live Greeks" },
+    { to: "/simulator", title: "Simulator", icon: "backtest", desc: "Replay a real past day minute by minute" },
     { to: "/max-pain", title: "Max Pain", icon: "maxpain", desc: "Option-writer payout by strike" },
     { to: "/put-call-ratio", title: "Put-Call Ratio", icon: "pcr", desc: "PCR vs spot, OI trend" },
     { to: "/iv-chart", title: "IV Chart", icon: "iv", desc: "IV smile + ATM IV trend" },
