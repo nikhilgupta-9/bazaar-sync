@@ -8,8 +8,6 @@
 // Never touches Angel One.
 const { pool } = require("../config/db");
 
-const SYMBOL_MAP = { nifty: "NIFTY", banknifty: "BANKNIFTY", finnifty: "FINNIFTY" };
-
 function computeAtmStrike(strikes, spot) {
     if (!strikes.length || spot == null) return null;
     return strikes.reduce((best, s) => (Math.abs(s - spot) < Math.abs(best - spot) ? s : best), strikes[0]);
@@ -40,10 +38,17 @@ function computePcr(rows) {
     return totalCe ? Number((totalPe / totalCe).toFixed(2)) : null;
 }
 
+// Any symbol with real data in option_chain_history is valid — indices and
+// the ~280 F&O stocks Bhavcopy/Breeze backfilled (Phase 7), not just the
+// original 3 hardcoded indices. Mirrors optionChainService's DB-driven
+// symbol handling rather than a fixed enum; an unknown symbol still comes
+// back as a clean 404 ("no stored option data") from the query below, same
+// as a known symbol with no data for the requested date.
 function resolveSymbol(req, res) {
-    const displaySymbol = SYMBOL_MAP[req.params.symbol?.toLowerCase()];
-    if (!displaySymbol) {
-        res.status(400).json({ error: "symbol must be one of nifty, banknifty, finnifty" });
+    const raw = req.params.symbol;
+    const displaySymbol = raw ? raw.toUpperCase() : null;
+    if (!displaySymbol || !/^[A-Z0-9&-]+$/.test(displaySymbol)) {
+        res.status(400).json({ error: "a valid symbol is required" });
         return null;
     }
     return displaySymbol;

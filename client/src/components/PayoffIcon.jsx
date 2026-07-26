@@ -94,6 +94,63 @@ const SHAPES = {
         { c: "green", pts: [[35, 22], [45, 10], [60, 22]] },
         { c: "red", pts: [[60, 22], [70, 34], [100, 34]] },
     ],
+    // Naked long call: flat loss (premium paid) up to the strike, unlimited
+    // upside past it — never flattens back out, unlike a call spread.
+    "buy-call": [
+        { c: "red", pts: [[0, 40], [45, 40], [55, 30]] },
+        { c: "green", pts: [[55, 30], [100, 6]] },
+    ],
+    // Naked short put: loss grows below the strike, profit caps at the
+    // premium collected once price is above it.
+    "sell-put": [
+        { c: "red", pts: [[0, 44], [45, 30]] },
+        { c: "green", pts: [[45, 30], [58, 22], [100, 22]] },
+    ],
+    // Buy call + sell put at the same strike replicates a linear futures
+    // payoff — a single uninterrupted diagonal, no flat zones either side.
+    "long-synthetic-future": [
+        { c: "red", pts: [[0, 44], [50, 27]] },
+        { c: "green", pts: [[50, 27], [100, 8]] },
+    ],
+    // Same risk/reward shape as bull-call-spread (a bullish vertical always
+    // looks like this regardless of whether it's built with calls or puts,
+    // debit or credit) — kept as its own key so PresetStrategies can label
+    // it distinctly.
+    "bull-put-spread": [
+        { c: "red", pts: [[0, 40], [30, 40], [45, 30]] },
+        { c: "green", pts: [[45, 30], [60, 12], [100, 12]] },
+    ],
+    // All-call condor with every strike shifted above current spot — same
+    // plateau shape as a short iron condor, just placed to the right instead
+    // of centered, since the profit zone sits above today's price.
+    "bull-condor": [
+        { c: "red", pts: [[0, 40], [20, 40], [32, 30]] },
+        { c: "green", pts: [[32, 30], [45, 15], [70, 15], [80, 26]] },
+        { c: "red", pts: [[80, 26], [90, 36], [100, 40]] },
+    ],
+    // Same idea as bull-condor but a butterfly (single peak) instead of a
+    // plateau, shifted right of center for the same reason.
+    "bull-butterfly": [
+        { c: "red", pts: [[0, 40], [35, 40], [48, 30]] },
+        { c: "green", pts: [[48, 30], [62, 14], [76, 30]] },
+        { c: "red", pts: [[76, 30], [88, 38], [100, 40]] },
+    ],
+    // Call ratio BACK spread (buy more further-OTM calls than the near
+    // strike sold) — opposite construction from call-ratio-spread above:
+    // small defined risk near the money, unlimited profit further out.
+    "call-ratio-back-spread": [
+        { c: "red", pts: [[0, 30], [25, 36], [45, 30]] },
+        { c: "green", pts: [[45, 30], [65, 12], [100, 4]] },
+    ],
+    // Calendar spread (sell near-dated, buy far-dated at the same strike),
+    // evaluated at the near leg's expiry: bounded loss on both wings (capped
+    // at the net debit paid), single peak near the strike where the near
+    // leg has fully decayed but the far leg still holds time value.
+    "long-calendar-call": [
+        { c: "red", pts: [[0, 34], [30, 32]] },
+        { c: "green", pts: [[30, 32], [50, 14], [70, 32]] },
+        { c: "red", pts: [[70, 32], [100, 34]] },
+    ],
 };
 
 const COLORS = { green: "#10b981", red: "#f43f5e" };

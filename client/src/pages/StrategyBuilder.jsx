@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import { useOptionChain } from "../hooks/useOptionChain";
+import { fetchOptionChain } from "../services/optionChainApi";
 import { formatPrice } from "../utils/format";
 import {
     computePayoffCurve, computeBreakevens, computeMaxProfitLoss, computeNetGreeks,
-    addMarkToMarketCurve, computeExpectedMove, computePOP,
+    addMarkToMarketCurve, computeExpectedMove, computePOP, evaluationExpiryOf,
 } from "../utils/payoff";
 import { yearsToExpiry, daysUntilExpiry } from "../utils/blackScholes";
 import PayoffChart from "../components/PayoffChart";
@@ -30,7 +31,7 @@ function formatExpiryShort(sqlDate) {
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 let legIdCounter = 0;
 
-function legFromRow(row, right, action) {
+function legFromRow(row, right, action, expiry) {
     const side = right === "CE" ? row.ce : row.pe;
     return {
         id: ++legIdCounter,
@@ -44,6 +45,7 @@ function legFromRow(row, right, action) {
         gamma: side.gamma,
         theta: side.theta,
         vega: side.vega,
+        expiry, // which expiry this leg's premium/greeks came from — see payoff.js
     };
 }
 
@@ -73,9 +75,16 @@ export default function StrategyBuilder() {
 
     function addLeg(row, right, action) {
         setLegs((prev) => {
-            if (prev.length >= 6) return prev; 
-            return [...prev, legFromRow(row, right, action)];
+            if (prev.length >= 6) return prev;
+            return [...prev, legFromRow(row, right, action, data?.selectedExpiry)];
         });
+    }
+
+    // Fetches a DIFFERENT expiry's chain than the one currently displayed —
+    // needed for calendar-spread presets, whose far leg comes from a later
+    // expiry. Doesn't touch `data`/the visible chain table; returns rows only.
+    function fetchExpiryRows(expiry) {
+        return fetchOptionChain(symbol, expiry).then((res) => res.rows || []);
     }
 
     function removeLeg(id) {
@@ -145,11 +154,15 @@ export default function StrategyBuilder() {
             const { maxProfit: mxProf, maxLoss: mxLoss } = computeMaxProfitLoss(legs, curveData);
             const netGrks = computeNetGreeks(legs);
 
-            const yearsRemaining = yearsToExpiry(data.selectedExpiry);
+            // For a single-expiry strategy this is just data.selectedExpiry; for
+            // a calendar spread it's the near leg's expiry — the meaningful
+            // horizon for "at expiry" (see payoff.js's evaluationExpiryOf).
+            const evaluationExpiry = evaluationExpiryOf(legs) || data.selectedExpiry;
+            const yearsRemaining = yearsToExpiry(evaluationExpiry);
             const atmRow = data.rows ? data.rows.find((r) => r.strike === data.atmStrike) : null;
             const atmIv = atmRow?.iv ?? null;
 
-            curveData = (atmIv && typeof addMarkToMarketCurve === "function") ? addMarkToMarketCurve(curveData, legs, yearsRemaining) : curveData;
+            curveData = (atmIv && typeof addMarkToMarketCurve === "function") ? addMarkToMarketCurve(curveData, legs, yearsRemaining, Date.now()) : curveData;
             const expMv = (atmIv && typeof computeExpectedMove === "function") ? computeExpectedMove(data.spotPrice, atmIv, yearsRemaining) : null;
             const popVal = (atmIv && typeof computePOP === "function") ? computePOP(curveData, data.spotPrice, atmIv, yearsRemaining) : null;
 
@@ -307,7 +320,7 @@ export default function StrategyBuilder() {
             <div className="flex-1 flex flex-col">
                 {legs.length === 0 ? (
                     <div className="flex-1 bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
-                        <PresetStrategies data={data} onApply={applyPreset} />
+                        <PresetStrategies data={data} onApply={applyPreset} fetchExpiryRows={fetchExpiryRows} />
                     </div>
                 ) : (
                     <>

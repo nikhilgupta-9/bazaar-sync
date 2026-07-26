@@ -1,31 +1,72 @@
 // Pure P&L/Greeks math for the Strategy Builder. Legs are:
-// { action: 'buy'|'sell', type: 'CE'|'PE', strike, premium, qty, iv, delta, gamma, theta, vega }
+// { action: 'buy'|'sell', type: 'CE'|'PE', strike, premium, qty, iv, delta, gamma, theta, vega, expiry }
 // premium = entry LTP at the time the leg was added (from the option chain).
 // qty is a raw contract count, not lots — the option-chain payload doesn't
 // carry lot size today, and lot sizes change periodically by exchange
 // circular, so we don't fabricate one; the user enters quantity directly.
 // (Angel One's instrument master does have lotsize — wiring it through the
 // chain payload is a possible follow-up.)
+//
+// Multi-expiry legs (e.g. a calendar spread: sell a near-dated call, buy a
+// far-dated one at the same strike) are supported: the "expiry" payoff curve
+// is evaluated as of the EARLIEST leg expiry (the "evaluation expiry") —
+// legs actually expiring then are priced at intrinsic value as usual, while
+// legs with a LATER expiry are Black-Scholes repriced (using their entry IV
+// as a stand-in, same convention as the mark-to-market curve below) with
+// time-to-THEIR-OWN-expiry measured from the evaluation date. When every leg
+// shares one expiry (the overwhelmingly common case) this reduces to exactly
+// the old intrinsic-only behavior — nothing changes for single-expiry
+// strategies whether or not legs carry an `expiry` field at all.
 
-import { bsPrice, normCdf } from "./blackScholes";
+import { bsPrice, normCdf, yearsToExpiry } from "./blackScholes";
 
-function legPayoffAtPrice(leg, price) {
-    const intrinsic = leg.type === "CE" ? Math.max(0, price - leg.strike) : Math.max(0, leg.strike - price);
-    const pnlPerUnit = leg.action === "buy" ? intrinsic - leg.premium : leg.premium - intrinsic;
+function expiryCutoffMs(expiryStr) {
+    const [y, m, d] = expiryStr.split("-").map(Number);
+    return Date.UTC(y, m - 1, d, 10, 0, 0); // 15:30 IST, same convention as blackScholes.js
+}
+
+// Years between two expiry dates (both 'YYYY-MM-DD'), for repricing a
+// later-dated leg as of an earlier evaluation expiry.
+function yearsBetweenExpiries(fromExpiryStr, toExpiryStr) {
+    return yearsToExpiry(toExpiryStr, expiryCutoffMs(fromExpiryStr));
+}
+
+// The evaluation expiry for a leg set: the earliest expiry among legs that
+// carry one. Returns null if no leg has an expiry (fully backward compatible
+// with any caller that hasn't attached one — everything falls back to pure
+// intrinsic value, the original single-expiry behavior).
+export function evaluationExpiryOf(legs) {
+    const expiries = legs.map((l) => l.expiry).filter(Boolean);
+    if (!expiries.length) return null;
+    return expiries.reduce((min, e) => (e < min ? e : min));
+}
+
+function legPayoffAtPrice(leg, price, evaluationExpiry) {
+    const isLaterDated = evaluationExpiry && leg.expiry && leg.expiry > evaluationExpiry;
+    let value;
+    if (isLaterDated && leg.iv != null) {
+        const t = yearsBetweenExpiries(evaluationExpiry, leg.expiry);
+        value = bsPrice({ spot: price, strike: leg.strike, t, vol: leg.iv / 100, right: leg.type });
+    } else {
+        value = leg.type === "CE" ? Math.max(0, price - leg.strike) : Math.max(0, leg.strike - price);
+    }
+    const pnlPerUnit = leg.action === "buy" ? value - leg.premium : leg.premium - value;
     return pnlPerUnit * leg.qty;
 }
 
-export function totalPayoffAtPrice(legs, price) {
-    return legs.reduce((sum, leg) => sum + legPayoffAtPrice(leg, price), 0);
+export function totalPayoffAtPrice(legs, price, evaluationExpiry) {
+    const evalExp = evaluationExpiry !== undefined ? evaluationExpiry : evaluationExpiryOf(legs);
+    return legs.reduce((sum, leg) => sum + legPayoffAtPrice(leg, price, evalExp), 0);
 }
 
 // Payoff curve across a price range, evenly spaced, for the chart.
 export function computePayoffCurve(legs, { minPrice, maxPrice, steps = 60 }) {
+    const evaluationExpiry = evaluationExpiryOf(legs);
     const points = [];
     const step = (maxPrice - minPrice) / steps;
     for (let i = 0; i <= steps; i++) {
         const price = minPrice + i * step;
-        points.push({ price: Math.round(price * 100) / 100, pnl: totalPayoffAtPrice(legs, price) });
+        points.push({ price: Math.round(price * 100) / 100, pnl: totalPayoffAtPrice(legs, price, evaluationExpiry) });
     }
     return points;
 }
@@ -78,11 +119,17 @@ function legMarkToMarketAtPrice(leg, price, t) {
 
 // Adds a `todayPnl` field to each point of an existing payoff curve (reuses
 // the same price samples as the expiry curve so both lines share an x-axis).
-export function addMarkToMarketCurve(curve, legs, yearsRemaining) {
+// `nowMs` is optional: when provided, each leg reprices using its OWN
+// time-to-its-own-expiry from `nowMs` (needed for calendar spreads, where
+// legs don't share an expiry) rather than one shared `fallbackYearsRemaining`
+// applied to every leg — which remains the behavior for legs with no
+// `expiry` field, or when `nowMs` is omitted (unchanged from before).
+export function addMarkToMarketCurve(curve, legs, fallbackYearsRemaining, nowMs) {
     return curve.map((point) => {
         let sum = 0;
         for (const leg of legs) {
-            const v = legMarkToMarketAtPrice(leg, point.price, yearsRemaining);
+            const t = leg.expiry && nowMs != null ? yearsToExpiry(leg.expiry, nowMs) : fallbackYearsRemaining;
+            const v = legMarkToMarketAtPrice(leg, point.price, t);
             if (v == null) return { ...point, todayPnl: null };
             sum += v;
         }

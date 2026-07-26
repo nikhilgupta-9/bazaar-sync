@@ -47,11 +47,14 @@ export function daysUntilExpiry(expiryStr) {
     return Math.round((expiryUtcMidnight - todayUtcMidnight) / (24 * 60 * 60 * 1000));
 }
 
-export function yearsToExpiry(expiryStr) {
+// `fromMs` defaults to the real clock (live Strategy Builder use), but can be
+// passed explicitly to price "as of" a historical instant instead — e.g. the
+// Simulator computing time-to-expiry as of the replayed minute, not now.
+export function yearsToExpiry(expiryStr, fromMs = Date.now()) {
     const [year, month, day] = expiryStr.split("-").map(Number);
     // IST is UTC+5:30; 15:30 IST = 10:00 UTC. Built via Date.UTC so this
     // doesn't depend on the browser's local timezone.
     const expiryUtcMs = Date.UTC(year, month - 1, day, 10, 0, 0);
-    const ms = expiryUtcMs - Date.now();
+    const ms = expiryUtcMs - fromMs;
     return Math.max(ms / (365 * 24 * 60 * 60 * 1000), 1 / (365 * 24 * 4));
 }

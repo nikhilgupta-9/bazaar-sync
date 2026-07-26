@@ -15,9 +15,20 @@ function buildPresets(data) {
         const row = rowAt(strike);
         if (!row) return null;
         const side = type === "CE" ? row.ce : row.pe;
-        return { action, type, strike, premium: side.ltp, qty, iv: side.iv, delta: side.delta, gamma: side.gamma, theta: side.theta, vega: side.vega };
+        return {
+            action, type, strike, premium: side.ltp, qty, iv: side.iv,
+            delta: side.delta, gamma: side.gamma, theta: side.theta, vega: side.vega,
+            expiry: data.selectedExpiry, // see utils/payoff.js — needed for calendar-spread math
+        };
     };
     const compact = (legs) => legs.filter(Boolean);
+
+    // The next expiry after whichever one is currently loaded — the "far"
+    // leg of a calendar spread needs a genuinely later expiry's real chain.
+    // Null if only one expiry is available (the preset disables itself below).
+    const farExpiry = data.expiries && data.selectedExpiry
+        ? data.expiries.find((e) => e > data.selectedExpiry) || null
+        : null;
 
     return [
         {
@@ -32,8 +43,72 @@ function buildPresets(data) {
             ]),
         },
         {
+            name: "Buy Call", bias: "Bullish", shape: "buy-call",
+            legs: compact([leg(atm, "CE", "buy")]),
+        },
+        {
+            name: "Sell Put", bias: "Bullish", shape: "sell-put",
+            legs: compact([leg(atm, "PE", "sell")]),
+        },
+        {
+            name: "Long Synthetic Future", bias: "Bullish", shape: "long-synthetic-future",
+            legs: compact([leg(atm, "CE", "buy"), leg(atm, "PE", "sell")]),
+        },
+        {
             name: "Bull Call Spread", bias: "Bullish", shape: "bull-call-spread",
             legs: compact([leg(atm, "CE", "buy"), leg(atm + 4 * gap, "CE", "sell")]),
+        },
+        {
+            name: "Bull Put Spread", bias: "Bullish", shape: "bull-put-spread",
+            legs: compact([leg(atm, "PE", "sell"), leg(atm - 4 * gap, "PE", "buy")]),
+        },
+        {
+            name: "Bull Condor", bias: "Bullish", shape: "bull-condor",
+            legs: compact([
+                leg(atm + gap, "CE", "buy"), leg(atm + 2 * gap, "CE", "sell"),
+                leg(atm + 4 * gap, "CE", "sell"), leg(atm + 5 * gap, "CE", "buy"),
+            ]),
+        },
+        {
+            name: "Bull Butterfly", bias: "Bullish", shape: "bull-butterfly",
+            legs: compact([
+                leg(atm + gap, "CE", "buy"),
+                leg(atm + 3 * gap, "CE", "sell", 2),
+                leg(atm + 5 * gap, "CE", "buy"),
+            ]),
+        },
+        // Best-guess match for the reference screenshot's 9th Bullish card
+        // (partially cut off) — a 1x2 call ratio BACK spread (buy more
+        // further-OTM calls than the near strike sold), the natural bullish
+        // counterpart to "Call Ratio Spread" under Other. Flag to the user
+        // if this isn't the strategy they meant.
+        {
+            name: "Call Ratio Back Spread", bias: "Bullish", shape: "call-ratio-back-spread",
+            legs: compact([leg(atm, "CE", "sell"), leg(atm + 3 * gap, "CE", "buy", 2)]),
+        },
+        // Needs a genuinely different expiry for the long leg — the near
+        // leg comes from the chain already loaded, but the far leg has to be
+        // fetched on demand (see fetchExpiryRows), so this preset builds its
+        // legs asynchronously instead of upfront like every other one here.
+        {
+            name: "Long Calendar with Calls", bias: "Bullish", shape: "long-calendar-call",
+            legCount: farExpiry ? 2 : 0,
+            buildLegs: farExpiry
+                ? async (fetchExpiryRows) => {
+                    const nearLeg = leg(atm, "CE", "sell");
+                    if (!nearLeg || !fetchExpiryRows) return [];
+                    const farRows = await fetchExpiryRows(farExpiry);
+                    const farRow = farRows.find((r) => r.strike === atm);
+                    if (!farRow || farRow.ce?.ltp == null) return [];
+                    const farLeg = {
+                        action: "buy", type: "CE", strike: atm, qty: 1,
+                        premium: farRow.ce.ltp, iv: farRow.ce.iv,
+                        delta: farRow.ce.delta, gamma: farRow.ce.gamma, theta: farRow.ce.theta, vega: farRow.ce.vega,
+                        expiry: farExpiry,
+                    };
+                    return [nearLeg, farLeg];
+                }
+                : null,
         },
         {
             name: "Bear Put Spread", bias: "Bearish", shape: "bear-put-spread",
@@ -119,11 +194,30 @@ function buildPresets(data) {
     ];
 }
 
-export default function PresetStrategies({ data, onApply }) {
+export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
     const presets = useMemo(() => buildPresets(data), [data]);
     const [category, setCategory] = useState("Other");
+    const [loadingPreset, setLoadingPreset] = useState(null);
 
     const visible = presets.filter((p) => p.bias === category);
+
+    async function handleApply(p) {
+        if (p.legs) {
+            if (p.legs.length) onApply(p.legs);
+            return;
+        }
+        if (p.buildLegs) {
+            setLoadingPreset(p.name);
+            try {
+                const legs = await p.buildLegs(fetchExpiryRows);
+                if (legs.length) onApply(legs);
+            } catch (err) {
+                console.error("[PresetStrategies] failed to build async preset", p.name, err);
+            } finally {
+                setLoadingPreset(null);
+            }
+        }
+    }
 
     return (
         <div className="rounded-lg border border-gray-200 bg-white p-5">
@@ -155,18 +249,24 @@ export default function PresetStrategies({ data, onApply }) {
                 <div className="py-8 text-center text-sm text-gray-400">No {category.toLowerCase()} templates yet.</div>
             ) : (
                 <div className="grid grid-cols-4 gap-3">
-                    {visible.map((p) => (
-                        <button
-                            key={p.name}
-                            onClick={() => p.legs.length && onApply(p.legs)}
-                            disabled={!p.legs.length}
-                            className="rounded-lg border border-gray-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50 disabled:opacity-40"
-                        >
-                            <PayoffIcon shape={p.shape} />
-                            <div className="mt-2 text-sm font-semibold text-gray-900">{p.name}</div>
-                            <div className="mt-0.5 text-[11px] text-gray-500">{p.legs.length} legs</div>
-                        </button>
-                    ))}
+                    {visible.map((p) => {
+                        const legCount = p.legs ? p.legs.length : (p.legCount || 0);
+                        const isLoading = loadingPreset === p.name;
+                        return (
+                            <button
+                                key={p.name}
+                                onClick={() => handleApply(p)}
+                                disabled={!legCount || isLoading}
+                                className="rounded-lg border border-gray-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50 disabled:opacity-40"
+                            >
+                                <PayoffIcon shape={p.shape} />
+                                <div className="mt-2 text-sm font-semibold text-gray-900">{p.name}</div>
+                                <div className="mt-0.5 text-[11px] text-gray-500">
+                                    {isLoading ? "Loading other expiry…" : `${legCount} legs`}
+                                </div>
+                            </button>
+                        );
+                    })}
                 </div>
             )}
         </div>

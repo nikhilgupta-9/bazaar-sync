@@ -63,9 +63,11 @@ function todayIst() {
 
 let parsed = null; // { loadedAt, options: Map<underlying, contracts[]> }
 
+const DOWNLOAD_TIMEOUT_MS = 10000; // fail fast instead of hanging the request that triggered this
+
 async function downloadMaster() {
     workerLogger.info(`Downloading Angel One scrip master from ${MASTER_URL}`);
-    const res = await fetch(MASTER_URL);
+    const res = await fetch(MASTER_URL, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`Scrip master download HTTP ${res.status}`);
     const text = await res.text();
     // Basic sanity check before overwriting the cache
