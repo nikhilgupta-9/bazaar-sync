@@ -37,8 +37,13 @@ const SYMBOLS = (process.env.WORKER_SYMBOLS || "NIFTY,BANKNIFTY,FINNIFTY")
     .filter(Boolean);
 
 // How many strikes either side of ATM to subscribe per symbol. 3 symbols x
-// (2*15+1) strikes x 2 rights ≈ 186 option tokens + 3 index tokens — well
-// inside Angel One's 1000-tokens-per-connection quota.
+// (2*15+1) strikes x 2 rights ≈ 186 option tokens + 3 index tokens + 1 VIX
+// token + 3 future tokens ≈ 193 total — well inside Angel One's
+// 1000-tokens-per-connection quota. There's headroom left in that budget,
+// but NOT enough to subscribe every listed expiry's full strike range live
+// for all 3 symbols simultaneously (would run into the thousands) — only the
+// nearest expiry is subscribed live per symbol; other expiries fall back to
+// historical data (see optionChainService.js).
 const STRIKES_PER_SIDE = Number(process.env.WORKER_STRIKES_PER_SIDE || 15);
 
 const OPTION_TICK_PERSIST_MS = 2000; // options tier: at most one row / 2 s / token
@@ -96,6 +101,44 @@ function subscribeIndices() {
     }
     // QUOTE mode gives OHLC alongside LTP for the index tiles
     ws.subscribe(MODE.QUOTE, EXCHANGE.NSE_CM, tokens);
+}
+
+// India VIX — single persistent index, no per-symbol expiry logic needed.
+// Not persisted to MySQL (no schema tier for it yet); only cached in-memory
+// and pushed over IPC for the option-chain header display.
+function subscribeVix() {
+    const token = instrumentMaster.getVixToken();
+    if (!token) {
+        workerLogger.error("No India VIX token configured — skipping");
+        return;
+    }
+    tokenMeta.set(token, { kind: "vix", underlying: "INDIAVIX" });
+    ws.subscribe(MODE.QUOTE, EXCHANGE.NSE_CM, [token]);
+}
+
+// Nearest (front-month) future contract per symbol — resolved once at
+// startup from the scrip master (no spot price needed, unlike options).
+// Also not persisted yet; cached + IPC'd only, same as VIX.
+async function subscribeFutures() {
+    for (const sym of SYMBOLS) {
+        try {
+            const future = await instrumentMaster.getNearestFuture(sym);
+            if (!future) {
+                workerLogger.error(`No future contract found for ${sym} — skipping`);
+                continue;
+            }
+            tokenMeta.set(future.token, {
+                kind: "future",
+                underlying: sym,
+                expiry: future.expiry,
+                lotSize: future.lotSize,
+            });
+            ws.subscribe(MODE.QUOTE, EXCHANGE.NSE_FO, [future.token]);
+            workerLogger.info(`${sym}: subscribed future contract (expiry ${future.expiry})`);
+        } catch (err) {
+            workerLogger.error(`Future subscription failed for ${sym}: ${err.message}`);
+        }
+    }
 }
 
 /**
@@ -194,6 +237,10 @@ ws.on("tick", (tick) => {
         );
         // First sight of a spot price unlocks the option-chain subscription
         subscribeOptionsFor(meta.underlying, tick.ltp);
+    } else if (meta.kind === "vix" || meta.kind === "future") {
+        // Cached in `latest` (above) + sent over IPC (sendTickSummary) only —
+        // no persistence tier for these yet, same as the option-chain header
+        // display doesn't need history for them.
     } else {
         // Tier 2: options at most every 2 s per token
         if (now - entry.lastPersistedAt >= OPTION_TICK_PERSIST_MS) {
@@ -395,6 +442,8 @@ async function main() {
     }
 
     subscribeIndices(); // remembered; actually sent once the socket opens
+    subscribeVix();
+    await subscribeFutures();
     await ws.connect(); // login failures inside are logged + retried with backoff
 
     timers.push(setInterval(snapshotGreeks, GREEKS_INTERVAL_MS));

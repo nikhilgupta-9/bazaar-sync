@@ -104,22 +104,6 @@ export async function fetchContractHistory(symbol, { strike, expiry, right }) {
 }
 
 /**
- * Fetch underlying OHLCV history (index/stock), for the Strategy Builder's
- * "Underlying" chart tab.
- */
-export async function fetchUnderlyingHistory(symbol, days = 30) {
-    const url = new URL(`${API_URL}/api/option-chain/${symbol.toLowerCase()}/underlying-history`);
-    url.searchParams.set("days", days);
-
-    const res = await fetch(url, { headers: { Accept: "application/json" } });
-    if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `Underlying history fetch failed (${res.status})`);
-    }
-    return res.json();
-}
-
-/**
  * Test connection to backend
  */
 export async function testConnection() {

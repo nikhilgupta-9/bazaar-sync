@@ -18,6 +18,15 @@ function formatDelta(value) {
     return value == null || Number.isNaN(value) ? "-" : Number(value).toFixed(2);
 }
 
+// Expiries now arrive as plain 'YYYY-MM-DD' (Angel One era, see CLAUDE.md
+// Gotcha #12) — this is just a display formatter, parsed manually.
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function formatExpiryShort(sqlDate) {
+    if (!sqlDate) return "";
+    const [, m, d] = sqlDate.split("-").map(Number);
+    return `${d} ${MONTHS_SHORT[m - 1]}`;
+}
+
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 let legIdCounter = 0;
 
@@ -54,6 +63,13 @@ export default function StrategyBuilder() {
     const [legs, setLegs] = useState([]);
     const [tab, setTab] = useState("positions"); // 'positions' | 'greeks'
     const [chartTab, setChartTab] = useState("payoff"); // 'payoff' | 'strategy' | 'underlying'
+
+    function cycleSymbol(dir) {
+        const idx = SYMBOLS.indexOf(symbol);
+        const next = SYMBOLS[(idx + dir + SYMBOLS.length) % SYMBOLS.length];
+        setSymbol(next);
+        resetLegs();
+    }
 
     function addLeg(row, right, action) {
         setLegs((prev) => {
@@ -152,32 +168,75 @@ export default function StrategyBuilder() {
         <div className="mx-auto flex max-w-[1600px] gap-5 px-5 py-5 bg-gray-50/40 min-h-screen">
             {/* Left Column: Option Chain Window */}
             <div className="w-[540px] shrink-0 flex flex-col">
-                <div className="mb-3 flex items-center justify-between rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
-                    <div className="flex gap-1.5 bg-gray-100 p-1 rounded-lg">
-                        {SYMBOLS.map((s) => (
+                <div className="mb-3 rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+                    <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
                             <button
-                                key={s}
-                                onClick={() => { setSymbol(s); resetLegs(); }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-bold transition-all ${
-                                    symbol === s ? "bg-white text-blue-600 shadow-sm" : "text-gray-600 hover:text-gray-900"
-                                }`}
+                                onClick={() => cycleSymbol(-1)}
+                                className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                                aria-label="Previous symbol"
                             >
-                                {s}
+                                ‹
                             </button>
-                        ))}
+                            {data?.lotSize && (
+                                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-bold text-gray-500">
+                                    {data.lotSize}
+                                </span>
+                            )}
+                            <span className="text-sm font-bold text-gray-900">{symbol}</span>
+                            <button
+                                onClick={() => cycleSymbol(1)}
+                                className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                                aria-label="Next symbol"
+                            >
+                                ›
+                            </button>
+                        </div>
                     </div>
-                    {data && data.expiries && (
-                        <select
-                            value={data.selectedExpiry || ""}
-                            onChange={(e) => load(symbol, e.target.value)}
-                            className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs font-medium bg-gray-50 text-gray-700 outline-none focus:border-blue-500"
-                        >
+
+                    {data && data.expiries && data.expiries.length > 0 && (
+                        <div className="mt-2 flex gap-1.5 overflow-x-auto pb-0.5">
                             {data.expiries.map((exp) => (
-                                <option key={exp} value={exp}>{exp} ({daysUntilExpiry ? daysUntilExpiry(exp) : 0}d)</option>
+                                <button
+                                    key={exp}
+                                    onClick={() => load(symbol, exp)}
+                                    className={`shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
+                                        exp === data.selectedExpiry
+                                            ? "bg-blue-600 text-white"
+                                            : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                                    }`}
+                                >
+                                    {formatExpiryShort(exp)} ({daysUntilExpiry(exp)}d)
+                                </button>
                             ))}
-                        </select>
+                        </div>
                     )}
                 </div>
+
+                {data && (
+                    <div className="mb-3 flex items-center gap-4 rounded-xl border border-gray-200 bg-white px-4 py-2 text-xs shadow-sm">
+                        <div>
+                            <span className="text-gray-400">SPOT: </span>
+                            <span className="font-bold tabular-nums text-gray-900">{formatPrice(data.spotPrice)}</span>
+                        </div>
+                        <div className="h-4 w-px bg-gray-200" />
+                        <div>
+                            <span className="text-gray-400">VIX: </span>
+                            <span className="font-bold tabular-nums text-gray-900">
+                                {data.vix != null ? Number(data.vix).toFixed(2) : "—"}
+                            </span>
+                        </div>
+                        <div className="h-4 w-px bg-gray-200" />
+                        <div>
+                            <span className="text-gray-400">
+                                FUT{data.futureExpiry ? ` (${formatExpiryShort(data.futureExpiry)})` : ""}:{" "}
+                            </span>
+                            <span className="font-bold tabular-nums text-gray-900">
+                                {data.futurePrice != null ? formatPrice(data.futurePrice) : "—"}
+                            </span>
+                        </div>
+                    </div>
+                )}
 
                 {error && <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>}
                 {loading && !data && <div className="rounded-xl border border-gray-200 bg-white px-3 py-12 text-center text-xs text-gray-400">Fetching option matrix...</div>}

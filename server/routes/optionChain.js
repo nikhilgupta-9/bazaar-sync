@@ -109,6 +109,66 @@ router.get("/:symbol/underlying-history", async (req, res) => {
     }
 });
 
+// Intraday index price series, downsampled to 1-minute resolution — powers
+// the "NIFTY Chart" / "Strategy Chart" tabs in the Strategy Builder. Today's
+// data comes from live_index_ticks (written every tick by the market
+// worker); when that's empty (market closed / worker hasn't run yet today),
+// falls back to the most recent day's 1-minute OHLCV close price.
+router.get("/:symbol/intraday", async (req, res) => {
+    try {
+        const SYMBOL_MAP = { nifty: "NIFTY", banknifty: "BANKNIFTY", finnifty: "FINNIFTY" };
+        const displaySymbol = SYMBOL_MAP[req.params.symbol?.toLowerCase()];
+        if (!displaySymbol) {
+            return res.status(400).json({ error: "symbol must be one of nifty, banknifty, finnifty" });
+        }
+
+        // Today's IST calendar date as 'YYYY-MM-DD', via explicit UTC
+        // arithmetic — never ambient local-timezone Date parsing (Gotcha #12).
+        const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+        const todayIst = `${istNow.getUTCFullYear()}-${String(istNow.getUTCMonth() + 1).padStart(2, "0")}-${String(istNow.getUTCDate()).padStart(2, "0")}`;
+
+        let points = await db.query(
+            `SELECT LEFT(tick_time, 5) AS minute, AVG(ltp) AS ltp
+             FROM live_index_ticks
+             WHERE symbol = ? AND tick_date = ?
+             GROUP BY minute
+             ORDER BY minute ASC`,
+            [displaySymbol, todayIst]
+        );
+
+        let tradeDate = todayIst;
+        let isHistorical = false;
+
+        if (!points.length) {
+            const latest = await db.query(
+                `SELECT trade_date FROM ohlcv_data WHERE symbol = ? ORDER BY trade_date DESC LIMIT 1`,
+                [displaySymbol]
+            );
+            if (latest.length) {
+                tradeDate = latest[0].trade_date;
+                isHistorical = true;
+                points = await db.query(
+                    `SELECT LEFT(trade_time, 5) AS minute, close AS ltp
+                     FROM ohlcv_data
+                     WHERE symbol = ? AND trade_date = ?
+                     ORDER BY trade_time ASC`,
+                    [displaySymbol, tradeDate]
+                );
+            }
+        }
+
+        res.json({
+            symbol: displaySymbol,
+            tradeDate,
+            isHistorical,
+            points: points.map((p) => ({ time: p.minute, ltp: Number(p.ltp) })),
+        });
+    } catch (err) {
+        console.error("[Intraday Error]", err);
+        res.status(500).json({ error: err.message || "Failed to fetch intraday data" });
+    }
+});
+
 // ============================================
 // MAIN ROUTES
 // ============================================

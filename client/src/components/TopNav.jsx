@@ -3,6 +3,7 @@ import { useAuth } from "../context/AuthContext";
 
 const links = [
     { to: "/strategy-builder", label: "Strategy Builder" },
+    { to: "/simulator", label: "Simulator" },
     { to: "/option-chain", label: "Option Chain" },
     { to: "/max-pain", label: "Max Pain" },
     { to: "/put-call-ratio", label: "PCR" },
@@ -18,10 +19,10 @@ export default function TopNav() {
 
     return (
         <header className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
-            <div className="flex items-center gap-1 text-lg font-bold">
+            <NavLink to="/" className="flex items-center gap-1 text-lg font-bold">
                 <span className="text-blue-600">Bazaar</span>
                 <span className="text-gray-900">Sync</span>
-            </div>
+            </NavLink>
             <nav className="flex items-center gap-6 text-sm font-medium text-gray-600">
                 {links.map((link) => (
                     <NavLink
