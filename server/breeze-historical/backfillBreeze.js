@@ -80,6 +80,14 @@ function enrichWithGreeks(candles, { strike, right, expirySql, spot }) {
     });
 }
 
+// MySQL/MariaDB's default max_allowed_packet (often as low as 1MB on local
+// installs) can't always hold one INSERT for a contract's ENTIRE stored date
+// range in a single statement — a strike present across many months of the
+// 3-year window can mean tens of thousands of rows in one INSERT. Chunking
+// avoids that regardless of what the server's packet size is configured to
+// (same reasoning as workers/buffer.js's bounded flush size on the live path).
+const INSERT_BATCH_SIZE = 500;
+
 async function storeRows(symbol, expirySql, strike, ceRows, peRows) {
     const byTime = new Map();
     for (const r of ceRows) byTime.set(r.date + " " + r.time, { date: r.date, time: r.time, ce: r });
@@ -99,20 +107,24 @@ async function storeRows(symbol, expirySql, strike, ceRows, peRows) {
         r.pe?.close ?? null, r.pe?.oi ?? null, r.pe?.oiChange ?? null, r.pe?.iv ?? null, r.pe?.volume ?? null,
         r.pe?.delta ?? null, r.pe?.gamma ?? null, r.pe?.theta ?? null, r.pe?.vega ?? null,
     ]);
-    await pool.query(
-        `INSERT INTO option_chain_history (
-           symbol, trade_date, trade_time, expiry, strike, underlying_price,
-           ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume, ce_delta, ce_gamma, ce_theta, ce_vega,
-           pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume, pe_delta, pe_gamma, pe_theta, pe_vega
-         ) VALUES ?
-         ON DUPLICATE KEY UPDATE
-           underlying_price=VALUES(underlying_price),
-           ce_ltp=VALUES(ce_ltp), ce_oi=VALUES(ce_oi), ce_oi_change=VALUES(ce_oi_change), ce_iv=VALUES(ce_iv), ce_volume=VALUES(ce_volume),
-           ce_delta=VALUES(ce_delta), ce_gamma=VALUES(ce_gamma), ce_theta=VALUES(ce_theta), ce_vega=VALUES(ce_vega),
-           pe_ltp=VALUES(pe_ltp), pe_oi=VALUES(pe_oi), pe_oi_change=VALUES(pe_oi_change), pe_iv=VALUES(pe_iv), pe_volume=VALUES(pe_volume),
-           pe_delta=VALUES(pe_delta), pe_gamma=VALUES(pe_gamma), pe_theta=VALUES(pe_theta), pe_vega=VALUES(pe_vega)`,
-        [values]
-    );
+
+    for (let i = 0; i < values.length; i += INSERT_BATCH_SIZE) {
+        const batch = values.slice(i, i + INSERT_BATCH_SIZE);
+        await pool.query(
+            `INSERT INTO option_chain_history (
+               symbol, trade_date, trade_time, expiry, strike, underlying_price,
+               ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume, ce_delta, ce_gamma, ce_theta, ce_vega,
+               pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume, pe_delta, pe_gamma, pe_theta, pe_vega
+             ) VALUES ?
+             ON DUPLICATE KEY UPDATE
+               underlying_price=VALUES(underlying_price),
+               ce_ltp=VALUES(ce_ltp), ce_oi=VALUES(ce_oi), ce_oi_change=VALUES(ce_oi_change), ce_iv=VALUES(ce_iv), ce_volume=VALUES(ce_volume),
+               ce_delta=VALUES(ce_delta), ce_gamma=VALUES(ce_gamma), ce_theta=VALUES(ce_theta), ce_vega=VALUES(ce_vega),
+               pe_ltp=VALUES(pe_ltp), pe_oi=VALUES(pe_oi), pe_oi_change=VALUES(pe_oi_change), pe_iv=VALUES(pe_iv), pe_volume=VALUES(pe_volume),
+               pe_delta=VALUES(pe_delta), pe_gamma=VALUES(pe_gamma), pe_theta=VALUES(pe_theta), pe_vega=VALUES(pe_vega)`,
+            [batch]
+        );
+    }
     return rows.length;
 }
 
@@ -147,13 +159,13 @@ async function backfillSymbol(symbol, fromDate, toDate) {
 
     let rowsStored = 0, contractsFailed = 0, contractsSkipped = 0;
     for (const { expiry, strike } of contracts) {
-        const range = await contractDateRange(symbol, expiry, strike, fromDate, toDate);
-        if (!range) continue;
-        if (await isAlreadyEnriched(symbol, expiry, strike, range.from, range.to)) {
-            contractsSkipped += 1;
-            continue;
-        }
         try {
+            const range = await contractDateRange(symbol, expiry, strike, fromDate, toDate);
+            if (!range) continue;
+            if (await isAlreadyEnriched(symbol, expiry, strike, range.from, range.to)) {
+                contractsSkipped += 1;
+                continue;
+            }
             const spot = await spotForDate(symbol, range.to);
             const ceRaw = await historicalService.getOptionMinuteCandles({
                 stockCode: symbol, expirySql: expiry, strike, right: "CE", fromDateStr: range.from, toDateStr: range.to,
