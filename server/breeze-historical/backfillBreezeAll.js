@@ -27,8 +27,9 @@ const { backfillSymbol } = require("./backfillBreeze");
 
 async function main() {
     const today = instrumentMaster.todayIst();
-    const toDate = process.argv[2] || addDays(today, -180);
-    const fromDate = process.argv[3] || addDays(toDate, -365 * 3);
+    // Args are [FROM_DATE] [TO_DATE], matching the header comment above.
+    const toDate = process.argv[3] || addDays(today, -180);
+    const fromDate = process.argv[2] || addDays(toDate, -365 * 3);
 
     const [rows] = await pool.query(
         `SELECT DISTINCT symbol FROM option_chain_history WHERE trade_date BETWEEN ? AND ? ORDER BY symbol`,

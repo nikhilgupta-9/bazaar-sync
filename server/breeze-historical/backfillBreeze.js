@@ -188,8 +188,10 @@ async function backfillSymbol(symbol, fromDate, toDate) {
 async function main() {
     const symbol = (process.argv[2] || "NIFTY").toUpperCase();
     const today = instrumentMaster.todayIst();
-    const toDate = process.argv[3] || addDays(today, -180);
-    const fromDate = process.argv[4] || addDays(toDate, -365 * 3);
+    // Args are [SYMBOL] [FROM_DATE] [TO_DATE], matching the header comment
+    // above — do not swap these two without also updating that comment.
+    const toDate = process.argv[4] || addDays(today, -180);
+    const fromDate = process.argv[3] || addDays(toDate, -365 * 3);
 
     console.log(`[breeze] ${symbol}: ${fromDate} .. ${toDate} (daily budget remaining today: ${rateLimiter.remainingToday()})`);
 
