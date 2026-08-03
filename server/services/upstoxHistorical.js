@@ -31,13 +31,36 @@ const { dbLogger } = require("../config/logger");
 
 const BASE_URL = process.env.UPSTOX_API_BASE_URL || "https://api.upstox.com/v2";
 
-const REQUEST_GAP_MS = Number(process.env.UPSTOX_REQUEST_GAP_MS || 350);
-const MAX_ATTEMPTS = 3;
+// 350ms was our original guess at Upstox's real pacing limit — a real run
+// against the liquid-strikes-widened backfill (2026-07-31) hit sustained
+// "Too Many Request Sent" (HTTP 429) even with the retry backoff below, so
+// the real limit is evidently tighter than assumed. Raised the default and
+// made 429s specifically back off much harder (and much longer) than a
+// generic failure, since a 429 means "you're inside a rate-limit window
+// right now", not "this one request had a transient problem" — a short
+// retry just trips the same wall again. Both are still env-overridable.
+const REQUEST_GAP_MS = Number(process.env.UPSTOX_REQUEST_GAP_MS || 1200);
+const MAX_ATTEMPTS = Number(process.env.UPSTOX_MAX_ATTEMPTS || 5);
+const RATE_LIMIT_BACKOFF_MS = Number(process.env.UPSTOX_RATE_LIMIT_BACKOFF_MS || 5000);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let lastRequestAt = 0;
+
+// A 429 means Upstox has already put the WHOLE account/token into a
+// rate-limit window server-side — it's not about this one request being
+// unlucky. Without this, backfillUpstox.js's per-strike try/catch loop just
+// moves on to the next strike immediately after giving up on a rate-limited
+// one, which re-triggers the same 429 on the very next call and can extend
+// the penalty window further. `blockedUntil` is shared across every call
+// through this module, so once ANY request sees a 429, every other
+// in-flight/future request (a completely different strike, a different
+// symbol run, etc.) waits out the same cooldown before firing again.
+let blockedUntil = 0;
+
 async function withGap(fn) {
+    const blockWait = blockedUntil - Date.now();
+    if (blockWait > 0) await sleep(blockWait);
     const wait = lastRequestAt + REQUEST_GAP_MS - Date.now();
     if (wait > 0) await sleep(wait);
     lastRequestAt = Date.now();
@@ -48,12 +71,23 @@ async function withRetry(fn, label) {
     let lastErr;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         try {
-            return await withGap(fn);
+            const result = await withGap(fn);
+            blockedUntil = 0; // a clean success proves the cooldown has cleared
+            return result;
         } catch (err) {
             lastErr = err;
+            const isRateLimited = err.httpStatus === 429;
+            if (isRateLimited) {
+                // Respect a real Retry-After header when Upstox sends one;
+                // otherwise use our own escalating floor. This sets the
+                // SHARED cooldown every other call also waits on, not just
+                // this request's own retry delay.
+                const cooldownMs = Math.max(RATE_LIMIT_BACKOFF_MS * attempt, (err.retryAfterSec || 0) * 1000);
+                blockedUntil = Math.max(blockedUntil, Date.now() + cooldownMs);
+            }
             if (attempt < MAX_ATTEMPTS) {
-                const delay = 500 * 2 ** (attempt - 1);
-                dbLogger.warn(`${label} failed (attempt ${attempt}): ${err.message} — retrying in ${delay}ms`);
+                const delay = isRateLimited ? Math.max(0, blockedUntil - Date.now()) : 500 * 2 ** (attempt - 1);
+                dbLogger.warn(`${label} failed (attempt ${attempt}): ${err.message} — retrying in ${delay}ms${isRateLimited ? " (rate limited, shared cooldown)" : ""}`);
                 await sleep(delay);
             }
         }
@@ -83,6 +117,8 @@ async function secureGet(path, label) {
         const msg = (body && (body.errors?.[0]?.message || body.message)) || `HTTP ${res.status}`;
         const err = new Error(`${label} failed: ${msg}`);
         err.httpStatus = res.status;
+        const retryAfterHeader = res.headers.get("retry-after");
+        if (retryAfterHeader) err.retryAfterSec = Number(retryAfterHeader) || 0;
         throw err;
     }
     return body;

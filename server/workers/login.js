@@ -148,7 +148,17 @@ async function securePost(path, payload, { retryOnAuthFailure = true } = {}) {
         return securePost(path, payload, { retryOnAuthFailure: false });
     }
     if (!res.ok) {
-        throw new Error(`SmartAPI ${path} HTTP ${res.status}`);
+        // Previously this threw a bare "HTTP 403" with no body read at all —
+        // SmartAPI's actual reason (e.g. a segment-permission block, an
+        // unrecognized IP, a bad token) is IN the JSON body even on non-2xx
+        // responses, and was being silently discarded. Read it defensively
+        // (some non-2xx responses aren't JSON at all, e.g. a gateway error
+        // page) so real diagnostics surface instead of a content-free status
+        // code (2026-07-31 fix, found while debugging a real 403 storm on
+        // NFO historical candles that NSE index candles didn't hit).
+        const body = await res.json().catch(() => null);
+        const detail = body && (body.message || body.errorcode) ? ` — ${body.message || "no message"} (code ${body.errorcode || "?"})` : "";
+        throw new Error(`SmartAPI ${path} HTTP ${res.status}${detail}`);
     }
     const body = await res.json();
     if (body.status === false) {

@@ -54,6 +54,12 @@ const SHAPES = {
         { c: "red", pts: [[0, 44], [25, 20]] },
         { c: "green", pts: [[25, 20], [55, 10], [100, 10]] },
     ],
+    // Mirror of jade-lizard: flat profit plateau on the downside (no risk
+    // there), uncapped loss on the upside (naked short call).
+    "reverse-jade-lizard": [
+        { c: "green", pts: [[0, 10], [45, 10], [75, 20]] },
+        { c: "red", pts: [[75, 20], [100, 44]] },
+    ],
     // Retail-glossary name for a twin-peak payoff (see PresetStrategies.jsx
     // comment) — offset call + put butterflies produce two peaks with a dip
     // at ATM, resembling bat ears.

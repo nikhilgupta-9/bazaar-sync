@@ -8,19 +8,24 @@
 // daily-granularity backtest mode, not for the existing minute-by-minute
 // backtestEngine.js as-is.
 //
-// *** UNVERIFIED — READ BEFORE RUNNING ***
-// NSE's domain is blocked from the sandbox this was written in, so neither
-// the URL pattern nor the CSV column names below could be fetched and
-// checked directly (unlike the Angel One/Upstox code, which was verified
-// against live docs/responses). Both are built from NSE's public UDiFF
-// format documentation and community-reported patterns as of 2026-07-19:
+// VERIFIED (2026-07-19) for the core UDiFF path (post-2024-07-08 dates):
+// backfillBhavcopy.js NIFTY 1 ran for real — 245 trading days succeeded, 16
+// failed (real market holidays, not a bug), 209,009 rows stored with the
+// URL pattern and CSV column names below both correct on the first real run
+// (see CLAUDE.md's Phase 7 "Verification status"). What is NOT yet
+// reverified after that run: the 503/cookie-refresh handling and fetch
+// timeout added 2026-07-20 (hit while testing further back in history), and
+// the pre-2024-07-08 old-archive-format fallback (buildBhavcopyUrl's other
+// branch) — no old-format date has been backfilled for real yet. If a
+// far-back multi-year run stalls or 404s, that fallback branch is the first
+// place to check.
 //   URL:     https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_{yyyymmdd}_F_0000.csv.zip
 //   Columns: TckrSymb, FinInstrmTp, XpryDt, StrkPric, OptnTp, ClsPric,
 //            OpnIntrst, TtlTradgVol, UndrlygPric
-// The parser below is defensive: it reads the actual CSV header row at
-// runtime and matches columns by name (not fixed position), and throws a
-// clear error printing the real headers if something doesn't match — so the
-// FIRST real run will either work, or tell us exactly what to fix.
+// The parser below is defensive regardless: it reads the actual CSV header
+// row at runtime and matches columns by name (not fixed position), and
+// throws a clear error printing the real headers if something doesn't
+// match — kept as a safety net even though the shape above is now confirmed.
 //
 // NSE's old bhavcopy format was retired 2024-07-08 in favor of "UDiFF"
 // (Unified Distilled File Format) — if this project is picked up much later

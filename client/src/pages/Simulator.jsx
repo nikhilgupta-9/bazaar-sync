@@ -15,6 +15,10 @@ import {
   runSimulatorReplay,
 } from "../services/simulatorApi";
 import { fetchSymbolList } from "../services/optionChainApi";
+import { saveStrategy } from "../services/strategiesApi";
+import SaveButton from "../components/SaveButton";
+import SavedStrategiesModal from "../components/SavedStrategiesModal";
+import ContractChartModal from "../components/ContractChartModal";
 import { formatPrice } from "../utils/format";
 import {
   computePayoffCurve,
@@ -49,14 +53,24 @@ const MONTHS_SHORT = [
   "Dec",
 ];
 
-// Wall-clock playback speed presets. `stepPerTick` is how many stored per-
-// minute samples advance every `tickMs` of real time — labelled the way the
-// stockmojo reference does ("1 min/1 sec" = 1 simulated minute per second).
-const SPEED_OPTIONS = [
-  { key: "slow", label: "1 min/2 sec", stepPerTick: 1, tickMs: 2000 },
-  { key: "normal", label: "1 min/1 sec", stepPerTick: 1, tickMs: 1000 },
-  { key: "fast", label: "1 min/0.25 sec", stepPerTick: 1, tickMs: 250 },
-  { key: "fastest", label: "5 min/1 sec", stepPerTick: 5, tickMs: 1000 },
+// Wall-clock playback speed, split into two independent controls like the
+// stockmojo reference: "Move" (how many stored per-minute samples advance
+// per tick) and "Every" (real-world interval between ticks). "1 day" isn't
+// offered as a Move step — the replay series is scoped to ONE historical
+// day (see simulatorController.js's replay endpoint), so there's nowhere
+// for a day-sized step to land; offering it would either silently do
+// nothing or require reinterpreting it as something else, neither of which
+// is honest about what Autoplay actually does here.
+const MOVE_OPTIONS = [
+  { key: "1m", label: "1 min", stepPerTick: 1 },
+  { key: "5m", label: "5 min", stepPerTick: 5 },
+  { key: "15m", label: "15 min", stepPerTick: 15 },
+  { key: "1h", label: "1 hr", stepPerTick: 60 },
+];
+const EVERY_OPTIONS = [
+  { key: "1s", label: "1 sec", tickMs: 1000 },
+  { key: "3s", label: "3 sec", tickMs: 3000 },
+  { key: "5s", label: "5 sec", tickMs: 5000 },
 ];
 
 const CHART_TABS = [
@@ -67,6 +81,47 @@ const CHART_TABS = [
 ];
 
 let legIdCounter = 0;
+
+const DEFAULT_FAVORITES = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
+const FAVORITES_KEY = "bazaarSync.simulator.favoriteSymbols";
+
+function loadFavorites() {
+  try {
+    const raw = localStorage.getItem(FAVORITES_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed) && parsed.length ? parsed : DEFAULT_FAVORITES;
+  } catch {
+    return DEFAULT_FAVORITES;
+  }
+}
+
+// Same searchable-dropdown row as Strategy Builder's symbol picker (star
+// toggles favorites, which the pill's chevrons cycle through) — kept as its
+// own local copy rather than a shared import since each page owns its own
+// symbol-picker state independently (see StrategyBuilder.jsx for the sibling).
+function SymbolOption({ sym, active, isFav, onPick, onToggleFav }) {
+  return (
+    <div className={`flex items-center justify-between px-2 py-1.5 hover:bg-gray-50 ${active ? "bg-blue-50" : ""}`}>
+      <button onClick={() => onPick(sym)} className="flex-1 text-left font-medium text-gray-700">{sym}</button>
+      <button
+        onClick={(e) => { e.stopPropagation(); onToggleFav(sym); }}
+        className={`px-1 ${isFav ? "text-amber-500" : "text-gray-300 hover:text-gray-400"}`}
+        title={isFav ? "Remove from favorites" : "Add to favorites"}
+      >
+        ★
+      </button>
+    </div>
+  );
+}
+
+// Option-chain column toggles — same idea as StrategyBuilder.jsx's
+// DEFAULT_COLUMNS. Defaults match the table's original fixed layout (Call/Put
+// Delta + LTP + OI each side); Greeks/IV start hidden. All fields are already
+// returned per-strike by simulatorController.js's /chain endpoint.
+const DEFAULT_COLUMNS = {
+  oi: true, callDelta: true, putDelta: true, iv: false,
+  theta: false, vega: false, gamma: false,
+};
 
 function formatTime(t) {
   return t ? String(t).slice(0, 5) : "-";
@@ -109,6 +164,16 @@ function pad2(n) {
 
 function ymdToStr(y, m, d) {
   return `${y}-${pad2(m)}-${pad2(d)}`;
+}
+
+// Cosmetic-only "today" (IST) for the calendar's Holiday-dot check below —
+// a future day with no stored data yet isn't a holiday, it just hasn't
+// happened. Plain string comparison, not a data-integrity date parse, so
+// this doesn't fall under Gotcha #12's "no new Date(nonISOString)" rule.
+function todayIstDateStr() {
+  const istMs = Date.now() + 5.5 * 60 * 60 * 1000;
+  const d = new Date(istMs);
+  return ymdToStr(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
 }
 
 function timeToSeconds(t) {
@@ -182,25 +247,44 @@ function Stat({ label, value, tone, hint }) {
 export default function Simulator() {
   const [symbol, setSymbol] = useState("NIFTY");
   const [dates, setDates] = useState([]); // DESC (most recent first), per /dates
+  const [datesLoaded, setDatesLoaded] = useState(false); // distinguishes "still fetching" from "fetched, genuinely empty"
+  const [sparseDates, setSparseDates] = useState([]); // dates with only 1 stored snapshot (EOD-only, no scrubbing)
   const [selectedDate, setSelectedDate] = useState("");
   const [chainData, setChainData] = useState(null); // metadata holder: expiries/times/selectedExpiry
   const [liveChain, setLiveChain] = useState(null); // chain rows at whichever instant is being viewed
   const [chainError, setChainError] = useState(null);
+  const [scrubError, setScrubError] = useState(null); // -1m/+5m/etc failures — previously swallowed silently
   const [legs, setLegs] = useState([]);
   const [tab, setTab] = useState("positions"); // 'positions' | 'greeks'
   const [chartTab, setChartTab] = useState("payoff"); // 'payoff' | 'strategy' | 'nifty' | 'combined'
+  const [savedOpen, setSavedOpen] = useState(false);
+
+  const [columns, setColumns] = useState(DEFAULT_COLUMNS);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [expiryDropdownOpen, setExpiryDropdownOpen] = useState(false);
+
+  function toggleColumn(key) {
+    setColumns((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
+  function resetChainSettings() {
+    setColumns(DEFAULT_COLUMNS);
+  }
 
   const [replayData, setReplayData] = useState(null);
   const [replayError, setReplayError] = useState(null);
   const [running, setRunning] = useState(false);
   const [cursor, setCursor] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [speedKey, setSpeedKey] = useState("normal");
+  const [moveKey, setMoveKey] = useState("1m");
+  const [everyKey, setEveryKey] = useState("1s");
+  const [speedOpen, setSpeedOpen] = useState(false);
 
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [calendarYm, setCalendarYm] = useState(null); // { y, m } (m: 1-12), which month the popover shows
   const [pendingDate, setPendingDate] = useState(null); // day picked in the popover, not applied until OK
-  const [pendingTime, setPendingTime] = useState(null);
+  const [pendingTime, setPendingTime] = useState(null); // nearest REAL stored time to whatever hour/minute is picked
+  const [pendingHour, setPendingHour] = useState(null); // "HH" the user clicked — purely visual selection
+  const [pendingMinute, setPendingMinute] = useState(null); // "MM" the user clicked — purely visual selection
   const [pendingTimes, setPendingTimes] = useState([]); // real stored snapshot times for pendingDate
 
   // Every symbol with real data (indices + the ~280 F&O stocks Bhavcopy/
@@ -214,25 +298,76 @@ export default function Simulator() {
       .catch(() => { /* keep the fallback list */ });
   }, []);
 
+  // Symbol pill + searchable dropdown — same pattern as StrategyBuilder.jsx.
+  const [favorites, setFavorites] = useState(loadFavorites);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState("");
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
+    } catch {
+      /* localStorage unavailable (private mode, etc) — favorites just won't persist */
+    }
+  }, [favorites]);
+
+  const filteredIndices = useMemo(
+    () => symbolList.indices.filter((s) => s.toLowerCase().includes(pickerQuery.toLowerCase())),
+    [symbolList, pickerQuery],
+  );
+  const filteredStocks = useMemo(
+    () => symbolList.stocks.filter((s) => s.toLowerCase().includes(pickerQuery.toLowerCase())),
+    [symbolList, pickerQuery],
+  );
+
+  // Chevrons cycle through favorites only; the pill opens the full
+  // searchable dropdown to jump anywhere. The symbol-reset useEffect above
+  // already clears legs/dates/chain state on any setSymbol call.
+  function cycleSymbol(dir) {
+    if (favorites.length < 2) return;
+    const idx = favorites.indexOf(symbol);
+    const base = idx >= 0 ? idx : 0;
+    const next = favorites[(base + dir + favorites.length) % favorites.length];
+    setSymbol(next);
+  }
+
+  function pickSymbol(sym) {
+    setSymbol(sym);
+    setPickerOpen(false);
+    setPickerQuery("");
+  }
+
+  function toggleFavorite(sym) {
+    setFavorites((prev) => (prev.includes(sym) ? prev.filter((s) => s !== sym) : [...prev, sym]));
+  }
+
   // Reset everything when the symbol changes.
   useEffect(() => {
     setDates([]);
+    setDatesLoaded(false);
+    setSparseDates([]);
     setSelectedDate("");
     setChainData(null);
     setLiveChain(null);
+    setChainError(null);
+    setScrubError(null);
     setLegs([]);
     setReplayData(null);
+    setReplayError(null);
     setChartTab("payoff");
     setCalendarYm(null);
+    setChartModal(null);
     fetchSimulatorDates(symbol)
       .then((res) => {
         setDates(res.dates);
+        setSparseDates(res.sparseDates || []);
         if (res.dates.length) {
           const [y, m] = res.dates[0].split("-").map(Number);
           setCalendarYm({ y, m });
         }
       })
-      .catch((err) => setChainError(err.message));
+      .catch((err) => setChainError(err.message))
+      .finally(() => setDatesLoaded(true));
   }, [symbol]);
 
   function shiftCalendarMonth(dir) {
@@ -251,6 +386,8 @@ export default function Simulator() {
   }
 
   const availableDateSet = useMemo(() => new Set(dates), [dates]);
+  const sparseDateSet = useMemo(() => new Set(sparseDates), [sparseDates]);
+  const TODAY_IST = useMemo(() => todayIstDateStr(), []);
   const dayExpirySet = useMemo(() => new Set(chainData?.expiries || []), [chainData]);
 
   // Full 6x7 grid including muted/disabled leading & trailing days from the
@@ -274,34 +411,49 @@ export default function Simulator() {
     return cells;
   }, [calendarYm]);
 
-  // Time picker for whichever day is currently pending in the popover — only
-  // the hours/minutes that actually have a stored snapshot are selectable,
-  // never a generic 00-59 range (there's no data at arbitrary minutes).
-  const pendingHours = useMemo(() => {
-    const set = new Set(pendingTimes.map((t) => String(t).slice(0, 2)));
-    return [...set].sort();
-  }, [pendingTimes]);
+  // Time picker for whichever day is currently pending in the popover — ALL
+  // hours across the NSE trading day (09:15-15:30) and all minutes 00-59 are
+  // always shown, regardless of how sparse that particular day's stored data
+  // actually is (a day with only two recorded snapshots, e.g. 15:15/15:30,
+  // must not collapse the picker down to a single hour). Whatever the user
+  // clicks resolves to the NEAREST real stored snapshot, same "nearest wins"
+  // rule the -1m/+5m/etc scrubber buttons already use, so every clickable
+  // time shows real data even when most of the day has no stored row.
+  const MARKET_HOURS = useMemo(() => ["09", "10", "11", "12", "13", "14", "15"], []);
+  const ALL_MINUTES = useMemo(() => Array.from({ length: 60 }, (_, i) => pad2(i)), []);
+  const pendingHours = MARKET_HOURS;
 
-  const selectedHour = pendingTime ? String(pendingTime).slice(0, 2) : (pendingHours[0] || null);
-
-  const pendingMinutes = useMemo(() => {
-    if (!selectedHour) return [];
-    return pendingTimes.filter((t) => String(t).slice(0, 2) === selectedHour).map((t) => String(t).slice(3, 5));
-  }, [pendingTimes, selectedHour]);
+  function resolvePendingTime(hour, minute) {
+    if (!pendingTimes.length || !hour || minute == null) return;
+    const target = timeToSeconds(`${hour}:${minute}:00`);
+    const match = nearestTime(pendingTimes, target);
+    if (match) setPendingTime(match);
+  }
 
   function fetchPendingTimes(date) {
     fetchSimulatorChain(symbol, { date, expiry: chainData?.selectedExpiry })
       .then((res) => {
-        setPendingTimes(res.times || []);
-        setPendingTime((res.times && res.times[0]) || null);
+        const times = res.times || [];
+        const initial = times[0] || null;
+        setPendingTimes(times);
+        setPendingTime(initial);
+        setPendingHour(initial ? String(initial).slice(0, 2) : null);
+        setPendingMinute(initial ? String(initial).slice(3, 5) : null);
       })
-      .catch(() => setPendingTimes([]));
+      .catch(() => {
+        setPendingTimes([]);
+        setPendingHour(null);
+        setPendingMinute(null);
+      });
   }
 
   function openCalendar() {
     const initDate = selectedDate || dates[0] || null;
     setPendingDate(initDate);
-    setPendingTime(currentTime || null);
+    const initTime = currentTime || null;
+    setPendingTime(initTime);
+    setPendingHour(initTime ? String(initTime).slice(0, 2) : null);
+    setPendingMinute(initTime ? String(initTime).slice(3, 5) : null);
     if (initDate && initDate === selectedDate && chainData?.times?.length) {
       setPendingTimes(chainData.times);
     } else if (initDate) {
@@ -322,13 +474,13 @@ export default function Simulator() {
   }
 
   function pickHour(hour) {
-    const match = pendingTimes.find((t) => String(t).slice(0, 2) === hour);
-    if (match) setPendingTime(match);
+    setPendingHour(hour);
+    resolvePendingTime(hour, pendingMinute || "00");
   }
 
   function pickMinute(minute) {
-    const match = pendingTimes.find((t) => String(t).slice(0, 2) === selectedHour && String(t).slice(3, 5) === minute);
-    if (match) setPendingTime(match);
+    setPendingMinute(minute);
+    resolvePendingTime(pendingHour || pendingHours[0], minute);
   }
 
   function confirmCalendarSelection() {
@@ -338,6 +490,7 @@ export default function Simulator() {
 
   function loadChain(date, expiry, time) {
     setChainError(null);
+    setScrubError(null); // a fresh full chain load supersedes any earlier scrub failure
     fetchSimulatorChain(symbol, { date, expiry, time })
       .then((res) => {
         setChainData(res);
@@ -394,21 +547,36 @@ export default function Simulator() {
       }
       return;
     }
+    setScrubError(null);
     fetchSimulatorChain(symbol, {
       date: selectedDate,
       expiry: chainData.selectedExpiry,
       time,
     })
       .then((res) => setLiveChain(res))
-      .catch(() => {
-        /* non-fatal — keep showing the last good chain */
+      .catch((err) => {
+        // Previously swallowed silently — a scrub click that failed (bad
+        // symbol, network hiccup, backend error) looked identical to one
+        // that succeeded but landed on the same already-loaded minute,
+        // which made real failures indistinguishable from "nothing to step
+        // to". Surface it so the two cases are never confused again.
+        console.error("[Simulator] scrubToTime failed", err);
+        setScrubError(err.message || "Failed to load that time");
       });
   }
 
   function jumpTimeBy(deltaSeconds) {
     const times = chainData?.times || [];
     if (!times.length || !currentTime) return;
-    scrubToTime(nearestTime(times, timeToSeconds(currentTime) + deltaSeconds));
+    const target = nearestTime(times, timeToSeconds(currentTime) + deltaSeconds);
+    if (target === currentTime) {
+      // Nothing to move to in that direction — most likely this day only
+      // has a handful of stored snapshots. Make that explicit instead of
+      // silently doing nothing (see onlySnapshotForDay note below the chain).
+      console.debug("[Simulator] jumpTimeBy: nearest time is unchanged", { currentTime, deltaSeconds, times });
+      return;
+    }
+    scrubToTime(target);
   }
 
   function jumpToStart() {
@@ -445,6 +613,21 @@ export default function Simulator() {
     );
   }
 
+  // Chain-row inline position display, same pattern as StrategyBuilder.jsx —
+  // which leg(s) match this exact strike/right in the currently displayed
+  // expiry, plus signed net lots (buy=+qty, sell=-qty) shown as a badge.
+  function legsAt(strike, right) {
+    return legs.filter((l) => l.strike === strike && l.type === right && l.expiry === chainData?.selectedExpiry);
+  }
+  function netPositionAt(strike, right) {
+    const matches = legsAt(strike, right);
+    if (!matches.length) return 0;
+    return matches.reduce((sum, l) => sum + (l.action === "buy" ? l.qty : -l.qty), 0);
+  }
+
+  // Mini contract-chart popup, opened from the small chart icon on hover.
+  const [chartModal, setChartModal] = useState(null); // { strike, right } | null
+
   function resetWorkspace() {
     setLegs([]);
     setReplayData(null);
@@ -480,23 +663,23 @@ export default function Simulator() {
     }
   }
 
-  // Playback loop (Autoplay).
+  // Playback loop (Autoplay) — Move (step size) and Every (interval) vary independently.
   useEffect(() => {
     if (!playing || !replayData) return;
-    const opt =
-      SPEED_OPTIONS.find((o) => o.key === speedKey) || SPEED_OPTIONS[1];
+    const move = MOVE_OPTIONS.find((o) => o.key === moveKey) || MOVE_OPTIONS[0];
+    const every = EVERY_OPTIONS.find((o) => o.key === everyKey) || EVERY_OPTIONS[0];
     const timer = setInterval(() => {
       setCursor((c) => {
-        const next = c + opt.stepPerTick;
+        const next = c + move.stepPerTick;
         if (next >= replayData.series.length - 1) {
           setPlaying(false);
           return replayData.series.length - 1;
         }
         return next;
       });
-    }, opt.tickMs);
+    }, every.tickMs);
     return () => clearInterval(timer);
-  }, [playing, speedKey, replayData]);
+  }, [playing, moveKey, everyKey, replayData]);
 
   // Keep the option-chain table in sync with the scrubbed replay cursor.
   useEffect(() => {
@@ -528,6 +711,17 @@ export default function Simulator() {
   const maxCeOi = Math.max(0, ...displayRows.map((r) => r.ce?.oi || 0));
   const maxPeOi = Math.max(0, ...displayRows.map((r) => r.pe?.oi || 0));
   const currentPoint = replayData?.series?.[cursor];
+
+  // Boundary check for the -1h/-15m/-5m/-1m/+1m/+5m/+15m/+1h scrubber
+  // buttons: a step is only meaningful if there's a stored snapshot further
+  // in that direction than the one currently showing. Some days only have a
+  // handful of stored snapshots (e.g. an EOD-only Bhavcopy row, see CLAUDE.md
+  // Phase 7) — without this check those buttons look "broken" (click does
+  // nothing) instead of correctly greying out at the real data boundary.
+  const chainTimes = chainData?.times || [];
+  const canStepEarlier = !!(chainTimes.length && currentTime && currentTime > chainTimes[0]);
+  const canStepLater = !!(chainTimes.length && currentTime && currentTime < chainTimes[chainTimes.length - 1]);
+  const onlySnapshotForDay = chainData && chainTimes.length <= 1;
 
   function legLivePnl(leg) {
     const row = displayRows.find((r) => r.strike === leg.strike);
@@ -637,26 +831,69 @@ export default function Simulator() {
 
   return (
     <div className="bg-gray-50/40">
-      <div className="mx-auto max-w-[1600px] px-5 pt-5">
+      <div className="mx-auto max-w-[1600px] px-5 pt-2">
         <div className="w-full shrink-0 flex flex-col">
           <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
             <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5">
-                <select
-                  value={symbol}
-                  onChange={(e) => setSymbol(e.target.value)}
-                  className="rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-sm font-bold text-gray-900 outline-none focus:border-blue-500"
-                  aria-label="Symbol"
+              <div className="flex items-center gap-1.5 relative">
+                <button
+                  onClick={() => cycleSymbol(-1)}
+                  disabled={favorites.length < 2}
+                  className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-30"
+                  aria-label="Previous favorite symbol"
                 >
-                  <optgroup label="Indices">
-                    {symbolList.indices.map((s) => <option key={s} value={s}>{s}</option>)}
-                  </optgroup>
-                  {symbolList.stocks.length > 0 && (
-                    <optgroup label="Stocks">
-                      {symbolList.stocks.map((s) => <option key={s} value={s}>{s}</option>)}
-                    </optgroup>
-                  )}
-                </select>
+                  ‹
+                </button>
+                <button
+                  onClick={() => setPickerOpen((v) => !v)}
+                  className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-sm font-bold text-gray-900 hover:border-blue-400 hover:bg-blue-50"
+                >
+                  {symbol}
+                </button>
+                <button
+                  onClick={() => cycleSymbol(1)}
+                  disabled={favorites.length < 2}
+                  className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-30"
+                  aria-label="Next favorite symbol"
+                >
+                  ›
+                </button>
+
+                {pickerOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setPickerOpen(false)} />
+                    <div className="absolute left-0 top-full z-20 mt-1 w-64 max-h-96 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-xl text-xs">
+                      <div className="sticky top-0 border-b border-gray-100 bg-white p-2">
+                        <input
+                          autoFocus
+                          value={pickerQuery}
+                          onChange={(e) => setPickerQuery(e.target.value)}
+                          placeholder="Search symbol…"
+                          className="w-full rounded-md border border-gray-200 px-2 py-1 text-xs outline-none focus:border-blue-500"
+                        />
+                      </div>
+                      {filteredIndices.length > 0 && (
+                        <div>
+                          <div className="px-2 pt-2 pb-1 text-[10px] font-bold uppercase text-gray-400">Index</div>
+                          {filteredIndices.map((s) => (
+                            <SymbolOption key={s} sym={s} active={s === symbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
+                          ))}
+                        </div>
+                      )}
+                      {filteredStocks.length > 0 && (
+                        <div>
+                          <div className="px-2 pt-2 pb-1 text-[10px] font-bold uppercase text-gray-400">Stocks</div>
+                          {filteredStocks.map((s) => (
+                            <SymbolOption key={s} sym={s} active={s === symbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
+                          ))}
+                        </div>
+                      )}
+                      {!filteredIndices.length && !filteredStocks.length && (
+                        <div className="px-3 py-6 text-center text-gray-400">No matches</div>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="flex items-center gap-2">
@@ -671,18 +908,50 @@ export default function Simulator() {
                 >
                   {playing ? "❚❚ Pause" : "▶ Autoplay"}
                 </button>
-                <select
-                  value={speedKey}
-                  onChange={(e) => setSpeedKey(e.target.value)}
-                  disabled={!replayData}
-                  className="rounded-md border border-gray-200 px-1.5 py-1 text-[11px] font-medium bg-gray-50 text-gray-700 outline-none disabled:opacity-40"
-                >
-                  {SPEED_OPTIONS.map((o) => (
-                    <option key={o.key} value={o.key}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
+
+                <div className="relative">
+                  <button
+                    onClick={() => setSpeedOpen((v) => !v)}
+                    disabled={!replayData}
+                    className="rounded-md border border-gray-200 px-2 py-1 text-[11px] font-medium bg-gray-50 text-gray-700 outline-none disabled:opacity-40 hover:bg-gray-100"
+                  >
+                    {MOVE_OPTIONS.find((o) => o.key === moveKey)?.label} / {EVERY_OPTIONS.find((o) => o.key === everyKey)?.label}
+                  </button>
+
+                  {speedOpen && (
+                    <>
+                      <div className="fixed inset-0 z-10" onClick={() => setSpeedOpen(false)} />
+                      <div className="absolute right-0 z-20 mt-1 w-56 rounded-lg border border-gray-200 bg-white p-3 shadow-xl text-xs">
+                        <div className="mb-3">
+                          <div className="mb-1.5 font-semibold text-gray-600">Move</div>
+                          <div className="flex flex-col gap-1">
+                            {MOVE_OPTIONS.map((o) => (
+                              <label key={o.key} className="flex items-center gap-1.5 text-gray-700 cursor-pointer">
+                                <input type="radio" name="move" checked={moveKey === o.key} onChange={() => setMoveKey(o.key)} />
+                                {o.label}
+                              </label>
+                            ))}
+                            <label className="flex items-center gap-1.5 text-gray-300 cursor-not-allowed" title="Replay is scoped to one historical day — a 1-day step has nowhere to land">
+                              <input type="radio" disabled />
+                              1 day
+                            </label>
+                          </div>
+                        </div>
+                        <div>
+                          <div className="mb-1.5 font-semibold text-gray-600">Every</div>
+                          <div className="flex flex-col gap-1">
+                            {EVERY_OPTIONS.map((o) => (
+                              <label key={o.key} className="flex items-center gap-1.5 text-gray-700 cursor-pointer">
+                                <input type="radio" name="every" checked={everyKey === o.key} onChange={() => setEveryKey(o.key)} />
+                                {o.label}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -704,28 +973,32 @@ export default function Simulator() {
               </button>
               <button
                 onClick={() => jumpTimeBy(-3600)}
-                disabled={!chainData}
+                disabled={!chainData || !canStepEarlier}
+                title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing earlier to step to" : undefined}
                 className="flex-1 min-w-[44px] rounded-md bg-gray-100 px-2 py-1.5 text-center font-semibold text-gray-600 hover:bg-gray-200 disabled:opacity-40"
               >
                 -1h
               </button>
               <button
                 onClick={() => jumpTimeBy(-900)}
-                disabled={!chainData}
+                disabled={!chainData || !canStepEarlier}
+                title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing earlier to step to" : undefined}
                 className="flex-1 min-w-[44px] rounded-md bg-gray-100 px-2 py-1.5 text-center font-semibold text-gray-600 hover:bg-gray-200 disabled:opacity-40"
               >
                 -15m
               </button>
               <button
                 onClick={() => jumpTimeBy(-300)}
-                disabled={!chainData}
+                disabled={!chainData || !canStepEarlier}
+                title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing earlier to step to" : undefined}
                 className="flex-1 min-w-[44px] rounded-md bg-gray-100 px-2 py-1.5 text-center font-semibold text-gray-600 hover:bg-gray-200 disabled:opacity-40"
               >
                 -5m
               </button>
               <button
                 onClick={() => jumpTimeBy(-60)}
-                disabled={!chainData}
+                disabled={!chainData || !canStepEarlier}
+                title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing earlier to step to" : undefined}
                 className="flex-1 min-w-[44px] rounded-md bg-gray-100 px-2 py-1.5 text-center font-semibold text-gray-600 hover:bg-gray-200 disabled:opacity-40"
               >
                 -1m
@@ -765,13 +1038,20 @@ export default function Simulator() {
                             const dateStr = ymdToStr(cell.y, cell.m, cell.day);
                             const available = cell.inMonth && availableDateSet.has(dateStr);
                             const isExpiry = available && dayExpirySet.has(dateStr);
-                            const isHoliday = cell.inMonth && !available && isWeekdayDate(cell.y, cell.m, cell.day);
+                            const isHoliday =
+                              cell.inMonth && !available && dateStr <= TODAY_IST && isWeekdayDate(cell.y, cell.m, cell.day);
+                            // EOD-only day (Bhavcopy, one snapshot) — the time-step
+                            // scrubber has nothing to move between. Shown up front
+                            // now instead of only being discovered after picking
+                            // the day and hitting a disabled -1m/+1m button.
+                            const isSparse = available && sparseDateSet.has(dateStr);
                             const isPending = dateStr === pendingDate;
                             return (
                               <button
                                 key={i}
                                 disabled={!available}
                                 onClick={() => pickCalendarDay(dateStr)}
+                                title={isSparse ? "Only one stored snapshot (EOD-only) — no minute-level scrubbing on this day" : undefined}
                                 className={`relative rounded-full py-1.5 text-[12px] font-semibold transition ${
                                   !cell.inMonth
                                     ? "text-gray-300 cursor-default"
@@ -785,6 +1065,9 @@ export default function Simulator() {
                                 }`}
                               >
                                 {cell.day}
+                                {isSparse && !isPending && (
+                                  <span className="absolute top-0 right-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />
+                                )}
                                 {isHoliday && (
                                   <span className="absolute bottom-0.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-gray-400" />
                                 )}
@@ -795,20 +1078,23 @@ export default function Simulator() {
                         <div className="mt-3 flex items-center gap-3 text-[10px] text-gray-500">
                           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Expiry Day</span>
                           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-gray-400" /> Holiday</span>
+                          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-500" /> EOD-only</span>
                         </div>
                       </div>
 
-                      {/* Hour / minute picker for whichever day is pending */}
+                      {/* Hour / minute picker for whichever day is pending — a
+                          fixed height + overflow-y-auto so 60 minute options
+                          scroll within a compact box instead of stretching
+                          the whole popover to cover the page. */}
                       <div className="flex w-[130px] shrink-0 flex-col">
-                        <div className="flex flex-1 divide-x divide-gray-100 overflow-hidden">
+                        <div className="flex h-72 divide-x divide-gray-100 overflow-hidden">
                           <div className="flex-1 overflow-y-auto py-1 text-center">
-                            {pendingHours.length === 0 && <div className="px-1 py-4 text-[10px] text-gray-300">—</div>}
                             {pendingHours.map((h) => (
                               <button
                                 key={h}
                                 onClick={() => pickHour(h)}
                                 className={`w-full py-1.5 text-[12px] font-semibold ${
-                                  h === selectedHour ? "bg-blue-600 text-white" : "text-gray-700 hover:bg-gray-100"
+                                  h === pendingHour ? "bg-blue-600 text-white" : "text-gray-700 hover:bg-gray-100"
                                 }`}
                               >
                                 {h}
@@ -816,12 +1102,12 @@ export default function Simulator() {
                             ))}
                           </div>
                           <div className="flex-1 overflow-y-auto py-1 text-center">
-                            {pendingMinutes.map((min) => (
+                            {ALL_MINUTES.map((min) => (
                               <button
                                 key={min}
                                 onClick={() => pickMinute(min)}
                                 className={`w-full py-1.5 text-[12px] font-semibold ${
-                                  pendingTime && String(pendingTime).slice(3, 5) === min ? "bg-blue-600 text-white" : "text-gray-700 hover:bg-gray-100"
+                                  min === pendingMinute ? "bg-blue-600 text-white" : "text-gray-700 hover:bg-gray-100"
                                 }`}
                               >
                                 {min}
@@ -846,28 +1132,32 @@ export default function Simulator() {
 
               <button
                 onClick={() => jumpTimeBy(60)}
-                disabled={!chainData}
+                disabled={!chainData || !canStepLater}
+                title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing later to step to" : undefined}
                 className="flex-1 min-w-[44px] rounded-md bg-gray-100 px-2 py-1.5 text-center font-semibold text-gray-600 hover:bg-gray-200 disabled:opacity-40"
               >
                 +1m
               </button>
               <button
                 onClick={() => jumpTimeBy(300)}
-                disabled={!chainData}
+                disabled={!chainData || !canStepLater}
+                title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing later to step to" : undefined}
                 className="flex-1 min-w-[44px] rounded-md bg-gray-100 px-2 py-1.5 text-center font-semibold text-gray-600 hover:bg-gray-200 disabled:opacity-40"
               >
                 +5m
               </button>
               <button
                 onClick={() => jumpTimeBy(900)}
-                disabled={!chainData}
+                disabled={!chainData || !canStepLater}
+                title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing later to step to" : undefined}
                 className="flex-1 min-w-[44px] rounded-md bg-gray-100 px-2 py-1.5 text-center font-semibold text-gray-600 hover:bg-gray-200 disabled:opacity-40"
               >
                 +15m
               </button>
               <button
                 onClick={() => jumpTimeBy(3600)}
-                disabled={!chainData}
+                disabled={!chainData || !canStepLater}
+                title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing later to step to" : undefined}
                 className="flex-1 min-w-[44px] rounded-md bg-gray-100 px-2 py-1.5 text-center font-semibold text-gray-600 hover:bg-gray-200 disabled:opacity-40"
               >
                 +1h
@@ -888,27 +1178,113 @@ export default function Simulator() {
               </button>
             </div>
 
-            {!dates.length && (
+            {!dates.length && !datesLoaded && (
               <div className="mt-2 text-[11px] text-gray-400">
                 Loading available dates…
               </div>
             )}
+            {!dates.length && datesLoaded && !chainError && (
+              <div className="mt-2 text-[11px] text-amber-600">
+                No stored option data for {symbol} yet — try a different symbol, or run one of the Phase 7 backfill
+                scripts (NSE Bhavcopy / Angel One / Breeze) for this symbol first.
+              </div>
+            )}
 
             {chainData && chainData.expiries.length > 0 && (
-              <div className="mt-2 flex gap-1.5 overflow-x-auto pb-0.5">
-                {chainData.expiries.map((exp) => (
+              <div className="mt-2 flex items-center gap-1.5">
+                {/* Nearest expiry — always the day's earliest listed one
+                    (expiryRows is ORDER BY expiry ASC server-side) — shown as
+                    its own highlighted chip, matching the stockmojo reference
+                    where the front-month expiry is visually distinct from the
+                    rest of the list. */}
+                <button
+                  onClick={() => selectExpiry(chainData.expiries[0])}
+                  className={`shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
+                    chainData.selectedExpiry === chainData.expiries[0]
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  }`}
+                >
+                  {formatExpiryShort(chainData.expiries[0])} ({daysBetween(selectedDate, chainData.expiries[0])}d)
+                </button>
+
+                {chainData.expiries.length > 1 && (
+                  <div className="relative">
+                    <button
+                      onClick={() => setExpiryDropdownOpen((v) => !v)}
+                      className={`shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
+                        chainData.selectedExpiry !== chainData.expiries[0]
+                          ? "bg-blue-600 text-white"
+                          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                      }`}
+                    >
+                      {chainData.selectedExpiry !== chainData.expiries[0]
+                        ? `${formatExpiryShort(chainData.selectedExpiry)} (${daysBetween(selectedDate, chainData.selectedExpiry)}d)`
+                        : `Other expiries (${chainData.expiries.length - 1})`}
+                      {" ▾"}
+                    </button>
+                    {expiryDropdownOpen && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setExpiryDropdownOpen(false)} />
+                        <div className="absolute left-0 top-full z-20 mt-1 max-h-72 w-44 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-xl text-[11px]">
+                          {chainData.expiries.slice(1).map((exp) => (
+                            <button
+                              key={exp}
+                              onClick={() => { selectExpiry(exp); setExpiryDropdownOpen(false); }}
+                              className={`block w-full px-3 py-1.5 text-left font-semibold hover:bg-gray-50 ${
+                                exp === chainData.selectedExpiry ? "bg-blue-50 text-blue-700" : "text-gray-600"
+                              }`}
+                            >
+                              {formatExpiryShort(exp)} ({daysBetween(selectedDate, exp)}d)
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                <div className="relative ml-auto">
                   <button
-                    key={exp}
-                    onClick={() => selectExpiry(exp)}
-                    className={`shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
-                      exp === chainData.selectedExpiry
-                        ? "bg-blue-600 text-white"
-                        : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                    }`}
+                    onClick={() => setSettingsOpen((v) => !v)}
+                    className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                    aria-label="Option chain settings"
+                    title="Column settings"
                   >
-                    {formatExpiryShort(exp)} ({daysBetween(selectedDate, exp)}d)
+                    ⚙
                   </button>
-                ))}
+                  {settingsOpen && (
+                    <>
+                      <div className="fixed inset-0 z-10" onClick={() => setSettingsOpen(false)} />
+                      <div className="absolute right-0 top-full z-20 mt-1 w-56 rounded-lg border border-gray-200 bg-white p-3 shadow-xl text-xs">
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="font-bold text-gray-800">Chain Settings</span>
+                          <button onClick={resetChainSettings} className="text-[10px] text-blue-600 hover:underline">Reset</button>
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="flex items-center gap-2">
+                            <input type="checkbox" checked={columns.oi} onChange={() => toggleColumn("oi")} /> Open Interest
+                          </label>
+                          <label className="flex items-center gap-2">
+                            <input type="checkbox" checked={columns.callDelta} onChange={() => toggleColumn("callDelta")} /> Call/Put Delta
+                          </label>
+                          <label className="flex items-center gap-2">
+                            <input type="checkbox" checked={columns.iv} onChange={() => toggleColumn("iv")} /> IV
+                          </label>
+                          <label className="flex items-center gap-2">
+                            <input type="checkbox" checked={columns.theta} onChange={() => toggleColumn("theta")} /> Theta
+                          </label>
+                          <label className="flex items-center gap-2">
+                            <input type="checkbox" checked={columns.vega} onChange={() => toggleColumn("vega")} /> Vega
+                          </label>
+                          <label className="flex items-center gap-2">
+                            <input type="checkbox" checked={columns.gamma} onChange={() => toggleColumn("gamma")} /> Gamma
+                          </label>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -945,32 +1321,40 @@ export default function Simulator() {
             </div>
           )}
 
+          {scrubError && (
+            <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              Couldn't load that time: {scrubError}
+            </div>
+          )}
+
+          
+
           {displayRows.length > 0 && (
             <div className="max-h-[68vh] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-sm custom-scrollbar">
               <table className="w-full border-collapse text-[11px]">
                 <thead className="sticky top-0 bg-gray-50 border-b border-gray-200 z-10">
                   <tr>
-                    <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[13%]">
-                      Call Δ
-                    </th>
+                    {columns.gamma && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Γ</th>}
+                    {columns.vega && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Vega</th>}
+                    {columns.theta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Theta</th>}
+                    {columns.iv && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">IV</th>}
+                    {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[13%]">Call Δ</th>}
                     <th className="px-1.5 py-2 text-right font-semibold text-gray-400 w-[15%]">
                       LTP
                     </th>
-                    <th className="px-1.5 py-2 text-right font-semibold text-gray-400 w-[18%]">
-                      OI
-                    </th>
+                    {columns.oi && <th className="px-1.5 py-2 text-right font-semibold text-gray-400 w-[18%]">OI</th>}
                     <th className="py-2 text-center font-bold text-gray-700 bg-gray-100/80 w-[16%] border-x border-gray-200">
                       Strike
                     </th>
-                    <th className="px-1.5 py-2 text-left font-semibold text-gray-400 w-[18%]">
-                      OI
-                    </th>
+                    {columns.oi && <th className="px-1.5 py-2 text-left font-semibold text-gray-400 w-[18%]">OI</th>}
                     <th className="px-1.5 py-2 text-left font-semibold text-gray-400 w-[18%]">
                       LTP
                     </th>
-                    <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">
-                      Put Δ
-                    </th>
+                    {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Put Δ</th>}
+                    {columns.iv && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">IV</th>}
+                    {columns.theta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Theta</th>}
+                    {columns.vega && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Vega</th>}
+                    {columns.gamma && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Γ</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -978,68 +1362,116 @@ export default function Simulator() {
                     const isAtm =
                       row.strike ===
                       (liveChain?.atmStrike ?? chainData?.atmStrike);
+                    const ceLeg = legsAt(row.strike, "CE")[0] || null;
+                    const peLeg = legsAt(row.strike, "PE")[0] || null;
+                    const ceNet = netPositionAt(row.strike, "CE");
+                    const peNet = netPositionAt(row.strike, "PE");
                     return (
                       <tr
                         key={row.strike}
                         className={`border-b border-gray-100/70 ${isAtm ? "bg-blue-50/60 font-semibold" : "hover:bg-gray-50/80"}`}
                       >
-                        <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">
-                          {formatDelta(row.ce?.delta)}
-                        </td>
+                        {columns.gamma && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.gamma)}</td>}
+                        {columns.vega && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.vega)}</td>}
+                        {columns.theta && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.theta)}</td>}
+                        {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.iv != null ? `${row.ce.iv.toFixed(1)}%` : "-"}</td>}
+                        {columns.callDelta && (
+                          <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">
+                            {formatDelta(row.ce?.delta)}
+                          </td>
+                        )}
                         <td className="group px-1.5 py-1.5 text-right tabular-nums relative">
+                          {ceNet !== 0 && (
+                            <span className={`absolute -top-0.5 right-0.5 z-[1] rounded px-1 text-[8px] font-bold leading-tight ${ceNet > 0 ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"}`}>
+                              {ceNet > 0 ? `+${ceNet}` : ceNet}
+                            </span>
+                          )}
                           <span className="text-gray-700 group-hover:invisible">
                             {formatPrice(row.ce?.ltp)}
                           </span>
-                          {!replayData && (
-                            <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-0.5 bg-white">
-                              <button
-                                onClick={() => addLeg(row, "CE", "buy")}
-                                className="rounded bg-emerald-500 hover:bg-emerald-600 px-1.5 py-0.5 text-[9px] font-extrabold text-white"
-                              >
-                                B
-                              </button>
-                              <button
-                                onClick={() => addLeg(row, "CE", "sell")}
-                                className="rounded bg-rose-500 hover:bg-rose-600 px-1.5 py-0.5 text-[9px] font-extrabold text-white"
-                              >
-                                S
-                              </button>
-                            </div>
-                          )}
+                          <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white">
+                            {!replayData && (ceLeg ? (
+                              <>
+                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty - 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] font-bold text-gray-600 hover:bg-gray-100">−</button>
+                                <span className="w-4 text-center text-[9px] font-bold tabular-nums text-gray-700">{ceLeg.qty}</span>
+                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty + 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] font-bold text-gray-600 hover:bg-gray-100">+</button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => addLeg(row, "CE", "buy")}
+                                  className="rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 px-1.5 py-0.5 text-[9px] font-extrabold"
+                                >
+                                  B
+                                </button>
+                                <button
+                                  onClick={() => addLeg(row, "CE", "sell")}
+                                  className="rounded border border-rose-500 text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 text-[9px] font-extrabold"
+                                >
+                                  S
+                                </button>
+                              </>
+                            ))}
+                            <button onClick={() => setChartModal({ strike: row.strike, right: "CE" })} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
+                          </div>
                         </td>
-                        <td className="p-0 tabular-nums">
-                          <OiBar value={row.ce?.oi} max={maxCeOi} side="ce" />
-                        </td>
+                        {columns.oi && (
+                          <td className="p-0 tabular-nums">
+                            <OiBar value={row.ce?.oi} max={maxCeOi} side="ce" />
+                          </td>
+                        )}
                         <td className="py-1.5 text-center font-bold text-gray-900 bg-gray-50/40 border-x border-gray-100 text-xs tabular-nums">
                           {row.strike}
                         </td>
-                        <td className="p-0 tabular-nums">
-                          <OiBar value={row.pe?.oi} max={maxPeOi} side="pe" />
-                        </td>
+                        {columns.oi && (
+                          <td className="p-0 tabular-nums">
+                            <OiBar value={row.pe?.oi} max={maxPeOi} side="pe" />
+                          </td>
+                        )}
                         <td className="group px-1.5 py-1.5 text-left tabular-nums relative">
+                          {peNet !== 0 && (
+                            <span className={`absolute -top-0.5 left-0.5 z-[1] rounded px-1 text-[8px] font-bold leading-tight ${peNet > 0 ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"}`}>
+                              {peNet > 0 ? `+${peNet}` : peNet}
+                            </span>
+                          )}
                           <span className="text-gray-700 group-hover:invisible">
                             {formatPrice(row.pe?.ltp)}
                           </span>
-                          {!replayData && (
-                            <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-0.5 bg-white">
-                              <button
-                                onClick={() => addLeg(row, "PE", "buy")}
-                                className="rounded bg-emerald-500 hover:bg-emerald-600 px-1.5 py-0.5 text-[9px] font-extrabold text-white"
-                              >
-                                B
-                              </button>
-                              <button
-                                onClick={() => addLeg(row, "PE", "sell")}
-                                className="rounded bg-rose-500 hover:bg-rose-600 px-1.5 py-0.5 text-[9px] font-extrabold text-white"
-                              >
-                                S
-                              </button>
-                            </div>
-                          )}
+                          <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white">
+                            {!replayData && (peLeg ? (
+                              <>
+                                <button onClick={() => updateQty(peLeg.id, peLeg.qty - 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] font-bold text-gray-600 hover:bg-gray-100">−</button>
+                                <span className="w-4 text-center text-[9px] font-bold tabular-nums text-gray-700">{peLeg.qty}</span>
+                                <button onClick={() => updateQty(peLeg.id, peLeg.qty + 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] font-bold text-gray-600 hover:bg-gray-100">+</button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => addLeg(row, "PE", "buy")}
+                                  className="rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 px-1.5 py-0.5 text-[9px] font-extrabold"
+                                >
+                                  B
+                                </button>
+                                <button
+                                  onClick={() => addLeg(row, "PE", "sell")}
+                                  className="rounded border border-rose-500 text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 text-[9px] font-extrabold"
+                                >
+                                  S
+                                </button>
+                              </>
+                            ))}
+                            <button onClick={() => setChartModal({ strike: row.strike, right: "PE" })} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
+                          </div>
                         </td>
-                        <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">
-                          {formatDelta(row.pe?.delta)}
-                        </td>
+                        {columns.callDelta && (
+                          <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">
+                            {formatDelta(row.pe?.delta)}
+                          </td>
+                        )}
+                        {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.pe?.iv != null ? `${row.pe.iv.toFixed(1)}%` : "-"}</td>}
+                        {columns.theta && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.pe?.theta)}</td>}
+                        {columns.vega && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.pe?.vega)}</td>}
+                        {columns.gamma && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.pe?.gamma)}</td>}
                       </tr>
                     );
                   })}
@@ -1093,6 +1525,16 @@ export default function Simulator() {
                     ← Edit legs
                   </button>
                 )}
+                <SaveButton
+                  itemLabel="strategy"
+                  onSave={(token, name) => saveStrategy(token, { name, underlying: symbol, legs })}
+                />
+                <button
+                  onClick={() => setSavedOpen(true)}
+                  className="rounded-xl border border-gray-300 px-4 py-1.5 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition"
+                >
+                  Saved
+                </button>
                 <button
                   onClick={resetWorkspace}
                   className="rounded-xl border border-gray-300 px-4 py-1.5 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition"
@@ -1100,6 +1542,19 @@ export default function Simulator() {
                   Reset Workspace
                 </button>
               </div>
+
+              {savedOpen && (
+                <SavedStrategiesModal
+                  onClose={() => setSavedOpen(false)}
+                  onLoad={(loadedLegs, underlying) => {
+                    if (underlying !== symbol) setSymbol(underlying);
+                    setReplayData(null);
+                    setChartTab("payoff");
+                    setLegs(loadedLegs.map((l) => ({ ...l, id: ++legIdCounter })));
+                    setSavedOpen(false);
+                  }}
+                />
+              )}
 
               {replayError && (
                 <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
@@ -1503,6 +1958,16 @@ export default function Simulator() {
           )}
         </div>
       </div>
+
+      {chartModal && (
+        <ContractChartModal
+          symbol={symbol}
+          strike={chartModal.strike}
+          right={chartModal.right}
+          expiry={chainData?.selectedExpiry}
+          onClose={() => setChartModal(null)}
+        />
+      )}
     </div>
   );
 }

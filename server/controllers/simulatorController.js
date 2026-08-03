@@ -54,16 +54,36 @@ function resolveSymbol(req, res) {
     return displaySymbol;
 }
 
-/** GET /api/simulator/dates/:symbol — trading days that actually have stored option data. */
+/**
+ * GET /api/simulator/dates/:symbol — every trading day that actually has
+ * stored option data. Previously capped at `LIMIT 60` (~3 months back),
+ * which broke the calendar for anything older: Phase 7's NSE Bhavcopy
+ * backfill stores YEARS of history, but the calendar's month/year nav lets
+ * a user go back arbitrarily far — with only the 60 most recent dates known
+ * client-side, every day in an older month looked unavailable (and wrongly
+ * got a "Holiday" dot, since the frontend can't tell "never fetched" apart
+ * from "confirmed no data"). No LIMIT now: distinct trade_dates for one
+ * symbol over ~5 years is at most ~1,250 rows — a small, cheap payload.
+ *
+ * Also reports `sparseDates`: days with only 1 stored snapshot (an EOD-only
+ * Bhavcopy row, see CLAUDE.md Phase 7) where the time-step scrubber has
+ * nothing to move between. Previously a user only discovered this AFTER
+ * picking the day and hitting a disabled -1m/+1m button; now the calendar
+ * can mark it up front so real per-minute days (Angel One nightly cron) are
+ * visually distinguishable from EOD-only days (Bhavcopy/Breeze-not-yet-run).
+ */
 async function listDates(req, res) {
     try {
         const symbol = resolveSymbol(req, res);
         if (!symbol) return;
         const [rows] = await pool.query(
-            `SELECT DISTINCT trade_date FROM option_chain_history WHERE symbol = ? ORDER BY trade_date DESC LIMIT 60`,
+            `SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
+             FROM option_chain_history WHERE symbol = ? GROUP BY trade_date ORDER BY trade_date DESC`,
             [symbol]
         );
-        res.json({ symbol, dates: rows.map((r) => r.trade_date) });
+        const dates = rows.map((r) => r.trade_date);
+        const sparseDates = rows.filter((r) => Number(r.snapshotCount) <= 1).map((r) => r.trade_date);
+        res.json({ symbol, dates, sparseDates });
     } catch (err) {
         console.error("[simulator/dates]", err);
         res.status(500).json({ error: err.message });
@@ -113,7 +133,7 @@ async function getChainAtTime(req, res) {
         const selectedTime = time && times.includes(time) ? time : times[0];
 
         const [rawRows] = await pool.query(
-            `SELECT strike,
+            `SELECT strike, underlying_price,
                     ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume, ce_delta, ce_gamma, ce_theta, ce_vega,
                     pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume, pe_delta, pe_gamma, pe_theta, pe_vega
              FROM option_chain_history
@@ -122,7 +142,10 @@ async function getChainAtTime(req, res) {
             [symbol, date, selectedExpiry, selectedTime]
         );
 
-        const spotPrice = await getSpotAt(symbol, date, selectedTime);
+        // ohlcv_data is empty for Bhavcopy-sourced (EOD-only) days — fall back to
+        // the underlying_price already stored on the option_chain_history row itself.
+        const fallbackSpot = rawRows.find((r) => r.underlying_price != null)?.underlying_price;
+        const spotPrice = (await getSpotAt(symbol, date, selectedTime)) ?? (fallbackSpot != null ? Number(fallbackSpot) : null);
 
         const rows = rawRows.map((r) => ({
             strike: Number(r.strike),
@@ -205,15 +228,19 @@ async function replay(req, res) {
         const entryTime = times[0];
 
         const [priceRows] = await pool.query(
-            `SELECT trade_time, strike, ce_ltp, pe_ltp FROM option_chain_history
+            `SELECT trade_time, strike, underlying_price, ce_ltp, pe_ltp FROM option_chain_history
              WHERE symbol = ? AND trade_date = ? AND expiry = ? AND strike IN (?)
              ORDER BY trade_time ASC`,
             [symbol, date, expiry, strikes]
         );
         const byMinute = new Map(); // time -> Map<strike, {ce_ltp, pe_ltp}>
+        const fallbackSpotByTime = new Map(); // time -> underlying_price stored on the row itself
         for (const r of priceRows) {
             if (!byMinute.has(r.trade_time)) byMinute.set(r.trade_time, new Map());
             byMinute.get(r.trade_time).set(Number(r.strike), r);
+            if (r.underlying_price != null && !fallbackSpotByTime.has(r.trade_time)) {
+                fallbackSpotByTime.set(r.trade_time, Number(r.underlying_price));
+            }
         }
 
         const entryPrices = byMinute.get(entryTime);
@@ -245,7 +272,8 @@ async function replay(req, res) {
                     pnl += diff * leg.qty;
                 }
             }
-            return { time, spot: spotByTime.get(time) ?? null, pnl: pnl != null ? Number(pnl.toFixed(2)) : null };
+            const spot = spotByTime.get(time) ?? fallbackSpotByTime.get(time) ?? null;
+            return { time, spot, pnl: pnl != null ? Number(pnl.toFixed(2)) : null };
         });
 
         res.json({ symbol, date, expiry, entryTime, legs: legsWithEntry, series });

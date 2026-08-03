@@ -119,6 +119,26 @@ function enrichWithGreeks(candles, { strike, right, expirySql, spotByDate }) {
     });
 }
 
+// "Real" traded strikes for this (symbol, expiry) — any strike that shows
+// non-zero open interest in ANY Bhavcopy-sourced EOD snapshot already stored
+// for this expiry (across its whole lifetime, not just one day). OI is a
+// solid liquidity proxy: a strike nobody ever opened a position in has
+// nothing worth minute-level detail. Falls back to null when Bhavcopy hasn't
+// discovered this expiry yet at all, so callers know to use the old ±N
+// window instead rather than silently keeping zero strikes.
+async function getLiquidStrikes(symbol, expirySql, minOi = 1) {
+    const [rows] = await pool.query(
+        `SELECT strike, MAX(GREATEST(COALESCE(ce_oi, 0), COALESCE(pe_oi, 0))) AS maxOi
+         FROM option_chain_history
+         WHERE symbol = ? AND expiry = ?
+         GROUP BY strike
+         HAVING maxOi >= ?
+         ORDER BY strike`,
+        [symbol, expirySql, minOi]
+    );
+    return rows.length ? rows.map((r) => Number(r.strike)) : null;
+}
+
 async function backfillExpiry(symbol, underlyingKey, expirySql, strikesPerSide) {
     const windowStart = addDays(expirySql, -LOOKBACK_DAYS);
 
@@ -138,11 +158,24 @@ async function backfillExpiry(symbol, underlyingKey, expirySql, strikesPerSide) 
     }
 
     const strikes = [...new Set(contracts.map((c) => c.strike_price))].sort((a, b) => a - b);
-    const atmIdx = strikes.reduce(
-        (best, s, i) => (Math.abs(s - centerPrice) < Math.abs(strikes[best] - centerPrice) ? i : best),
-        0
-    );
-    const keepStrikes = new Set(strikes.slice(Math.max(0, atmIdx - strikesPerSide), atmIdx + strikesPerSide + 1));
+
+    // Prefer the real traded set (every strike Bhavcopy ever saw with open
+    // interest for this expiry) over an artificial ±N window — this is what
+    // "give me the full chain, skip the strikes nobody traded" actually
+    // means. Only falls back to the fixed window if Bhavcopy hasn't
+    // discovered this expiry at all yet (so we have no liquidity signal).
+    const liquidStrikes = await getLiquidStrikes(symbol, expirySql);
+    let keepStrikes;
+    if (liquidStrikes) {
+        keepStrikes = new Set(strikes.filter((s) => liquidStrikes.includes(s)));
+    } else {
+        const atmIdx = strikes.reduce(
+            (best, s, i) => (Math.abs(s - centerPrice) < Math.abs(strikes[best] - centerPrice) ? i : best),
+            0
+        );
+        keepStrikes = new Set(strikes.slice(Math.max(0, atmIdx - strikesPerSide), atmIdx + strikesPerSide + 1));
+        console.warn(`[upstox] ${symbol} ${expirySql}: no Bhavcopy OI data found for this expiry yet — falling back to ±${strikesPerSide} strikes around expiry-day close. Run backfillBhavcopy(All).js for this range first for full liquid-strike coverage.`);
+    }
 
     const byStrike = new Map();
     for (const c of contracts) {

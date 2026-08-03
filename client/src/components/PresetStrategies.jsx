@@ -143,6 +143,18 @@ function buildPresets(data) {
                 leg(atm + 2 * gap, "CE", "sell"), leg(atm + 4 * gap, "CE", "buy"),
             ]),
         },
+        // Reverse Jade Lizard: the upside/downside mirror of Jade Lizard —
+        // short OTM call (naked) + short put vertical (short put, long
+        // further-OTM put). No downside risk as long as the net credit
+        // exceeds the put spread width; uncapped upside risk from the naked
+        // short call (same trade-off as Jade Lizard, flipped).
+        {
+            name: "Reverse Jade Lizard", bias: "Neutral", shape: "reverse-jade-lizard",
+            legs: compact([
+                leg(atm + 3 * gap, "CE", "sell"),
+                leg(atm - 2 * gap, "PE", "sell"), leg(atm - 4 * gap, "PE", "buy"),
+            ]),
+        },
         // Batman & Double Plateau are retail-glossary names (twin-peak /
         // twin-plateau payoff shapes), not standardized textbook structures —
         // these are reasonable constructions matching the named shape, not

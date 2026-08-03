@@ -18,6 +18,7 @@ const cron = require("node-cron");
 const { pool } = require("../config/db");
 const instrumentMaster = require("./instrumentMaster");
 const angelHist = require("./angelOneHistorical");
+const bs = require("../utils/blackScholes");
 const { dbLogger } = require("../config/logger");
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
@@ -25,6 +26,24 @@ const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 // Bound the per-night API-call volume: only pull contracts within this many
 // strikes of the day's closing spot (each contract = 2 API calls: candles+OI).
 const HIST_STRIKES_PER_SIDE = Number(process.env.HIST_STRIKES_PER_SIDE || 20);
+
+// Years between (dateStr, timeStr) and expirySql, both IST wall-clock,
+// expiry cutoff 15:30 IST. Same Date.UTC-only approach as
+// scripts/backfillUpstox.js's yearsToExpiryAsOf — deliberately NOT
+// blackScholes.js's yearsToExpiry(expiryDate, now=new Date()), which
+// defaults to the real current time and isn't meant for computing "years
+// to expiry as of an arbitrary historical minute" (CLAUDE.md Gotcha #12:
+// no ambient/local-timezone Date parsing for historical data).
+function yearsToExpiryAsOf(expirySql, dateStr, timeStr) {
+    const [ey, em, ed] = expirySql.split("-").map(Number);
+    const [dy, dm, dd] = dateStr.split("-").map(Number);
+    const [hh, mm, ss] = (timeStr || "15:30:00").split(":").map(Number);
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const expiryUtcMs = Date.UTC(ey, em - 1, ed, 15, 30, 0) - IST_OFFSET_MS;
+    const rowUtcMs = Date.UTC(dy, dm - 1, dd, hh, mm, ss) - IST_OFFSET_MS;
+    const ms = expiryUtcMs - rowUtcMs;
+    return Math.max(ms / (365 * 24 * 60 * 60 * 1000), 1 / (365 * 24 * 4)); // floor at 15 min
+}
 
 async function storeOHLCV(symbol, candles) {
     if (!candles.length) return;
@@ -39,10 +58,16 @@ async function storeOHLCV(symbol, candles) {
 }
 
 // Merge same-minute CE/PE candle+OI rows for one strike into
-// option_chain_history rows (IV/greeks stay null here — historical greeks
-// would need a historical IV series; the live worker persists live greeks
-// separately in live_greeks_snapshots).
-async function storeOptionChainMinutes(symbol, expirySql, strike, ceCandles, ceOi, peCandles, peOi) {
+// option_chain_history rows. Computes IV/Greeks per minute via
+// utils/blackScholes.js using that minute's real index close (from
+// ohlcv_data, already pulled earlier in pullSymbolForDate) — same convention
+// backfillUpstox.js/backfillBreeze.js already use for their historical rows,
+// so option_chain_history's Greeks columns are populated consistently
+// regardless of which of the 4 Phase 7 sources wrote a given row. Previously
+// these stayed NULL for Angel-One-cron-sourced days (2026-07-31 fix) — the
+// live worker's OWN 5-second live_greeks_snapshots table is unaffected and
+// still exists separately for today's live/intraday polling use case.
+async function storeOptionChainMinutes(symbol, expirySql, strike, ceCandles, ceOi, peCandles, peOi, spotByTime) {
     const byTime = new Map();
     for (const c of ceCandles) {
         byTime.set(c.time, { date: c.date, time: c.time, ceLtp: c.close, ceVolume: c.volume, ceOi: ceOi.get(c.time) ?? null });
@@ -57,19 +82,39 @@ async function storeOptionChainMinutes(symbol, expirySql, strike, ceCandles, ceO
     const rows = [...byTime.values()];
     if (!rows.length) return;
 
-    const values = rows.map((r) => [
-        symbol, r.date, r.time, expirySql, strike,
-        r.ceLtp ?? null, r.ceOi ?? null, r.ceVolume ?? null,
-        r.peLtp ?? null, r.peOi ?? null, r.peVolume ?? null,
-    ]);
+    const values = rows.map((r) => {
+        const spot = spotByTime ? spotByTime.get(r.time) ?? null : null;
+        const t = yearsToExpiryAsOf(expirySql, r.date, r.time);
+        let ceGreeks = { iv: null, delta: null, gamma: null, theta: null, vega: null };
+        let peGreeks = { iv: null, delta: null, gamma: null, theta: null, vega: null };
+        if (spot != null) {
+            if (r.ceLtp > 0) {
+                const iv = bs.impliedVolatility({ marketPrice: r.ceLtp, spot, strike, t, right: "call" });
+                if (iv != null) ceGreeks = { iv: iv * 100, ...bs.greeks({ spot, strike, t, vol: iv, right: "call" }) };
+            }
+            if (r.peLtp > 0) {
+                const iv = bs.impliedVolatility({ marketPrice: r.peLtp, spot, strike, t, right: "put" });
+                if (iv != null) peGreeks = { iv: iv * 100, ...bs.greeks({ spot, strike, t, vol: iv, right: "put" }) };
+            }
+        }
+        return [
+            symbol, r.date, r.time, expirySql, strike, spot,
+            r.ceLtp ?? null, r.ceOi ?? null, r.ceVolume ?? null, ceGreeks.iv, ceGreeks.delta, ceGreeks.gamma, ceGreeks.theta, ceGreeks.vega,
+            r.peLtp ?? null, r.peOi ?? null, r.peVolume ?? null, peGreeks.iv, peGreeks.delta, peGreeks.gamma, peGreeks.theta, peGreeks.vega,
+        ];
+    });
     await pool.query(
         `INSERT INTO option_chain_history (
-           symbol, trade_date, trade_time, expiry, strike,
-           ce_ltp, ce_oi, ce_volume, pe_ltp, pe_oi, pe_volume
+           symbol, trade_date, trade_time, expiry, strike, underlying_price,
+           ce_ltp, ce_oi, ce_volume, ce_iv, ce_delta, ce_gamma, ce_theta, ce_vega,
+           pe_ltp, pe_oi, pe_volume, pe_iv, pe_delta, pe_gamma, pe_theta, pe_vega
          ) VALUES ?
          ON DUPLICATE KEY UPDATE
+           underlying_price=COALESCE(VALUES(underlying_price), underlying_price),
            ce_ltp=VALUES(ce_ltp), ce_oi=VALUES(ce_oi), ce_volume=VALUES(ce_volume),
-           pe_ltp=VALUES(pe_ltp), pe_oi=VALUES(pe_oi), pe_volume=VALUES(pe_volume)`,
+           ce_iv=VALUES(ce_iv), ce_delta=VALUES(ce_delta), ce_gamma=VALUES(ce_gamma), ce_theta=VALUES(ce_theta), ce_vega=VALUES(ce_vega),
+           pe_ltp=VALUES(pe_ltp), pe_oi=VALUES(pe_oi), pe_volume=VALUES(pe_volume),
+           pe_iv=VALUES(pe_iv), pe_delta=VALUES(pe_delta), pe_gamma=VALUES(pe_gamma), pe_theta=VALUES(pe_theta), pe_vega=VALUES(pe_vega)`,
         [values]
     );
 }
@@ -93,6 +138,19 @@ async function dayClose(symbol, dateStr) {
     return rows.length ? Number(rows[0].close) : null;
 }
 
+// Per-minute index close for the day, keyed by trade_time — queried fresh
+// from ohlcv_data (already populated earlier the same run by
+// pullOHLCVForDate) rather than threading candle arrays through call sites,
+// same defensive style as dayClose(). Feeds storeOptionChainMinutes' per-
+// minute Greeks calculation.
+async function getSpotByTime(symbol, dateStr) {
+    const [rows] = await pool.query(
+        `SELECT trade_time, close FROM ohlcv_data WHERE symbol = ? AND trade_date = ?`,
+        [symbol, dateStr]
+    );
+    return new Map(rows.map((r) => [r.trade_time, Number(r.close)]));
+}
+
 /**
  * Full-day minute-by-minute option chain (price + OI) for one expiry, by
  * looping every in-window strike and pulling each CE/PE contract's candles
@@ -101,6 +159,7 @@ async function dayClose(symbol, dateStr) {
  */
 async function pullOptionChainForExpiry(symbol, expirySql, dateStr) {
     const center = await dayClose(symbol, dateStr);
+    const spotByTime = await getSpotByTime(symbol, dateStr);
     const contracts = await instrumentMaster.getOptionContracts(symbol, expirySql, {
         centerPrice: center,
         strikesPerSide: center != null ? HIST_STRIKES_PER_SIDE : null,
@@ -134,7 +193,7 @@ async function pullOptionChainForExpiry(symbol, expirySql, dateStr) {
                 ? await angelHist.getDayOpenInterest({ exchange: "NFO", symboltoken: pair.PE.token, dateStr })
                 : new Map();
 
-            await storeOptionChainMinutes(symbol, expirySql, strike, ce, ceOi, pe, peOi);
+            await storeOptionChainMinutes(symbol, expirySql, strike, ce, ceOi, pe, peOi, spotByTime);
             stored += 1;
         } catch (err) {
             dbLogger.error(`[cron] ${symbol} ${dateStr} strike ${strike}: ${err.message}`);

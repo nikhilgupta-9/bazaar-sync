@@ -2,12 +2,15 @@
 // getHistoricalDatav2 for options, chunked to respect the 1,000-candle/call
 // cap and paced via rateLimiter.js.
 //
-// *** UNVERIFIED response shape *** — like services/nseBhavcopy.js, this was
-// written from the npm package's documented method signature, not a live
-// response (Breeze's domain isn't reachable from the sandbox this was built
-// in). Parsing is defensive: matches known field-name variants, throws with
-// the actual response keys on a miss, instead of silently returning garbage.
-// Run testBreeze.js on one contract before trusting a multi-year run.
+// Response shape CONFIRMED (2026-07-20): testBreeze.js NIFTY returned 375
+// real 1-minute candles for a real contract — session/auth/response-shape
+// all verified against a live account, so backfillBreeze.js/
+// backfillBreezeAll.js are safe to run for real (see CLAUDE.md's Phase 7
+// "Verification status"). Originally written from the npm package's
+// documented method signature only (Breeze's domain wasn't reachable from
+// the sandbox this was first built in); parsing is still kept defensive
+// (matches known field-name variants, throws with the actual response keys
+// on a miss) as a safety net, not because the shape is still in doubt.
 //
 // Date/time convention: the documented Node.js example sends fromDate/
 // toDate/expiryDate as "YYYY-MM-DDTHH:mm:ss.000Z" strings that appear to
