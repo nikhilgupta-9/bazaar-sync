@@ -35,6 +35,7 @@ import OiBar from "../components/OiBar";
 import PayoffChart from "../components/PayoffChart";
 import PresetStrategies from "../components/PresetStrategies";
 import { SlCalender } from "react-icons/sl";
+import { FiSettings } from "react-icons/fi";
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -1190,127 +1191,217 @@ export default function Simulator() {
               </div>
             )}
 
-            {chainData && chainData.expiries.length > 0 && (
-              <div className="mt-2 flex items-center gap-1.5">
-                {/* Nearest expiry — always the day's earliest listed one
-                    (expiryRows is ORDER BY expiry ASC server-side) — shown as
-                    its own highlighted chip, matching the stockmojo reference
-                    where the front-month expiry is visually distinct from the
-                    rest of the list. */}
-                <button
-                  onClick={() => selectExpiry(chainData.expiries[0])}
-                  className={`shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
-                    chainData.selectedExpiry === chainData.expiries[0]
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                  }`}
-                >
-                  {formatExpiryShort(chainData.expiries[0])} ({daysBetween(selectedDate, chainData.expiries[0])}d)
-                </button>
-
-                {chainData.expiries.length > 1 && (
-                  <div className="relative">
-                    <button
-                      onClick={() => setExpiryDropdownOpen((v) => !v)}
-                      className={`shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
-                        chainData.selectedExpiry !== chainData.expiries[0]
-                          ? "bg-blue-600 text-white"
-                          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                      }`}
-                    >
-                      {chainData.selectedExpiry !== chainData.expiries[0]
-                        ? `${formatExpiryShort(chainData.selectedExpiry)} (${daysBetween(selectedDate, chainData.selectedExpiry)}d)`
-                        : `Other expiries (${chainData.expiries.length - 1})`}
-                      {" ▾"}
-                    </button>
-                    {expiryDropdownOpen && (
-                      <>
-                        <div className="fixed inset-0 z-10" onClick={() => setExpiryDropdownOpen(false)} />
-                        <div className="absolute left-0 top-full z-20 mt-1 max-h-72 w-44 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-xl text-[11px]">
-                          {chainData.expiries.slice(1).map((exp) => (
-                            <button
-                              key={exp}
-                              onClick={() => { selectExpiry(exp); setExpiryDropdownOpen(false); }}
-                              className={`block w-full px-3 py-1.5 text-left font-semibold hover:bg-gray-50 ${
-                                exp === chainData.selectedExpiry ? "bg-blue-50 text-blue-700" : "text-gray-600"
-                              }`}
-                            >
-                              {formatExpiryShort(exp)} ({daysBetween(selectedDate, exp)}d)
-                            </button>
-                          ))}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-
-                <div className="relative ml-auto">
-                  <button
-                    onClick={() => setSettingsOpen((v) => !v)}
-                    className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
-                    aria-label="Option chain settings"
-                    title="Column settings"
-                  >
-                    ⚙
-                  </button>
-                  {settingsOpen && (
-                    <>
-                      <div className="fixed inset-0 z-10" onClick={() => setSettingsOpen(false)} />
-                      <div className="absolute right-0 top-full z-20 mt-1 w-56 rounded-lg border border-gray-200 bg-white p-3 shadow-xl text-xs">
-                        <div className="mb-2 flex items-center justify-between">
-                          <span className="font-bold text-gray-800">Chain Settings</span>
-                          <button onClick={resetChainSettings} className="text-[10px] text-blue-600 hover:underline">Reset</button>
-                        </div>
-                        <div className="space-y-1.5">
-                          <label className="flex items-center gap-2">
-                            <input type="checkbox" checked={columns.oi} onChange={() => toggleColumn("oi")} /> Open Interest
-                          </label>
-                          <label className="flex items-center gap-2">
-                            <input type="checkbox" checked={columns.callDelta} onChange={() => toggleColumn("callDelta")} /> Call/Put Delta
-                          </label>
-                          <label className="flex items-center gap-2">
-                            <input type="checkbox" checked={columns.iv} onChange={() => toggleColumn("iv")} /> IV
-                          </label>
-                          <label className="flex items-center gap-2">
-                            <input type="checkbox" checked={columns.theta} onChange={() => toggleColumn("theta")} /> Theta
-                          </label>
-                          <label className="flex items-center gap-2">
-                            <input type="checkbox" checked={columns.vega} onChange={() => toggleColumn("vega")} /> Vega
-                          </label>
-                          <label className="flex items-center gap-2">
-                            <input type="checkbox" checked={columns.gamma} onChange={() => toggleColumn("gamma")} /> Gamma
-                          </label>
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
+            
           </div>
         </div>
       </div>
 
-      <div className="mx-auto flex max-w-[1600px] gap-5 px-5 py-5 min-h-screen">
+      <div className="mx-auto flex max-w-[1600px] gap-5 px-5 pt-2 min-h-screen">
         {/* Left Column: Option Chain Window */}
         <div className="w-[560px] shrink-0 flex flex-col">
           {chainData && (
-            <div className="mb-3 flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-2 text-xs shadow-sm">
-              <div>
-                <span className="text-gray-400">SPOT: </span>
-                <span className="font-bold tabular-nums text-gray-900">
-                  {formatPrice(displaySpot)}
-                </span>
+            <div className="mb-3 rounded-xl border border-gray-200 bg-white px-4 py-1 shadow-sm transition-all hover:shadow-md">
+  
+              {/* Row 1 */}
+              <div className="flex items-center justify-between">
+                <div className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-gray-50">
+                  <span className="text-xs font-medium text-gray-400">SPOT:</span>
+                  <span className="font-bold tabular-nums text-xs text-gray-900 transition-colors group-hover:text-blue-600">
+                    {formatPrice(displaySpot)}
+                  </span>
+                </div>
+
+                <div className="h-5 w-px bg-gray-200" />
+
+                <div className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-gray-50">
+                  <span className="text-xs font-medium text-gray-400">VIX:</span>
+                  <span className="font-bold tabular-nums text-gray-400">—</span>
+                </div>
+
+                <div className="h-5 w-px bg-gray-200" />
+
+                <div className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-gray-50">
+                  <span className="text-xs font-medium text-gray-400">FUT:</span>
+                  <span className="font-bold tabular-nums text-gray-400">—</span>
+                </div>
               </div>
-              <div className="h-4 w-px bg-gray-200" />
-              <div title="VIX isn't persisted for historical dates — only live snapshots are stored (see CLAUDE.md Gotcha #13). Not fabricated here.">
-                <span className="text-gray-400">VIX: </span>
-                <span className="font-bold tabular-nums text-gray-400">—</span>
-              </div>
-              <div className="h-4 w-px bg-gray-200" />
-              <div title="Futures prices aren't persisted for historical dates either — cache/IPC-only in the live path. Not fabricated here.">
-                <span className="text-gray-400">FUT: </span>
-                <span className="font-bold tabular-nums text-gray-400">—</span>
+
+              <hr className="my-1.5 border-gray-200" />
+
+              {/* Row 2 */}
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  {chainData && chainData.expiries.length > 0 && (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* Nearest expiry */}
+                      <button
+                        onClick={() => selectExpiry(chainData.expiries[0])}
+                        className={`shrink-0 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-all duration-200 hover:scale-105 ${
+                          chainData.selectedExpiry === chainData.expiries[0]
+                            ? "bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-md hover:shadow-lg"
+                            : "bg-gray-100 text-gray-600 hover:bg-gray-200 hover:text-gray-900"
+                        }`}
+                      >
+                        {formatExpiryShort(chainData.expiries[0])} ({daysBetween(selectedDate, chainData.expiries[0])}d)
+                      </button>
+
+                      <button
+                        onClick={() => selectExpiry(chainData.expiries[1])}
+                        className={`shrink-0 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-all duration-200 hover:scale-105 ${
+                          chainData.selectedExpiry === chainData.expiries[1]
+                            ? "bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-md hover:shadow-lg"
+                            : "bg-gray-100 text-gray-600 hover:bg-gray-200 hover:text-gray-900"
+                        }`}
+                      >
+                        {formatExpiryShort(chainData.expiries[1])} ({daysBetween(selectedDate, chainData.expiries[1])}d)
+                      </button>
+
+                      <button
+                        onClick={() => selectExpiry(chainData.expiries[2])}
+                        className={`shrink-0 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-all duration-200 hover:scale-105 ${
+                          chainData.selectedExpiry === chainData.expiries[2]
+                            ? "bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-md hover:shadow-lg"
+                            : "bg-gray-100 text-gray-600 hover:bg-gray-200 hover:text-gray-900"
+                        }`}
+                      >
+                        {formatExpiryShort(chainData.expiries[2])} ({daysBetween(selectedDate, chainData.expiries[2])}d)
+                      </button>
+
+                      {chainData.expiries.length > 1 && (
+                        <div className="relative">
+                          <button
+                            onClick={() => setExpiryDropdownOpen((v) => !v)}
+                            className={`shrink-0 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-all duration-200 hover:scale-105 ${
+                              chainData.selectedExpiry !== chainData.expiries[0] && chainData.expiries[1]
+                                ? "bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-md hover:shadow-lg"
+                                : "bg-gray-100 text-gray-600 hover:bg-gray-200 hover:text-gray-900"
+                            }`}
+                          >
+                            {chainData.selectedExpiry !== chainData.expiries[0] && chainData.expiries[1]
+                              ? `${formatExpiryShort(chainData.selectedExpiry)} (${daysBetween(selectedDate, chainData.selectedExpiry)}d)`
+                              : `Other expiries (${chainData.expiries.length - 1})`}
+                            <span className="ml-1 inline-block transition-transform duration-200 group-hover:rotate-180">▾</span>
+                          </button>
+                          
+                          {expiryDropdownOpen && (
+                            <>
+                              <div className="fixed inset-0 z-10" onClick={() => setExpiryDropdownOpen(false)} />
+                              <div className="absolute left-0 top-full z-20 mt-1.5 min-w-[160px] max-h-72 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-xl text-[11px] animate-in fade-in slide-in-from-top-1 duration-200">
+                                {chainData.expiries.slice(1).map((exp) => (
+                                  <button
+                                    key={exp}
+                                    onClick={() => { selectExpiry(exp); setExpiryDropdownOpen(false); }}
+                                    className={`block w-full px-4 py-2 text-left font-semibold transition-colors hover:bg-gray-50 ${
+                                      exp === chainData.selectedExpiry 
+                                        ? "bg-blue-50 text-blue-700" 
+                                        : "text-gray-600 hover:text-gray-900"
+                                    }`}
+                                  >
+                                    {formatExpiryShort(exp)} ({daysBetween(selectedDate, exp)}d)
+                                  </button>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="h-5 w-px bg-gray-200 flex-shrink-0" />
+
+                <div className="flex-shrink-0">
+                  <div className="relative">
+                    <button
+                      onClick={() => setSettingsOpen((v) => !v)}
+                      className="rounded-lg p-2 text-gray-400 transition-all duration-200 hover:bg-gray-100 hover:text-gray-700 hover:rotate-90"
+                      aria-label="Option chain settings"
+                      title="Column settings"
+                    >
+                      <FiSettings size={20} />
+                    </button>
+                    
+                    {settingsOpen && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setSettingsOpen(false)} />
+                        <div className="absolute right-0 top-full z-20 mt-1.5 w-56 rounded-lg border border-gray-200 bg-white p-4 shadow-xl text-xs animate-in fade-in slide-in-from-top-1 duration-200">
+                          <div className="mb-3 flex items-center justify-between">
+                            <span className="font-bold text-gray-800">Chain Settings</span>
+                            <button 
+                              onClick={resetChainSettings} 
+                              className="text-[10px] text-blue-600 transition-colors hover:text-blue-800 hover:underline"
+                            >
+                              Reset
+                            </button>
+                          </div>
+                          
+                          <div className="space-y-2">
+                            <label className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-gray-50">
+                              <input 
+                                type="checkbox" 
+                                checked={columns.oi} 
+                                onChange={() => toggleColumn("oi")} 
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              /> 
+                              <span className="select-none">Open Interest</span>
+                            </label>
+                            
+                            <label className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-gray-50">
+                              <input 
+                                type="checkbox" 
+                                checked={columns.callDelta} 
+                                onChange={() => toggleColumn("callDelta")} 
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              /> 
+                              <span className="select-none">Call/Put Delta</span>
+                            </label>
+                            
+                            <label className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-gray-50">
+                              <input 
+                                type="checkbox" 
+                                checked={columns.iv} 
+                                onChange={() => toggleColumn("iv")} 
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              /> 
+                              <span className="select-none">IV</span>
+                            </label>
+                            
+                            <label className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-gray-50">
+                              <input 
+                                type="checkbox" 
+                                checked={columns.theta} 
+                                onChange={() => toggleColumn("theta")} 
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              /> 
+                              <span className="select-none">Theta</span>
+                            </label>
+                            
+                            <label className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-gray-50">
+                              <input 
+                                type="checkbox" 
+                                checked={columns.vega} 
+                                onChange={() => toggleColumn("vega")} 
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              /> 
+                              <span className="select-none">Vega</span>
+                            </label>
+                            
+                            <label className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-gray-50">
+                              <input 
+                                type="checkbox" 
+                                checked={columns.gamma} 
+                                onChange={() => toggleColumn("gamma")} 
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              /> 
+                              <span className="select-none">Gamma</span>
+                            </label>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           )}
