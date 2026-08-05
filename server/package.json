@@ -15,6 +15,7 @@
   "type": "commonjs",
   "dependencies": {
     "adm-zip": "^0.6.0",
+    "axios": "^1.18.1",
     "bcrypt": "^6.0.0",
     "breezeconnect": "^1.0.31",
     "cors": "^2.8.6",

@@ -31,6 +31,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const axios = require("axios");
 
 const NSE_SCRIP_MASTER_URL = "https://traderweb.icicidirect.com/Content/File/txtFile/ScripFile/NSEScripMaster.txt";
 const CACHE_PATH = path.join(__dirname, "../data/breeze-nse-scrip-master.json");
@@ -92,10 +93,14 @@ async function ensureLoaded() {
             }
 
             console.log("[breeze-symbolmap] downloading NSE scrip master from ICICI...");
-            const res = await fetch(NSE_SCRIP_MASTER_URL);
-            if (!res.ok) throw new Error(`NSE scrip master download failed: HTTP ${res.status}`);
-            const text = await res.text();
-            cache = parseScripMaster(text);
+            // Native fetch (undici) hit a real ECONNRESET against this exact
+            // domain (confirmed 2026-08-06) — breezeconnect's own getNames()
+            // downloads the same file successfully via axios, so use that
+            // instead of chasing undici-specific TLS/keep-alive behavior.
+            // transformResponse: bypass axios's default JSON-parse attempt so
+            // res.data is always the raw CSV string, whatever the content-type.
+            const res = await axios.get(NSE_SCRIP_MASTER_URL, { transformResponse: (d) => d });
+            cache = parseScripMaster(res.data);
             if (!cache.size) throw new Error("parsed 0 rows from NSE scrip master — column layout may have changed, check stripQuotes/column indices");
 
             fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
@@ -103,10 +108,15 @@ async function ensureLoaded() {
             console.log(`[breeze-symbolmap] parsed and cached ${cache.size} NSE->ISEC mappings`);
             return cache;
         } catch (err) {
-            // err.cause carries the real underlying reason for fetch's generic
-            // "fetch failed" (DNS/TLS/connection-refused/etc.) — surface it,
-            // don't just print the useless top-level message.
-            const detail = err.cause ? ` (cause: ${err.cause.message || err.cause})` : "";
+            // axios error shapes: err.response = server replied with an error
+            // status; err.request (no .response) = request went out but got no
+            // response (timeout/reset/etc.); neither = something else (e.g. our
+            // own "parsed 0 rows" Error above).
+            const detail = err.response
+                ? ` (HTTP ${err.response.status})`
+                : err.code
+                ? ` (${err.code})`
+                : "";
             console.error(`[breeze-symbolmap] failed to load NSE scrip master: ${err.message}${detail} — falling back to identity mapping (symbols will be sent unchanged, same broken behavior as before this fix)`);
             cache = new Map();
             return cache;
