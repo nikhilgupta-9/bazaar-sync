@@ -178,8 +178,13 @@ async function backfillSymbol(symbol, fromDate, toDate) {
             rowsStored += await storeRows(symbol, expiry, strike, ce, pe);
         } catch (err) {
             contractsFailed += 1;
-            console.error(`[breeze] ${symbol} ${expiry} strike ${strike}: ${err.message}`);
-            if (/daily call budget spent/.test(err.message)) throw err; // stop this whole symbol AND propagate to caller
+            // breezeconnect's own errorException() throws a plain string, not
+            // an Error, on internal SDK failures — err.message is undefined
+            // in that case (confirmed 2026-08-05: a real ABB strike printed
+            // "undefined" here). Extract defensively rather than assume Error.
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[breeze] ${symbol} ${expiry} strike ${strike}: ${msg}`);
+            if (/daily call budget spent/.test(msg)) throw err; // stop this whole symbol AND propagate to caller
         }
     }
     return { rowsStored, contractsFailed, contractsSkipped, contractsTotal: contracts.length };
@@ -205,8 +210,9 @@ async function main() {
             );
         }
     } catch (err) {
-        if (/daily call budget spent/.test(err.message)) {
-            console.log(`[breeze] ${err.message}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/daily call budget spent/.test(msg)) {
+            console.log(`[breeze] ${msg}`);
             console.log("[breeze] stopping early — daily budget spent. Re-run this same command tomorrow, it resumes where it left off.");
         } else {
             throw err;

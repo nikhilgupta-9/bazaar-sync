@@ -21,6 +21,7 @@
 
 const { getBreeze } = require("./auth");
 const rateLimiter = require("./rateLimiter");
+const symbolMap = require("./symbolMap");
 const { addDays } = require("../services/backtestEngine");
 
 const CHUNK_DAYS = Number(process.env.BREEZE_CHUNK_DAYS || 2); // 2 days * 375 1-min candles ≈ 750, safely under 1000
@@ -95,6 +96,11 @@ async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fro
     const breezeRight = RIGHT_MAP[right];
     if (!breezeRight) throw new Error(`Unknown right "${right}", expected CE or PE`);
 
+    // stockCode here is our NSE-style symbol (matches option_chain_history) —
+    // Breeze itself wants ICICI's own isec_stock_code, which differs from the
+    // NSE symbol for most stocks (see symbolMap.js header for why).
+    const isecStockCode = await symbolMap.resolveStockCode(stockCode);
+
     const chunks = chunkDateRange(fromDateStr, toDateStr);
     const all = [];
     for (const [chunkFrom, chunkTo] of chunks) {
@@ -103,7 +109,7 @@ async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fro
             interval: "1minute",
             fromDate: isoIst(chunkFrom, "09:15:00"),
             toDate: isoIst(chunkTo, "15:30:00"),
-            stockCode,
+            stockCode: isecStockCode,
             exchangeCode: "NFO",
             productType: "options",
             expiryDate: isoIst(expirySql, "07:00:00"), // per documented example's convention, unverified

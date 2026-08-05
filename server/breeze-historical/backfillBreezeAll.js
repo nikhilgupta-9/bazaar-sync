@@ -63,15 +63,18 @@ async function main() {
                 );
             }
         } catch (err) {
-            if (/daily call budget spent/.test(err.message)) {
-                console.log(`[breeze-all] ${err.message}`);
+            // Same non-Error-throw quirk as backfillBreeze.js — breezeconnect
+            // can throw a plain string internally, so don't assume .message exists.
+            const msg = err instanceof Error ? err.message : String(err);
+            if (/daily call budget spent/.test(msg)) {
+                console.log(`[breeze-all] ${msg}`);
                 console.log(
                     `[breeze-all] stopping here — processed ${symbolsDone} symbols this run (${symbolsSkipped} were already done), ${totalRows} rows stored. Re-run this same command tomorrow (or anytime), already-enriched contracts are skipped automatically.`
                 );
                 await pool.end();
                 return;
             }
-            console.error(`[breeze-all] ${symbol}: unexpected error: ${err.message}`);
+            console.error(`[breeze-all] ${symbol}: unexpected error: ${msg}`);
         }
     }
 
