@@ -36,6 +36,19 @@ const NSE_SCRIP_MASTER_URL = "https://traderweb.icicidirect.com/Content/File/txt
 const CACHE_PATH = path.join(__dirname, "../data/breeze-nse-scrip-master.json");
 const CACHE_MAX_AGE_MS = 20 * 60 * 60 * 1000; // 20h, same refresh cadence as instrumentMaster.js
 
+// Confirmed 2026-08-06: this traderweb.icicidirect.com domain hits the same
+// TLS issue breezeconnect's own require() already papers over process-wide
+// for api.icicidirect.com (see CLAUDE.md's Phase 7 gotcha — "breezeconnect's
+// own require() sets NODE_TLS_REJECT_UNAUTHORIZED=0 for the whole Node
+// process"). In the real backfill flow that's already set by the time this
+// file's fetch runs (auth.js requires breezeconnect first), but
+// testSymbolMap.js never touches breezeconnect at all and hit a real "fetch
+// failed" here as a result — set it explicitly so this module doesn't
+// silently depend on some other file's require order. Same accepted-risk
+// scope as the rest of breeze-historical/: one-off CLI scripts only, never
+// required from Express/the market worker/anything long-lived.
+if (!process.env.NODE_TLS_REJECT_UNAUTHORIZED) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
 // UNVERIFIED against a real response — see header comment above.
 const INDEX_OVERRIDES = {
     NIFTY: process.env.BREEZE_STOCKCODE_NIFTY || "NIFTY",
@@ -90,7 +103,11 @@ async function ensureLoaded() {
             console.log(`[breeze-symbolmap] parsed and cached ${cache.size} NSE->ISEC mappings`);
             return cache;
         } catch (err) {
-            console.error(`[breeze-symbolmap] failed to load NSE scrip master: ${err.message} — falling back to identity mapping (symbols will be sent unchanged, same broken behavior as before this fix)`);
+            // err.cause carries the real underlying reason for fetch's generic
+            // "fetch failed" (DNS/TLS/connection-refused/etc.) — surface it,
+            // don't just print the useless top-level message.
+            const detail = err.cause ? ` (cause: ${err.cause.message || err.cause})` : "";
+            console.error(`[breeze-symbolmap] failed to load NSE scrip master: ${err.message}${detail} — falling back to identity mapping (symbols will be sent unchanged, same broken behavior as before this fix)`);
             cache = new Map();
             return cache;
         }
