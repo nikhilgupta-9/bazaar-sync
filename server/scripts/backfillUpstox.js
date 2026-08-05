@@ -210,18 +210,28 @@ async function backfillExpiry(symbol, underlyingKey, expirySql, strikesPerSide) 
     );
 }
 
-// Same "already has minute-level data" check as breeze-historical/backfillBreeze.js
-// (a bhavcopy-only row always sits at trade_time='15:30:00' exactly) — lets
-// SYMBOL=ALL resume runs skip strikes a previous run already filled in,
-// instead of re-requesting Upstox for the same contract every time.
+// A contract counts as fully enriched only if EVERY trade_date already known
+// for it (bhavcopy EOD row, a previous partial run, whatever) also has at
+// least one minute-level row. Checking "does ANY minute row exist at all"
+// (the original check here) let a contract that only PARTIALLY succeeded —
+// e.g. one day's fetch hit a transient network error mid-run — get marked
+// done forever, so that specific missing day would never get retried by
+// just re-running this script. Confirmed necessary 2026-08-05: a real run
+// left scattered day-level gaps inside otherwise-enriched NIFTY contracts
+// for exactly this reason. Re-fetching a contract's whole range again when
+// only one day was missing is a bit wasteful, but cheap here — Upstox has
+// no daily call budget the way Breeze does, and ON DUPLICATE KEY UPDATE
+// makes re-writing already-good days harmless.
 async function isAlreadyEnriched(symbol, expiry, strike, fromDate, toDate) {
     const [rows] = await pool.query(
-        `SELECT 1 FROM option_chain_history
-         WHERE symbol = ? AND expiry = ? AND strike = ? AND trade_date BETWEEN ? AND ? AND trade_time <> '15:30:00'
-         LIMIT 1`,
+        `SELECT trade_date, MAX(trade_time <> '15:30:00') AS has_minute_row
+         FROM option_chain_history
+         WHERE symbol = ? AND expiry = ? AND strike = ? AND trade_date BETWEEN ? AND ?
+         GROUP BY trade_date`,
         [symbol, expiry, strike, fromDate, toDate]
     );
-    return rows.length > 0;
+    if (!rows.length) return false;
+    return rows.every((r) => Number(r.has_minute_row) === 1);
 }
 
 /** Resolve a symbol to its Upstox underlying instrument_key — indices first (hardcoded, confirmed), stocks via the downloaded instrument master. */
