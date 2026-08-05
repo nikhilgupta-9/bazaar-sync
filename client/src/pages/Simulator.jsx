@@ -664,6 +664,22 @@ export default function Simulator() {
     }
   }
 
+  // Starting playback from (at or past) the last sample would otherwise
+  // immediately self-stop on the interval's first tick (see the clamp
+  // below) with zero visible movement — looks exactly like a broken button
+  // when a user replays to the end, or jumps to EOD, then clicks Autoplay
+  // again expecting it to restart from the top.
+  function toggleAutoplay() {
+    if (!replayData) return;
+    setPlaying((wasPlaying) => {
+      const startingPlayback = !wasPlaying;
+      if (startingPlayback && cursor >= replayData.series.length - 1) {
+        setCursor(0);
+      }
+      return startingPlayback;
+    });
+  }
+
   // Playback loop (Autoplay) — Move (step size) and Every (interval) vary independently.
   useEffect(() => {
     if (!playing || !replayData) return;
@@ -834,7 +850,7 @@ export default function Simulator() {
     <div className="bg-gray-50/40">
       <div className="mx-auto max-w-[1600px] px-5 pt-2">
         <div className="w-full shrink-0 flex flex-col">
-          <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+          <div className="rounded-xl border border-gray-200 bg-white p-2 shadow-sm">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5 relative">
                 <button
@@ -899,7 +915,7 @@ export default function Simulator() {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setPlaying((p) => !p)}
+                  onClick={toggleAutoplay}
                   disabled={!replayData}
                   className={`rounded-md px-2.5 py-1 text-[11px] font-bold transition disabled:opacity-40 disabled:cursor-not-allowed ${
                     playing
@@ -1196,7 +1212,7 @@ export default function Simulator() {
         </div>
       </div>
 
-      <div className="mx-auto flex max-w-[1600px] gap-5 px-5 pt-2 min-h-screen">
+      <div className="mx-auto flex max-w-[1600px] gap-3 px-5 pt-2 min-h-screen">
         {/* Left Column: Option Chain Window */}
         <div className="w-[560px] shrink-0 flex flex-col">
           {chainData && (
@@ -1583,8 +1599,13 @@ export default function Simulator() {
 
         {/* Right Column: Ready-made strategies, or Analytics/Chart/Positions once legs exist */}
         <div className="flex-1 flex flex-col">
+          
           {legs.length === 0 ? (
-            <div className="flex-1 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+            <div className="flex-1 rounded-xl border border-gray-200 bg-white p-2 shadow-sm">
+              <div className=" px-4 py-1">
+                <h1>nikhil</h1>
+              </div>
+              <hr className="my-1.5 border-gray-200" />
               <PresetStrategies
                 data={liveChain || chainData}
                 onApply={applyPreset}
