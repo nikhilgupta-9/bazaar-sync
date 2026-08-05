@@ -60,6 +60,25 @@ const INDEX_OVERRIDES = {
 let cache = null; // Map<nseSymbol, isecStockCode>
 let loadPromise = null;
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** ECONNRESET can be a one-off network hiccup, not just a hard block — retry a few times before giving up. */
+async function withDownloadRetry(fn, attempts = 3) {
+    let lastErr;
+    for (let i = 1; i <= attempts; i++) {
+        try {
+            return await fn();
+        } catch (err) {
+            lastErr = err;
+            if (i < attempts) {
+                console.warn(`[breeze-symbolmap] download attempt ${i}/${attempts} failed (${err.code || err.message}), retrying...`);
+                await sleep(1000 * i);
+            }
+        }
+    }
+    throw lastErr;
+}
+
 function stripQuotes(v) {
     const m = (v || "").match(/(?:"[^"]*"|^[^"]*$)/);
     return (m ? m[0] : v || "").replace(/"/g, "").trim();
@@ -93,13 +112,25 @@ async function ensureLoaded() {
             }
 
             console.log("[breeze-symbolmap] downloading NSE scrip master from ICICI...");
-            // Native fetch (undici) hit a real ECONNRESET against this exact
-            // domain (confirmed 2026-08-06) — breezeconnect's own getNames()
-            // downloads the same file successfully via axios, so use that
-            // instead of chasing undici-specific TLS/keep-alive behavior.
-            // transformResponse: bypass axios's default JSON-parse attempt so
-            // res.data is always the raw CSV string, whatever the content-type.
-            const res = await axios.get(NSE_SCRIP_MASTER_URL, { transformResponse: (d) => d });
+            // Confirmed 2026-08-06: BOTH native fetch (undici) and plain axios
+            // hit ECONNRESET against this exact domain — ruling out "wrong HTTP
+            // client", since both ultimately ride Node's own TLS stack. Most
+            // likely a WAF/anti-bot filter resetting connections that don't
+            // look like a real browser (no User-Agent, etc.) — untested
+            // theory, breezeconnect's own getNames() sends no headers either
+            // and was never independently confirmed working from this
+            // codebase. Send browser-like headers + retry a few times (a
+            // reset can also just be a transient hiccup) before giving up.
+            const res = await withDownloadRetry(() =>
+                axios.get(NSE_SCRIP_MASTER_URL, {
+                    transformResponse: (d) => d,
+                    headers: {
+                        "User-Agent":
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                        Accept: "text/plain,text/csv,*/*",
+                    },
+                })
+            );
             cache = parseScripMaster(res.data);
             if (!cache.size) throw new Error("parsed 0 rows from NSE scrip master — column layout may have changed, check stripQuotes/column indices");
 
