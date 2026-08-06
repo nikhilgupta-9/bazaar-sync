@@ -28,6 +28,40 @@ const CHUNK_DAYS = Number(process.env.BREEZE_CHUNK_DAYS || 2); // 2 days * 375 1
 
 const RIGHT_MAP = { CE: "call", PE: "put" };
 
+// Confirmed 2026-08-06: a real run hit "read ECONNRESET" straight from
+// breezeconnect's getHistoricalDatav2 (a pure network hiccup, unrelated to
+// the request's validity) with ZERO retry — every one of these permanently
+// failed that contract's chunk AND still burned one call against Breeze's
+// precious 4,800/day budget for nothing. Retry a few times, but ONLY for
+// error text that actually looks like a transport-level problem — anything
+// else (bad stock code, expired session, "daily budget spent" from
+// rateLimiter.throttle() before this even runs) should keep failing fast,
+// since retrying those just wastes more budget on a call that will never
+// succeed differently.
+const TRANSIENT_ERROR_PATTERN = /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|socket hang up|network|fetch failed/i;
+const CHUNK_RETRY_ATTEMPTS = Number(process.env.BREEZE_CHUNK_RETRY_ATTEMPTS || 3);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function callWithTransientRetry(fn, label) {
+    let lastErr;
+    for (let attempt = 1; attempt <= CHUNK_RETRY_ATTEMPTS; attempt++) {
+        try {
+            return await fn();
+        } catch (err) {
+            // breezeconnect's own errorException() throws a plain string on
+            // internal failures, not an Error — extract defensively (same
+            // quirk as backfillBreeze.js's catch blocks).
+            const msg = err instanceof Error ? err.message || "" : String(err);
+            lastErr = err;
+            if (!TRANSIENT_ERROR_PATTERN.test(msg) || attempt === CHUNK_RETRY_ATTEMPTS) throw err;
+            const delay = 1000 * attempt;
+            console.warn(`[breeze] ${label}: transient error (attempt ${attempt}/${CHUNK_RETRY_ATTEMPTS}) — retrying in ${delay}ms: ${msg.split("\n")[0]}`);
+            await sleep(delay);
+        }
+    }
+    throw lastErr;
+}
+
 function isoIst(dateStr, timeStr) {
     return `${dateStr}T${timeStr}.000Z`;
 }
@@ -105,17 +139,21 @@ async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fro
     const all = [];
     for (const [chunkFrom, chunkTo] of chunks) {
         await rateLimiter.throttle();
-        const resp = await breeze.getHistoricalDatav2({
-            interval: "1minute",
-            fromDate: isoIst(chunkFrom, "09:15:00"),
-            toDate: isoIst(chunkTo, "15:30:00"),
-            stockCode: isecStockCode,
-            exchangeCode: "NFO",
-            productType: "options",
-            expiryDate: isoIst(expirySql, "07:00:00"), // per documented example's convention, unverified
-            right: breezeRight,
-            strikePrice: String(strike),
-        });
+        const resp = await callWithTransientRetry(
+            () =>
+                breeze.getHistoricalDatav2({
+                    interval: "1minute",
+                    fromDate: isoIst(chunkFrom, "09:15:00"),
+                    toDate: isoIst(chunkTo, "15:30:00"),
+                    stockCode: isecStockCode,
+                    exchangeCode: "NFO",
+                    productType: "options",
+                    expiryDate: isoIst(expirySql, "07:00:00"), // per documented example's convention, unverified
+                    right: breezeRight,
+                    strikePrice: String(strike),
+                }),
+            `${stockCode} ${expirySql} ${strike}`
+        );
 
         if (resp?.Error) throw new Error(`Breeze getHistoricalDatav2 error: ${resp.Error}`);
         const rows = Array.isArray(resp?.Success) ? resp.Success : [];
