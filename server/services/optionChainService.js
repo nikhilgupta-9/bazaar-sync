@@ -32,6 +32,12 @@ const LIVE_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY"]);
 // concern for the symbol picker, not a data-source decision.
 const INDEX_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX", "SENSEX50"]);
 const HISTORICAL_CACHE_TTL_MS = 60 * 1000;
+// Symbol list only changes when a backfill script adds a new symbol
+// (infrequent) — but `SELECT DISTINCT symbol` against option_chain_history
+// (17M+ rows as Phase 7 backfills grow) is expensive to re-run on every
+// page load, which is what listSymbols() was doing. Cache it like
+// historicalCache above.
+const SYMBOL_LIST_CACHE_TTL_MS = 5 * 60 * 1000;
 
 // Plain-string date helpers (CLAUDE.md Gotcha #12 — no local-timezone Date math)
 function utcMidnight(dateStr) {
@@ -50,6 +56,7 @@ function daysToExpiry(expirySql, fromDateStr) {
 class OptionChainService {
     constructor() {
         this.historicalCache = new Map(); // key -> { payload, cachedAt }
+        this.symbolListCache = null; // { payload, cachedAt }
     }
 
     isMarketOpen() {
@@ -78,6 +85,10 @@ class OptionChainService {
      * list) so it's automatically correct as Bhavcopy/Breeze coverage grows.
      */
     async listSymbols() {
+        if (this.symbolListCache && Date.now() - this.symbolListCache.cachedAt < SYMBOL_LIST_CACHE_TTL_MS) {
+            return this.symbolListCache.payload;
+        }
+
         const rows = await db.query(`SELECT DISTINCT symbol FROM option_chain_history ORDER BY symbol ASC`);
         const all = (rows || []).map((r) => r.symbol);
         const indices = all.filter((s) => INDEX_SYMBOLS.has(s));
@@ -88,7 +99,9 @@ class OptionChainService {
         // rather than being dropped.
         const indexOrder = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX", "SENSEX50"];
         indices.sort((a, b) => indexOrder.indexOf(a) - indexOrder.indexOf(b));
-        return { indices, stocks, liveSymbols: [...LIVE_SYMBOLS] };
+        const payload = { indices, stocks, liveSymbols: [...LIVE_SYMBOLS] };
+        this.symbolListCache = { payload, cachedAt: Date.now() };
+        return payload;
     }
 
     /**

@@ -283,4 +283,44 @@ async function replay(req, res) {
     }
 }
 
-module.exports = { listDates, getChainAtTime, replay };
+/**
+ * GET /api/simulator/candles/:symbol?date=YYYY-MM-DD
+ * Real 1-minute OHLC candles for the underlying on one historical trading
+ * day, straight from ohlcv_data (same table the replay endpoint already
+ * reads spot closes from) — powers the Simulator's NIFTY Chart tab. Never
+ * touches Angel One; timeframe aggregation (5m/15m/1h) is done client-side
+ * from these 1m bars rather than adding query variants for each interval.
+ */
+async function getCandles(req, res) {
+    try {
+        const symbol = resolveSymbol(req, res);
+        if (!symbol) return;
+        const { date } = req.query;
+        if (!date) return res.status(400).json({ error: "date is required (see /api/simulator/dates/:symbol)" });
+
+        const [rows] = await pool.query(
+            `SELECT trade_time, open, high, low, close, volume FROM ohlcv_data
+             WHERE symbol = ? AND trade_date = ? ORDER BY trade_time ASC`,
+            [symbol, date]
+        );
+        if (!rows.length) {
+            return res.status(404).json({ error: `No stored candle data for ${symbol} on ${date}` });
+        }
+        const candles = rows
+            .filter((r) => r.open != null && r.high != null && r.low != null && r.close != null)
+            .map((r) => ({
+                time: r.trade_time,
+                open: Number(r.open),
+                high: Number(r.high),
+                low: Number(r.low),
+                close: Number(r.close),
+                volume: r.volume != null ? Number(r.volume) : null,
+            }));
+        res.json({ symbol, date, candles });
+    } catch (err) {
+        console.error("[simulator/candles]", err);
+        res.status(500).json({ error: err.message });
+    }
+}
+
+module.exports = { listDates, getChainAtTime, replay, getCandles };

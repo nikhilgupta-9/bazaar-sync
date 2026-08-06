@@ -16,7 +16,25 @@ CREATE TABLE IF NOT EXISTS option_chain_history (
   pe_delta DECIMAL(6,4), pe_gamma DECIMAL(8,6), pe_theta DECIMAL(8,4), pe_vega DECIMAL(8,4),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_snapshot (symbol, expiry, strike, trade_date, trade_time),
-  KEY idx_backtest_range (symbol, expiry, trade_date, trade_time)
+  KEY idx_backtest_range (symbol, expiry, trade_date, trade_time),
+  -- Added Phase 7.1 (2026-08-06): simulatorController.js's listDates
+  -- (GROUP BY trade_date, COUNT(DISTINCT trade_time) over every row for a
+  -- symbol) and getChainAtTime's expiry-discovery query (WHERE symbol=? AND
+  -- trade_date=?, no expiry known yet) both filter/group by trade_date
+  -- BEFORE expiry is known — idx_backtest_range can't help since expiry
+  -- sits between symbol and trade_date there, forcing a full scan of every
+  -- row for the symbol (NIFTY alone is 5M+ rows after Phase 7's
+  -- Bhavcopy/Breeze backfills: 6.8s measured for listDates, 1.2s for the
+  -- expiry lookup — most of the Simulator page's ~15s load). Verified live
+  -- against the real dev DB (2026-08-06): this index alone (no wider
+  -- variant needed — a (symbol, trade_date, expiry, trade_time) index was
+  -- tried first and was slower, since MySQL couldn't avoid a filesort with
+  -- expiry sitting in the middle) took listDates to ~1.5s and the expiry
+  -- lookup to ~0.04s. Existing databases need
+  -- `ALTER TABLE option_chain_history ADD INDEX idx_symbol_date_time
+  -- (symbol, trade_date, trade_time);` run by hand — schema.sql's
+  -- CREATE TABLE IF NOT EXISTS does not retrofit already-created tables.
+  KEY idx_symbol_date_time (symbol, trade_date, trade_time)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS ohlcv_data (
