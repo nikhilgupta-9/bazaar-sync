@@ -43,11 +43,6 @@ const SHAPES = {
         { c: "green", pts: [[0, 12], [40, 12], [55, 30]] },
         { c: "red", pts: [[55, 30], [70, 40], [100, 40]] },
     ],
-    "long-call-butterfly": [
-        { c: "red", pts: [[0, 40], [25, 40], [37, 30]] },
-        { c: "green", pts: [[37, 30], [50, 12], [63, 30]] },
-        { c: "red", pts: [[63, 30], [75, 40], [100, 40]] },
-    ],
     // No upside risk: profit plateaus (flat) to the right past the short
     // call spread, loss grows to the left below the short put.
     "jade-lizard": [
@@ -141,13 +136,6 @@ const SHAPES = {
         { c: "green", pts: [[48, 30], [62, 14], [76, 30]] },
         { c: "red", pts: [[76, 30], [88, 38], [100, 40]] },
     ],
-    // Call ratio BACK spread (buy more further-OTM calls than the near
-    // strike sold) — opposite construction from call-ratio-spread above:
-    // small defined risk near the money, unlimited profit further out.
-    "call-ratio-back-spread": [
-        { c: "red", pts: [[0, 30], [25, 36], [45, 30]] },
-        { c: "green", pts: [[45, 30], [65, 12], [100, 4]] },
-    ],
     // Calendar spread (sell near-dated, buy far-dated at the same strike),
     // evaluated at the near leg's expiry: bounded loss on both wings (capped
     // at the net debit paid), single peak near the strike where the near
@@ -156,6 +144,76 @@ const SHAPES = {
         { c: "red", pts: [[0, 34], [30, 32]] },
         { c: "green", pts: [[30, 32], [50, 14], [70, 32]] },
         { c: "red", pts: [[70, 32], [100, 34]] },
+    ],
+    // Same payoff shape as long-calendar-call regardless of calls vs. puts
+    // (a calendar spread's shape comes from the time-decay differential
+    // between near/far legs, not which right they're built with) — kept as
+    // its own key so PresetStrategies can label it distinctly, same
+    // convention as bull-put-spread reusing bull-call-spread's shape.
+    "long-calendar-put": [
+        { c: "red", pts: [[0, 34], [30, 32]] },
+        { c: "green", pts: [[30, 32], [50, 14], [70, 32]] },
+        { c: "red", pts: [[70, 32], [100, 34]] },
+    ],
+    // Naked long put: bearish mirror of buy-call — flat loss (premium paid)
+    // above the strike (put worthless while spot stays high), profit grows
+    // unbounded as spot falls below it.
+    "buy-put": [
+        { c: "green", pts: [[0, 6], [45, 30]] },
+        { c: "red", pts: [[45, 30], [55, 40], [100, 40]] },
+    ],
+    // Naked short call: bearish mirror of sell-put — profit caps at the
+    // premium collected while price stays below the strike, loss grows
+    // unbounded above it.
+    "sell-call": [
+        { c: "green", pts: [[0, 22], [42, 22], [55, 30]] },
+        { c: "red", pts: [[55, 30], [100, 44]] },
+    ],
+    // Buy put + sell call at the same strike replicates a linear short
+    // futures payoff — the bearish mirror of long-synthetic-future (a single
+    // descending diagonal instead of ascending).
+    "short-synthetic-future": [
+        { c: "green", pts: [[0, 8], [50, 27]] },
+        { c: "red", pts: [[50, 27], [100, 44]] },
+    ],
+    // Same risk/reward shape as bear-put-spread (a bearish vertical always
+    // looks like this regardless of whether it's built with calls or puts,
+    // credit or debit) — kept as its own key so PresetStrategies can label
+    // it distinctly, same convention as bull-put-spread above.
+    "bear-call-spread": [
+        { c: "green", pts: [[0, 12], [40, 12], [55, 30]] },
+        { c: "red", pts: [[55, 30], [70, 40], [100, 40]] },
+    ],
+    // All-put condor with every strike shifted below current spot — same
+    // plateau shape as bull-condor, mirrored, since the profit zone here
+    // sits below today's price instead of above it.
+    "bear-condor": [
+        { c: "red", pts: [[0, 40], [10, 36], [20, 26]] },
+        { c: "green", pts: [[20, 26], [30, 15], [55, 15], [68, 30]] },
+        { c: "red", pts: [[68, 30], [80, 40], [100, 40]] },
+    ],
+    // Same idea as bear-condor but a butterfly (single peak) instead of a
+    // plateau — the bearish mirror of bull-butterfly.
+    "bear-butterfly": [
+        { c: "red", pts: [[0, 40], [12, 38], [24, 30]] },
+        { c: "green", pts: [[24, 30], [38, 14], [52, 30]] },
+        { c: "red", pts: [[52, 30], [65, 40], [100, 40]] },
+    ],
+    // Buy an OTM call + sell an OTM put — bounded/flattish P&L between the
+    // two strikes, unbounded profit above the call strike, unbounded loss
+    // below the put strike.
+    "range-forward": [
+        { c: "red", pts: [[0, 42], [28, 30]] },
+        { c: "green", pts: [[28, 30], [45, 24], [55, 24], [72, 18]] },
+        { c: "green", pts: [[72, 18], [100, 4]] },
+    ],
+    // Sell an OTM call + buy an OTM put — the bearish mirror of
+    // range-forward (unbounded profit below the put strike, unbounded loss
+    // above the call strike).
+    "risk-reversal": [
+        { c: "green", pts: [[0, 4], [28, 18]] },
+        { c: "red", pts: [[28, 18], [45, 24], [55, 24], [72, 30]] },
+        { c: "red", pts: [[72, 30], [100, 44]] },
     ],
 };
 

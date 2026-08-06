@@ -1,21 +1,15 @@
 // pages/OptionChain.jsx
 import { useMemo, useState, useRef, useEffect } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import { useOptionChain } from "../hooks/useOptionChain";
+import { useAuth } from "../context/AuthContext";
 import { formatPrice, formatPercent, formatDateTime, formatOi } from "../utils/format";
 import { fetchSymbolList } from "../services/optionChainApi";
 import ContractChartModal from "../components/ContractChartModal";
 import OiBar from "../components/OiBar";
 import BuildupBadge from "../components/BuildupBadge";
-
-// Small chart icon shown on hover over an LTP cell
-function ChartIcon() {
-    return (
-        <svg viewBox="0 0 20 20" fill="none" className="size-3.5">
-            <path d="M3 15.5 7.5 10l3 3L17 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-            <path d="M13 5h4v4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-    );
-}
+import OptionChainSettingsDrawer from "../components/OptionChainSettingsDrawer";
+import PremiumFeaturesModal from "../components/PremiumFeaturesModal";
 
 // Fallback shown for the brief moment before /symbols/list resolves (or if
 // it fails) — the 3 symbols the live worker actually covers.
@@ -70,7 +64,25 @@ function heatStyle(value, maxAbs) {
     return { backgroundColor: color };
 }
 
+// Table columns the user can individually show/hide via the settings
+// drawer — defaults match the table's original always-on layout, so turning
+// this feature on doesn't change what anyone already sees. Gamma/Theta/Vega
+// are new (backend already computes them, just wasn't rendered here before).
+const DEFAULT_COLUMNS = {
+    ltpChangePercent: true,
+    oi: true, oiChangePercent: true, oiChange: true, pcr: true,
+    volume: true, volOi: true, pcrVol: true,
+    iv: true, ivChangePercent: true, delta: true, gamma: false, theta: false, vega: false,
+    buildup: true,
+};
+const LTP_PRESET_COLUMNS = Object.fromEntries(Object.keys(DEFAULT_COLUMNS).map((k) => [k, false]));
+const ALL_COLUMNS = Object.fromEntries(Object.keys(DEFAULT_COLUMNS).map((k) => [k, true]));
+
 export default function OptionChain() {
+    const { symbol: urlSymbol } = useParams();
+    const navigate = useNavigate();
+    const { user, isPro } = useAuth();
+
     const {
         symbol,
         data,
@@ -82,12 +94,44 @@ export default function OptionChain() {
         setSymbol,
         load,
         refresh,
-    } = useOptionChain();
+    } = useOptionChain(urlSymbol ? urlSymbol.toUpperCase() : "NIFTY");
 
     const [expiryFilter, setExpiryFilter] = useState(null);
     const [chartTarget, setChartTarget] = useState(null); // { strike, right } | null
     const [symbolList, setSymbolList] = useState(FALLBACK_SYMBOLS);
     const tableContainerRef = useRef(null);
+    const atmRowRef = useRef(null);
+
+    // Symbol search badge (pill → editable search box) + prev/next arrows.
+    const [pickerOpen, setPickerOpen] = useState(false);
+    const [pickerQuery, setPickerQuery] = useState("");
+
+    // Settings drawer state.
+    const [settingsOpen, setSettingsOpen] = useState(false);
+    const [columns, setColumns] = useState(DEFAULT_COLUMNS);
+    const [atmBasis, setAtmBasis] = useState("spot"); // 'spot' | 'future' | 'synth'
+    const [strikesAroundAtm, setStrikesAroundAtm] = useState(null); // null = All
+
+    // Live/Historical strip — Historical is Pro-gated (see CLAUDE.md hard
+    // rule: Free tier cannot access full history) and bridges to Simulator,
+    // which already does real per-minute historical browsing, rather than
+    // half-building a second historical picker inside this page.
+    const [premiumModalOpen, setPremiumModalOpen] = useState(false);
+
+    function toggleColumn(key) {
+        setColumns((prev) => ({ ...prev, [key]: !prev[key] }));
+    }
+    function applyColumnPreset(preset) {
+        setColumns(preset === "ltp" ? LTP_PRESET_COLUMNS : ALL_COLUMNS);
+    }
+
+    function goHistorical() {
+        if (!user || !isPro) {
+            setPremiumModalOpen(true);
+            return;
+        }
+        navigate("/simulator");
+    }
 
     // Every symbol with real historical data (indices + 200+ F&O stocks from
     // Bhavcopy/Breeze) — fetched once, not the old hardcoded 3-index list.
@@ -105,15 +149,90 @@ export default function OptionChain() {
         };
     }, []);
 
-    // Group into ITM, OTM, and Grand Totals
+    // Keep the URL (/option-chain/:symbol) in sync with whichever symbol is
+    // actually loaded — covers both directions: picking a new symbol here
+    // pushes a new URL, and landing on a URL directly seeds useOptionChain's
+    // initial symbol above.
+    useEffect(() => {
+        if (symbol && symbol.toLowerCase() !== urlSymbol) {
+            navigate(`/option-chain/${symbol.toLowerCase()}`);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [symbol]);
+
+    const allSymbols = useMemo(
+        () => [...symbolList.indices, ...symbolList.stocks],
+        [symbolList]
+    );
+    const filteredIndices = useMemo(
+        () => symbolList.indices.filter((s) => s.toLowerCase().includes(pickerQuery.toLowerCase())),
+        [symbolList, pickerQuery]
+    );
+    const filteredStocks = useMemo(
+        () => symbolList.stocks.filter((s) => s.toLowerCase().includes(pickerQuery.toLowerCase())),
+        [symbolList, pickerQuery]
+    );
+
+    function cycleSymbol(dir) {
+        if (allSymbols.length < 2) return;
+        const idx = allSymbols.indexOf(symbol);
+        const base = idx >= 0 ? idx : 0;
+        setSymbol(allSymbols[(base + dir + allSymbols.length) % allSymbols.length]);
+    }
+    function pickSymbol(sym) {
+        setSymbol(sym);
+        setPickerOpen(false);
+        setPickerQuery("");
+    }
+
+    // Which strike counts as ATM depends on the chosen reference price
+    // (Spot / Future / Synthetic Future via put-call parity) — ITM/OTM
+    // shading still uses raw spot (moneyness doesn't change), only the ATM
+    // highlight/tag/Go-to-ATM target moves. Same formula as StrategyBuilder.jsx.
+    const effectiveAtmPrice = useMemo(() => {
+        if (!data) return null;
+        if (atmBasis === "future") return data.futurePrice ?? data.spotPrice;
+        if (atmBasis === "synth") {
+            const atmRow = data.rows?.find((r) => r.strike === data.atmStrike);
+            const synth = atmRow && atmRow.ce?.ltp != null && atmRow.pe?.ltp != null
+                ? data.atmStrike + atmRow.ce.ltp - atmRow.pe.ltp
+                : null;
+            return synth ?? data.spotPrice;
+        }
+        return data.spotPrice;
+    }, [atmBasis, data]);
+
+    const effectiveAtmStrike = useMemo(() => {
+        if (!data?.rows?.length || effectiveAtmPrice == null) return data?.atmStrike ?? null;
+        return data.rows.reduce(
+            (best, r) => (Math.abs(r.strike - effectiveAtmPrice) < Math.abs(best.strike - effectiveAtmPrice) ? r : best)
+        ).strike;
+    }, [data, effectiveAtmPrice]);
+
+    // "Strikes around ATM" trims the full chain to N rows either side of the
+    // effective ATM strike (null = show everything, the previous behavior).
+    const displayRows = useMemo(() => {
+        if (!data?.rows) return [];
+        if (strikesAroundAtm == null || effectiveAtmStrike == null) return data.rows;
+        const idx = data.rows.findIndex((r) => r.strike === effectiveAtmStrike);
+        if (idx < 0) return data.rows;
+        return data.rows.slice(Math.max(0, idx - strikesAroundAtm), idx + strikesAroundAtm + 1);
+    }, [data, strikesAroundAtm, effectiveAtmStrike]);
+
+    function scrollToAtm() {
+        atmRowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+
+    // Group into ITM, OTM, and Grand Totals — scoped to the currently VISIBLE
+    // strikes (respects "Strikes around ATM"), not the full stored chain.
     const totals = useMemo(() => {
-        if (!data || !data.rows) return null;
-        const spot = data.spotPrice || 0;
+        if (!displayRows.length) return null;
+        const spot = data?.spotPrice || 0;
 
         let ceItmOi = 0, ceItmVol = 0, ceOtmOi = 0, ceOtmVol = 0;
         let peItmOi = 0, peItmVol = 0, peOtmOi = 0, peOtmVol = 0;
 
-        data.rows.forEach((r) => {
+        displayRows.forEach((r) => {
             if (r.strike < spot) {
                 ceItmOi += r.ce.oi || 0;
                 ceItmVol += r.ce.volume || 0;
@@ -135,22 +254,39 @@ export default function OptionChain() {
             totalCeOi: ceItmOi + ceOtmOi,
             totalPeOi: peItmOi + peOtmOi,
         };
-    }, [data]);
+    }, [displayRows, data]);
 
     // Scaling references for the OI inline bars and the Volume/OI-Chg heatmap
-    // shading — recomputed whenever the loaded chain changes, shared across
+    // shading — recomputed whenever the visible chain changes, shared across
     // both call and put sides so the two halves of the table stay visually
     // comparable (a bigger bar always means a bigger number, same scale).
     const scale = useMemo(() => {
-        if (!data || !data.rows) return { maxOi: 0, maxVolume: 0, maxOiChange: 0 };
+        if (!displayRows.length) return { maxOi: 0, maxVolume: 0, maxOiChange: 0 };
         let maxOi = 0, maxVolume = 0, maxOiChange = 0;
-        data.rows.forEach((r) => {
+        displayRows.forEach((r) => {
             maxOi = Math.max(maxOi, r.ce.oi || 0, r.pe.oi || 0);
             maxVolume = Math.max(maxVolume, r.ce.volume || 0, r.pe.volume || 0);
             maxOiChange = Math.max(maxOiChange, Math.abs(r.ce.oiChange || 0), Math.abs(r.pe.oiChange || 0));
         });
         return { maxOi, maxVolume, maxOiChange };
-    }, [data]);
+    }, [displayRows]);
+
+    // Real visible-column counts, driven by the settings drawer's toggles —
+    // used only for the CALLS/PUTS grouping row's colSpan so that row stays
+    // aligned with whichever columns are actually rendered below it. (The
+    // Totals footer's colSpans are left as fixed approximations, same as
+    // before this feature existed — they were never pixel-exact against the
+    // real header to begin with.)
+    const ceColCount =
+        1 /* LTP */ +
+        (columns.delta ? 1 : 0) + (columns.buildup ? 1 : 0) + (columns.volOi ? 1 : 0) +
+        (columns.volume ? 1 : 0) + (columns.oiChangePercent ? 1 : 0) + (columns.oiChange ? 1 : 0) +
+        (columns.oi ? 1 : 0) + (columns.iv ? 1 : 0) +
+        (columns.theta ? 1 : 0) + (columns.vega ? 1 : 0) + (columns.gamma ? 1 : 0);
+    const midColCount = 1 /* Strike */ + (columns.iv ? 1 : 0) + (columns.pcr ? 1 : 0) + (columns.pcrVol ? 1 : 0);
+    const peColCount =
+        1 /* LTP */ + (columns.iv ? 1 : 0) + (columns.oi ? 1 : 0) + (columns.oiChange ? 1 : 0) +
+        (columns.oiChangePercent ? 1 : 0) + (columns.theta ? 1 : 0) + (columns.vega ? 1 : 0) + (columns.gamma ? 1 : 0);
 
     const handleExpiryChange = (e) => {
         const expiry = e.target.value;
@@ -162,57 +298,116 @@ export default function OptionChain() {
         <div className="mx-auto max-w-[1500px] px-2 py-4 bg-slate-50 min-h-screen font-sans text-gray-900">
 
             {/* Header Ribbon */}
-            <div className="mb-4 bg-white p-4 rounded-lg shadow-sm border border-gray-100">
+            <div className="mb-2 bg-white p-4 rounded-lg shadow-sm border border-gray-100">
                 <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                        <label htmlFor="asset-select" className="text-xs font-bold text-gray-400 uppercase tracking-wider">
-                            Select Asset:
-                        </label>
-                        <div className="relative inline-block text-left">
-                            <select
-                                id="asset-select"
-                                value={symbol}
-                                onChange={(e) => setSymbol(e.target.value)}
-                                className="rounded border border-gray-300 bg-white appearance-none text-black-700 text-sm font-semibold rounded-md px-3 py-1 outline-hidden cursor-pointer transition-all shadow-sm max-w-[160px]"
-                            >
-                                <optgroup label="Indices">
-                                    {symbolList.indices.map((s) => (
-                                        <option key={s} value={s} className="bg-white text-black-700">
-                                            {s}
-                                            {!symbolList.liveSymbols.includes(s) ? " (Historical)" : ""}
-                                        </option>
-                                    ))}
-                                </optgroup>
-                                {symbolList.stocks.length > 0 && (
-                                    <optgroup label="F&O Stocks">
-                                        {symbolList.stocks.map((s) => (
-                                            <option key={s} value={s} className="bg-white text-black-700">
-                                                {s}
-                                            </option>
-                                        ))}
-                                    </optgroup>
-                                )}
-                            </select>
-                            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-gray-400">
-                                <svg className="size-4" viewBox="0 0 20 20" fill="currentColor">
-                                    <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
-                                </svg>
-                            </div>
-                        </div>
-                        <div className="relative inline-block text-left">
+                    <div className="flex items-center gap-1.5 relative">
+                        <button
+                            onClick={() => cycleSymbol(-1)}
+                            disabled={allSymbols.length < 2}
+                            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-30"
+                            aria-label="Previous symbol"
+                        >
+                            ‹
+                        </button>
+
+                        {data?.lotSize && (
+                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-bold text-gray-500">
+                                {data.lotSize}
+                            </span>
+                        )}
+                        <button
+                            onClick={() => setPickerOpen((v) => !v)}
+                            className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-sm font-bold text-gray-900 hover:border-blue-400 hover:bg-blue-50"
+                        >
+                            {symbol}
+                        </button>
+
+                        <button
+                            onClick={() => cycleSymbol(1)}
+                            disabled={allSymbols.length < 2}
+                            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-30"
+                            aria-label="Next symbol"
+                        >
+                            ›
+                        </button>
+
+                        {pickerOpen && (
+                            <>
+                                <div className="fixed inset-0 z-10" onClick={() => setPickerOpen(false)} />
+                                <div className="absolute left-0 top-full z-20 mt-1 w-64 max-h-96 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-xl text-xs">
+                                    <div className="sticky top-0 border-b border-gray-100 bg-white p-2">
+                                        <input
+                                            autoFocus
+                                            value={pickerQuery}
+                                            onChange={(e) => setPickerQuery(e.target.value)}
+                                            placeholder="Search symbol…"
+                                            className="w-full rounded-md border border-gray-200 px-2 py-1 text-xs outline-none focus:border-blue-500"
+                                        />
+                                    </div>
+                                    {filteredIndices.length > 0 && (
+                                        <div>
+                                            <div className="px-2 pt-2 pb-1 text-[10px] font-bold uppercase text-gray-400">Index</div>
+                                            {filteredIndices.map((s) => (
+                                                <button
+                                                    key={s}
+                                                    onClick={() => pickSymbol(s)}
+                                                    className={`block w-full px-2 py-1.5 text-left font-medium hover:bg-gray-50 ${s === symbol ? "bg-blue-50 text-blue-700" : "text-gray-700"}`}
+                                                >
+                                                    {s}
+                                                    {!symbolList.liveSymbols.includes(s) ? <span className="ml-1 text-[10px] text-gray-400">(Historical)</span> : null}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {filteredStocks.length > 0 && (
+                                        <div>
+                                            <div className="px-2 pt-2 pb-1 text-[10px] font-bold uppercase text-gray-400">Stocks</div>
+                                            {filteredStocks.map((s) => (
+                                                <button
+                                                    key={s}
+                                                    onClick={() => pickSymbol(s)}
+                                                    className={`block w-full px-2 py-1.5 text-left font-medium hover:bg-gray-50 ${s === symbol ? "bg-blue-50 text-blue-700" : "text-gray-700"}`}
+                                                >
+                                                    {s}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {!filteredIndices.length && !filteredStocks.length && (
+                                        <div className="px-3 py-6 text-center text-gray-400">No matches</div>
+                                    )}
+                                </div>
+                            </>
+                        )}
+
+                        <div className="relative inline-block text-left ml-2">
                             <select
                                 value={data?.selectedExpiry || expiryFilter || ""}
                                 onChange={handleExpiryChange}
                                 className="rounded border border-gray-300 bg-white px-3 py-1 text-xs font-medium focus:outline-none focus:border-blue-500"
                             >
                                 {data?.expiries?.map((exp) => (
-                                    <option key={exp} value={exp}>{exp}</option>
+                                    <option key={exp} value={exp}>
+                                        {exp}{data.daysToExpiry != null && exp === data.selectedExpiry ? ` (${data.daysToExpiry}d)` : ""}
+                                    </option>
                                 ))}
                             </select>
                         </div>
                     </div>
 
                     <div className="flex items-center gap-2">
+                        {data && (
+                            <div className="flex items-center gap-4 text-xs text-gray-600 mr-2">
+                                <div>Spot: <span className="font-bold text-gray-900 tabular-nums">{formatPrice(data.spotPrice)}</span></div>
+                                <div className="h-4 w-px bg-gray-200" />
+                                <div>
+                                    {atmBasis === "future" ? "Future" : atmBasis === "synth" ? "Syn Future" : "Future"}:{" "}
+                                    <span className="font-bold text-gray-900 tabular-nums">{data.futurePrice != null ? formatPrice(data.futurePrice) : "—"}</span>
+                                </div>
+                                <div className="h-4 w-px bg-gray-200" />
+                                <div>VIX: <span className="font-bold text-gray-900 tabular-nums">{data.vix != null ? Number(data.vix).toFixed(2) : "—"}</span></div>
+                            </div>
+                        )}
                         <button
                             onClick={refresh}
                             disabled={loading}
@@ -220,27 +415,72 @@ export default function OptionChain() {
                         >
                             {loading ? "Refreshing..." : "⟳ Refresh"}
                         </button>
+                        <button
+                            onClick={() => setSettingsOpen(true)}
+                            className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                            aria-label="Option chain settings"
+                            title="Option Chain Settings"
+                        >
+                            ⚙
+                        </button>
                     </div>
                 </div>
 
                 {/* Live Metrics Row */}
                 {data && (
                     <div className="mt-4 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-6 text-xs text-gray-600">
-                        <div className="flex items-center gap-1.5">
-                            <span className={`inline-block h-2 w-2 rounded-full ${marketStatus.isOpen ? 'bg-green-500 animate-pulse' : 'bg-amber-500'}`} />
-                            <span className="font-bold uppercase">{marketStatus.isOpen ? 'Live' : 'Market Closed'}</span>
-                        </div>
-                        <div>Spot: <span className="font-bold text-gray-900 text-sm tabular-nums">{formatPrice(data.spotPrice)}</span></div>
                         <div>PCR: <span className={`font-bold tabular-nums ${data.pcr >= 1 ? 'text-emerald-600' : 'text-rose-600'}`}>{data.pcr ?? "-"}</span></div>
                         <div>Max Pain: <span className="font-bold text-orange-600 tabular-nums">{data.maxPainStrike}</span></div>
-                        {data.daysToExpiry != null && (
-                            <div className="text-gray-400">
-                                {data.daysToExpiry} days to expiry
-                            </div>
-                        )}
                     </div>
                 )}
             </div>
+
+            {/* Live/Historical strip */}
+            <div className="mb-4 bg-white px-4 py-2 rounded-lg shadow-sm border border-gray-100 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                    <button
+                        className="rounded-md bg-blue-600 px-3 py-1 text-xs font-bold text-white"
+                    >
+                        Live
+                    </button>
+                    <button
+                        onClick={goHistorical}
+                        className="rounded-md bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-200"
+                        title={!user || !isPro ? "Pro feature — subscribe to unlock" : "Browse this day minute-by-minute in the Simulator"}
+                    >
+                        Historical{!user || !isPro ? " 🔒" : ""}
+                    </button>
+                </div>
+
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                    <span>🕐</span>
+                    <span className="tabular-nums">{lastUpdated ? formatDateTime(lastUpdated) : "—"}</span>
+                    <span
+                        className={`inline-block h-2.5 w-2.5 rounded-full ${
+                            marketStatus.isOpen && marketStatus.feedConnected && isLive
+                                ? "bg-green-500 animate-pulse"
+                                : marketStatus.isOpen
+                                    ? "bg-amber-500"
+                                    : "bg-gray-300"
+                        }`}
+                        title={marketStatus.isOpen ? (isLive ? "Live feed connected" : "Market open, feed stale") : "Market closed"}
+                    />
+                </div>
+            </div>
+
+            {premiumModalOpen && <PremiumFeaturesModal onClose={() => setPremiumModalOpen(false)} />}
+
+            <OptionChainSettingsDrawer
+                open={settingsOpen}
+                onClose={() => setSettingsOpen(false)}
+                columns={columns}
+                onToggleColumn={toggleColumn}
+                onApplyPreset={applyColumnPreset}
+                atmBasis={atmBasis}
+                onAtmBasisChange={setAtmBasis}
+                strikesAroundAtm={strikesAroundAtm}
+                onStrikesAroundAtmChange={setStrikesAroundAtm}
+            />
 
             {error && <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded text-xs">⚠️ {error}</div>}
 
@@ -261,93 +501,120 @@ export default function OptionChain() {
                         <table className="w-full text-left border-collapse text-[11px]">
                             <thead>
                                 <tr className="text-center font-bold text-sm">
-                                    <th colSpan={9} className="bg-emerald-50 text-emerald-800 border-b border-gray-200 py-2">CALLS</th>
-                                    <th colSpan={4} className="bg-gray-100 border-b border-gray-200"></th>
-                                    <th colSpan={5} className="bg-rose-50 text-rose-800 border-b border-gray-200 py-2">PUTS</th>
+                                    <th colSpan={ceColCount} className="bg-emerald-50 text-emerald-800 border-b border-gray-200 py-2">CALLS</th>
+                                    <th colSpan={midColCount} className="bg-gray-100 border-b border-gray-200"></th>
+                                    <th colSpan={peColCount} className="bg-rose-50 text-rose-800 border-b border-gray-200 py-2">PUTS</th>
                                 </tr>
                                 <tr className="bg-gray-50 text-gray-500 font-semibold border-b border-gray-200 text-center">
-                                    <th className="p-1.5">Delta</th>
-                                    <th className="p-1.5">Buildup</th>
-                                    <th className="p-1.5 text-right">Vol/OI</th>
-                                    <th className="p-1.5 text-right">Volume</th>
-                                    <th className="p-1.5 text-right">OI Chg%</th>
-                                    <th className="p-1.5 text-right">OI Chg</th>
-                                    <th className="p-1.5 text-right">OI</th>
-                                    <th className="p-1.5 text-right">IV</th>
+                                    {columns.theta && <th className="p-1.5">Theta</th>}
+                                    {columns.vega && <th className="p-1.5">Vega</th>}
+                                    {columns.gamma && <th className="p-1.5">Gamma</th>}
+                                    {columns.delta && <th className="p-1.5">Delta</th>}
+                                    {columns.buildup && <th className="p-1.5">Buildup</th>}
+                                    {columns.volOi && <th className="p-1.5 text-right">Vol/OI</th>}
+                                    {columns.volume && <th className="p-1.5 text-right">Volume</th>}
+                                    {columns.oiChangePercent && <th className="p-1.5 text-right">OI Chg%</th>}
+                                    {columns.oiChange && <th className="p-1.5 text-right">OI Chg</th>}
+                                    {columns.oi && <th className="p-1.5 text-right">OI</th>}
+                                    {columns.iv && <th className="p-1.5 text-right">IV</th>}
                                     <th className="p-1.5 text-right">LTP</th>
                                     <th className="bg-gray-100 text-gray-800 font-bold p-1.5">Strike</th>
-                                    <th className="p-1.5 text-right">IV</th>
-                                    <th className="p-1.5 text-right">PCR</th>
-                                    <th className="p-1.5 text-right">PCR(Vol)</th>
+                                    {columns.iv && <th className="p-1.5 text-right">IV</th>}
+                                    {columns.pcr && <th className="p-1.5 text-right">PCR</th>}
+                                    {columns.pcrVol && <th className="p-1.5 text-right">PCR(Vol)</th>}
                                     <th className="p-1.5 text-right">LTP</th>
-                                    <th className="p-1.5 text-right">IV</th>
-                                    <th className="p-1.5 text-right">OI</th>
-                                    <th className="p-1.5 text-right">OI Chg</th>
-                                    <th className="p-1.5 text-right">OI Chg%</th>
+                                    {columns.iv && <th className="p-1.5 text-right">IV</th>}
+                                    {columns.oi && <th className="p-1.5 text-right">OI</th>}
+                                    {columns.oiChange && <th className="p-1.5 text-right">OI Chg</th>}
+                                    {columns.oiChangePercent && <th className="p-1.5 text-right">OI Chg%</th>}
+                                    {columns.theta && <th className="p-1.5">Theta</th>}
+                                    {columns.vega && <th className="p-1.5">Vega</th>}
+                                    {columns.gamma && <th className="p-1.5">Gamma</th>}
                                 </tr>
                             </thead>
 
                             <tbody className="divide-y divide-gray-100">
-                                {data.rows.map((row) => {
+                                {displayRows.map((row) => {
                                     const ceItm = row.strike < data.spotPrice;
                                     const peItm = row.strike > data.spotPrice;
                                     const isMaxPain = row.strike === data.maxPainStrike;
-                                    const isAtm = row.strike === data.atmStrike;
+                                    const isAtm = row.strike === effectiveAtmStrike;
 
                                     return (
                                         <tr
                                             key={row.strike}
+                                            ref={isAtm ? atmRowRef : null}
                                             className={`hover:bg-slate-50 transition-colors text-center font-medium ${
                                                 isAtm ? "ring-1 ring-inset ring-blue-400" : ""
                                             }`}
                                         >
                                             {/* CALL SIDE */}
-                                            <td className={`p-1 tabular-nums font-mono ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                {formatGreek(row.ce.delta)}
-                                            </td>
+                                            {columns.theta && <td className={`p-1 tabular-nums text-gray-400 ${ceItm ? "bg-amber-50/60" : ""}`}>{formatGreek(row.ce.theta)}</td>}
+                                            {columns.vega && <td className={`p-1 tabular-nums text-gray-400 ${ceItm ? "bg-amber-50/60" : ""}`}>{formatGreek(row.ce.vega)}</td>}
+                                            {columns.gamma && <td className={`p-1 tabular-nums text-gray-400 ${ceItm ? "bg-amber-50/60" : ""}`}>{formatGreek(row.ce.gamma, 4)}</td>}
+                                            {columns.delta && (
+                                                <td className={`p-1 tabular-nums font-mono ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                    {formatGreek(row.ce.delta)}
+                                                </td>
+                                            )}
+                                            {columns.buildup && (
+                                                <td className={`p-1 ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                    <BuildupBadge code={row.ce.buildup} />
+                                                </td>
+                                            )}
+                                            {columns.volOi && (
+                                                <td className={`p-1 text-right tabular-nums text-gray-500 ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                    {formatRatio(row.ce.volume, row.ce.oi)}
+                                                </td>
+                                            )}
+                                            {columns.volume && (
+                                                <td
+                                                    className={`p-1 text-right tabular-nums ${ceItm ? "bg-amber-50/60" : ""}`}
+                                                    style={heatStyle(row.ce.volume, scale.maxVolume)}
+                                                >
+                                                    {formatOi(row.ce.volume)}
+                                                </td>
+                                            )}
+                                            {columns.oiChangePercent && (
+                                                <td
+                                                    className={`p-1 text-right tabular-nums ${ceItm ? "bg-amber-50/60" : ""} ${
+                                                        row.ce.oiChangePercent >= 0 ? "text-emerald-600" : "text-rose-600"
+                                                    }`}
+                                                >
+                                                    {row.ce.oiChangePercent != null ? formatPercent(row.ce.oiChangePercent) : "-"}
+                                                </td>
+                                            )}
+                                            {columns.oiChange && (
+                                                <td
+                                                    className={`p-1 text-right tabular-nums ${ceItm ? "bg-amber-50/60" : ""}`}
+                                                    style={heatStyle(row.ce.oiChange, scale.maxOiChange)}
+                                                >
+                                                    {row.ce.oiChange != null ? formatOi(row.ce.oiChange) : "-"}
+                                                </td>
+                                            )}
+                                            {columns.oi && (
+                                                <td className={`p-1 ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                    <OiBar value={row.ce.oi} max={scale.maxOi} side="ce" />
+                                                </td>
+                                            )}
+                                            {columns.iv && (
+                                                <td className={`p-1 ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                    <ValueWithChange value={row.ce.iv} change={columns.ivChangePercent ? row.ce.ivChangePercent : null} formatValue={(v) => (v != null ? v : "-")} />
+                                                </td>
+                                            )}
                                             <td className={`p-1 ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                <BuildupBadge code={row.ce.buildup} />
-                                            </td>
-                                            <td className={`p-1 text-right tabular-nums text-gray-500 ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                {formatRatio(row.ce.volume, row.ce.oi)}
-                                            </td>
-                                            <td
-                                                className={`p-1 text-right tabular-nums ${ceItm ? "bg-amber-50/60" : ""}`}
-                                                style={heatStyle(row.ce.volume, scale.maxVolume)}
-                                            >
-                                                {formatOi(row.ce.volume)}
-                                            </td>
-                                            <td
-                                                className={`p-1 text-right tabular-nums ${ceItm ? "bg-amber-50/60" : ""} ${
-                                                    row.ce.oiChangePercent >= 0 ? "text-emerald-600" : "text-rose-600"
-                                                }`}
-                                            >
-                                                {row.ce.oiChangePercent != null ? formatPercent(row.ce.oiChangePercent) : "-"}
-                                            </td>
-                                            <td
-                                                className={`p-1 text-right tabular-nums ${ceItm ? "bg-amber-50/60" : ""}`}
-                                                style={heatStyle(row.ce.oiChange, scale.maxOiChange)}
-                                            >
-                                                {row.ce.oiChange != null ? formatOi(row.ce.oiChange) : "-"}
-                                            </td>
-                                            <td className={`p-1 ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                <OiBar value={row.ce.oi} max={scale.maxOi} side="ce" />
-                                            </td>
-                                            <td className={`p-1 ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                <ValueWithChange value={row.ce.iv} change={row.ce.ivChangePercent} formatValue={(v) => (v != null ? v : "-")} />
-                                            </td>
-                                            <td className={`group p-1 ${ceItm ? "bg-amber-50/60" : ""}`}>
-                                                <span className="inline-flex items-center justify-end gap-1 w-full">
-                                                    <ValueWithChange value={row.ce.ltp} change={row.ce.changePercent} />
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setChartTarget({ strike: row.strike, right: "CE" })}
-                                                        title="View chart"
-                                                        className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-600 transition-opacity"
-                                                    >
-                                                        <ChartIcon />
-                                                    </button>
-                                                </span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setChartTarget({ strike: row.strike, right: "CE" })}
+                                                    title="View candlestick chart"
+                                                    className="inline-flex w-full items-center justify-end gap-1 rounded hover:bg-blue-50/70"
+                                                >
+                                                    {row.ce.ltp == null ? (
+                                                        <span title="No trade in this contract — illiquid" className="text-amber-500">⚠</span>
+                                                    ) : (
+                                                        <ValueWithChange value={row.ce.ltp} change={columns.ltpChangePercent ? row.ce.changePercent : null} />
+                                                    )}
+                                                </button>
                                             </td>
 
                                             {/* STRIKE PRICE */}
@@ -359,45 +626,59 @@ export default function OptionChain() {
                                             </td>
 
                                             {/* NEUTRAL MIDDLE ZONE — put IV shown early (matches stockmojo), plus per-strike PCR */}
-                                            <td className="p-1">
-                                                <ValueWithChange value={row.pe.iv} change={row.pe.ivChangePercent} formatValue={(v) => (v != null ? v : "-")} align="center" />
-                                            </td>
-                                            <td className="p-1 text-right tabular-nums text-gray-600">{formatStrikeRatio(row.pe.oi, row.ce.oi)}</td>
-                                            <td className="p-1 text-right tabular-nums text-gray-600">{formatStrikeRatio(row.pe.volume, row.ce.volume)}</td>
+                                            {columns.iv && (
+                                                <td className="p-1">
+                                                    <ValueWithChange value={row.pe.iv} change={columns.ivChangePercent ? row.pe.ivChangePercent : null} formatValue={(v) => (v != null ? v : "-")} align="center" />
+                                                </td>
+                                            )}
+                                            {columns.pcr && <td className="p-1 text-right tabular-nums text-gray-600">{formatStrikeRatio(row.pe.oi, row.ce.oi)}</td>}
+                                            {columns.pcrVol && <td className="p-1 text-right tabular-nums text-gray-600">{formatStrikeRatio(row.pe.volume, row.ce.volume)}</td>}
 
                                             {/* PUT SIDE */}
-                                            <td className={`group p-1 ${peItm ? "bg-amber-50/60" : ""}`}>
-                                                <span className="inline-flex items-center justify-end gap-1 w-full">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setChartTarget({ strike: row.strike, right: "PE" })}
-                                                        title="View chart"
-                                                        className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-600 transition-opacity"
-                                                    >
-                                                        <ChartIcon />
-                                                    </button>
-                                                    <ValueWithChange value={row.pe.ltp} change={row.pe.changePercent} />
-                                                </span>
-                                            </td>
                                             <td className={`p-1 ${peItm ? "bg-amber-50/60" : ""}`}>
-                                                <ValueWithChange value={row.pe.iv} change={row.pe.ivChangePercent} formatValue={(v) => (v != null ? v : "-")} />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setChartTarget({ strike: row.strike, right: "PE" })}
+                                                    title="View candlestick chart"
+                                                    className="inline-flex w-full items-center justify-start gap-1 rounded hover:bg-blue-50/70"
+                                                >
+                                                    {row.pe.ltp == null ? (
+                                                        <span title="No trade in this contract — illiquid" className="text-amber-500">⚠</span>
+                                                    ) : (
+                                                        <ValueWithChange value={row.pe.ltp} change={columns.ltpChangePercent ? row.pe.changePercent : null} />
+                                                    )}
+                                                </button>
                                             </td>
-                                            <td className={`p-1 ${peItm ? "bg-amber-50/60" : ""}`}>
-                                                <OiBar value={row.pe.oi} max={scale.maxOi} side="pe" />
-                                            </td>
-                                            <td
-                                                className={`p-1 text-right tabular-nums ${peItm ? "bg-amber-50/60" : ""}`}
-                                                style={heatStyle(row.pe.oiChange, scale.maxOiChange)}
-                                            >
-                                                {row.pe.oiChange != null ? formatOi(row.pe.oiChange) : "-"}
-                                            </td>
-                                            <td
-                                                className={`p-1 text-right tabular-nums ${peItm ? "bg-amber-50/60" : ""} ${
-                                                    row.pe.oiChangePercent >= 0 ? "text-emerald-600" : "text-rose-600"
-                                                }`}
-                                            >
-                                                {row.pe.oiChangePercent != null ? formatPercent(row.pe.oiChangePercent) : "-"}
-                                            </td>
+                                            {columns.iv && (
+                                                <td className={`p-1 ${peItm ? "bg-amber-50/60" : ""}`}>
+                                                    <ValueWithChange value={row.pe.iv} change={columns.ivChangePercent ? row.pe.ivChangePercent : null} formatValue={(v) => (v != null ? v : "-")} />
+                                                </td>
+                                            )}
+                                            {columns.oi && (
+                                                <td className={`p-1 ${peItm ? "bg-amber-50/60" : ""}`}>
+                                                    <OiBar value={row.pe.oi} max={scale.maxOi} side="pe" />
+                                                </td>
+                                            )}
+                                            {columns.oiChange && (
+                                                <td
+                                                    className={`p-1 text-right tabular-nums ${peItm ? "bg-amber-50/60" : ""}`}
+                                                    style={heatStyle(row.pe.oiChange, scale.maxOiChange)}
+                                                >
+                                                    {row.pe.oiChange != null ? formatOi(row.pe.oiChange) : "-"}
+                                                </td>
+                                            )}
+                                            {columns.oiChangePercent && (
+                                                <td
+                                                    className={`p-1 text-right tabular-nums ${peItm ? "bg-amber-50/60" : ""} ${
+                                                        row.pe.oiChangePercent >= 0 ? "text-emerald-600" : "text-rose-600"
+                                                    }`}
+                                                >
+                                                    {row.pe.oiChangePercent != null ? formatPercent(row.pe.oiChangePercent) : "-"}
+                                                </td>
+                                            )}
+                                            {columns.theta && <td className={`p-1 tabular-nums text-gray-400 ${peItm ? "bg-amber-50/60" : ""}`}>{formatGreek(row.pe.theta)}</td>}
+                                            {columns.vega && <td className={`p-1 tabular-nums text-gray-400 ${peItm ? "bg-amber-50/60" : ""}`}>{formatGreek(row.pe.vega)}</td>}
+                                            {columns.gamma && <td className={`p-1 tabular-nums text-gray-400 ${peItm ? "bg-amber-50/60" : ""}`}>{formatGreek(row.pe.gamma, 4)}</td>}
                                         </tr>
                                     );
                                 })}
@@ -431,6 +712,13 @@ export default function OptionChain() {
                             )}
                         </table>
                     </div>
+
+                    <button
+                        onClick={scrollToAtm}
+                        className="fixed bottom-6 left-1/2 z-30 -translate-x-1/2 rounded-full bg-gray-900/85 px-3 py-1.5 text-[11px] font-semibold text-white shadow-lg hover:bg-gray-900"
+                    >
+                        Go to ATM
+                    </button>
                 </div>
             ) : (
                 loading && <div className="p-12 text-center text-sm text-gray-500">Fetching live matrix feeds...</div>

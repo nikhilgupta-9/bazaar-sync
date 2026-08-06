@@ -34,6 +34,7 @@ import { yearsToExpiry } from "../utils/blackScholes";
 import OiBar from "../components/OiBar";
 import PayoffChart from "../components/PayoffChart";
 import PresetStrategies from "../components/PresetStrategies";
+import CandlestickChart from "../components/CandlestickChart";
 import { SlCalender } from "react-icons/sl";
 import { FiSettings } from "react-icons/fi";
 
@@ -224,6 +225,7 @@ function legFromRow(row, right, action, expiry) {
     theta: side.theta,
     vega: side.vega,
     expiry, // which expiry this leg's premium/greeks came from — see payoff.js
+    active: true, // unchecked in the Positions table = kept but excluded from payoff/metrics
   };
 }
 
@@ -259,6 +261,9 @@ export default function Simulator() {
   const [tab, setTab] = useState("positions"); // 'positions' | 'greeks'
   const [chartTab, setChartTab] = useState("payoff"); // 'payoff' | 'strategy' | 'nifty' | 'combined'
   const [savedOpen, setSavedOpen] = useState(false);
+  const [hideChain, setHideChain] = useState(false);
+  const [legsTopFirst, setLegsTopFirst] = useState(true);
+  const [slTgEditId, setSlTgEditId] = useState(null);
 
   const [columns, setColumns] = useState(DEFAULT_COLUMNS);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -363,8 +368,23 @@ export default function Simulator() {
         setDates(res.dates);
         setSparseDates(res.sparseDates || []);
         if (res.dates.length) {
-          const [y, m] = res.dates[0].split("-").map(Number);
+          // Auto-select the most recent day with stored data so the left
+          // chain box isn't blank on first load — previously it stayed
+          // empty until the user manually opened the calendar and picked
+          // a day, even though we already know the latest available date.
+          // Fetches directly (not via selectDate/loadChain) to avoid
+          // closing over this render's stale `chainData` from the
+          // previous symbol when switching symbols.
+          const latestDate = res.dates[0];
+          const [y, m] = latestDate.split("-").map(Number);
           setCalendarYm({ y, m });
+          setSelectedDate(latestDate);
+          fetchSimulatorChain(symbol, { date: latestDate })
+            .then((chainRes) => {
+              setChainData(chainRes);
+              setLiveChain(chainRes);
+            })
+            .catch((err) => setChainError(err.message));
         }
       })
       .catch((err) => setChainError(err.message))
@@ -614,6 +634,109 @@ export default function Simulator() {
     );
   }
 
+  // Positions table checkbox — doesn't delete the leg, just excludes it from
+  // the payoff curve / Greeks / POP / max-profit-loss calculation below (see
+  // the activeLegs filter in the payoff useMemo), same as a real what-if
+  // toggle: the row and its live LTP/P&L stay visible either way.
+  function toggleLegActive(id) {
+    setLegs((prev) =>
+      prev.map((l) => (l.id === id ? { ...l, active: !l.active } : l)),
+    );
+  }
+
+  // Expiry dropdown in the Positions table — re-fetches that expiry's real
+  // chain for the same historical day and carries the leg over to the
+  // closest available strike (same strike if it still exists), pulling a
+  // fresh entry premium/Greeks for the new contract rather than keeping the
+  // old expiry's stale numbers.
+  async function updateLegExpiry(id, newExpiry) {
+    if (replayData) return;
+    const leg = legs.find((l) => l.id === id);
+    if (!leg || leg.expiry === newExpiry) return;
+    try {
+      const rows = await fetchExpiryRows(newExpiry);
+      if (!rows.length) return;
+      const match =
+        rows.find((r) => r.strike === leg.strike) ||
+        rows.reduce((best, r) =>
+          !best || Math.abs(r.strike - leg.strike) < Math.abs(best.strike - leg.strike) ? r : best,
+        rows[0]);
+      const side = leg.type === "CE" ? match.ce : match.pe;
+      setLegs((prev) =>
+        prev.map((l) =>
+          l.id === id
+            ? { ...l, expiry: newExpiry, strike: match.strike, premium: side?.ltp, iv: side?.iv, delta: side?.delta, gamma: side?.gamma, theta: side?.theta, vega: side?.vega }
+            : l,
+        ),
+      );
+    } catch (err) {
+      console.error("[Simulator] updateLegExpiry failed", err);
+    }
+  }
+
+  function updateLeg(id, patch) {
+    setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  }
+
+  // Roll strike up/down by one row — only offered while the leg's expiry
+  // matches the currently displayed chain (so the adjacent-strike lookup
+  // comes from data already in memory, no extra fetch); a leg parked on a
+  // different expiry (e.g. a calendar-spread preset's far leg) shows its
+  // strike as plain text instead of guessing. Same pattern as
+  // StrategyBuilder.jsx's rollLegStrike.
+  function rollLegStrike(id, direction) {
+    if (replayData) return;
+    const leg = legs.find((l) => l.id === id);
+    if (!leg || leg.expiry !== chainData?.selectedExpiry) return;
+    const sorted = [...displayRows].sort((a, b) => a.strike - b.strike);
+    const idx = sorted.findIndex((r) => r.strike === leg.strike);
+    const nextRow = sorted[idx + direction];
+    const side = nextRow && (leg.type === "CE" ? nextRow.ce : nextRow.pe);
+    if (!side || side.ltp == null) return; // no adjacent strike in that direction
+    updateLeg(id, { strike: nextRow.strike, premium: side.ltp, iv: side.iv, delta: side.delta, gamma: side.gamma, theta: side.theta, vega: side.vega });
+  }
+
+  // Re-bases the entry price to the current LTP (zeroes out this leg's live
+  // P&L going forward) — same as StrategyBuilder.jsx's Exit column refresh icon.
+  function resetLegEntryToLtp(id) {
+    if (replayData) return;
+    const leg = legs.find((l) => l.id === id);
+    const row = leg && displayRows.find((r) => r.strike === leg.strike);
+    const currentLtp = row ? (leg.type === "CE" ? row.ce?.ltp : row.pe?.ltp) : null;
+    if (currentLtp == null) return;
+    updateLeg(id, { premium: currentLtp });
+  }
+
+  // SL/TG here are a planning note stored on the leg, NOT an executed order —
+  // same as StrategyBuilder.jsx (this workspace has no live monitoring/
+  // auto-exit engine; automatic SL%/target% exits only exist in the separate
+  // Backtest engine, which runs against a date range, not a single replayed day).
+  function setLegSlTg(id, slPercent, tgPercent) {
+    updateLeg(id, {
+      slPercent: slPercent === "" ? null : Number(slPercent),
+      tgPercent: tgPercent === "" ? null : Number(tgPercent),
+    });
+  }
+
+  // Scales EVERY leg's lot count by the same delta at once (min 1) — same as
+  // StrategyBuilder.jsx's bulkAdjustLots.
+  function bulkAdjustLots(delta) {
+    if (replayData) return;
+    setLegs((prev) => prev.map((l) => ({ ...l, qty: Math.max(1, l.qty + delta) })));
+  }
+
+  // "Select All" toggles every leg's payoff-inclusion checkbox at once —
+  // Simulator's per-leg checkbox already means something (included in
+  // payoff/replay), unlike StrategyBuilder's purely cosmetic selection, so
+  // this reuses that same `active` flag rather than adding a second,
+  // meaningless checkbox column.
+  const allLegsActive = legs.length > 0 && legs.every((l) => l.active !== false);
+  function toggleSelectAllLegs() {
+    if (replayData) return;
+    const shouldInclude = !allLegsActive;
+    setLegs((prev) => prev.map((l) => ({ ...l, active: shouldInclude })));
+  }
+
   // Chain-row inline position display, same pattern as StrategyBuilder.jsx —
   // which leg(s) match this exact strike/right in the currently displayed
   // expiry, plus signed net lots (buy=+qty, sell=-qty) shown as a badge.
@@ -636,7 +759,7 @@ export default function Simulator() {
   }
 
   function applyPreset(presetLegs) {
-    setLegs(presetLegs.map((l) => ({ ...l, id: ++legIdCounter })));
+    setLegs(presetLegs.map((l) => ({ active: true, ...l, id: ++legIdCounter })));
   }
 
   async function runSimulation() {
@@ -647,7 +770,9 @@ export default function Simulator() {
       const res = await runSimulatorReplay(symbol, {
         date: selectedDate,
         expiry: chainData.selectedExpiry,
-        legs: legs.map(({ strike, type, action, qty }) => ({
+        // Unchecked (excluded) legs stay in the workspace but don't join the
+        // replay, same as they're excluded from the theoretical payoff curve.
+        legs: legs.filter((l) => l.active !== false).map(({ strike, type, action, qty }) => ({
           strike,
           type,
           action,
@@ -755,6 +880,29 @@ export default function Simulator() {
     return diff * leg.qty;
   }
 
+  // Legs the Positions table checkbox has left checked — the payoff curve,
+  // Greeks, POP, and max-profit/loss below are recalculated from only these,
+  // so unchecking a leg removes it from every metric without deleting the
+  // row (see toggleLegActive).
+  const activeLegs = useMemo(() => legs.filter((l) => l.active !== false), [legs]);
+
+  // Positions toolbar — same pattern as StrategyBuilder.jsx: reorder toggle,
+  // a lots stepper that scales every leg at once, and a combined live P&L
+  // readout across all legs.
+  const orderedLegs = useMemo(() => (legsTopFirst ? legs : [...legs].reverse()), [legs, legsTopFirst]);
+  const commonLots = legs.length && legs.every((l) => l.qty === legs[0].qty) ? legs[0].qty : null;
+  const totalLots = legs.reduce((sum, l) => sum + l.qty, 0);
+  const totalLivePnl = useMemo(() => {
+    if (!legs.length) return null;
+    let sum = 0;
+    for (const leg of legs) {
+      const v = legLivePnl(leg);
+      if (v == null) return null;
+      sum += v;
+    }
+    return sum;
+  }, [legs, displayRows]);
+
   // Theoretical payoff at expiry — same math/pattern as Strategy Builder,
   // just priced "as of" the historical instant being viewed instead of now.
   const {
@@ -777,27 +925,27 @@ export default function Simulator() {
       pop: null,
       expectedMove: null,
     };
-    if (!legs.length || !displaySpot || !chainData?.selectedExpiry)
+    if (!activeLegs.length || !displaySpot || !chainData?.selectedExpiry)
       return empty;
     try {
       const spread = displaySpot * 0.08;
       let curveData =
-        computePayoffCurve(legs, {
+        computePayoffCurve(activeLegs, {
           minPrice: displaySpot - spread,
           maxPrice: displaySpot + spread,
         }) || [];
       const breakEvs = computeBreakevens(curveData) || [];
       const { maxProfit: mxProf, maxLoss: mxLoss } = computeMaxProfitLoss(
-        legs,
+        activeLegs,
         curveData,
       );
-      const netGrks = computeNetGreeks(legs);
+      const netGrks = computeNetGreeks(activeLegs);
 
       const asOfMs = istWallClockToUtcMs(selectedDate, currentTime);
       // For a single-expiry strategy this is just chainData.selectedExpiry;
       // for a calendar spread it's the near leg's expiry — the meaningful
       // horizon for "at expiry" (see payoff.js's evaluationExpiryOf).
-      const evaluationExpiry = evaluationExpiryOf(legs) || chainData.selectedExpiry;
+      const evaluationExpiry = evaluationExpiryOf(activeLegs) || chainData.selectedExpiry;
       const yearsRemaining = yearsToExpiry(evaluationExpiry, asOfMs);
       const atmRow = displayRows.find(
         (r) => r.strike === (liveChain?.atmStrike ?? chainData.atmStrike),
@@ -805,7 +953,7 @@ export default function Simulator() {
       const atmIv = atmRow?.ce?.iv ?? atmRow?.pe?.iv ?? null;
 
       curveData = atmIv
-        ? addMarkToMarketCurve(curveData, legs, yearsRemaining, asOfMs)
+        ? addMarkToMarketCurve(curveData, activeLegs, yearsRemaining, asOfMs)
         : curveData;
       const expMv = atmIv
         ? computeExpectedMove(displaySpot, atmIv, yearsRemaining)
@@ -837,7 +985,7 @@ export default function Simulator() {
       return empty;
     }
   }, [
-    legs,
+    activeLegs,
     displaySpot,
     displayRows,
     chainData,
@@ -845,6 +993,64 @@ export default function Simulator() {
     currentTime,
     liveChain,
   ]);
+
+  // Shared between the standalone "Strategy Chart" tab and the top half of
+  // "Strategy Chart + NIFTY Chart" — same three states either way (no
+  // positions yet / positions added but not replayed / real per-minute
+  // replay), so the gating logic and chart markup only live in one place.
+  function renderStrategyChart(height = 280) {
+    if (!legs.length) {
+      return (
+        <div className="py-16 text-center text-xs text-gray-400">
+          <div className="mb-2 text-3xl">📈</div>
+          Add positions to view the strategy chart.
+        </div>
+      );
+    }
+    if (!replayData) {
+      return (
+        <div className="py-16 text-center text-xs text-gray-400">
+          Click "Run Simulation" to see the real minute-by-minute
+          replay for this chart.
+        </div>
+      );
+    }
+    return (
+      <>
+        <ResponsiveContainer width="100%" height={height}>
+          <LineChart data={replayData.series}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis
+              dataKey="time"
+              tickFormatter={formatTime}
+              tick={{ fontSize: 10 }}
+              interval="preserveStartEnd"
+            />
+            <YAxis tick={{ fontSize: 11 }} width={60} />
+            <Tooltip formatter={(v) => formatPrice(v)} labelFormatter={formatTime} />
+            <ReferenceLine y={0} stroke="#9ca3af" />
+            {currentPoint && (
+              <ReferenceLine x={currentPoint.time} stroke="#2563eb" strokeDasharray="4 4" />
+            )}
+            <Line
+              type="monotone"
+              dataKey="pnl"
+              name="Strategy P&L"
+              stroke="#2563eb"
+              strokeWidth={2}
+              dot={false}
+              connectNulls
+            />
+          </LineChart>
+        </ResponsiveContainer>
+        <div className="mt-2 text-[11px] text-gray-400 text-center">
+          Real stored prices from {replayData.date} — a gap means
+          no recorded price for that minute, never guessed. Use
+          the scrubber above or Autoplay to move through the day.
+        </div>
+      </>
+    );
+  }
 
   return (
     <div className="bg-gray-50/40">
@@ -1214,6 +1420,7 @@ export default function Simulator() {
 
       <div className="mx-auto flex max-w-[1600px] gap-3 px-5 pt-2 min-h-screen">
         {/* Left Column: Option Chain Window */}
+        {!hideChain && (
         <div className="w-[560px] shrink-0 flex flex-col">
           {chainData && (
             <div className="mb-3 rounded-xl border border-gray-200 bg-white px-4 py-1 shadow-sm transition-all hover:shadow-md">
@@ -1327,7 +1534,14 @@ export default function Simulator() {
 
                 <div className="h-5 w-px bg-gray-200 flex-shrink-0" />
 
-                <div className="flex-shrink-0">
+                <div className="flex-shrink-0 flex items-center gap-1">
+                  <button
+                    onClick={() => setHideChain(true)}
+                    className="rounded-md px-2 py-1 text-[11px] font-semibold text-gray-500 hover:bg-gray-100"
+                    title="Hide Chain — give the right panel full width"
+                  >
+                    Hide Chain
+                  </button>
                   <div className="relative">
                     <button
                       onClick={() => setSettingsOpen((v) => !v)}
@@ -1596,340 +1810,271 @@ export default function Simulator() {
             </div>
           )}
         </div>
+        )}
 
-        {/* Right Column: Ready-made strategies, or Analytics/Chart/Positions once legs exist */}
+        {hideChain && (
+          <button
+            onClick={() => setHideChain(false)}
+            className="fixed left-3 top-20 z-30 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-600 shadow-md hover:bg-gray-50"
+          >
+            Show Option Chain
+          </button>
+        )}
+
+        {/* Right Column: chart tabs are always visible now (Ready-Made
+            Strategies lives inside the Payoff tab instead of replacing this
+            whole column pre-legs) — Positions/Greeks/the run-simulation bar
+            still only make sense once at least one leg exists. */}
         <div className="flex-1 flex flex-col">
-          
-          {legs.length === 0 ? (
-            <div className="flex-1 rounded-xl border border-gray-200 bg-white p-2 shadow-sm">
-              <div className=" px-4 py-1">
-                <h1>nikhil</h1>
-              </div>
-              <hr className="my-1.5 border-gray-200" />
-              <PresetStrategies
-                data={liveChain || chainData}
-                onApply={applyPreset}
-                fetchExpiryRows={fetchExpiryRows}
-              />
-            </div>
-          ) : (
-            <>
-              <div className="mb-3 flex items-center justify-end gap-2">
-                {!replayData && (
-                  <button
-                    onClick={runSimulation}
-                    disabled={running}
-                    className="rounded-xl bg-blue-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50 shadow-sm transition"
-                  >
-                    {running
-                      ? "Loading real prices…"
-                      : `Run Simulation (${selectedDate})`}
-                  </button>
-                )}
-                {replayData && (
-                  <button
-                    onClick={() => {
-                      setReplayData(null);
-                      setChartTab("payoff");
-                    }}
-                    className="rounded-xl border border-gray-300 px-4 py-1.5 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition"
-                  >
-                    ← Edit legs
-                  </button>
-                )}
-                <SaveButton
-                  itemLabel="strategy"
-                  onSave={(token, name) => saveStrategy(token, { name, underlying: symbol, legs })}
-                />
+          {legs.length > 0 && (
+            <div className="mb-3 flex items-center justify-end gap-2">
+              {!replayData && (
                 <button
-                  onClick={() => setSavedOpen(true)}
-                  className="rounded-xl border border-gray-300 px-4 py-1.5 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition"
+                  onClick={runSimulation}
+                  disabled={running || !activeLegs.length}
+                  title={!activeLegs.length ? "Check at least one position in the Positions table first" : undefined}
+                  className="rounded-xl bg-blue-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50 shadow-sm transition"
                 >
-                  Saved
+                  {running
+                    ? "Loading real prices…"
+                    : `Run Simulation (${selectedDate})`}
                 </button>
+              )}
+              {replayData && (
                 <button
-                  onClick={resetWorkspace}
-                  className="rounded-xl border border-gray-300 px-4 py-1.5 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition"
-                >
-                  Reset Workspace
-                </button>
-              </div>
-
-              {savedOpen && (
-                <SavedStrategiesModal
-                  onClose={() => setSavedOpen(false)}
-                  onLoad={(loadedLegs, underlying) => {
-                    if (underlying !== symbol) setSymbol(underlying);
+                  onClick={() => {
                     setReplayData(null);
                     setChartTab("payoff");
-                    setLegs(loadedLegs.map((l) => ({ ...l, id: ++legIdCounter })));
-                    setSavedOpen(false);
                   }}
+                  className="rounded-xl border border-gray-300 px-4 py-1.5 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition"
+                >
+                  ← Edit legs
+                </button>
+              )}
+              <SaveButton
+                itemLabel="strategy"
+                onSave={(token, name) => saveStrategy(token, { name, underlying: symbol, legs })}
+              />
+              <button
+                onClick={() => setSavedOpen(true)}
+                className="rounded-xl border border-gray-300 px-4 py-1.5 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition"
+              >
+                Saved
+              </button>
+              <button
+                onClick={resetWorkspace}
+                className="rounded-xl border border-gray-300 px-4 py-1.5 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition"
+              >
+                Reset Workspace
+              </button>
+            </div>
+          )}
+
+          {savedOpen && (
+            <SavedStrategiesModal
+              onClose={() => setSavedOpen(false)}
+              onLoad={(loadedLegs, underlying) => {
+                if (underlying !== symbol) setSymbol(underlying);
+                setReplayData(null);
+                setChartTab("payoff");
+                setLegs(loadedLegs.map((l) => ({ active: true, ...l, id: ++legIdCounter })));
+                setSavedOpen(false);
+              }}
+            />
+          )}
+
+          {replayError && (
+            <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              {replayError}
+            </div>
+          )}
+
+          <div className="mb-4 flex gap-4 items-stretch">
+            {legs.length > 0 && (
+              <div className="w-48 shrink-0 flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
+                <Stat
+                  label="Strategy P&L"
+                  value={formatPrice(currentPnl)}
+                  tone={currentPnl >= 0 ? "positive" : "negative"}
                 />
-              )}
+                <Stat
+                  label="Probability of Profit (POP)"
+                  value={pop != null ? `${pop.toFixed(0)}%` : "—"}
+                  hint="Normal distribution approximation"
+                />
+                <Stat
+                  label="Max Profit Potential"
+                  value={
+                    typeof maxProfit === "number"
+                      ? formatPrice(maxProfit)
+                      : maxProfit || "Unlimited"
+                  }
+                  tone="positive"
+                />
+                <Stat
+                  label="Max Loss Risk"
+                  value={
+                    typeof maxLoss === "number"
+                      ? formatPrice(maxLoss)
+                      : maxLoss || "Unlimited"
+                  }
+                  tone="negative"
+                />
+                <Stat
+                  label="Breakeven Thresholds"
+                  value={
+                    breakevens && breakevens.length
+                      ? breakevens.join(", ")
+                      : "None"
+                  }
+                />
+                <Stat
+                  label="Workspace Constraints"
+                  value={
+                    activeLegs.length === legs.length
+                      ? `${legs.length} of 6 legs used`
+                      : `${legs.length} of 6 legs used (${activeLegs.length} included)`
+                  }
+                />
+              </div>
+            )}
 
-              {replayError && (
-                <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                  {replayError}
-                </div>
-              )}
-
-              <div className="mb-4 flex gap-4 items-stretch">
-                <div className="w-48 shrink-0 flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
-                  <Stat
-                    label="Strategy P&L"
-                    value={formatPrice(currentPnl)}
-                    tone={currentPnl >= 0 ? "positive" : "negative"}
-                  />
-                  <Stat
-                    label="Probability of Profit (POP)"
-                    value={pop != null ? `${pop.toFixed(0)}%` : "—"}
-                    hint="Normal distribution approximation"
-                  />
-                  <Stat
-                    label="Max Profit Potential"
-                    value={
-                      typeof maxProfit === "number"
-                        ? formatPrice(maxProfit)
-                        : maxProfit || "Unlimited"
-                    }
-                    tone="positive"
-                  />
-                  <Stat
-                    label="Max Loss Risk"
-                    value={
-                      typeof maxLoss === "number"
-                        ? formatPrice(maxLoss)
-                        : maxLoss || "Unlimited"
-                    }
-                    tone="negative"
-                  />
-                  <Stat
-                    label="Breakeven Thresholds"
-                    value={
-                      breakevens && breakevens.length
-                        ? breakevens.join(", ")
-                        : "None"
-                    }
-                  />
-                  <Stat
-                    label="Workspace Constraints"
-                    value={`${legs.length} of 6 active legs`}
-                  />
-                </div>
-
-                <div className="flex-1 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col">
-                  <div className="flex gap-1 border-b border-gray-100 bg-gray-50/50 px-3 pt-2 overflow-x-auto">
-                    {CHART_TABS.map(([key, label]) => (
-                      <button
-                        key={key}
-                        onClick={() => setChartTab(key)}
-                        className={`shrink-0 rounded-t-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                          chartTab === key
-                            ? "bg-white text-blue-600 border border-b-0 border-gray-200"
-                            : "text-gray-500 hover:text-gray-800"
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex-1 p-4 flex flex-col justify-center">
-                    {chartTab === "payoff" && (
+            <div className="flex-1 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col">
+              <div className="flex gap-1 border-b border-gray-100 bg-gray-50/50 px-3 pt-2 overflow-x-auto">
+                {CHART_TABS.map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setChartTab(key)}
+                    className={`shrink-0 rounded-t-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                      chartTab === key
+                        ? "bg-white text-blue-600 border border-b-0 border-gray-200"
+                        : "text-gray-500 hover:text-gray-800"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex-1 p-4">
+                {chartTab === "payoff" && (
+                  <div className="space-y-4">
+                    {curve.length ? (
                       <PayoffChart
                         curve={curve}
                         spotPrice={displaySpot}
                         breakevens={breakevens}
                         expectedMove={expectedMove}
                       />
-                    )}
-
-                    {chartTab !== "payoff" && !replayData && (
-                      <div className="py-16 text-center text-xs text-gray-400">
-                        Click "Run Simulation" to see the real minute-by-minute
-                        replay for this chart.
+                    ) : (
+                      <div className="py-10 text-center text-xs text-gray-400">
+                        Add positions to view the payoff diagram.
                       </div>
                     )}
-
-                    {chartTab === "strategy" && replayData && (
-                      <ResponsiveContainer width="100%" height={280}>
-                        <LineChart data={replayData.series}>
-                          <CartesianGrid
-                            strokeDasharray="3 3"
-                            stroke="#f0f0f0"
-                          />
-                          <XAxis
-                            dataKey="time"
-                            tickFormatter={formatTime}
-                            tick={{ fontSize: 10 }}
-                            interval="preserveStartEnd"
-                          />
-                          <YAxis tick={{ fontSize: 11 }} width={60} />
-                          <Tooltip
-                            formatter={(v) => formatPrice(v)}
-                            labelFormatter={formatTime}
-                          />
-                          <ReferenceLine y={0} stroke="#9ca3af" />
-                          {currentPoint && (
-                            <ReferenceLine
-                              x={currentPoint.time}
-                              stroke="#2563eb"
-                              strokeDasharray="4 4"
-                            />
-                          )}
-                          <Line
-                            type="monotone"
-                            dataKey="pnl"
-                            name="Strategy P&L"
-                            stroke="#2563eb"
-                            strokeWidth={2}
-                            dot={false}
-                            connectNulls
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    )}
-
-                    {chartTab === "nifty" && replayData && (
-                      <ResponsiveContainer width="100%" height={280}>
-                        <LineChart data={replayData.series}>
-                          <CartesianGrid
-                            strokeDasharray="3 3"
-                            stroke="#f0f0f0"
-                          />
-                          <XAxis
-                            dataKey="time"
-                            tickFormatter={formatTime}
-                            tick={{ fontSize: 10 }}
-                            interval="preserveStartEnd"
-                          />
-                          <YAxis
-                            tick={{ fontSize: 11 }}
-                            width={60}
-                            domain={["dataMin", "dataMax"]}
-                          />
-                          <Tooltip
-                            formatter={(v) => formatPrice(v)}
-                            labelFormatter={formatTime}
-                          />
-                          {currentPoint && (
-                            <ReferenceLine
-                              x={currentPoint.time}
-                              stroke="#2563eb"
-                              strokeDasharray="4 4"
-                            />
-                          )}
-                          <Line
-                            type="monotone"
-                            dataKey="spot"
-                            name={`${symbol} spot`}
-                            stroke="#f59e0b"
-                            strokeWidth={2}
-                            dot={false}
-                            connectNulls
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    )}
-
-                    {chartTab === "combined" && replayData && (
-                      <ResponsiveContainer width="100%" height={280}>
-                        <LineChart data={replayData.series}>
-                          <CartesianGrid
-                            strokeDasharray="3 3"
-                            stroke="#f0f0f0"
-                          />
-                          <XAxis
-                            dataKey="time"
-                            tickFormatter={formatTime}
-                            tick={{ fontSize: 10 }}
-                            interval="preserveStartEnd"
-                          />
-                          <YAxis
-                            yAxisId="pnl"
-                            tick={{ fontSize: 11 }}
-                            width={60}
-                          />
-                          <YAxis
-                            yAxisId="spot"
-                            orientation="right"
-                            tick={{ fontSize: 11 }}
-                            width={60}
-                            domain={["dataMin", "dataMax"]}
-                          />
-                          <Tooltip
-                            formatter={(v) => formatPrice(v)}
-                            labelFormatter={formatTime}
-                          />
-                          <ReferenceLine yAxisId="pnl" y={0} stroke="#9ca3af" />
-                          {currentPoint && (
-                            <ReferenceLine
-                              yAxisId="pnl"
-                              x={currentPoint.time}
-                              stroke="#2563eb"
-                              strokeDasharray="4 4"
-                            />
-                          )}
-                          <Line
-                            yAxisId="pnl"
-                            type="monotone"
-                            dataKey="pnl"
-                            name="Strategy P&L"
-                            stroke="#2563eb"
-                            strokeWidth={2}
-                            dot={false}
-                            connectNulls
-                          />
-                          <Line
-                            yAxisId="spot"
-                            type="monotone"
-                            dataKey="spot"
-                            name={`${symbol} spot`}
-                            stroke="#f59e0b"
-                            strokeWidth={2}
-                            dot={false}
-                            connectNulls
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    )}
-
-                    {replayData && (
-                      <div className="mt-2 text-[11px] text-gray-400 text-center">
-                        Real stored prices from {replayData.date} — a gap means
-                        no recorded price for that minute, never guessed. Use
-                        the scrubber above or Autoplay to move through the day.
-                      </div>
-                    )}
+                    <PresetStrategies
+                      data={liveChain || chainData}
+                      onApply={applyPreset}
+                      fetchExpiryRows={fetchExpiryRows}
+                    />
                   </div>
-                </div>
+                )}
+
+                {chartTab === "strategy" && renderStrategyChart(280)}
+
+                {chartTab === "nifty" && (
+                  <CandlestickChart symbol={symbol} date={selectedDate} />
+                )}
+
+                {chartTab === "combined" && (
+                  <div className="space-y-4">
+                    <div>{renderStrategyChart(220)}</div>
+                    <div className="border-t border-gray-100 pt-4">
+                      <CandlestickChart symbol={symbol} date={selectedDate} compact />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {legs.length > 0 && (
+            <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+              <div className="flex border-b border-gray-100 text-xs font-semibold">
+                <button
+                  onClick={() => setTab("positions")}
+                  className={`px-5 py-3 transition-colors ${tab === "positions" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
+                >
+                  Positions
+                </button>
+                <button
+                  onClick={() => setTab("greeks")}
+                  className={`px-5 py-3 transition-colors ${tab === "greeks" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
+                >
+                  Portfolio Greeks
+                </button>
               </div>
 
-              <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-                <div className="flex border-b border-gray-100 text-xs font-semibold">
-                  <button
-                    onClick={() => setTab("positions")}
-                    className={`px-5 py-3 transition-colors ${tab === "positions" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
-                  >
-                    Positions
-                  </button>
-                  <button
-                    onClick={() => setTab("greeks")}
-                    className={`px-5 py-3 transition-colors ${tab === "greeks" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
-                  >
-                    Portfolio Greeks
-                  </button>
-                </div>
-
-                {tab === "positions" ? (
+              {tab === "positions" ? (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 bg-gray-50/40 px-4 py-2 text-[11px]">
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-1.5 text-gray-600 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={allLegsActive}
+                          disabled={!!replayData}
+                          onChange={toggleSelectAllLegs}
+                          className="disabled:cursor-not-allowed"
+                        />{" "}
+                        Select All
+                      </label>
+                      <button
+                        onClick={() => setLegsTopFirst((v) => !v)}
+                        className="rounded-md border border-gray-200 px-2 py-1 font-semibold text-gray-600 hover:bg-gray-100"
+                      >
+                        {legsTopFirst ? "Top ↓" : "Bottom ↑"}
+                      </button>
+                      <div className="flex items-center gap-1">
+                        <span className="text-gray-400">Lots:</span>
+                        <button
+                          onClick={() => bulkAdjustLots(-1)}
+                          disabled={!!replayData}
+                          className="rounded border border-gray-200 px-1.5 py-0.5 font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-30"
+                        >
+                          −
+                        </button>
+                        <span className="w-6 text-center font-bold tabular-nums text-gray-800">{commonLots ?? "—"}</span>
+                        <button
+                          onClick={() => bulkAdjustLots(1)}
+                          disabled={!!replayData}
+                          className="rounded border border-gray-200 px-1.5 py-0.5 font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-30"
+                        >
+                          +
+                        </button>
+                      </div>
+                      <div>
+                        <span className="text-gray-400">Total Qty: </span>
+                        <span className="font-bold tabular-nums text-gray-800">{totalLots}</span>
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-gray-400">Total P&L: </span>
+                      <span className={`font-bold tabular-nums ${totalLivePnl != null && totalLivePnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                        {totalLivePnl != null ? formatPrice(totalLivePnl) : "-"}
+                      </span>
+                    </div>
+                  </div>
                   <table className="w-full border-collapse text-xs">
                     <thead>
                       <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-100">
+                        <th className="px-3 py-2.5 w-8" title="Include in payoff calculation"></th>
                         <th className="px-4 py-2.5 text-left font-medium">
                           Action
                         </th>
                         <th className="px-4 py-2.5 text-left font-medium">
                           Type
+                        </th>
+                        <th className="px-4 py-2.5 text-left font-medium">
+                          Expiry
                         </th>
                         <th className="px-4 py-2.5 text-right font-medium">
                           Strike
@@ -1944,13 +2089,16 @@ export default function Simulator() {
                           Live P&L
                         </th>
                         <th className="px-4 py-2.5 text-right font-medium">
-                          Qty
+                          Lots
+                        </th>
+                        <th className="px-4 py-2.5 text-center font-medium">
+                          SL/TG
                         </th>
                         <th className="px-4 py-2.5 w-10"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {legs.map((leg) => {
+                      {orderedLegs.map((leg) => {
                         const row = displayRows.find(
                           (r) => r.strike === leg.strike,
                         );
@@ -1960,11 +2108,23 @@ export default function Simulator() {
                             : row.pe?.ltp
                           : null;
                         const livePnl = legLivePnl(leg);
+                        const included = leg.active !== false;
+                        const canPickStrike = leg.expiry === chainData?.selectedExpiry;
                         return (
                           <tr
                             key={leg.id}
-                            className="hover:bg-gray-50/40 transition-colors"
+                            className={`hover:bg-gray-50/40 transition-colors ${included ? "" : "opacity-50"}`}
                           >
+                            <td className="px-3 py-2.5 text-center">
+                              <input
+                                type="checkbox"
+                                checked={included}
+                                disabled={!!replayData}
+                                onChange={() => toggleLegActive(leg.id)}
+                                title={included ? "Included in payoff calculation — uncheck to exclude" : "Excluded from payoff calculation — check to include"}
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
+                              />
+                            </td>
                             <td className="px-4 py-2.5">
                               <span
                                 className={`rounded-md px-2 py-0.5 text-[10px] font-bold text-white shadow-sm ${leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"}`}
@@ -1972,11 +2132,51 @@ export default function Simulator() {
                                 {leg.action === "buy" ? "BUY" : "SELL"}
                               </span>
                             </td>
-                            <td className="px-4 py-2.5 font-medium text-gray-700">
-                              {leg.type}
+                            <td className="px-4 py-2.5">
+                              <span
+                                className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${leg.type === "CE" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"}`}
+                              >
+                                {leg.type}
+                              </span>
+                            </td>
+                            <td className="px-4 py-2.5 text-left">
+                              <select
+                                value={leg.expiry || ""}
+                                disabled={!!replayData || !chainData?.expiries?.length}
+                                onChange={(e) => updateLegExpiry(leg.id, e.target.value)}
+                                className="rounded-lg border border-gray-200 bg-white px-1.5 py-1 text-[11px] font-medium text-gray-700 outline-none focus:border-blue-500 disabled:opacity-50"
+                              >
+                                {(chainData?.expiries?.includes(leg.expiry) ? chainData.expiries : [leg.expiry, ...(chainData?.expiries || [])]).map((exp) => (
+                                  <option key={exp} value={exp}>{formatExpiryShort(exp)}</option>
+                                ))}
+                              </select>
                             </td>
                             <td className="px-4 py-2.5 text-right font-bold tabular-nums text-gray-900">
-                              {leg.strike}
+                              {canPickStrike ? (
+                                <div className="flex items-center justify-end gap-1">
+                                  <button
+                                    onClick={() => rollLegStrike(leg.id, -1)}
+                                    disabled={!!replayData}
+                                    className="rounded border border-gray-200 px-1 text-[10px] font-bold text-gray-500 hover:bg-gray-100 disabled:opacity-30"
+                                    title="Roll to lower strike"
+                                  >
+                                    −
+                                  </button>
+                                  <span className="tabular-nums">{leg.strike}</span>
+                                  <button
+                                    onClick={() => rollLegStrike(leg.id, 1)}
+                                    disabled={!!replayData}
+                                    className="rounded border border-gray-200 px-1 text-[10px] font-bold text-gray-500 hover:bg-gray-100 disabled:opacity-30"
+                                    title="Roll to higher strike"
+                                  >
+                                    +
+                                  </button>
+                                </div>
+                              ) : (
+                                <span title="Switch this leg's expiry to the currently displayed one to change its strike">
+                                  {leg.strike}
+                                </span>
+                              )}
                             </td>
                             <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">
                               {formatPrice(leg.premium)}
@@ -1992,31 +2192,93 @@ export default function Simulator() {
                               {livePnl != null ? formatPrice(livePnl) : "-"}
                             </td>
                             <td className="px-4 py-2.5 text-right">
-                              <input
-                                type="number"
-                                min={1}
-                                value={leg.qty}
+                              <div className="inline-flex items-center gap-1.5">
+                                <button
+                                  onClick={() => updateQty(leg.id, leg.qty - 1)}
+                                  disabled={!!replayData || leg.qty <= 1}
+                                  className="rounded border border-gray-300 px-1.5 py-0.5 text-[11px] font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-30"
+                                >
+                                  −
+                                </button>
+                                <span className="w-5 text-center tabular-nums font-semibold text-gray-800">
+                                  {leg.qty}
+                                </span>
+                                <button
+                                  onClick={() => updateQty(leg.id, leg.qty + 1)}
+                                  disabled={!!replayData}
+                                  className="rounded border border-gray-300 px-1.5 py-0.5 text-[11px] font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-30"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </td>
+                            <td className="px-4 py-2.5 text-center relative">
+                              <button
+                                onClick={() => setSlTgEditId(slTgEditId === leg.id ? null : leg.id)}
                                 disabled={!!replayData}
-                                onChange={(e) =>
-                                  updateQty(leg.id, Number(e.target.value))
-                                }
-                                className="w-16 rounded-lg border border-gray-200 px-2 py-1 text-right font-medium text-gray-800 focus:border-blue-500 outline-none disabled:opacity-50"
-                              />
+                                className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                                title={leg.slPercent != null || leg.tgPercent != null ? `SL ${leg.slPercent ?? "—"}% / TG ${leg.tgPercent ?? "—"}%` : "Set SL/TG"}
+                              >
+                                ⚙
+                              </button>
+                              {(leg.slPercent != null || leg.tgPercent != null) && (
+                                <div className="text-[9px] text-gray-400">SL {leg.slPercent ?? "—"}% / TG {leg.tgPercent ?? "—"}%</div>
+                              )}
+                              {slTgEditId === leg.id && (
+                                <>
+                                  <div className="fixed inset-0 z-10" onClick={() => setSlTgEditId(null)} />
+                                  <div className="absolute right-0 z-20 mt-1 w-52 rounded-lg border border-gray-200 bg-white p-3 text-left shadow-xl">
+                                    <div className="mb-2 text-[10px] text-gray-400">
+                                      Planning note only — not auto-executed here. Use Backtest for SL%/target%-driven exits.
+                                    </div>
+                                    <label className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
+                                      SL %
+                                      <input
+                                        type="number"
+                                        defaultValue={leg.slPercent ?? ""}
+                                        onBlur={(e) => setLegSlTg(leg.id, e.target.value, leg.tgPercent ?? "")}
+                                        className="w-16 rounded border border-gray-200 px-1.5 py-0.5 text-right outline-none focus:border-blue-500"
+                                      />
+                                    </label>
+                                    <label className="flex items-center justify-between gap-2 text-[11px]">
+                                      TG %
+                                      <input
+                                        type="number"
+                                        defaultValue={leg.tgPercent ?? ""}
+                                        onBlur={(e) => setLegSlTg(leg.id, leg.slPercent ?? "", e.target.value)}
+                                        className="w-16 rounded border border-gray-200 px-1.5 py-0.5 text-right outline-none focus:border-blue-500"
+                                      />
+                                    </label>
+                                  </div>
+                                </>
+                              )}
                             </td>
                             <td className="px-4 py-2.5 text-center">
-                              <button
-                                onClick={() => removeLeg(leg.id)}
-                                disabled={!!replayData}
-                                className="text-gray-400 hover:text-rose-600 font-bold transition disabled:opacity-30"
-                              >
-                                ✕
-                              </button>
+                              <div className="flex items-center justify-center gap-2">
+                                <button
+                                  onClick={() => resetLegEntryToLtp(leg.id)}
+                                  disabled={!!replayData}
+                                  className="text-gray-400 hover:text-blue-600 transition disabled:opacity-30"
+                                  title="Reset entry to current LTP"
+                                >
+                                  ⟳
+                                </button>
+                                <button
+                                  onClick={() => removeLeg(leg.id)}
+                                  disabled={!!replayData}
+                                  className="text-gray-400 hover:text-rose-600 font-bold transition disabled:opacity-30"
+                                  title="Remove leg"
+                                >
+                                  ✕
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
                       })}
                     </tbody>
                   </table>
+                </>
                 ) : (
                   <table className="w-full border-collapse text-xs">
                     <thead>
@@ -2066,8 +2328,7 @@ export default function Simulator() {
                   </table>
                 )}
               </div>
-            </>
-          )}
+            )}
         </div>
       </div>
 

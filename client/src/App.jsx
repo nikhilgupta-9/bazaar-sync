@@ -18,7 +18,8 @@ function App() {
             <TopNav />
             <Routes>
                 <Route path="/" element={<Home />} />
-                <Route path="/option-chain" element={<OptionChain />} />
+                <Route path="/option-chain" element={<Navigate to="/option-chain/nifty" replace />} />
+                <Route path="/option-chain/:symbol" element={<OptionChain />} />
                 <Route path="/strategy-builder" element={<StrategyBuilder />} />
                 <Route path="/simulator" element={<Simulator />} />
                 <Route path="/max-pain" element={<MaxPain />} />

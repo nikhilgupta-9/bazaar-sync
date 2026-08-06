@@ -9,7 +9,7 @@ import { Link } from "react-router-dom";
 import ToolIcon from "../components/ToolIcon";
 
 const TOOLS = [
-    { to: "/option-chain", title: "Option Chain", icon: "chain", desc: "Full chain with OI, buildup, Greeks" },
+    { to: "/option-chain", title: "Option Chain", image: "/images/oi.png", desc: "Full chain with OI, buildup, Greeks" },
     { to: "/strategy-builder", title: "Strategy Builder", icon: "strategy", desc: "Multi-leg payoff + live Greeks" },
     { to: "/simulator", title: "Simulator", icon: "backtest", desc: "Replay a real past day minute by minute" },
     { to: "/max-pain", title: "Max Pain", icon: "maxpain", desc: "Option-writer payout by strike" },
@@ -31,14 +31,26 @@ function SectionHeading({ children }) {
     );
 }
 
-function ToolCard({ to, title, icon, desc, big }) {
+function ToolCard({ to, title, icon, image, desc, big }) {
     return (
         <Link
             to={to}
             className="group block overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm transition hover:border-blue-300 hover:shadow-md"
         >
-            <div className={`flex items-center justify-center bg-gray-50 px-4 ${big ? "h-32" : "h-20"}`}>
+            <div
+            className={`flex items-center justify-center bg-gray-50 px-4 ${
+                big ? "h-32" : "h-20"
+            }`}
+            >
+            {image ? (
+                <img
+                src={image}
+                alt={title}
+                className={`${big ? "h-20 w-20" : "h-12 w-12"} object-contain transition-transform duration-300 group-hover:scale-110`}
+                />
+            ) : (
                 <ToolIcon name={icon} />
+            )}
             </div>
             <div className="border-t border-gray-100 px-4 py-3">
                 <div className="text-sm font-semibold text-gray-900 group-hover:text-blue-600">{title}</div>

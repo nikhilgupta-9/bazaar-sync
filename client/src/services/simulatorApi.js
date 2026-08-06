@@ -26,6 +26,13 @@ export async function fetchSimulatorChain(symbol, { date, expiry, time } = {}) {
     return handle(res);
 }
 
+export async function fetchSimulatorCandles(symbol, { date } = {}) {
+    const url = new URL(`${API_URL}/api/simulator/candles/${symbol.toLowerCase()}`);
+    if (date) url.searchParams.set("date", date);
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    return handle(res);
+}
+
 export async function runSimulatorReplay(symbol, { date, expiry, legs }) {
     const res = await fetch(`${API_URL}/api/simulator/replay/${symbol.toLowerCase()}`, {
         method: "POST",

@@ -77,14 +77,13 @@ function buildPresets(data) {
                 leg(atm + 5 * gap, "CE", "buy"),
             ]),
         },
-        // Best-guess match for the reference screenshot's 9th Bullish card
-        // (partially cut off) — a 1x2 call ratio BACK spread (buy more
-        // further-OTM calls than the near strike sold), the natural bullish
-        // counterpart to "Call Ratio Spread" under Other. Flag to the user
-        // if this isn't the strategy they meant.
+        // Buy an OTM call + sell an OTM put — a defined-range bullish combo
+        // (synthetic long with the upside capped by how far OTM the call is
+        // and downside cushioned by the put premium collected), the natural
+        // bullish counterpart to Bearish's "Risk Reversal" below.
         {
-            name: "Call Ratio Back Spread", bias: "Bullish", shape: "call-ratio-back-spread",
-            legs: compact([leg(atm, "CE", "sell"), leg(atm + 3 * gap, "CE", "buy", 2)]),
+            name: "Range Forward", bias: "Bullish", shape: "range-forward",
+            legs: compact([leg(atm + 2 * gap, "CE", "buy"), leg(atm - 2 * gap, "PE", "sell")]),
         },
         // Needs a genuinely different expiry for the long leg — the near
         // leg comes from the chain already loaded, but the far leg has to be
@@ -114,13 +113,80 @@ function buildPresets(data) {
             name: "Bear Put Spread", bias: "Bearish", shape: "bear-put-spread",
             legs: compact([leg(atm, "PE", "buy"), leg(atm - 4 * gap, "PE", "sell")]),
         },
+        // Naked long put: bearish mirror of "Buy Call" — flat loss (premium
+        // paid) above the strike, unlimited profit as price falls below it.
         {
-            name: "Long Call Butterfly", bias: "Neutral", shape: "long-call-butterfly",
+            name: "Buy Put", bias: "Bearish", shape: "buy-put",
+            legs: compact([leg(atm, "PE", "buy")]),
+        },
+        // Naked short call: bearish mirror of "Sell Put" — profit caps at the
+        // premium collected once price is below the strike, loss grows above it.
+        {
+            name: "Sell Call", bias: "Bearish", shape: "sell-call",
+            legs: compact([leg(atm, "CE", "sell")]),
+        },
+        // Buy put + sell call at the same strike replicates a linear short
+        // futures payoff — the bearish mirror of "Long Synthetic Future".
+        {
+            name: "Short Synthetic Future", bias: "Bearish", shape: "short-synthetic-future",
+            legs: compact([leg(atm, "PE", "buy"), leg(atm, "CE", "sell")]),
+        },
+        // Credit call spread: sell the near strike, buy further OTM as
+        // protection — bearish, defined risk/reward (the call-side mirror of
+        // "Bull Put Spread").
+        {
+            name: "Bear Call Spread", bias: "Bearish", shape: "bear-call-spread",
+            legs: compact([leg(atm, "CE", "sell"), leg(atm + 4 * gap, "CE", "buy")]),
+        },
+        // Same near/far-expiry pattern as "Long Calendar with Calls", built
+        // with puts instead — sell the near-dated ATM put, buy the same
+        // strike at a genuinely later expiry.
+        {
+            name: "Long Calendar with Puts", bias: "Bearish", shape: "long-calendar-put",
+            legCount: farExpiry ? 2 : 0,
+            buildLegs: farExpiry
+                ? async (fetchExpiryRows) => {
+                    const nearLeg = leg(atm, "PE", "sell");
+                    if (!nearLeg || !fetchExpiryRows) return [];
+                    const farRows = await fetchExpiryRows(farExpiry);
+                    const farRow = farRows.find((r) => r.strike === atm);
+                    if (!farRow || farRow.pe?.ltp == null) return [];
+                    const farLeg = {
+                        action: "buy", type: "PE", strike: atm, qty: 1,
+                        premium: farRow.pe.ltp, iv: farRow.pe.iv,
+                        delta: farRow.pe.delta, gamma: farRow.pe.gamma, theta: farRow.pe.theta, vega: farRow.pe.vega,
+                        expiry: farExpiry,
+                    };
+                    return [nearLeg, farLeg];
+                }
+                : null,
+        },
+        // All-put condor with every strike shifted below current spot — the
+        // bearish mirror of "Bull Condor" (same plateau shape, placed left of
+        // center since the profit zone sits below today's price).
+        {
+            name: "Bear Condor", bias: "Bearish", shape: "bear-condor",
             legs: compact([
-                leg(atm - 4 * gap, "CE", "buy"),
-                leg(atm, "CE", "sell", 2),
-                leg(atm + 4 * gap, "CE", "buy"),
+                leg(atm - gap, "PE", "buy"), leg(atm - 2 * gap, "PE", "sell"),
+                leg(atm - 4 * gap, "PE", "sell"), leg(atm - 5 * gap, "PE", "buy"),
             ]),
+        },
+        // Bearish mirror of "Bull Butterfly" — a single peak below the money
+        // instead of above it.
+        {
+            name: "Bear Butterfly", bias: "Bearish", shape: "bear-butterfly",
+            legs: compact([
+                leg(atm - gap, "PE", "buy"),
+                leg(atm - 3 * gap, "PE", "sell", 2),
+                leg(atm - 5 * gap, "PE", "buy"),
+            ]),
+        },
+        // Sell an OTM call + buy an OTM put — the bearish mirror of
+        // "Range Forward" above (a strangle-shaped combo trade, named by
+        // directional convention rather than payoff shape).
+        {
+            name: "Risk Reversal", bias: "Bearish", shape: "risk-reversal",
+            legs: compact([leg(atm + 2 * gap, "CE", "sell"), leg(atm - 2 * gap, "PE", "buy")]),
         },
         {
             name: "Short Strangle", bias: "Neutral", shape: "short-strangle",
