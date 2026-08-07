@@ -27,6 +27,7 @@ const { pool } = require("../config/db");
 const { addDays } = require("../services/backtestEngine");
 const upstox = require("../services/upstoxHistorical");
 const upstoxInstruments = require("../services/upstoxInstrumentMaster");
+const instrumentMaster = require("../services/instrumentMaster");
 const bs = require("../utils/blackScholes");
 
 const LOOKBACK_DAYS = Number(process.env.UPSTOX_BACKFILL_LOOKBACK_DAYS || 35);
@@ -274,7 +275,12 @@ async function main() {
     // ALL mode: every symbol already discovered by backfillBhavcopyAll.js
     // within Upstox's usable (last ~6mo) window — indices resolve via the
     // hardcoded UNDERLYING_KEYS, stocks via the downloaded instrument master.
-    const sixMonthsAgo = addDays(new Date().toISOString().slice(0, 10), -190);
+    // Was `new Date().toISOString().slice(0, 10)` — a real CLAUDE.md Gotcha
+    // #12 violation (never do date math via ambient local-timezone Date
+    // parsing) caught 2026-08-07 before this ALL-mode path was ever run for
+    // real. todayIst() is the same IST-string helper every other date
+    // computation in this codebase uses.
+    const sixMonthsAgo = addDays(instrumentMaster.todayIst(), -190);
     const [rows] = await pool.query(
         `SELECT DISTINCT symbol FROM option_chain_history WHERE trade_date >= ? ORDER BY symbol`,
         [sixMonthsAgo]
