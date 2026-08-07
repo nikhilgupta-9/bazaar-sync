@@ -5,15 +5,15 @@
 // only hardcodes the 3 index keys we already know — this covers the other
 // ~200+ F&O stocks by downloading Upstox's own public instrument master.
 //
-// *** UNVERIFIED file format *** — same situation nseBhavcopy.js and
-// breeze-historical/historicalService.js were in before their first real
-// run: built from Upstox's documented instrument-master file (gzipped CSV,
-// assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz), not a
-// live download (not reachable from the sandbox this was written in).
-// Column-name matching is defensive (same FIELD_CANDIDATES pattern as
-// nseBhavcopy.js) and throws with the real header on a mismatch instead of
-// silently returning wrong keys. Run scripts/testUpstoxInstrumentMaster.js
-// before trusting backfillUpstox.js SYMBOL=ALL.
+// *** VERIFIED against a real download (2026-08-07) *** — column names and
+// header order confirmed exactly as coded (instrument_key, exchange_token,
+// tradingsymbol, name, last_price, expiry, strike, tick_size, lot_size,
+// instrument_type, option_type, exchange). One real assumption WAS wrong
+// though, caught by backfillUpstox.js ALL mode parsing 0 equity rows on its
+// first real run: equities are instrument_type="EQUITY", not "EQ" — fixed
+// below. This single NSE.csv.gz file mixes equities, F&O, SDLs/bonds, etc.
+// all together (not a pure-equity file), which is why the instrument_type
+// filter matters.
 //
 // Cached on disk (server/data/upstox-instruments.csv, gitignored), refreshed
 // after 24h — same pattern as instrumentMaster.js's Angel One scrip master.
@@ -100,7 +100,11 @@ async function getEquityInstrumentKeyMap({ force = false } = {}) {
         // that may share the same file) — defensive: if instrumentType/segment
         // columns aren't present, fall back to accepting the row rather than
         // dropping everything.
-        if (instrumentType && !/^EQ$/i.test(instrumentType)) continue;
+        // Confirmed against a real download (2026-08-07): equities are
+        // instrument_type="EQUITY" (not "EQ" as assumed before ever seeing
+        // real data — RELIANCE: "NSE_EQ|INE002A01018","...","EQUITY","","NSE_EQ").
+        // Keep "EQ" too in case Upstox's other exchange files use the shorter form.
+        if (instrumentType && !/^(EQ|EQUITY)$/i.test(instrumentType)) continue;
         if (segment && !/NSE_EQ|^NSE$/i.test(segment)) continue;
 
         const symbol = cells[col.tradingSymbol]?.trim().toUpperCase();
