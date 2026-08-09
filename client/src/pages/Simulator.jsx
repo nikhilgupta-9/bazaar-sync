@@ -1,16 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ReferenceLine,
-  ResponsiveContainer,
-} from "recharts";
-import {
   fetchSimulatorDates,
   fetchSimulatorChain,
   runSimulatorReplay,
@@ -37,6 +27,7 @@ import OiBar from "../components/OiBar";
 import PayoffChart from "../components/PayoffChart";
 import PresetStrategies from "../components/PresetStrategies";
 import CandlestickChart from "../components/CandlestickChart";
+import StrategyChart from "../components/StrategyChart";
 import { SlCalender } from "react-icons/sl";
 import { FiSettings } from "react-icons/fi";
 
@@ -126,10 +117,6 @@ const DEFAULT_COLUMNS = {
   oi: true, callDelta: true, putDelta: true, iv: false,
   theta: false, vega: false, gamma: false,
 };
-
-function formatTime(t) {
-  return t ? String(t).slice(0, 5) : "-";
-}
 
 function formatDelta(value) {
   return value == null || Number.isNaN(value) ? "-" : Number(value).toFixed(2);
@@ -271,6 +258,83 @@ export default function Simulator() {
   const [legs, setLegs] = useState([]);
   const [tab, setTab] = useState("positions"); // 'positions' | 'greeks'
   const [chartTab, setChartTab] = useState("payoff"); // 'payoff' | 'strategy' | 'nifty' | 'combined'
+  // Underlying lightweight-charts instances, exposed via forwardRef, so the
+  // "combined" tab can sync crosshair + pan/zoom between the two separate
+  // chart instances (StrategyChart's candles aren't a pane inside
+  // CandlestickChart or vice versa — they're two independent charts that
+  // need to be told to move together, see the sync effect below).
+  const strategyChartRef = useRef(null);
+  const niftyChartRef = useRef(null);
+
+  // Syncs crosshair + visible time range between StrategyChart and
+  // CandlestickChart's underlying lightweight-charts instances when the
+  // "combined" tab shows both — they're two independent chart instances
+  // (not panes within one chart), so nothing links them by default. Both
+  // charts mount fresh whenever this tab becomes active; a short retry loop
+  // handles the brief window before both instances exist, rather than
+  // threading extra "chart ready" state through two separate children.
+  useEffect(() => {
+    if (chartTab !== "combined") return;
+    let cancelled = false;
+    let retryTimer = null;
+    let unsubscribers = [];
+
+    function trySubscribe() {
+      if (cancelled) return;
+      const chartA = strategyChartRef.current?.getChart();
+      const chartB = niftyChartRef.current?.getChart();
+      const seriesA = strategyChartRef.current?.getSeries();
+      const seriesB = niftyChartRef.current?.getSeries();
+      if (!chartA || !chartB || !seriesA || !seriesB) {
+        retryTimer = setTimeout(trySubscribe, 150);
+        return;
+      }
+
+      let syncingCrosshair = false;
+      function linkCrosshair(sourceChart, targetChart, targetSeries) {
+        const handler = (param) => {
+          if (syncingCrosshair) return;
+          syncingCrosshair = true;
+          if (param.time == null) {
+            targetChart.clearCrosshairPosition();
+          } else {
+            const price = param.seriesData?.get(param.seriesData.keys().next().value)?.close
+              ?? param.seriesData?.get(param.seriesData.keys().next().value)?.value;
+            if (price != null) targetChart.setCrosshairPosition(price, param.time, targetSeries);
+          }
+          syncingCrosshair = false;
+        };
+        sourceChart.subscribeCrosshairMove(handler);
+        return () => sourceChart.unsubscribeCrosshairMove(handler);
+      }
+
+      let syncingRange = false;
+      function linkTimeRange(sourceChart, targetChart) {
+        const handler = (range) => {
+          if (syncingRange || !range) return;
+          syncingRange = true;
+          targetChart.timeScale().setVisibleLogicalRange(range);
+          syncingRange = false;
+        };
+        sourceChart.timeScale().subscribeVisibleLogicalRangeChange(handler);
+        return () => sourceChart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
+      }
+
+      unsubscribers = [
+        linkCrosshair(chartA, chartB, seriesB),
+        linkCrosshair(chartB, chartA, seriesA),
+        linkTimeRange(chartA, chartB),
+        linkTimeRange(chartB, chartA),
+      ];
+    }
+
+    trySubscribe();
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      unsubscribers.forEach((unsub) => unsub());
+    };
+  }, [chartTab, replayData, selectedDate]);
   const [savedOpen, setSavedOpen] = useState(false);
   const [hideChain, setHideChain] = useState(false);
   const [legsTopFirst, setLegsTopFirst] = useState(true);
@@ -904,7 +968,6 @@ export default function Simulator() {
   }, [chainData?.date, chainData?.selectedExpiry, symbol]);
   const maxCeOi = Math.max(0, ...displayRows.map((r) => r.ce?.oi || 0));
   const maxPeOi = Math.max(0, ...displayRows.map((r) => r.pe?.oi || 0));
-  const currentPoint = replayData?.series?.[cursor];
 
   // Real visible-column counts for the chain table's CALL/PUT grouping row
   // colSpan, so that row stays aligned with whichever columns are actually
@@ -1057,9 +1120,9 @@ export default function Simulator() {
   ]);
 
   // Shared between the standalone "Strategy Chart" tab and the top half of
-  // "Strategy Chart + NIFTY Chart" — same three states either way (no
-  // positions yet / positions added but not replayed / real per-minute
-  // replay), so the gating logic and chart markup only live in one place.
+  // "Strategy Chart + NIFTY Chart" — gates on "no positions yet" here (a
+  // page-level concept); StrategyChart itself handles "not replayed yet" /
+  // "no data" once positions do exist.
   function renderStrategyChart(height = 280) {
     if (!legs.length) {
       return (
@@ -1069,48 +1132,14 @@ export default function Simulator() {
         </div>
       );
     }
-    if (!replayData) {
-      return (
-        <div className="py-16 text-center text-xs text-gray-400">
-          Click "Run Simulation" to see the real minute-by-minute
-          replay for this chart.
-        </div>
-      );
-    }
     return (
-      <>
-        <ResponsiveContainer width="100%" height={height}>
-          <LineChart data={replayData.series}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis
-              dataKey="time"
-              tickFormatter={formatTime}
-              tick={{ fontSize: 10 }}
-              interval="preserveStartEnd"
-            />
-            <YAxis tick={{ fontSize: 11 }} width={60} />
-            <Tooltip formatter={(v) => formatPrice(v)} labelFormatter={formatTime} />
-            <ReferenceLine y={0} stroke="#9ca3af" />
-            {currentPoint && (
-              <ReferenceLine x={currentPoint.time} stroke="#2563eb" strokeDasharray="4 4" />
-            )}
-            <Line
-              type="monotone"
-              dataKey="pnl"
-              name="Strategy P&L"
-              stroke="#2563eb"
-              strokeWidth={2}
-              dot={false}
-              connectNulls
-            />
-          </LineChart>
-        </ResponsiveContainer>
-        <div className="mt-2 text-[11px] text-gray-400 text-center">
-          Real stored prices from {replayData.date} — a gap means
-          no recorded price for that minute, never guessed. Use
-          the scrubber above or Autoplay to move through the day.
-        </div>
-      </>
+      <StrategyChart
+        ref={strategyChartRef}
+        replayData={replayData}
+        date={replayData?.date || selectedDate}
+        currentTime={currentTime}
+        height={height}
+      />
     );
   }
 
@@ -2053,15 +2082,20 @@ export default function Simulator() {
                 {chartTab === "strategy" && renderStrategyChart(280)}
 
                 {chartTab === "nifty" && (
-                  <CandlestickChart symbol={symbol} date={selectedDate} />
+                  <CandlestickChart ref={niftyChartRef} symbol={symbol} date={selectedDate} />
                 )}
 
                 {chartTab === "combined" && (
                   <div className="space-y-4">
                     <div>{renderStrategyChart(220)}</div>
                     <div className="border-t border-gray-100 pt-4">
-                      <CandlestickChart symbol={symbol} date={selectedDate} compact />
+                      <CandlestickChart ref={niftyChartRef} symbol={symbol} date={selectedDate} compact />
                     </div>
+                    {legs.length > 0 && (
+                      <div className="text-[11px] text-gray-400 text-center">
+                        Crosshair is synced between the two charts above — move it on either one.
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

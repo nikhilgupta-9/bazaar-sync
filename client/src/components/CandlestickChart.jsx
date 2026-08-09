@@ -16,8 +16,8 @@
 // Text is still a "coming soon" stub (a real text-annotation tool needs its
 // own input UI, a separate follow-up). Indicators: SMA(20)/EMA(20) (already
 // existed) plus Bollinger Bands(20,2) and single-day VWAP (new).
-import { useEffect, useRef, useState, useMemo } from "react";
-import { createChart, CandlestickSeries, LineSeries, AreaSeries, BarSeries, LineStyle } from "lightweight-charts";
+import { useEffect, useRef, useState, useMemo, forwardRef, useImperativeHandle } from "react";
+import { createChart, CandlestickSeries, LineSeries, AreaSeries, BarSeries, HistogramSeries, LineStyle } from "lightweight-charts";
 import { fetchSimulatorCandles } from "../services/simulatorApi";
 
 const TIMEFRAMES = [
@@ -140,7 +140,7 @@ function vwapSeries(candles) {
     });
 }
 
-export default function CandlestickChart({ symbol, date, compact = false }) {
+const CandlestickChart = forwardRef(function CandlestickChart({ symbol, date, compact = false }, ref) {
     const wrapperRef = useRef(null);
     const containerRef = useRef(null);
     const chartRef = useRef(null);
@@ -153,6 +153,12 @@ export default function CandlestickChart({ symbol, date, compact = false }) {
     const overlaysRef = useRef([]);
     const pendingPointRef = useRef(null); // shared by trendline/ray/fib — only one tool active at a time
 
+    // Exposes the underlying chart instance so a parent (Simulator.jsx's
+    // "combined" tab) can wire crosshair/time-range sync against StrategyChart's
+    // chart — see StrategyChart.jsx for the matching half of that.
+    useImperativeHandle(ref, () => ({ getChart: () => chartRef.current, getSeries: () => candleSeriesRef.current }));
+
+    const [showVolume, setShowVolume] = useState(true);
     const [rawCandles, setRawCandles] = useState(null);
     const [error, setError] = useState(null);
     const [timeframe, setTimeframe] = useState("1m");
@@ -302,6 +308,23 @@ export default function CandlestickChart({ symbol, date, compact = false }) {
         overlaysRef.current = [];
         pendingPointRef.current = null;
 
+        const hasVolume = candles.some((c) => c.volume != null && c.volume > 0);
+        if (showVolume && hasVolume) {
+            const volSeries = chart.addSeries(
+                HistogramSeries,
+                { color: "#93c5fd", priceFormat: { type: "volume" }, title: "Volume" },
+                1
+            );
+            volSeries.setData(
+                candles.map((c, i) => ({
+                    time: ohlcData[i].time,
+                    value: c.volume,
+                    color: c.close >= c.open ? "#86efac" : "#fca5a5",
+                }))
+            );
+            chart.panes()[1]?.setHeight(Math.round((compact ? 220 : 380) * 0.2));
+        }
+
         const closes = candles.map((c) => c.close);
 
         if (indicators.sma) {
@@ -349,7 +372,7 @@ export default function CandlestickChart({ symbol, date, compact = false }) {
             overlaysRef.current = [];
             pendingPointRef.current = null;
         };
-    }, [candles, date, compact, chartType, indicators.sma, indicators.ema, indicators.bollinger, indicators.vwap]);
+    }, [candles, date, compact, chartType, showVolume, indicators.sma, indicators.ema, indicators.bollinger, indicators.vwap]);
 
     // Drawing-tool click handling, kept in its own effect so toggling a tool
     // doesn't tear down and rebuild the whole chart — only re-subscribes the
@@ -567,6 +590,10 @@ export default function CandlestickChart({ symbol, date, compact = false }) {
                                 </>
                             )}
                         </div>
+
+                        <label className="flex cursor-pointer items-center gap-1 text-[11px] text-gray-600">
+                            <input type="checkbox" checked={showVolume} onChange={() => setShowVolume((v) => !v)} /> Volume
+                        </label>
                     </div>
 
                     <div className="flex items-center gap-1.5">
@@ -638,4 +665,6 @@ export default function CandlestickChart({ symbol, date, compact = false }) {
             </div>
         </div>
     );
-}
+});
+
+export default CandlestickChart;

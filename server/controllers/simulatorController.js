@@ -290,7 +290,7 @@ async function replay(req, res) {
         const entryTime = times[0];
 
         const [priceRows] = await pool.query(
-            `SELECT trade_time, strike, underlying_price, ce_ltp, pe_ltp FROM option_chain_history
+            `SELECT trade_time, strike, underlying_price, ce_ltp, pe_ltp, ce_volume, pe_volume, ce_oi, pe_oi FROM option_chain_history
              WHERE symbol = ? AND trade_date = ? AND expiry = ? AND strike IN (?)
              ORDER BY trade_time ASC`,
             [symbol, date, expiry, strikes]
@@ -318,24 +318,46 @@ async function replay(req, res) {
         );
         const spotByTime = new Map(ohlcvRows.map((r) => [r.trade_time, Number(r.close)]));
 
+        // volume/oi are summed once per leg's own contract (not multiplied by
+        // qty) — they're real market-wide activity on that strike, not scaled
+        // to this position's size. A leg shared by two legs (e.g. same strike
+        // bought and sold, rare but possible) would double-count; acceptable
+        // for a "how active are the strikes in this strategy" chart, not a
+        // precise per-position figure the way pnl is.
         const series = times.map((time) => {
             const priceByStrike = byMinute.get(time);
             let pnl = null;
+            let volume = null;
+            let oi = null;
             if (priceByStrike) {
                 pnl = 0;
+                volume = 0;
+                oi = 0;
                 for (const leg of legsWithEntry) {
                     const row = priceByStrike.get(leg.strike);
                     const price = row ? Number(leg.type === "CE" ? row.ce_ltp : row.pe_ltp) : null;
                     if (price == null || leg.entryPrice == null) {
                         pnl = null;
+                        volume = null;
+                        oi = null;
                         break;
                     }
                     const diff = leg.action === "buy" ? price - leg.entryPrice : leg.entryPrice - price;
                     pnl += diff * leg.qty * shareMultiplier;
+                    const legVolume = row ? Number(leg.type === "CE" ? row.ce_volume : row.pe_volume) || 0 : 0;
+                    const legOi = row ? Number(leg.type === "CE" ? row.ce_oi : row.pe_oi) || 0 : 0;
+                    volume += legVolume;
+                    oi += legOi;
                 }
             }
             const spot = spotByTime.get(time) ?? fallbackSpotByTime.get(time) ?? null;
-            return { time, spot, pnl: pnl != null ? Number(pnl.toFixed(2)) : null };
+            return {
+                time,
+                spot,
+                pnl: pnl != null ? Number(pnl.toFixed(2)) : null,
+                volume,
+                oi,
+            };
         });
 
         res.json({ symbol, date, expiry, entryTime, lotSize, legs: legsWithEntry, series });
