@@ -33,6 +33,12 @@ const DRAWING_TOOLS = [
     { key: "text", label: "Text", icon: "T", wired: false },
 ];
 
+// IST wall-clock date+time -> epoch seconds, treating the wall-clock digits
+// as if they were already UTC (no offset subtraction) — same deliberate
+// convention as IntradayChart.jsx's toEpochSeconds and the contract-history
+// backend endpoint. lightweight-charts renders its time axis in UTC by
+// default; doing it this way makes the displayed label show the real IST
+// time (e.g. "09:15" for market open) instead of shifting it 5.5h.
 function toEpochSeconds(dateStr, timeStr) {
     const [y, m, d] = dateStr.split("-").map(Number);
     const [hh, mm, ss] = timeStr.split(":").map(Number);
