@@ -366,9 +366,23 @@ export default function StrategyBuilder() {
         ).strike;
     }, [data, effectiveAtmPrice]);
 
-    function scrollToAtm() {
-        atmRowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    function scrollToAtm(behavior = "smooth") {
+        atmRowRef.current?.scrollIntoView({ behavior, block: "center" });
     }
+
+    // Auto-center the chain on the SPOT/ATM row whenever a fresh chain loads
+    // (symbol switch, expiry switch, or the very first load) — previously
+    // this only happened if the user manually clicked the Strike column's
+    // "go to ATM" arrow, so the table opened scrolled to the top (lowest
+    // strike) instead of the price range a trader actually cares about.
+    // "instant" (not "smooth") on auto-trigger so switching symbols/expiries
+    // doesn't visibly animate-scroll every time — only the manual button
+    // click below still smooth-scrolls.
+    useEffect(() => {
+        if (!data?.rows?.length) return;
+        const raf = requestAnimationFrame(() => scrollToAtm("instant"));
+        return () => cancelAnimationFrame(raf);
+    }, [data?.selectedExpiry, symbol]);
 
     const enabledColumnCount = Object.values(columns).filter(Boolean).length;
     const totalColumnCount = Object.keys(columns).length;
@@ -799,7 +813,7 @@ export default function StrategyBuilder() {
 
                         {/* Floating "Go to ATM" pill */}
                         <button
-                            onClick={scrollToAtm}
+                            onClick={() => scrollToAtm("smooth")}
                             className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-gray-900/85 px-3 py-1.5 text-[11px] font-semibold text-white shadow-lg hover:bg-gray-900"
                         >
                             Go to ATM
