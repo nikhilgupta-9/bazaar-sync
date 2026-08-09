@@ -6,10 +6,9 @@ import {
     computePayoffCurve, computeBreakevens, computeMaxProfitLoss, computeNetGreeks,
     addMarkToMarketCurve, computeExpectedMove, computePOP, evaluationExpiryOf, legMultiplier, otherAction,
 } from "../utils/payoff";
-import { yearsToExpiry, daysUntilExpiry } from "../utils/blackScholes";
+import { yearsToExpiry, daysUntilExpiry, bsPrice } from "../utils/blackScholes";
 import PayoffChart from "../components/PayoffChart";
-import StrategyValueChart from "../components/StrategyValueChart";
-import UnderlyingChart from "../components/UnderlyingChart";
+import LiveIntradayChart from "../components/LiveIntradayChart";
 import PresetStrategies from "../components/PresetStrategies";
 import SaveButton from "../components/SaveButton";
 import SavedStrategiesModal from "../components/SavedStrategiesModal";
@@ -108,7 +107,15 @@ export default function StrategyBuilder() {
     const { symbol, setSymbol, data, loading, error, load } = useOptionChain();
     const [legs, setLegs] = useState([]);
     const [tab, setTab] = useState("positions"); // 'positions' | 'greeks'
-    const [chartTab, setChartTab] = useState("payoff"); // 'payoff' | 'strategy' | 'underlying'
+    const [chartTab, setChartTab] = useState("payoff"); // 'payoff' | 'strategy' | 'nifty' | 'combined'
+    // "Payoff setting" what-if simulator — lets you drag Underlying/Date-Time/
+    // IV without waiting for the real market to move. Percent/day/point OFFSETS
+    // from today's real values (0 = no change), not absolute inputs, so the
+    // sliders always start centered on "now" regardless of symbol/expiry.
+    const [payoffSettingsOpen, setPayoffSettingsOpen] = useState(false);
+    const [whatIfSpotPct, setWhatIfSpotPct] = useState(0); // -10..+10 (%)
+    const [whatIfDaysForward, setWhatIfDaysForward] = useState(0); // 0..days-to-expiry
+    const [whatIfIvShift, setWhatIfIvShift] = useState(0); // -20..+20 (percentage points)
 
     const [columns, setColumns] = useState(DEFAULT_COLUMNS);
     const [atmBasis, setAtmBasis] = useState("spot"); // 'spot' | 'future' | 'synth'
@@ -466,6 +473,38 @@ export default function StrategyBuilder() {
             return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, currentPnl: null, pop: null, expectedMove: null };
         }
     }, [activeLegs, data]);
+
+    // "Payoff setting" what-if readout — reprices every leg via Black-Scholes
+    // at the simulated spot/date/IV instead of the real ones, using each
+    // leg's entry IV + the slider's shift as the stand-in volatility (same
+    // approximation class as the "Today" curve above). Legs missing an IV
+    // snapshot fall back to intrinsic value (no time value) rather than being
+    // silently dropped from the total.
+    const whatIfResult = useMemo(() => {
+        if (!payoffSettingsOpen || !legs.length || !data?.spotPrice) return null;
+        const evaluationExpiry = evaluationExpiryOf(legs) || data.selectedExpiry;
+        const simSpot = data.spotPrice * (1 + whatIfSpotPct / 100);
+        const simMs = Date.now() + whatIfDaysForward * 24 * 60 * 60 * 1000;
+
+        let pnl = 0;
+        for (const leg of legs) {
+            const t = Math.max(
+                yearsToExpiry(leg.expiry || evaluationExpiry, simMs),
+                1 / (365 * 24 * 4) // floor at 15 minutes, matches blackScholes.js's own convention
+            );
+            let theoPrice;
+            if (leg.iv != null) {
+                const vol = Math.max(0.01, (leg.iv + whatIfIvShift) / 100);
+                theoPrice = bsPrice({ spot: simSpot, strike: leg.strike, t, vol, right: leg.type });
+            } else {
+                theoPrice = Math.max(0, leg.type === "CE" ? simSpot - leg.strike : leg.strike - simSpot);
+            }
+            pnl += (leg.action === "buy" ? theoPrice - leg.premium : leg.premium - theoPrice) * leg.qty;
+        }
+        return { simSpot, pnl };
+    }, [payoffSettingsOpen, legs, data, whatIfSpotPct, whatIfDaysForward, whatIfIvShift]);
+
+    const daysToExpiry = data?.selectedExpiry ? Math.max(1, daysUntilExpiry(data.selectedExpiry)) : 30;
 
     return (
         <div className="mx-auto flex max-w-[1600px] gap-5 px-5 py-5 bg-gray-50/40 min-h-screen">
@@ -892,33 +931,89 @@ export default function StrategyBuilder() {
                             </div>
 
                             <div className="flex-1 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col">
-                                <div className="flex gap-1 border-b border-gray-100 bg-gray-50/50 px-3 pt-2">
-                                    {[
-                                        ["payoff", "Payoff"],
-                                        ["strategy", "Strategy Chart"],
-                                        ["underlying", "Underlying Chart"],
-                                    ].map(([key, label]) => (
-                                        <button
-                                            key={key}
-                                            onClick={() => setChartTab(key)}
-                                            className={`rounded-t-md px-3 py-1.5 text-[13px] font-semibold transition-colors ${
-                                                chartTab === key
-                                                    ? "bg-white text-blue-600 border border-b-0 border-gray-200"
-                                                    : "text-gray-500 hover:text-gray-800"
-                                            }`}
-                                        >
-                                            {label}
-                                        </button>
-                                    ))}
+                                <div className="flex items-center justify-between gap-1 border-b border-gray-100 bg-gray-50/50 px-3 pt-2">
+                                    <div className="flex gap-1 overflow-x-auto">
+                                        {[
+                                            ["payoff", "Payoff"],
+                                            ["strategy", "Strategy Chart"],
+                                            ["nifty", "NIFTY Chart"],
+                                            ["combined", "Strategy Chart + NIFTY Chart"],
+                                        ].map(([key, label]) => (
+                                            <button
+                                                key={key}
+                                                onClick={() => setChartTab(key)}
+                                                className={`shrink-0 rounded-t-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                                                    chartTab === key
+                                                        ? "bg-white text-blue-600 border border-b-0 border-gray-200"
+                                                        : "text-gray-500 hover:text-gray-800"
+                                                }`}
+                                            >
+                                                {label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    {chartTab === "payoff" && (
+                                        <label className="mb-1.5 flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-gray-600">
+                                            Payoff setting
+                                            <span
+                                                role="switch"
+                                                aria-checked={payoffSettingsOpen}
+                                                onClick={() => setPayoffSettingsOpen((v) => !v)}
+                                                className={`relative inline-block h-4 w-8 rounded-full transition-colors ${payoffSettingsOpen ? "bg-blue-600" : "bg-gray-300"}`}
+                                            >
+                                                <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${payoffSettingsOpen ? "translate-x-4" : "translate-x-0.5"}`} />
+                                            </span>
+                                        </label>
+                                    )}
                                 </div>
+
+                                {chartTab === "payoff" && payoffSettingsOpen && (
+                                    <div className="grid grid-cols-3 gap-4 border-b border-gray-100 bg-gray-50/60 px-4 py-3 text-[11px]">
+                                        <div>
+                                            <div className="mb-1 flex justify-between font-semibold text-gray-600">
+                                                <span>Underlying</span>
+                                                <span className="tabular-nums text-blue-600">
+                                                    {whatIfResult ? formatPrice(whatIfResult.simSpot) : "—"} ({whatIfSpotPct > 0 ? "+" : ""}{whatIfSpotPct}%)
+                                                </span>
+                                            </div>
+                                            <input type="range" min={-10} max={10} step={0.5} value={whatIfSpotPct} onChange={(e) => setWhatIfSpotPct(Number(e.target.value))} className="w-full" />
+                                        </div>
+                                        <div>
+                                            <div className="mb-1 flex justify-between font-semibold text-gray-600">
+                                                <span>Date/Time</span>
+                                                <span className="tabular-nums text-blue-600">+{whatIfDaysForward}d</span>
+                                            </div>
+                                            <input type="range" min={0} max={daysToExpiry} step={1} value={whatIfDaysForward} onChange={(e) => setWhatIfDaysForward(Number(e.target.value))} className="w-full" />
+                                        </div>
+                                        <div>
+                                            <div className="mb-1 flex justify-between font-semibold text-gray-600">
+                                                <span>IV</span>
+                                                <span className="tabular-nums text-blue-600">{whatIfIvShift > 0 ? "+" : ""}{whatIfIvShift}pt</span>
+                                            </div>
+                                            <input type="range" min={-20} max={20} step={1} value={whatIfIvShift} onChange={(e) => setWhatIfIvShift(Number(e.target.value))} className="w-full" />
+                                        </div>
+                                        <div className="col-span-3 flex items-center justify-between rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
+                                            <span className="font-semibold text-gray-600">Simulated P&L at these settings</span>
+                                            <span className={`text-sm font-bold tabular-nums ${whatIfResult && whatIfResult.pnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                                                {whatIfResult ? formatPrice(whatIfResult.pnl) : "—"}
+                                            </span>
+                                        </div>
+                                    </div>
+                                )}
+
                                 <div className="flex-1 p-4 flex flex-col justify-center">
                                     {chartTab === "payoff" && (
                                         <PayoffChart curve={curve} spotPrice={data?.spotPrice} breakevens={breakevens} expectedMove={expectedMove} />
                                     )}
                                     {chartTab === "strategy" && (
-                                        <StrategyValueChart totalPnl={totalLivePnl} resetKey={legs.map((l) => l.id).join(",")} />
+                                        <LiveIntradayChart symbol={symbol} mode="strategy" legs={legs} selectedExpiry={data?.selectedExpiry} />
                                     )}
-                                    {chartTab === "underlying" && <UnderlyingChart symbol={symbol} />}
+                                    {chartTab === "nifty" && (
+                                        <LiveIntradayChart symbol={symbol} mode="nifty" legs={legs} selectedExpiry={data?.selectedExpiry} />
+                                    )}
+                                    {chartTab === "combined" && (
+                                        <LiveIntradayChart symbol={symbol} mode="combined" legs={legs} selectedExpiry={data?.selectedExpiry} height={380} />
+                                    )}
                                 </div>
                             </div>
                         </div>

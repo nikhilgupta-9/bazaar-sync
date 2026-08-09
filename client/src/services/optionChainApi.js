@@ -94,6 +94,24 @@ export async function refreshOptionChain(symbol, expiry = null) {
  * Fetch LTP history for a single contract (strike + expiry + right), for the
  * hover "view chart" action on the option chain LTP cells.
  */
+/**
+ * Fetch today's 1-minute intraday index price series (live_index_ticks,
+ * falling back to the last trading day's ohlcv_data close when the market's
+ * closed / worker hasn't started today) — powers Strategy Builder's
+ * "Strategy Chart" / "NIFTY Chart" / "Strategy Chart + NIFTY Chart" tabs.
+ * See server/routes/optionChain.js's GET /:symbol/intraday.
+ */
+export async function fetchIntraday(symbol) {
+    const res = await fetch(`${API_URL}/api/option-chain/${symbol.toLowerCase()}/intraday`, {
+        headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Intraday fetch failed (${res.status})`);
+    }
+    return res.json();
+}
+
 export async function fetchContractHistory(symbol, { strike, expiry, right }) {
     const url = new URL(`${API_URL}/api/option-chain/${symbol.toLowerCase()}/contract-history`);
     url.searchParams.set("strike", strike);
