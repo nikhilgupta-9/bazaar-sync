@@ -854,6 +854,16 @@ export default function Simulator() {
   const maxPeOi = Math.max(0, ...displayRows.map((r) => r.pe?.oi || 0));
   const currentPoint = replayData?.series?.[cursor];
 
+  // Real visible-column counts for the chain table's CALL/PUT grouping row
+  // colSpan, so that row stays aligned with whichever columns are actually
+  // toggled on below it (same pattern as OptionChain.jsx).
+  const chainCeColCount =
+    1 /* LTP */ + (columns.gamma ? 1 : 0) + (columns.vega ? 1 : 0) + (columns.theta ? 1 : 0) +
+    (columns.iv ? 1 : 0) + (columns.callDelta ? 1 : 0) + (columns.oi ? 1 : 0);
+  const chainPeColCount =
+    1 /* LTP */ + (columns.oi ? 1 : 0) + (columns.callDelta ? 1 : 0) + (columns.iv ? 1 : 0) +
+    (columns.theta ? 1 : 0) + (columns.vega ? 1 : 0) + (columns.gamma ? 1 : 0);
+
   // Boundary check for the -1h/-15m/-5m/-1m/+1m/+5m/+15m/+1h scrubber
   // buttons: a step is only meaningful if there's a stored snapshot further
   // in that direction than the one currently showing. Some days only have a
@@ -1654,12 +1664,17 @@ export default function Simulator() {
             <div className="max-h-[68vh] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-sm custom-scrollbar">
               <table className="w-full border-collapse text-[11px]">
                 <thead className="sticky top-0 bg-gray-50 border-b border-gray-200 z-10">
+                  <tr className="text-center font-bold text-xs">
+                    <th colSpan={chainCeColCount} className="bg-emerald-50 text-emerald-800 border-b border-gray-200 py-1.5">CALL</th>
+                    <th className="bg-gray-100/80 border-b border-gray-200"></th>
+                    <th colSpan={chainPeColCount} className="bg-rose-50 text-rose-800 border-b border-gray-200 py-1.5">PUT</th>
+                  </tr>
                   <tr>
                     {columns.gamma && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Γ</th>}
                     {columns.vega && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Vega</th>}
                     {columns.theta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Theta</th>}
                     {columns.iv && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">IV</th>}
-                    {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[13%]">Call Δ</th>}
+                    {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[13%]">Delta Δ</th>}
                     <th className="px-1.5 py-2 text-right font-semibold text-gray-400 w-[15%]">
                       LTP
                     </th>
@@ -1671,7 +1686,7 @@ export default function Simulator() {
                     <th className="px-1.5 py-2 text-left font-semibold text-gray-400 w-[18%]">
                       LTP
                     </th>
-                    {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Put Δ</th>}
+                    {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Delta Δ</th>}
                     {columns.iv && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">IV</th>}
                     {columns.theta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Theta</th>}
                     {columns.vega && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Vega</th>}
