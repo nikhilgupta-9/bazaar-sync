@@ -1985,11 +1985,13 @@ export default function Simulator() {
                         Add positions to view the payoff diagram.
                       </div>
                     )}
-                    <PresetStrategies
-                      data={liveChain || chainData}
-                      onApply={applyPreset}
-                      fetchExpiryRows={fetchExpiryRows}
-                    />
+                    {!legs.length && (
+                      <PresetStrategies
+                        data={liveChain || chainData}
+                        onApply={applyPreset}
+                        fetchExpiryRows={fetchExpiryRows}
+                      />
+                    )}
                   </div>
                 )}
 
