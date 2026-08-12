@@ -37,32 +37,50 @@ function yearsToExpiryAsOf(expirySql, dateStr, timeStr) {
     return Math.max((expiryUtcMs - rowUtcMs) / (365 * 24 * 60 * 60 * 1000), 1 / (365 * 24 * 4));
 }
 
-async function findContracts(symbol, fromDate, toDate) {
+// One bulk query replaces what used to be 2 separate per-contract queries
+// (contractDateRange + isAlreadyEnriched) called in a loop. Confirmed as a
+// real performance problem 2026-08-10: with ~200 symbols × 100-200 contracts
+// each, that per-contract pattern meant tens of thousands of sequential DB
+// round-trips just to figure out what to SKIP, before any real Breeze work
+// even started — the user measured this at over an hour of nothing-visible-
+// happening on every run, on symbols that had already been fully enriched
+// days earlier. GROUP BY here does in one query, across every contract for
+// this symbol, exactly what the old per-contract queries computed one at a
+// time: each contract's real [minDate,maxDate] and whether it already has at
+// least one minute-level row (MAX(trade_time <> '15:30:00') is 1/0 per group,
+// same day-completeness signal isAlreadyEnriched used).
+async function loadContractStatuses(symbol, fromDate, toDate) {
     const [rows] = await pool.query(
-        `SELECT DISTINCT expiry, strike FROM option_chain_history
+        `SELECT expiry, strike,
+                MIN(trade_date) AS minDate, MAX(trade_date) AS maxDate,
+                MAX(trade_time <> '15:30:00') AS hasMinuteRow
+         FROM option_chain_history
          WHERE symbol = ? AND trade_date BETWEEN ? AND ?
+         GROUP BY expiry, strike
          ORDER BY expiry, strike`,
         [symbol, fromDate, toDate]
     );
-    return rows.map((r) => ({ expiry: r.expiry, strike: Number(r.strike) }));
+    return rows.map((r) => ({
+        expiry: r.expiry,
+        strike: Number(r.strike),
+        range: { from: r.minDate, to: r.maxDate },
+        alreadyEnriched: Number(r.hasMinuteRow) === 1,
+    }));
 }
 
-async function contractDateRange(symbol, expiry, strike, fromDate, toDate) {
+// Same bulk-over-per-row fix for spot price: was one query per NOT-yet-
+// enriched contract (spotForDate), now one query per symbol up front. Picks
+// an arbitrary non-null underlying_price per date (MAX, same "any one row"
+// semantics the old LIMIT 1 had — the actual value should be identical
+// across rows for the same symbol+date anyway).
+async function loadSpotByDate(symbol, fromDate, toDate) {
     const [rows] = await pool.query(
-        `SELECT MIN(trade_date) AS minDate, MAX(trade_date) AS maxDate FROM option_chain_history
-         WHERE symbol = ? AND expiry = ? AND strike = ? AND trade_date BETWEEN ? AND ?`,
-        [symbol, expiry, strike, fromDate, toDate]
+        `SELECT trade_date, MAX(underlying_price) AS price FROM option_chain_history
+         WHERE symbol = ? AND trade_date BETWEEN ? AND ? AND underlying_price IS NOT NULL
+         GROUP BY trade_date`,
+        [symbol, fromDate, toDate]
     );
-    return rows[0]?.minDate && rows[0]?.maxDate ? { from: rows[0].minDate, to: rows[0].maxDate } : null;
-}
-
-async function spotForDate(symbol, dateStr) {
-    const [rows] = await pool.query(
-        `SELECT underlying_price FROM option_chain_history
-         WHERE symbol = ? AND trade_date = ? AND underlying_price IS NOT NULL LIMIT 1`,
-        [symbol, dateStr]
-    );
-    return rows.length ? Number(rows[0].underlying_price) : null;
+    return new Map(rows.map((r) => [r.trade_date, Number(r.price)]));
 }
 
 function enrichWithGreeks(candles, { strike, right, expirySql, spot }) {
@@ -128,22 +146,6 @@ async function storeRows(symbol, expirySql, strike, ceRows, peRows) {
     return rows.length;
 }
 
-// Has Breeze/Upstox already filled minute-level detail for this contract? A
-// bhavcopy-only row always lands at exactly trade_time='15:30:00' (see
-// backfillBhavcopyAll.js's EOD_TIME) — any row at a different time means some
-// minute-granularity source already enriched this contract. Used to skip
-// contracts across repeated/resumed backfillBreezeAll.js runs instead of
-// re-spending Breeze's daily budget on work already done.
-async function isAlreadyEnriched(symbol, expiry, strike, fromDate, toDate) {
-    const [rows] = await pool.query(
-        `SELECT 1 FROM option_chain_history
-         WHERE symbol = ? AND expiry = ? AND strike = ? AND trade_date BETWEEN ? AND ? AND trade_time <> '15:30:00'
-         LIMIT 1`,
-        [symbol, expiry, strike, fromDate, toDate]
-    );
-    return rows.length > 0;
-}
-
 /**
  * Runs the full backfill for one symbol over [fromDate, toDate]. Shared by
  * this script's own CLI (below) and backfillBreezeAll.js's multi-symbol loop.
@@ -152,21 +154,20 @@ async function isAlreadyEnriched(symbol, expiry, strike, fromDate, toDate) {
  * symbol.
  */
 async function backfillSymbol(symbol, fromDate, toDate) {
-    const contracts = await findContracts(symbol, fromDate, toDate);
+    const contracts = await loadContractStatuses(symbol, fromDate, toDate);
     if (!contracts.length) {
         return { rowsStored: 0, contractsFailed: 0, contractsSkipped: 0, contractsTotal: 0 };
     }
+    const spotByDate = await loadSpotByDate(symbol, fromDate, toDate);
 
     let rowsStored = 0, contractsFailed = 0, contractsSkipped = 0;
-    for (const { expiry, strike } of contracts) {
+    for (const { expiry, strike, range, alreadyEnriched } of contracts) {
+        if (alreadyEnriched) {
+            contractsSkipped += 1;
+            continue;
+        }
         try {
-            const range = await contractDateRange(symbol, expiry, strike, fromDate, toDate);
-            if (!range) continue;
-            if (await isAlreadyEnriched(symbol, expiry, strike, range.from, range.to)) {
-                contractsSkipped += 1;
-                continue;
-            }
-            const spot = await spotForDate(symbol, range.to);
+            const spot = spotByDate.get(range.to) ?? null;
             const ceRaw = await historicalService.getOptionMinuteCandles({
                 stockCode: symbol, expirySql: expiry, strike, right: "CE", fromDateStr: range.from, toDateStr: range.to,
             });

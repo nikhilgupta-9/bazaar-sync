@@ -186,9 +186,11 @@ async function backfillExpiry(symbol, underlyingKey, expirySql, strikesPerSide) 
         byStrike.set(c.strike_price, entry);
     }
 
+    const fullyEnrichedStrikes = await loadFullyEnrichedStrikes(symbol, expirySql, windowStart, expirySql);
+
     let totalRows = 0, skippedStrikes = 0;
     for (const [strike, pair] of byStrike) {
-        if (await isAlreadyEnriched(symbol, expirySql, strike, windowStart, expirySql)) {
+        if (fullyEnrichedStrikes.has(strike)) {
             skippedStrikes += 1;
             continue;
         }
@@ -223,16 +225,28 @@ async function backfillExpiry(symbol, underlyingKey, expirySql, strikesPerSide) 
 // only one day was missing is a bit wasteful, but cheap here — Upstox has
 // no daily call budget the way Breeze does, and ON DUPLICATE KEY UPDATE
 // makes re-writing already-good days harmless.
-async function isAlreadyEnriched(symbol, expiry, strike, fromDate, toDate) {
+// Bulk version of the same day-completeness check, one query per EXPIRY
+// instead of one query per strike — confirmed as a real slowdown 2026-08-10:
+// backfillOneSymbol calls this per strike inside backfillExpiry's loop, and
+// with liquid-strike expansion routinely pulling 70-150+ strikes per expiry
+// across dozens of expiries per symbol, that's thousands of sequential DB
+// round-trips just to figure out what to skip (same class of problem fixed
+// in breeze-historical/backfillBreeze.js the same day). The inner query
+// computes per (strike, trade_date) whether that day has a minute-level
+// row; the outer MIN(...) collapses that to "does EVERY day for this strike
+// have one" — same logic the old per-strike loop version had, just batched.
+async function loadFullyEnrichedStrikes(symbol, expiry, fromDate, toDate) {
     const [rows] = await pool.query(
-        `SELECT trade_date, MAX(trade_time <> '15:30:00') AS has_minute_row
-         FROM option_chain_history
-         WHERE symbol = ? AND expiry = ? AND strike = ? AND trade_date BETWEEN ? AND ?
-         GROUP BY trade_date`,
-        [symbol, expiry, strike, fromDate, toDate]
+        `SELECT strike, MIN(has_minute) AS fully_enriched FROM (
+             SELECT strike, trade_date, MAX(trade_time <> '15:30:00') AS has_minute
+             FROM option_chain_history
+             WHERE symbol = ? AND expiry = ? AND trade_date BETWEEN ? AND ?
+             GROUP BY strike, trade_date
+         ) per_day
+         GROUP BY strike`,
+        [symbol, expiry, fromDate, toDate]
     );
-    if (!rows.length) return false;
-    return rows.every((r) => Number(r.has_minute_row) === 1);
+    return new Set(rows.filter((r) => Number(r.fully_enriched) === 1).map((r) => Number(r.strike)));
 }
 
 /** Resolve a symbol to its Upstox underlying instrument_key — indices first (hardcoded, confirmed), stocks via the downloaded instrument master. */
