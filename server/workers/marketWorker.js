@@ -15,8 +15,12 @@
 // The only outbound surfaces are MySQL (own pool — own process) and IPC.
 //
 // Storage tiers (see schema.sql):
-//   live_index_ticks       every index tick
-//   live_option_ticks      per option token, at most every 2 s
+//   live_index_ticks       per symbol, one row/minute (first tick after the
+//                          minute rolls over — was every tick until
+//                          2026-08-12, a real driver of DB disk growth)
+//   live_option_ticks      per option token, one row/minute (same fix; was
+//                          "at most every 2s", a fixed-interval throttle,
+//                          not minute-aligned)
 //   live_greeks_snapshots  per option token, every 5 s (IV/greeks computed here)
 //   pcr_snapshots          per symbol, every 60 s
 //   oi_summary_snapshots   per symbol+strike, every 60 s
@@ -46,7 +50,6 @@ const SYMBOLS = (process.env.WORKER_SYMBOLS || "NIFTY,BANKNIFTY,FINNIFTY")
 // historical data (see optionChainService.js).
 const STRIKES_PER_SIDE = Number(process.env.WORKER_STRIKES_PER_SIDE || 15);
 
-const OPTION_TICK_PERSIST_MS = 2000; // options tier: at most one row / 2 s / token
 const GREEKS_INTERVAL_MS = 5000;
 const MINUTE_INTERVAL_MS = 60000;
 const IPC_SUMMARY_INTERVAL_MS = 1000;
@@ -59,12 +62,15 @@ const buffer = new TickBuffer();
 const ws = new AngelOneWebSocket(getSession);
 
 // token -> { meta, ltp, volume, oi, oiChangePercent, open, high, low, close,
-//            exchangeTimestamp, updatedAt, lastPersistedAt }
+//            exchangeTimestamp, updatedAt, lastPersistedMinute }
 const latest = new Map();
 // token -> meta ({ kind:'index'|'option', underlying, strike, right, expiry, lotSize })
 const tokenMeta = new Map();
 // underlying -> latest spot ltp
 const spot = new Map();
+// underlying -> "YYYY-MM-DD HH:MM" of the last persisted live_index_ticks
+// row for it — see the tick handler below for why this replaced "every tick".
+const lastPersistedIndexMinute = new Map();
 // tokens changed since the last IPC summary
 const dirtyTokens = new Set();
 // underlyings whose option chain subscription is done/in-flight
@@ -221,20 +227,35 @@ ws.on("tick", (tick) => {
         close: tick.close ?? (prev ? prev.close : null),
         exchangeTimestamp: ts,
         updatedAt: now,
-        lastPersistedAt: prev ? prev.lastPersistedAt : 0,
+        lastPersistedMinute: prev ? prev.lastPersistedMinute : null,
     };
     latest.set(tick.token, entry);
     dirtyTokens.add(tick.token);
 
+    const { date, time } = istParts(ts);
+    // "YYYY-MM-DD HH:MM" — every tick within the same minute maps to the
+    // same key, so comparing against the last-persisted key is exactly
+    // "have we already saved a row for this minute" without needing a
+    // separate timer or rounding trick.
+    const minuteKey = `${date} ${time.slice(0, 5)}`;
+
     if (meta.kind === "index") {
         spot.set(meta.underlying, tick.ltp);
-        // Tier 1: every index tick is persisted
-        const { date, time } = istParts(ts);
-        buffer.push(
-            "live_index_ticks",
-            ["symbol", "tick_date", "tick_time", "ltp", "open", "high", "low", "close", "volume", "exchange_ts"],
-            [meta.underlying, date, time, tick.ltp, entry.open, entry.high, entry.low, entry.close, entry.volume, ts]
-        );
+        // Tier 1: one row per minute, the FIRST tick seen once the minute
+        // rolls over — not every tick (was: every single tick, which at
+        // Angel One's real feed rate meant many rows per minute and was a
+        // real driver of the DB's disk growth). Deliberately keeps
+        // whichever tick happens to arrive first in the new minute rather
+        // than the tick closest to :00 seconds — "first data for the
+        // minute", matching what was asked for, not a synthetic sample.
+        if (lastPersistedIndexMinute.get(meta.underlying) !== minuteKey) {
+            lastPersistedIndexMinute.set(meta.underlying, minuteKey);
+            buffer.push(
+                "live_index_ticks",
+                ["symbol", "tick_date", "tick_time", "ltp", "open", "high", "low", "close", "volume", "exchange_ts"],
+                [meta.underlying, date, time, tick.ltp, entry.open, entry.high, entry.low, entry.close, entry.volume, ts]
+            );
+        }
         // First sight of a spot price unlocks the option-chain subscription
         subscribeOptionsFor(meta.underlying, tick.ltp);
     } else if (meta.kind === "vix" || meta.kind === "future") {
@@ -242,10 +263,11 @@ ws.on("tick", (tick) => {
         // no persistence tier for these yet, same as the option-chain header
         // display doesn't need history for them.
     } else {
-        // Tier 2: options at most every 2 s per token
-        if (now - entry.lastPersistedAt >= OPTION_TICK_PERSIST_MS) {
-            entry.lastPersistedAt = now;
-            const { date, time } = istParts(ts);
+        // Tier 2: same "first tick of the minute" rule as the index tier
+        // above — was "at most every 2s per token" (a fixed-interval
+        // throttle, not minute-aligned, and still up to 30 rows/min/token).
+        if (entry.lastPersistedMinute !== minuteKey) {
+            entry.lastPersistedMinute = minuteKey;
             buffer.push(
                 "live_option_ticks",
                 ["underlying", "expiry", "strike", "opt_right", "tick_date", "tick_time", "ltp", "volume", "oi", "oi_change_percent"],
