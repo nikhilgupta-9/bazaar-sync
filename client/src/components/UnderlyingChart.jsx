@@ -9,7 +9,7 @@ import { fetchUnderlyingHistory } from "../services/optionChainApi";
  * card — light theme to match the rest of the page, unlike the dark
  * TradingView-style theme ContractChartModal uses for its popup.
  */
-export default function UnderlyingChart({ symbol }) {
+export default function UnderlyingChart({ symbol, days = 30 }) {
     const containerRef = useRef(null);
     const chartRef = useRef(null);
     const [points, setPoints] = useState(null);
@@ -20,7 +20,7 @@ export default function UnderlyingChart({ symbol }) {
         setPoints(null);
         setError(null);
 
-        fetchUnderlyingHistory(symbol, 30)
+        fetchUnderlyingHistory(symbol, days)
             .then((res) => {
                 if (!cancelled) setPoints(res.points);
             })
@@ -31,7 +31,7 @@ export default function UnderlyingChart({ symbol }) {
         return () => {
             cancelled = true;
         };
-    }, [symbol]);
+    }, [symbol, days]);
 
     useEffect(() => {
         if (!points || !points.length || !containerRef.current) return;

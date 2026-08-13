@@ -39,10 +39,18 @@ export function AuthProvider({ children }) {
         setUser(null);
     }, []);
 
+    // Re-fetches /me so `user`/`isPro` reflect a just-completed purchase
+    // (e.g. Pro subscription) without forcing a re-login.
+    const refreshUser = useCallback(async () => {
+        if (!token) return;
+        const r = await authApi.fetchMe(token);
+        setUser(r.user);
+    }, [token]);
+
     const isPro = user?.tier === "pro" && (!user.pro_expires_at || new Date(user.pro_expires_at) > new Date());
 
     return (
-        <AuthContext.Provider value={{ token, user, loading, isPro, login, register, logout }}>
+        <AuthContext.Provider value={{ token, user, loading, isPro, login, register, logout, refreshUser }}>
             {children}
         </AuthContext.Provider>
     );

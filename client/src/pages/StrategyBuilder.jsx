@@ -16,6 +16,8 @@ import SavedStrategiesModal from "../components/SavedStrategiesModal";
 import OiBar from "../components/OiBar";
 import ContractChartModal from "../components/ContractChartModal";
 import { saveStrategy } from "../services/strategiesApi";
+import { FiSettings } from "react-icons/fi";
+
 
 function formatDelta(value) {
     return value == null || Number.isNaN(value) ? "-" : Number(value).toFixed(2);
@@ -870,10 +872,10 @@ export default function StrategyBuilder() {
                         <div className="mb-4 flex gap-4 items-stretch">
                             {/* StockMojo Matched Vertical Status Column */}
                             <div className="w-48 shrink-0 flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
-                                <Stat label="Strategy P&L" value={formatPrice(currentPnl)} tone={currentPnl >= 0 ? "positive" : "negative"} />
+                                <Stat label="Strategy P&L" value={formatPrice(currentPnl)} tone={currentPnl == null ? undefined : currentPnl >= 0 ? "positive" : "negative"} />
                                 <Stat label="Probability of Profit (POP)" value={pop != null ? `${pop.toFixed(0)}%` : "—"} hint="Normal distribution assumption breakdown strategy" />
-                                <Stat label="Max Profit Potential" value={typeof maxProfit === "number" ? formatPrice(maxProfit) : (maxProfit || "Unlimited")} tone="positive" />
-                                <Stat label="Max Loss Risk" value={typeof maxLoss === "number" ? formatPrice(maxLoss) : (maxLoss || "Unlimited")} tone="negative" />
+                                <Stat label="Max Profit Potential" value={maxProfit == null ? "—" : typeof maxProfit === "number" ? formatPrice(maxProfit) : maxProfit} tone="positive" />
+                                <Stat label="Max Loss Risk" value={maxLoss == null ? "—" : typeof maxLoss === "number" ? formatPrice(maxLoss) : maxLoss} tone="negative" />
                                 <Stat label="Breakeven Thresholds" value={breakevens && breakevens.length ? breakevens.join(", ") : "None"} />
                                 <Stat label="Workspace Constraints" value={`${legs.length} of 6 active legs`} />
                             </div>

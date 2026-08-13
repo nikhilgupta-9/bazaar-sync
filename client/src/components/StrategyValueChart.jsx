@@ -8,10 +8,9 @@ const MAX_POINTS = 200;
 
 /**
  * "Strategy Chart" tab — no persisted intraday P&L series exists anywhere in
- * this app (only end-of-day rows), so this is the same session-only,
- * client-sampled pattern StraddleChart.jsx/PutCallRatio.jsx already use for
- * the same limitation: the combined live P&L of the position, sampled every
- * 15s from when the position was built, not a historical chart.
+ * this app (only end-of-day rows), so this is a session-only, client-sampled
+ * chart: the combined live P&L of the position, sampled every 15s from when
+ * the position was built, not a historical chart.
  */
 export default function StrategyValueChart({ totalPnl, resetKey }) {
     const [history, setHistory] = useState([]);

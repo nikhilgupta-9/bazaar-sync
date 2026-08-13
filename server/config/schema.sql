@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS ohlcv_data (
   KEY idx_symbol_date (symbol, trade_date)
 ) ENGINE=InnoDB;
 
+-- role powers the admin panel (Phase 9): 'admin' unlocks GET /api/admin/*
+-- (requireAdmin.js). No self-service admin signup — the first admin is
+-- always set by hand: UPDATE users SET role='admin' WHERE email='...';
+-- Existing DBs created before the admin panel need:
+--   ALTER TABLE users ADD COLUMN role ENUM('user','admin') NOT NULL DEFAULT 'user';
 CREATE TABLE IF NOT EXISTS users (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(100) NOT NULL,
@@ -57,6 +62,7 @@ CREATE TABLE IF NOT EXISTS users (
   google_id VARCHAR(100) UNIQUE,
   tier ENUM('free','pro') NOT NULL DEFAULT 'free',
   pro_expires_at DATETIME,
+  role ENUM('user','admin') NOT NULL DEFAULT 'user',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
@@ -194,4 +200,80 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
   exit_reason VARCHAR(30),             -- stop_loss, target, expiry
   FOREIGN KEY (backtest_result_id) REFERENCES backtest_results(id) ON DELETE CASCADE,
   KEY idx_backtest (backtest_result_id)
+) ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------------------
+-- Phase 8.2: Paper Trade wallet. Pro-ness itself still lives on users.tier/
+-- pro_expires_at (unchanged) — buying/renewing Pro also grants paper capital
+-- here, it's the same ₹499/mo subscription, not a second product. These two
+-- tables only track the trial window and the running paper balance.
+-- Phase 8.3 added the trade_debit/trade_credit ledger types below plus
+-- paper_positions (the actual order-placement engine) — see CLAUDE.md.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS paper_wallets (
+  user_id BIGINT UNSIGNED PRIMARY KEY,
+  balance DECIMAL(14,2) NOT NULL DEFAULT 0,
+  trial_started_at DATETIME,
+  trial_expires_at DATETIME,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- amount is a SIGNED balance delta (positive = credit, negative = debit).
+-- trial_grant/pro_purchase_grant/refill_purchase are always positive;
+-- trade_debit (opening a position) is negative, trade_credit (closing one)
+-- is positive. Existing DBs created before Phase 8.3 need:
+--   ALTER TABLE paper_wallet_ledger MODIFY type ENUM('trial_grant',
+--   'pro_purchase_grant','refill_purchase','trade_debit','trade_credit') NOT NULL;
+-- (schema.sql's CREATE TABLE IF NOT EXISTS does not retrofit existing tables —
+-- same caveat as idx_symbol_date_time on option_chain_history above.)
+CREATE TABLE IF NOT EXISTS paper_wallet_ledger (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  type ENUM('trial_grant','pro_purchase_grant','refill_purchase','trade_debit','trade_credit') NOT NULL,
+  amount DECIMAL(14,2) NOT NULL,
+  balance_after DECIMAL(14,2) NOT NULL,
+  razorpay_order_id VARCHAR(64),
+  razorpay_payment_id VARCHAR(64) UNIQUE,   -- NULL-safe unique; blocks double-credit on retry
+  note VARCHAR(255),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  KEY idx_user_time (user_id, created_at)
+) ENGINE=InnoDB;
+
+-- Phase 8.3: the actual paper-trading positions (BUY/long only at first).
+-- Phase 8.4 added `side`/`margin_blocked` for SELL/short (writing) —
+-- margin is a flat-percentage-of-notional approximation
+-- (MARGIN_PERCENT_OF_NOTIONAL in paperTradeConfig.js), not real SPAN, and
+-- there is NO intraday margin monitoring/auto square-off (deliberate v1
+-- limitation — see CLAUDE.md Phase 8.4). Each Buy/Sell creates its own row
+-- (no averaging into an existing position at the same contract); close is
+-- all-or-nothing (no partial close) — both deliberate v1 choices.
+-- Existing DBs (created before Phase 8.4) need:
+--   ALTER TABLE paper_positions
+--     ADD COLUMN side ENUM('long','short') NOT NULL DEFAULT 'long' AFTER opt_right,
+--     ADD COLUMN margin_blocked DECIMAL(14,2) NULL AFTER entry_price;
+CREATE TABLE IF NOT EXISTS paper_positions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  symbol VARCHAR(20) NOT NULL,
+  expiry DATE NOT NULL,
+  strike DECIMAL(10,2) NOT NULL,
+  opt_right ENUM('CE','PE') NOT NULL,
+  side ENUM('long','short') NOT NULL DEFAULT 'long',
+  lots INT NOT NULL,
+  lot_size INT NOT NULL,               -- snapshot at entry
+  entry_price DECIMAL(10,2) NOT NULL,
+  margin_blocked DECIMAL(14,2),        -- short positions only; blocked at entry, never recalculated
+  entry_time DATETIME NOT NULL,
+  status ENUM('open','closed') NOT NULL DEFAULT 'open',
+  exit_price DECIMAL(10,2),
+  exit_time DATETIME,
+  realized_pnl DECIMAL(14,2),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  KEY idx_user_status (user_id, status)
 ) ENGINE=InnoDB;

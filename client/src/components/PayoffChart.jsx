@@ -6,7 +6,13 @@ import { formatPrice } from "../utils/format";
 // line (Black-Scholes mark-to-market with remaining time value, smooth near
 // the money) — plus ±1SD/±2SD expected-move reference lines based on ATM IV.
 export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove }) {
-    if (!curve.length) return null;
+    if (!curve.length) {
+        return (
+            <div className="p-16 text-center text-xs text-gray-400">
+                Add a leg from the option chain to see the payoff chart.
+            </div>
+        );
+    }
 
     const max = Math.max(...curve.map((p) => p.pnl));
     const min = Math.min(...curve.map((p) => p.pnl));

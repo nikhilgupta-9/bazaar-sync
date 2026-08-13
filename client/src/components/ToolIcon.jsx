@@ -39,15 +39,6 @@ function Line() {
     );
 }
 
-function Straddle() {
-    return (
-        <svg viewBox="0 0 100 40" className="h-full w-full" preserveAspectRatio="none">
-            <polygon points="0,8 50,32 100,8 100,40 0,40" fill={COLORS.line} opacity="0.18" />
-            <polyline points="0,8 50,32 100,8" fill="none" stroke={COLORS.line} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-    );
-}
-
 function Payoff() {
     return (
         <svg viewBox="0 0 100 40" className="h-full w-full" preserveAspectRatio="none">
@@ -85,12 +76,10 @@ const ICONS = {
     chain: Table,
     strategy: Payoff,
     payoff: Payoff,
-    maxpain: Bars,
-    pcr: Line,
-    iv: Line,
-    straddle: Straddle,
-    heatmap: Heatmap,
     backtest: Bars,
+    papertrade: Bars,
+    historicalchart: Line,
+    equitydata: Heatmap,
 };
 
 export default function ToolIcon({ name }) {

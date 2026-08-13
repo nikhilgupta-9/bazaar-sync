@@ -64,6 +64,16 @@ cd client && npm run dev      # Vite dev server on 5173
 
 Verify: `curl http://localhost:5001/health` → `{"status":"ok","database":"connected",...}`.
 
+### Admin app (separate from `client/`)
+
+`admin/` is a genuinely separate React (Vite) app — its own deployment/subdomain in production, not a route inside `client/` (see CLAUDE.md Phase 10). It talks to the same `server/` API (`/api/admin/*`, gated by `requireAuth + requireAdmin` — role must be `'admin'` in the `users` table, set by hand in MySQL: `UPDATE users SET role='admin' WHERE email='...';`, no self-service admin signup).
+
+```bash
+cd admin && npm install
+cp .env.example .env   # only VITE_API_URL, same default as client/
+npm run dev             # Vite dev server on 5174 (fixed port, see vite.config.js)
+```
+
 To run the market worker manually outside the cron window: `cd server && npm run worker`.
 To backfill history: `cd server && node scripts/backfillHistory.js NIFTY 7`.
 
@@ -75,8 +85,9 @@ To backfill history: `cd server && node scripts/backfillHistory.js NIFTY 7`.
    git clone <repo> /opt/bazaar-sync
    cd /opt/bazaar-sync/server && npm ci --omit=dev
    cd ../client && npm ci && npm run build   # outputs client/dist
+   cd ../admin && npm ci && npm run build    # outputs admin/dist — separate admin app, see below
    ```
-3. **Env**: create `/opt/bazaar-sync/server/.env` by hand from `.env.example` (never commit it). Set `CORS_ORIGINS` to the real site origin(s).
+3. **Env**: create `/opt/bazaar-sync/server/.env` by hand from `.env.example` (never commit it). Set `CORS_ORIGINS` to the real site origin(s) **plus the admin subdomain** (e.g. `https://bazaarsync.com,https://admin.bazaarsync.com`).
 4. **PM2** (process manager — required; the node processes must auto-restart):
    ```bash
    npm i -g pm2
@@ -85,7 +96,7 @@ To backfill history: `cd server && node scripts/backfillHistory.js NIFTY 7`.
    pm2 save && pm2 startup                # survive reboots
    ```
    Normal operation runs **only `bazaar-sync-api`** — it schedules the 08:45/15:35 IST worker lifecycle itself and reforks the worker on crashes (that keeps the IPC channel feeding the live socket.io cache). The `bazaar-sync-worker` PM2 app exists for standalone/ingestion-only deployments (`pm2 start ecosystem.config.js --only bazaar-sync-worker`); don't run both modes at once.
-5. **nginx**: serve `client/dist` as static files; proxy `/api` and `/socket.io` (with `Upgrade`/`Connection` headers for WebSocket) to `http://127.0.0.1:5001`.
+5. **nginx**: serve `client/dist` as static files on the main site's server block; proxy `/api` and `/socket.io` (with `Upgrade`/`Connection` headers for WebSocket) to `http://127.0.0.1:5001`. **The admin app (`admin/dist`) needs its OWN server block on its own subdomain** (e.g. `admin.bazaarsync.com`) — it's a genuinely separate deployment from `client/`, not a route inside it (see CLAUDE.md Phase 10). That block also proxies `/api` to the same `http://127.0.0.1:5001` backend (both apps share the one Express server) but serves `admin/dist` as its static root instead of `client/dist`; no `/socket.io` proxy is needed there since the admin app doesn't use live sockets.
 6. **Logs**: `server/logs/` — `login.log`, `worker.log`, `socket.log`, `database.log`, `error.log` (Winston, secrets redacted), plus PM2's own out/error files.
 7. **Daily rhythm** (all automatic, IST): 08:45 worker forks and logs in via TOTP → market hours live feed + tiered MySQL snapshots → 15:35 graceful worker stop with final buffer flush → 23:00 nightly historical pull into `option_chain_history`/`ohlcv_data`.
 

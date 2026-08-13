@@ -12,15 +12,12 @@ const TOOLS = [
     { to: "/option-chain", title: "Option Chain", image: "/images/oi.png", desc: "Full chain with OI, buildup, Greeks" },
     { to: "/strategy-builder", title: "Strategy Builder", icon: "strategy", desc: "Multi-leg payoff + live Greeks" },
     { to: "/simulator", title: "Simulator", icon: "backtest", desc: "Replay a real past day minute by minute" },
-    { to: "/max-pain", title: "Max Pain", icon: "maxpain", desc: "Option-writer payout by strike" },
-    { to: "/put-call-ratio", title: "Put-Call Ratio", icon: "pcr", desc: "PCR vs spot, OI trend" },
-    { to: "/iv-chart", title: "IV Chart", icon: "iv", desc: "IV smile + ATM IV trend" },
-    { to: "/straddle-chart", title: "Straddle Chart", icon: "straddle", desc: "ATM straddle cost vs spot" },
-    { to: "/oi-heatmap", title: "OI Heatmap", icon: "heatmap", desc: "Call vs Put OI by strike" },
-    { to: "/backtest", title: "Backtest", icon: "backtest", desc: "Simulate strategies on real history" },
+    { to: "/paper-trade", title: "Paper Trade", icon: "papertrade", desc: "Trade virtual capital on real historical data" },
+    { to: "/historical-chart", title: "Historical Chart", icon: "historicalchart", desc: "Multi-day historical price charts" },
+    { to: "/equity-data", title: "Equity Data", icon: "equitydata", desc: "Sector rotation, market map, 52W high/low & more" },
 ];
 
-const POPULAR = ["/option-chain", "/strategy-builder", "/straddle-chart", "/max-pain", "/oi-heatmap"];
+const POPULAR = ["/option-chain", "/strategy-builder", "/paper-trade", "/simulator", "/historical-chart"];
 
 function SectionHeading({ children }) {
     return (
@@ -92,22 +89,23 @@ export default function Home() {
                 </p>
                 <h3 className="mb-1 mt-4 text-sm font-bold text-gray-900">Core tools</h3>
                 <p className="mb-3 text-sm leading-relaxed text-gray-600">
-                    Live <Link to="/option-chain" className="text-blue-600 hover:underline">Option Chain</Link>,{" "}
-                    <Link to="/max-pain" className="text-blue-600 hover:underline">Max Pain</Link>,{" "}
-                    <Link to="/oi-heatmap" className="text-blue-600 hover:underline">OI Heatmap</Link> and{" "}
-                    <Link to="/put-call-ratio" className="text-blue-600 hover:underline">Put-Call Ratio</Link> for
-                    reading where the market is positioned. <Link to="/iv-chart" className="text-blue-600 hover:underline">IV Chart</Link> and{" "}
-                    <Link to="/straddle-chart" className="text-blue-600 hover:underline">Straddle Chart</Link> for
-                    volatility and premium. IV and Greeks (delta, gamma, theta, vega) are computed with our own
-                    Black-Scholes engine, since the broker feed doesn't provide them.
+                    Live <Link to="/option-chain" className="text-blue-600 hover:underline">Option Chain</Link> for
+                    reading where the market is positioned, with IV and Greeks (delta, gamma, theta, vega) computed
+                    with our own Black-Scholes engine, since the broker feed doesn't provide them. Browse{" "}
+                    <Link to="/equity-data" className="text-blue-600 hover:underline">Equity Data</Link> for
+                    sector rotation, market map, 52-week highs/lows and more, and{" "}
+                    <Link to="/historical-chart" className="text-blue-600 hover:underline">Historical Chart</Link> for
+                    multi-day price history.
                 </p>
-                <h3 className="mb-1 mt-4 text-sm font-bold text-gray-900">Strategy building and backtesting</h3>
+                <h3 className="mb-1 mt-4 text-sm font-bold text-gray-900">Strategy building and paper trading</h3>
                 <p className="mb-3 text-sm leading-relaxed text-gray-600">
                     The <Link to="/strategy-builder" className="text-blue-600 hover:underline">Strategy Builder</Link> lets
                     you build multi-leg positions from the live chain, see the payoff diagram, breakevens and net
                     Greeks in real time, and start from ready-made templates like Iron Condor or Straddle. The{" "}
-                    <Link to="/backtest" className="text-blue-600 hover:underline">Backtest</Link> engine replays a
-                    strategy against real stored historical data, never live prices, so results don't move under you.
+                    <Link to="/simulator" className="text-blue-600 hover:underline">Simulator</Link> replays a real
+                    past day minute by minute against real stored historical data, and{" "}
+                    <Link to="/paper-trade" className="text-blue-600 hover:underline">Paper Trade</Link> lets you
+                    trade a strategy forward with virtual capital, never live prices, so results don't move under you.
                 </p>
                 <h3 className="mb-1 mt-4 text-sm font-bold text-gray-900">Who it's for</h3>
                 <p className="text-sm leading-relaxed text-gray-600">

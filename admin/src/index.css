@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+:root {
+  --sans: "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  background: #08080b;
+  color: #f3f4f6;
+}
+
+#root {
+  min-height: 100vh;
+}

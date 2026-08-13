@@ -33,12 +33,19 @@ const backtestRoutes = require("./routes/backtest");
 const authRoutes = require("./routes/auth");
 const strategyRoutes = require("./routes/strategies");
 const simulatorRoutes = require("./routes/simulator");
+const subscriptionRoutes = require("./routes/subscription");
+const paperTradeRoutes = require("./routes/paperTrade");
+const adminRoutes = require("./routes/admin");
 
 const app = express();
 
+// 5174 is the separate admin/ app's dev port (Phase 10) — a genuinely
+// different app/deployment from client/'s 5173, not a route inside it. In
+// production, set CORS_ORIGINS to include the real admin subdomain
+// (e.g. https://admin.bazaarsync.com) alongside the main site's origin.
 const CORS_ORIGINS = process.env.CORS_ORIGINS
     ? process.env.CORS_ORIGINS.split(",").map((s) => s.trim())
-    : ["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"];
+    : ["http://localhost:3000", "http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:3000", "http://127.0.0.1:5173", "http://127.0.0.1:5174"];
 
 app.use(
     cors({
@@ -85,6 +92,9 @@ app.use("/api/backtest", backtestRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/strategies", strategyRoutes);
 app.use("/api/simulator", simulatorRoutes);
+app.use("/api/subscription", subscriptionRoutes);
+app.use("/api/paper-trade", paperTradeRoutes);
+app.use("/api/admin", adminRoutes);
 
 // 404 handler
 app.use((req, res) => {
