@@ -272,12 +272,36 @@ function buildPresets(data) {
     ];
 }
 
+// Display order within a category, matching the stockmojo.in reference
+// screenshot exactly (2026-08-15) — buildPresets' own array order doesn't
+// group same-bias entries contiguously (they're interleaved with their
+// bullish/bearish mirror-pairs for easier side-by-side maintenance), so this
+// re-sorts just for display. Names not listed here keep their natural
+// relative order at the end, so adding a new preset never requires touching
+// this list.
+const CARD_ORDER = {
+    Neutral: ["Short Straddle", "Short Strangle", "Short Iron Condor", "Short Iron Butterfly", "Batman", "Jade Lizard", "Reverse Jade Lizard", "Double Plateau"],
+};
+
+function sortForDisplay(presets, category) {
+    const order = CARD_ORDER[category];
+    if (!order) return presets;
+    return [...presets].sort((a, b) => {
+        const ia = order.indexOf(a.name);
+        const ib = order.indexOf(b.name);
+        if (ia === -1 && ib === -1) return 0;
+        if (ia === -1) return 1;
+        if (ib === -1) return -1;
+        return ia - ib;
+    });
+}
+
 export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
     const presets = useMemo(() => buildPresets(data), [data]);
     const [category, setCategory] = useState("Other");
     const [loadingPreset, setLoadingPreset] = useState(null);
 
-    const visible = presets.filter((p) => p.bias === category);
+    const visible = sortForDisplay(presets.filter((p) => p.bias === category), category);
 
     async function handleApply(p) {
         if (p.legs) {
