@@ -543,7 +543,7 @@ export default function StrategyBuilder() {
                                 aria-label="Option chain settings"
                                 title="Column & ATM settings"
                             >
-                                ⚙
+                                <FiSettings size={20} />
                             </button>
 
                             {settingsOpen && (
@@ -1016,7 +1016,7 @@ export default function StrategyBuilder() {
                                                                 className="rounded-md border border-gray-200 bg-white px-1.5 py-1 text-[11px] font-medium text-gray-700 outline-none focus:border-blue-500"
                                                             >
                                                                 {(data?.expiries || [leg.expiry]).map((exp) => (
-                                                                    <option key={exp} value={exp}>{formatExpiryShort(exp)}</option>
+                                                                    <option key={exp} value={exp}>{formatExpiryShort(exp)} ({daysUntilExpiry(exp)}d)</option>
                                                                 ))}
                                                             </select>
                                                         </td>
