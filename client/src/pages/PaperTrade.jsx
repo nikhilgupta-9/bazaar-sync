@@ -19,8 +19,12 @@ import { fetchWallet, createRefillOrder, verifyRefillPayment, fetchPositions, op
 import { createProOrder, verifyProPayment } from "../services/subscriptionApi";
 import { loadRazorpayCheckout } from "../utils/loadRazorpayCheckout";
 import { formatRupees, formatPrice, formatPercent, formatOi, formatDateTime } from "../utils/format";
+import { computePayoffCurve, computeBreakevens, computeMaxProfitLoss } from "../utils/payoff";
+import PayoffChart from "../components/PayoffChart";
 
-const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
+// Fallback shown before /symbols/list resolves (or if it fails) — same 3
+// live-worker symbols OptionChain.jsx falls back to.
+const FALLBACK_SYMBOLS = { indices: ["NIFTY", "BANKNIFTY", "FINNIFTY"], stocks: [], liveSymbols: ["NIFTY", "BANKNIFTY", "FINNIFTY"] };
 const POSITIONS_POLL_MS = 12000;
 
 // Brand hex values, kept as plain Tailwind arbitrary-value classes rather
@@ -149,6 +153,126 @@ function StatTile({ label, value, valueColor }) {
     );
 }
 
+// Right-side order panel — opened by TradeCell's Buy/Sell click. Shows the
+// contract + a lots stepper before confirm, then (after a successful
+// openPosition call) switches to a "trade placed" state — both states
+// render the same single-leg payoff preview (payoff.js, the exact math the
+// Strategy Builder uses), per the user's explicit request that a payoff
+// chart accompany the order both while placing it and right after.
+function TradeDrawer({ symbol, draft, lots, setLots, lotSize, spotPrice, curveInfo, submitting, success, onConfirm, onClose }) {
+    if (!draft) return null;
+    const isShort = draft.side === "short";
+    const sideColor = isShort ? RED : GREEN;
+    const estAmount = draft.row.ltp * lots * (lotSize || 1);
+
+    return (
+        <>
+            <div className="fixed inset-0 z-40 bg-black/60" onClick={onClose} />
+            <div
+                className="fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-y-auto p-4 shadow-2xl"
+                style={{ background: SURFACE, borderLeft: `1px solid ${BORDER}`, color: TEXT }}
+            >
+                <div className="flex items-start justify-between">
+                    <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+                            {success ? "Trade placed" : "Place order"}
+                        </div>
+                        <div className="mt-0.5 text-lg font-bold">
+                            {symbol} {draft.strike} {draft.optRight}
+                            <span
+                                className="ml-2 rounded px-1.5 py-0.5 align-middle text-[10px] font-bold uppercase"
+                                style={{ background: isShort ? "rgba(235,9,11,0.15)" : "rgba(11,229,92,0.15)", color: sideColor }}
+                            >
+                                {isShort ? "Sell" : "Buy"}
+                            </span>
+                        </div>
+                    </div>
+                    <button onClick={onClose} className="text-lg hover:opacity-80" style={{ color: MUTED }}>✕</button>
+                </div>
+
+                {!success ? (
+                    <>
+                        <div className="mt-4 grid grid-cols-2 gap-3">
+                            <StatTile label="LTP" value={formatPrice(draft.row.ltp)} />
+                            <StatTile label="Lot size" value={lotSize ?? "-"} />
+                        </div>
+
+                        <div className="mt-3 flex items-center justify-between rounded-xl p-3" style={{ background: SURFACE_2, border: `1px solid ${BORDER}` }}>
+                            <span className="text-xs font-medium" style={{ color: MUTED }}>Lots</span>
+                            <div className="flex items-center gap-3">
+                                <button
+                                    onClick={() => setLots((l) => Math.max(1, l - 1))}
+                                    className="h-7 w-7 rounded text-sm hover:opacity-80"
+                                    style={{ border: `1px solid ${BORDER}`, color: TEXT }}
+                                >
+                                    −
+                                </button>
+                                <span className="w-6 text-center text-sm font-semibold tabular-nums">{lots}</span>
+                                <button
+                                    onClick={() => setLots((l) => Math.min(100, l + 1))}
+                                    className="h-7 w-7 rounded text-sm hover:opacity-80"
+                                    style={{ border: `1px solid ${BORDER}`, color: TEXT }}
+                                >
+                                    +
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-2 gap-3">
+                            <StatTile label={isShort ? "Est. Credit" : "Est. Cost"} value={formatRupees(estAmount)} />
+                            <StatTile
+                                label="Max Loss"
+                                value={curveInfo.maxLoss === "Unlimited" ? "Unlimited" : curveInfo.maxLoss != null ? formatRupees(curveInfo.maxLoss) : "—"}
+                                valueColor={RED}
+                            />
+                        </div>
+
+                        <div className="mt-4 overflow-hidden rounded-xl bg-white p-1">
+                            <PayoffChart curve={curveInfo.curve} spotPrice={spotPrice} breakevens={curveInfo.breakevens} expectedMove={null} />
+                        </div>
+
+                        <div className="mt-4 flex gap-2">
+                            <button
+                                onClick={onClose}
+                                className="flex-1 rounded-lg py-2 text-sm font-semibold hover:opacity-80"
+                                style={{ border: `1px solid ${BORDER}`, color: TEXT }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={onConfirm}
+                                disabled={submitting}
+                                className="flex-1 rounded-lg py-2 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50"
+                                style={{ background: sideColor }}
+                            >
+                                {submitting ? "Placing…" : isShort ? "Sell" : "Buy"}
+                            </button>
+                        </div>
+                    </>
+                ) : (
+                    <>
+                        <div className="mt-4 rounded-xl px-3 py-2.5 text-sm" style={{ background: "rgba(11,229,92,0.1)", border: `1px solid ${GREEN}`, color: GREEN }}>
+                            ✓ {isShort ? "Sold" : "Bought"} {lots} lot{lots > 1 ? "s" : ""} of {symbol} {draft.strike}{draft.optRight} at {formatPrice(draft.row.ltp)}
+                        </div>
+
+                        <div className="mt-4 overflow-hidden rounded-xl bg-white p-1">
+                            <PayoffChart curve={curveInfo.curve} spotPrice={spotPrice} breakevens={curveInfo.breakevens} expectedMove={null} />
+                        </div>
+
+                        <button
+                            onClick={onClose}
+                            className="mt-4 w-full rounded-lg py-2 text-sm font-bold text-black hover:opacity-90"
+                            style={{ background: GREEN }}
+                        >
+                            Done
+                        </button>
+                    </>
+                )}
+            </div>
+        </>
+    );
+}
+
 export default function PaperTrade() {
     const { user, token, refreshUser } = useAuth();
     const navigate = useNavigate();
@@ -164,8 +288,18 @@ export default function PaperTrade() {
     const [closingId, setClosingId] = useState(null);
     const [closingAll, setClosingAll] = useState(false);
 
-    const { symbol, setSymbol, data, marketStatus } = useOptionChain(SYMBOLS[0]);
+    const { symbol, setSymbol, data, marketStatus } = useOptionChain("NIFTY");
     const positionsPollRef = useRef(null);
+    const atmRowRef = useRef(null);
+
+    // Auto-center the chain on the SPOT/ATM row whenever a fresh chain loads
+    // (symbol switch or first load) — same pattern as Strategy Builder's
+    // scrollToAtm, "instant" so it doesn't visibly animate on every load.
+    useEffect(() => {
+        if (!data?.rows?.length) return;
+        const raf = requestAnimationFrame(() => atmRowRef.current?.scrollIntoView({ behavior: "instant", block: "center" }));
+        return () => cancelAnimationFrame(raf);
+    }, [data?.selectedExpiry, symbol]);
 
     const loadWallet = useCallback(async () => {
         try {
@@ -356,7 +490,12 @@ export default function PaperTrade() {
         );
     }
 
-    const canTrade = !!user && wallet?.accessAllowed && marketStatus?.isOpen && !!data?.rows?.length;
+    // Only NIFTY/BANKNIFTY/FINNIFTY are worker-subscribed and can actually
+    // execute (paperPositionService.getLiveContractPrice throws for anything
+    // else) — the picker below now lists ~280 symbols for browsing (matches
+    // OptionChain.jsx), but trading itself stays scoped to the 3 live ones.
+    const isLiveSymbol = symbolList.liveSymbols.includes(symbol);
+    const canTrade = !!user && wallet?.accessAllowed && marketStatus?.isOpen && isLiveSymbol && !!data?.rows?.length;
     const goToLogin = () => navigate("/login");
 
     return (
@@ -369,14 +508,7 @@ export default function PaperTrade() {
                             
                             <span className="ml-1 text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Paper Trading</span>
                         </div>
-                        <select
-                            value={symbol}
-                            onChange={(e) => setSymbol(e.target.value)}
-                            className="rounded-lg px-2 py-1 text-sm font-semibold outline-none"
-                            style={{ background: SURFACE_2, border: `1px solid ${BORDER}`, color: TEXT }}
-                        >
-                            {SYMBOLS.map((s) => <option key={s} value={s}>{s}</option>)}
-                        </select>
+                        <SymbolPicker symbol={symbol} symbolList={symbolList} onPick={setSymbol} />
                         {data && (
                             <div className="flex items-baseline gap-1.5 text-sm">
                                 <span className="font-bold tabular-nums">{formatPrice(data.spotPrice)}</span>
@@ -454,6 +586,12 @@ export default function PaperTrade() {
                 {!marketStatus?.isOpen && (
                     <div className="mt-3 rounded-lg px-4 py-2 text-xs" style={{ background: "rgba(245,166,35,0.1)", border: `1px solid ${AMBER}`, color: AMBER }}>
                         Market is closed — buying/selling requires live market data, so it's disabled until the next session.
+                    </div>
+                )}
+
+                {marketStatus?.isOpen && !isLiveSymbol && (
+                    <div className="mt-3 rounded-lg px-4 py-2 text-xs" style={{ background: "rgba(245,166,35,0.1)", border: `1px solid ${AMBER}`, color: AMBER }}>
+                        {symbol} isn't live-streamed yet — only NIFTY, BANKNIFTY and FINNIFTY support paper trading right now. Showing {symbol}'s latest stored chain for reference.
                     </div>
                 )}
 
