@@ -21,6 +21,7 @@ import { loadRazorpayCheckout } from "../utils/loadRazorpayCheckout";
 import { formatRupees, formatPrice, formatPercent, formatOi, formatDateTime } from "../utils/format";
 import { computePayoffCurve, computeBreakevens, computeMaxProfitLoss } from "../utils/payoff";
 import PayoffChart from "../components/PayoffChart";
+import { fetchSymbolList } from "../services/optionChainApi";
 
 // Fallback shown before /symbols/list resolves (or if it fails) — same 3
 // live-worker symbols OptionChain.jsx falls back to.
@@ -73,41 +74,13 @@ function pnlColor(v) {
     return v > 0 ? GREEN : v < 0 ? RED : MUTED;
 }
 
-function TradeCell({ strike, optRight, side, loggedIn, canTrade, onTrade, onLoginRequired }) {
-    const [draftSide, setDraftSide] = useState(null); // 'long' | 'short' | null
-    const [lots, setLots] = useState(1);
-
+// Simplified from the old inline draft-side/lots-stepper cell: clicking
+// Buy/Sell now just opens the right-side TradeDrawer (below), which holds
+// the lots stepper + a live payoff preview + confirm — see the user's
+// explicit request to move order entry off the cramped inline cell and
+// into a dedicated panel showing the trade's payoff chart.
+function TradeCell({ strike, optRight, side, loggedIn, canTrade, onOpenTrade, onLoginRequired }) {
     if (!side || side.ltp == null) return <span style={{ color: MUTED }}>-</span>;
-
-    if (draftSide) {
-        return (
-            <div className="flex items-center justify-end gap-1">
-                <button
-                    onClick={() => setLots((l) => Math.max(1, l - 1))}
-                    className="h-5 w-5 rounded text-xs leading-none hover:opacity-80"
-                    style={{ border: `1px solid ${BORDER}`, color: MUTED }}
-                >
-                    −
-                </button>
-                <span className="w-5 text-center text-xs" style={{ color: TEXT }}>{lots}</span>
-                <button
-                    onClick={() => setLots((l) => Math.min(100, l + 1))}
-                    className="h-5 w-5 rounded text-xs leading-none hover:opacity-80"
-                    style={{ border: `1px solid ${BORDER}`, color: MUTED }}
-                >
-                    +
-                </button>
-                <button
-                    onClick={() => { onTrade(strike, optRight, lots, draftSide); setDraftSide(null); setLots(1); }}
-                    className="rounded px-2 py-0.5 text-[11px] font-semibold text-white hover:opacity-90"
-                    style={{ background: draftSide === "long" ? GREEN : RED }}
-                >
-                    {draftSide === "long" ? "Buy" : "Sell"}
-                </button>
-                <button onClick={() => setDraftSide(null)} className="text-xs hover:opacity-80" style={{ color: MUTED }}>✕</button>
-            </div>
-        );
-    }
 
     return (
         <div className="group relative text-right">
@@ -124,14 +97,14 @@ function TradeCell({ strike, optRight, side, loggedIn, canTrade, onTrade, onLogi
                 canTrade && (
                     <div className="invisible absolute inset-y-0 right-0 flex items-center gap-1 group-hover:visible">
                         <button
-                            onClick={() => setDraftSide("long")}
+                            onClick={() => onOpenTrade(strike, optRight, "long", side)}
                             className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-white hover:opacity-90"
                             style={{ background: GREEN }}
                         >
                             B
                         </button>
                         <button
-                            onClick={() => setDraftSide("short")}
+                            onClick={() => onOpenTrade(strike, optRight, "short", side)}
                             className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-white hover:opacity-90"
                             style={{ background: RED }}
                         >
@@ -273,6 +246,95 @@ function TradeDrawer({ symbol, draft, lots, setLots, lotSize, spotPrice, curveIn
     );
 }
 
+// Searchable symbol picker — was a plain 3-option <select>, mirrors
+// OptionChain.jsx's index/stocks picker (same "Historical" badge for
+// non-live symbols) so the full symbol universe (~280 indices+stocks from
+// Bhavcopy/Breeze/Upstox backfills) is browsable here too, dark-themed to
+// match this page.
+function SymbolPicker({ symbol, symbolList, onPick }) {
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState("");
+
+    const filteredIndices = symbolList.indices.filter((s) => s.toLowerCase().includes(query.toLowerCase()));
+    const filteredStocks = symbolList.stocks.filter((s) => s.toLowerCase().includes(query.toLowerCase()));
+
+    function pick(s) {
+        onPick(s);
+        setOpen(false);
+        setQuery("");
+    }
+
+    return (
+        <div className="relative">
+            <button
+                onClick={() => setOpen((v) => !v)}
+                className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold outline-none hover:opacity-90"
+                style={{ background: SURFACE_2, border: `1px solid ${BORDER}`, color: TEXT }}
+            >
+                {symbol}
+                <span style={{ color: MUTED }}>▾</span>
+            </button>
+            {open && (
+                <>
+                    <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+                    <div
+                        className="absolute left-0 top-full z-50 mt-1.5 max-h-96 w-64 overflow-y-auto rounded-xl shadow-2xl"
+                        style={{ background: SURFACE, border: `1px solid ${BORDER}` }}
+                    >
+                        <div className="sticky top-0 p-2" style={{ background: SURFACE, borderBottom: `1px solid ${BORDER}` }}>
+                            <input
+                                autoFocus
+                                value={query}
+                                onChange={(e) => setQuery(e.target.value)}
+                                placeholder="Search symbol…"
+                                className="w-full rounded-lg px-2.5 py-1.5 text-xs outline-none"
+                                style={{ background: SURFACE_2, border: `1px solid ${BORDER}`, color: TEXT }}
+                            />
+                        </div>
+                        {filteredIndices.length > 0 && (
+                            <div className="py-1">
+                                <div className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide" style={{ color: MUTED }}>Index</div>
+                                {filteredIndices.map((s) => (
+                                    <button
+                                        key={s}
+                                        onClick={() => pick(s)}
+                                        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs font-medium hover:opacity-90"
+                                        style={{ color: s === symbol ? GREEN : TEXT, background: s === symbol ? "rgba(11,229,92,0.08)" : "transparent" }}
+                                    >
+                                        {s}
+                                        {!symbolList.liveSymbols.includes(s) && (
+                                            <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold" style={{ background: SURFACE_2, color: MUTED }}>Historical</span>
+                                        )}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                        {filteredStocks.length > 0 && (
+                            <div className="py-1" style={{ borderTop: `1px solid ${BORDER}` }}>
+                                <div className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide" style={{ color: MUTED }}>Stocks</div>
+                                {filteredStocks.map((s) => (
+                                    <button
+                                        key={s}
+                                        onClick={() => pick(s)}
+                                        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs font-medium hover:opacity-90"
+                                        style={{ color: s === symbol ? GREEN : TEXT, background: s === symbol ? "rgba(11,229,92,0.08)" : "transparent" }}
+                                    >
+                                        {s}
+                                        <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold" style={{ background: SURFACE_2, color: MUTED }}>Historical</span>
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                        {!filteredIndices.length && !filteredStocks.length && (
+                            <div className="px-3 py-8 text-center text-xs" style={{ color: MUTED }}>No matches</div>
+                        )}
+                    </div>
+                </>
+            )}
+        </div>
+    );
+}
+
 export default function PaperTrade() {
     const { user, token, refreshUser } = useAuth();
     const navigate = useNavigate();
@@ -288,9 +350,28 @@ export default function PaperTrade() {
     const [closingId, setClosingId] = useState(null);
     const [closingAll, setClosingAll] = useState(false);
 
+    // Right-side order drawer state — see TradeDrawer above. `tradeDraft`
+    // holds the contract being ordered; `tradeSuccess` is only set once the
+    // order actually lands, switching the drawer to its confirmation view.
+    const [tradeDraft, setTradeDraft] = useState(null); // { strike, optRight, side, row } | null
+    const [tradeLots, setTradeLots] = useState(1);
+    const [tradeSubmitting, setTradeSubmitting] = useState(false);
+    const [tradeSuccess, setTradeSuccess] = useState(false);
+
     const { symbol, setSymbol, data, marketStatus } = useOptionChain("NIFTY");
     const positionsPollRef = useRef(null);
     const atmRowRef = useRef(null);
+    const [symbolList, setSymbolList] = useState(FALLBACK_SYMBOLS);
+
+    // Every symbol with real historical data (indices + 200+ F&O stocks from
+    // the Bhavcopy/Breeze/Upstox backfills — see CLAUDE.md Phase 7), same
+    // source OptionChain.jsx already uses. Keeps FALLBACK_SYMBOLS on failure
+    // — the picker still works with just the 3 live symbols.
+    useEffect(() => {
+        fetchSymbolList()
+            .then((d) => setSymbolList(d))
+            .catch(() => {});
+    }, []);
 
     // Auto-center the chain on the SPOT/ATM row whenever a fresh chain loads
     // (symbol switch or first load) — same pattern as Strategy Builder's
@@ -399,15 +480,61 @@ export default function PaperTrade() {
         });
     }
 
-    async function handleTrade(strike, optRight, lots, side) {
+    function openTrade(strike, optRight, side, row) {
         setError(null);
+        setTradeDraft({ strike, optRight, side, row });
+        setTradeSuccess(false);
+        setTradeLots(1);
+    }
+
+    function closeDrawer() {
+        setTradeDraft(null);
+        setTradeSuccess(false);
+        setTradeLots(1);
+    }
+
+    async function confirmTrade() {
+        if (!tradeDraft) return;
+        setError(null);
+        setTradeSubmitting(true);
         try {
-            await openPosition(token, { symbol, expiry: data.selectedExpiry, strike, optRight, lots, side });
+            await openPosition(token, {
+                symbol,
+                expiry: data.selectedExpiry,
+                strike: tradeDraft.strike,
+                optRight: tradeDraft.optRight,
+                lots: tradeLots,
+                side: tradeDraft.side,
+            });
+            setTradeSuccess(true);
             await Promise.all([loadWallet(), loadPositions()]);
         } catch (err) {
             setError(err.message);
+        } finally {
+            setTradeSubmitting(false);
         }
     }
+
+    // Single-leg payoff preview for the order drawer — the exact math the
+    // Strategy Builder uses (payoff.js), an 8% spot spread same as there.
+    const tradeDrawerCurve = useMemo(() => {
+        if (!tradeDraft || !data?.spotPrice) return { curve: [], breakevens: [], maxProfit: null, maxLoss: null };
+        const leg = {
+            action: tradeDraft.side === "long" ? "buy" : "sell",
+            type: tradeDraft.optRight,
+            strike: tradeDraft.strike,
+            premium: tradeDraft.row.ltp,
+            qty: tradeLots,
+            lotSize: data.lotSize,
+            iv: tradeDraft.row.iv,
+            expiry: data.selectedExpiry,
+        };
+        const spread = data.spotPrice * 0.08;
+        const curve = computePayoffCurve([leg], { minPrice: data.spotPrice - spread, maxPrice: data.spotPrice + spread }) || [];
+        const breakevens = computeBreakevens(curve) || [];
+        const { maxProfit, maxLoss } = computeMaxProfitLoss([leg], curve);
+        return { curve, breakevens, maxProfit, maxLoss };
+    }, [tradeDraft, tradeLots, data]);
 
     async function handleClose(id) {
         setError(null);
@@ -628,10 +755,14 @@ export default function PaperTrade() {
                             )}
                         </div>
 
-                        <div className="overflow-x-auto">
+                        {/* Bounded height + internal scroll (was unbounded — a full strike
+                            ladder made the page itself scroll for ages to reach the bottom
+                            rows). The ATM row auto-centers into this scroll area on load via
+                            atmRowRef above, so the useful strikes are visible immediately. */}
+                        <div className="max-h-[560px] overflow-y-auto overflow-x-auto">
                             <table className="w-full text-xs">
                                 <thead>
-                                    <tr style={{ color: MUTED }}>
+                                    <tr className="sticky top-0 z-10" style={{ color: MUTED, background: SURFACE }}>
                                         <th className="px-3 py-2 text-right font-medium">OI</th>
                                         <th className="px-3 py-2 text-right font-medium">Volume</th>
                                         <th className="px-3 py-2 text-right font-medium">IV</th>
@@ -649,18 +780,22 @@ export default function PaperTrade() {
                                         return (
                                             <tr
                                                 key={row.strike}
+                                                ref={isAtm ? atmRowRef : null}
                                                 className="border-t"
-                                                style={{ ...(isAtm ? { background: "rgba(11,229,92,0.06)" } : {}), borderColor: BORDER }}
+                                                style={{
+                                                    ...(isAtm ? { background: "rgba(11,229,92,0.06)", boxShadow: `inset 0 0 0 1px ${AMBER}` } : {}),
+                                                    borderColor: BORDER,
+                                                }}
                                             >
                                                 <td className="px-3 py-1.5 text-right tabular-nums" style={{ color: MUTED }}>{formatOi(row.ce?.oi)}</td>
                                                 <td className="px-3 py-1.5 text-right tabular-nums" style={{ color: MUTED }}>{formatOi(row.ce?.volume)}</td>
                                                 <td className="px-3 py-1.5 text-right tabular-nums" style={{ color: MUTED }}>{row.ce?.iv != null ? `${Number(row.ce.iv).toFixed(1)}%` : "-"}</td>
                                                 <td className="px-3 py-1.5">
-                                                    <TradeCell strike={row.strike} optRight="CE" side={row.ce} loggedIn={!!user} canTrade={canTrade} onTrade={handleTrade} onLoginRequired={goToLogin} />
+                                                    <TradeCell strike={row.strike} optRight="CE" side={row.ce} loggedIn={!!user} canTrade={canTrade} onOpenTrade={openTrade} onLoginRequired={goToLogin} />
                                                 </td>
                                                 <td className="px-3 py-1.5 text-center font-semibold tabular-nums" style={{ color: isAtm ? GREEN : TEXT }}>{row.strike}</td>
                                                 <td className="px-3 py-1.5">
-                                                    <TradeCell strike={row.strike} optRight="PE" side={row.pe} loggedIn={!!user} canTrade={canTrade} onTrade={handleTrade} onLoginRequired={goToLogin} />
+                                                    <TradeCell strike={row.strike} optRight="PE" side={row.pe} loggedIn={!!user} canTrade={canTrade} onOpenTrade={openTrade} onLoginRequired={goToLogin} />
                                                 </td>
                                                 <td className="px-3 py-1.5 text-left tabular-nums" style={{ color: MUTED }}>{row.pe?.iv != null ? `${Number(row.pe.iv).toFixed(1)}%` : "-"}</td>
                                                 <td className="px-3 py-1.5 text-left tabular-nums" style={{ color: MUTED }}>{formatOi(row.pe?.volume)}</td>
@@ -821,6 +956,20 @@ export default function PaperTrade() {
                     )}
                 </div>
             </div>
+
+            <TradeDrawer
+                symbol={symbol}
+                draft={tradeDraft}
+                lots={tradeLots}
+                setLots={setTradeLots}
+                lotSize={data?.lotSize}
+                spotPrice={data?.spotPrice}
+                curveInfo={tradeDrawerCurve}
+                submitting={tradeSubmitting}
+                success={tradeSuccess}
+                onConfirm={confirmTrade}
+                onClose={closeDrawer}
+            />
         </div>
     );
 }
