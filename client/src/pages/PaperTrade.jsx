@@ -21,8 +21,11 @@ import { loadRazorpayCheckout } from "../utils/loadRazorpayCheckout";
 import { formatRupees, formatPrice, formatPercent, formatOi, formatDateTime } from "../utils/format";
 import { computePayoffCurve, computeBreakevens, computeMaxProfitLoss } from "../utils/payoff";
 import PayoffChart from "../components/PayoffChart";
+import { fetchSymbolList } from "../services/optionChainApi";
 
-const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
+// Fallback shown before /symbols/list resolves (or if it fails) — same 3
+// live-worker symbols OptionChain.jsx falls back to.
+const FALLBACK_SYMBOLS = { indices: ["NIFTY", "BANKNIFTY", "FINNIFTY"], stocks: [], liveSymbols: ["NIFTY", "BANKNIFTY", "FINNIFTY"] };
 const POSITIONS_POLL_MS = 12000;
 
 // Brand hex values, kept as plain Tailwind arbitrary-value classes rather
@@ -243,6 +246,95 @@ function TradeDrawer({ symbol, draft, lots, setLots, lotSize, spotPrice, curveIn
     );
 }
 
+// Searchable symbol picker — was a plain 3-option <select>, mirrors
+// OptionChain.jsx's index/stocks picker (same "Historical" badge for
+// non-live symbols) so the full symbol universe (~280 indices+stocks from
+// Bhavcopy/Breeze/Upstox backfills) is browsable here too, dark-themed to
+// match this page.
+function SymbolPicker({ symbol, symbolList, onPick }) {
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState("");
+
+    const filteredIndices = symbolList.indices.filter((s) => s.toLowerCase().includes(query.toLowerCase()));
+    const filteredStocks = symbolList.stocks.filter((s) => s.toLowerCase().includes(query.toLowerCase()));
+
+    function pick(s) {
+        onPick(s);
+        setOpen(false);
+        setQuery("");
+    }
+
+    return (
+        <div className="relative">
+            <button
+                onClick={() => setOpen((v) => !v)}
+                className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold outline-none hover:opacity-90"
+                style={{ background: SURFACE_2, border: `1px solid ${BORDER}`, color: TEXT }}
+            >
+                {symbol}
+                <span style={{ color: MUTED }}>▾</span>
+            </button>
+            {open && (
+                <>
+                    <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+                    <div
+                        className="absolute left-0 top-full z-50 mt-1.5 max-h-96 w-64 overflow-y-auto rounded-xl shadow-2xl"
+                        style={{ background: SURFACE, border: `1px solid ${BORDER}` }}
+                    >
+                        <div className="sticky top-0 p-2" style={{ background: SURFACE, borderBottom: `1px solid ${BORDER}` }}>
+                            <input
+                                autoFocus
+                                value={query}
+                                onChange={(e) => setQuery(e.target.value)}
+                                placeholder="Search symbol…"
+                                className="w-full rounded-lg px-2.5 py-1.5 text-xs outline-none"
+                                style={{ background: SURFACE_2, border: `1px solid ${BORDER}`, color: TEXT }}
+                            />
+                        </div>
+                        {filteredIndices.length > 0 && (
+                            <div className="py-1">
+                                <div className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide" style={{ color: MUTED }}>Index</div>
+                                {filteredIndices.map((s) => (
+                                    <button
+                                        key={s}
+                                        onClick={() => pick(s)}
+                                        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs font-medium hover:opacity-90"
+                                        style={{ color: s === symbol ? GREEN : TEXT, background: s === symbol ? "rgba(11,229,92,0.08)" : "transparent" }}
+                                    >
+                                        {s}
+                                        {!symbolList.liveSymbols.includes(s) && (
+                                            <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold" style={{ background: SURFACE_2, color: MUTED }}>Historical</span>
+                                        )}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                        {filteredStocks.length > 0 && (
+                            <div className="py-1" style={{ borderTop: `1px solid ${BORDER}` }}>
+                                <div className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide" style={{ color: MUTED }}>Stocks</div>
+                                {filteredStocks.map((s) => (
+                                    <button
+                                        key={s}
+                                        onClick={() => pick(s)}
+                                        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs font-medium hover:opacity-90"
+                                        style={{ color: s === symbol ? GREEN : TEXT, background: s === symbol ? "rgba(11,229,92,0.08)" : "transparent" }}
+                                    >
+                                        {s}
+                                        <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold" style={{ background: SURFACE_2, color: MUTED }}>Historical</span>
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                        {!filteredIndices.length && !filteredStocks.length && (
+                            <div className="px-3 py-8 text-center text-xs" style={{ color: MUTED }}>No matches</div>
+                        )}
+                    </div>
+                </>
+            )}
+        </div>
+    );
+}
+
 export default function PaperTrade() {
     const { user, token, refreshUser } = useAuth();
     const navigate = useNavigate();
@@ -266,9 +358,20 @@ export default function PaperTrade() {
     const [tradeSubmitting, setTradeSubmitting] = useState(false);
     const [tradeSuccess, setTradeSuccess] = useState(false);
 
-    const { symbol, setSymbol, data, marketStatus } = useOptionChain(SYMBOLS[0]);
+    const { symbol, setSymbol, data, marketStatus } = useOptionChain("NIFTY");
     const positionsPollRef = useRef(null);
     const atmRowRef = useRef(null);
+    const [symbolList, setSymbolList] = useState(FALLBACK_SYMBOLS);
+
+    // Every symbol with real historical data (indices + 200+ F&O stocks from
+    // the Bhavcopy/Breeze/Upstox backfills — see CLAUDE.md Phase 7), same
+    // source OptionChain.jsx already uses. Keeps FALLBACK_SYMBOLS on failure
+    // — the picker still works with just the 3 live symbols.
+    useEffect(() => {
+        fetchSymbolList()
+            .then((d) => setSymbolList(d))
+            .catch(() => {});
+    }, []);
 
     // Auto-center the chain on the SPOT/ATM row whenever a fresh chain loads
     // (symbol switch or first load) — same pattern as Strategy Builder's
@@ -514,7 +617,12 @@ export default function PaperTrade() {
         );
     }
 
-    const canTrade = !!user && wallet?.accessAllowed && marketStatus?.isOpen && !!data?.rows?.length;
+    // Only NIFTY/BANKNIFTY/FINNIFTY are worker-subscribed and can actually
+    // execute (paperPositionService.getLiveContractPrice throws for anything
+    // else) — the picker below now lists ~280 symbols for browsing (matches
+    // OptionChain.jsx), but trading itself stays scoped to the 3 live ones.
+    const isLiveSymbol = symbolList.liveSymbols.includes(symbol);
+    const canTrade = !!user && wallet?.accessAllowed && marketStatus?.isOpen && isLiveSymbol && !!data?.rows?.length;
     const goToLogin = () => navigate("/login");
 
     return (
@@ -527,14 +635,7 @@ export default function PaperTrade() {
                             
                             <span className="ml-1 text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Paper Trading</span>
                         </div>
-                        <select
-                            value={symbol}
-                            onChange={(e) => setSymbol(e.target.value)}
-                            className="rounded-lg px-2 py-1 text-sm font-semibold outline-none"
-                            style={{ background: SURFACE_2, border: `1px solid ${BORDER}`, color: TEXT }}
-                        >
-                            {SYMBOLS.map((s) => <option key={s} value={s}>{s}</option>)}
-                        </select>
+                        <SymbolPicker symbol={symbol} symbolList={symbolList} onPick={setSymbol} />
                         {data && (
                             <div className="flex items-baseline gap-1.5 text-sm">
                                 <span className="font-bold tabular-nums">{formatPrice(data.spotPrice)}</span>
@@ -612,6 +713,12 @@ export default function PaperTrade() {
                 {!marketStatus?.isOpen && (
                     <div className="mt-3 rounded-lg px-4 py-2 text-xs" style={{ background: "rgba(245,166,35,0.1)", border: `1px solid ${AMBER}`, color: AMBER }}>
                         Market is closed — buying/selling requires live market data, so it's disabled until the next session.
+                    </div>
+                )}
+
+                {marketStatus?.isOpen && !isLiveSymbol && (
+                    <div className="mt-3 rounded-lg px-4 py-2 text-xs" style={{ background: "rgba(245,166,35,0.1)", border: `1px solid ${AMBER}`, color: AMBER }}>
+                        {symbol} isn't live-streamed yet — only NIFTY, BANKNIFTY and FINNIFTY support paper trading right now. Showing {symbol}'s latest stored chain for reference.
                     </div>
                 )}
 
