@@ -31,6 +31,14 @@ async function withMarketExtras(payload, displaySymbol) {
         console.error("[optionChain] expiry list lookup failed, using payload's own list:", err.message);
     }
 
+    // Spot vs the last recorded end-of-day close (ohlcv_data, previous
+    // trading day) — the header's "Spot" figure shows this delta next to
+    // the price. Null (not a fabricated 0%) when there's no prior day's
+    // candle yet, e.g. a brand-new symbol's first day of data.
+    const prevClose = await optionChainService.getPreviousDayClose(displaySymbol, instrumentMaster.todayIst());
+    const spotChange = prevClose != null && payload.spotPrice ? Number((payload.spotPrice - prevClose).toFixed(2)) : null;
+    const spotChangePercent = optionChainService.pctChange(payload.spotPrice, prevClose);
+
     return {
         ...payload,
         expiries,
@@ -38,6 +46,9 @@ async function withMarketExtras(payload, displaySymbol) {
         futurePrice: futureEntry ? futureEntry.ltp : null,
         futureExpiry: futureEntry ? futureEntry.expiry : null,
         lotSize: marketCache.getLotSize(displaySymbol),
+        spotPrevClose: prevClose,
+        spotChange,
+        spotChangePercent,
         marketStatus: {
             isOpen: marketHours.isTradingTime(),
             nextOpen: marketHours.getNextMarketOpen(),

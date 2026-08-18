@@ -4,7 +4,7 @@ import { fetchOptionChain, fetchSymbolList } from "../services/optionChainApi";
 import { formatPrice } from "../utils/format";
 import {
     computePayoffCurve, computeBreakevens, computeMaxProfitLoss, computeNetGreeks,
-    addMarkToMarketCurve, computeExpectedMove, computePOP, evaluationExpiryOf,
+    addMarkToMarketCurve, computeExpectedMove, computePOP, evaluationExpiryOf, legMultiplier,
 } from "../utils/payoff";
 import { yearsToExpiry, daysUntilExpiry } from "../utils/blackScholes";
 import PayoffChart from "../components/PayoffChart";
@@ -64,7 +64,7 @@ function SymbolOption({ sym, active, isFav, onPick, onToggleFav }) {
     );
 }
 
-function legFromRow(row, right, action, expiry) {
+function legFromRow(row, right, action, expiry, lotSize) {
     const side = right === "CE" ? row.ce : row.pe;
     return {
         id: ++legIdCounter,
@@ -72,7 +72,8 @@ function legFromRow(row, right, action, expiry) {
         type: right, // 'CE' | 'PE'
         strike: row.strike,
         premium: side.ltp,
-        qty: 1,
+        qty: 1, // lots, not shares — see payoff.js's legMultiplier
+        lotSize, // real per-lot share count at the moment this leg was built (see payoff.js)
         iv: side.iv,
         delta: side.delta,
         gamma: side.gamma,
@@ -85,7 +86,7 @@ function legFromRow(row, right, action, expiry) {
 function Stat({ label, value, tone, hint }) {
     return (
         <div title={hint} className="border-b border-gray-100 pb-2 last:border-0 last:pb-0">
-            <div className="text-[11px] font-medium text-gray-400 uppercase tracking-wider">{label}</div>
+            <div className="text-[12px] font-medium text-gray-400 uppercase tracking-wider">{label}</div>
             <div className={`text-sm font-bold tabular-nums mt-0.5 ${tone === "positive" ? "text-emerald-600" : tone === "negative" ? "text-rose-600" : "text-gray-800"}`}>
                 {value}
             </div>
@@ -184,7 +185,7 @@ export default function StrategyBuilder() {
     function addLeg(row, right, action) {
         setLegs((prev) => {
             if (prev.length >= 6) return prev;
-            return [...prev, legFromRow(row, right, action, data?.selectedExpiry)];
+            return [...prev, legFromRow(row, right, action, data?.selectedExpiry, data?.lotSize)];
         });
     }
 
@@ -405,7 +406,7 @@ export default function StrategyBuilder() {
         const currentLtp = row ? (leg.type === "CE" ? row.ce.ltp : row.pe.ltp) : null;
         if (currentLtp == null) return null;
         const diff = leg.action === "buy" ? currentLtp - leg.premium : leg.premium - currentLtp;
-        return diff * leg.qty;
+        return diff * legMultiplier(leg);
     }
 
     // Combined live P&L across all legs, for the Strategy Chart tab's
@@ -473,7 +474,7 @@ export default function StrategyBuilder() {
                                 ‹
                             </button>
                             {data?.lotSize && (
-                                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-bold text-gray-500">
+                                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-bold text-gray-500">
                                     {data.lotSize}
                                 </span>
                             )}
@@ -495,19 +496,19 @@ export default function StrategyBuilder() {
                             {pickerOpen && (
                                 <>
                                     <div className="fixed inset-0 z-10" onClick={() => setPickerOpen(false)} />
-                                    <div className="absolute left-0 top-full z-20 mt-1 w-64 max-h-96 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-xl text-xs">
+                                    <div className="absolute left-0 top-full z-20 mt-1 w-64 max-h-96 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-xl text-[13px]">
                                         <div className="sticky top-0 border-b border-gray-100 bg-white p-2">
                                             <input
                                                 autoFocus
                                                 value={pickerQuery}
                                                 onChange={(e) => setPickerQuery(e.target.value)}
                                                 placeholder="Search symbol…"
-                                                className="w-full rounded-md border border-gray-200 px-2 py-1 text-xs outline-none focus:border-blue-500"
+                                                className="w-full rounded-md border border-gray-200 px-2 py-1 text-[13px] outline-none focus:border-blue-500"
                                             />
                                         </div>
                                         {filteredIndices.length > 0 && (
                                             <div>
-                                                <div className="px-2 pt-2 pb-1 text-[10px] font-bold uppercase text-gray-400">Index</div>
+                                                <div className="px-2 pt-2 pb-1 text-[11px] font-bold uppercase text-gray-400">Index</div>
                                                 {filteredIndices.map((s) => (
                                                     <SymbolOption key={s} sym={s} active={s === symbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
                                                 ))}
@@ -515,7 +516,7 @@ export default function StrategyBuilder() {
                                         )}
                                         {filteredStocks.length > 0 && (
                                             <div>
-                                                <div className="px-2 pt-2 pb-1 text-[10px] font-bold uppercase text-gray-400">Stocks</div>
+                                                <div className="px-2 pt-2 pb-1 text-[11px] font-bold uppercase text-gray-400">Stocks</div>
                                                 {filteredStocks.map((s) => (
                                                     <SymbolOption key={s} sym={s} active={s === symbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
                                                 ))}
@@ -532,7 +533,7 @@ export default function StrategyBuilder() {
                         <div className="flex items-center gap-1 relative">
                             <button
                                 onClick={() => setHideChain(true)}
-                                className="rounded-md px-2 py-1 text-[11px] font-semibold text-gray-500 hover:bg-gray-100"
+                                className="rounded-md px-2 py-1 text-[12px] font-semibold text-gray-500 hover:bg-gray-100"
                                 title="Hide Chain — give the right panel full width"
                             >
                                 Hide Chain
@@ -549,10 +550,10 @@ export default function StrategyBuilder() {
                             {settingsOpen && (
                                 <>
                                     <div className="fixed inset-0 z-10" onClick={() => setSettingsOpen(false)} />
-                                    <div className="absolute right-0 top-full z-20 mt-1 w-72 rounded-lg border border-gray-200 bg-white p-3 shadow-xl text-xs">
+                                    <div className="absolute right-0 top-full z-20 mt-1 w-72 rounded-lg border border-gray-200 bg-white p-3 shadow-xl text-[13px]">
                                         <div className="mb-3 flex items-center justify-between">
                                             <span className="font-bold text-gray-800">Chain Settings</span>
-                                            <span className="text-[10px] text-gray-400">{enabledColumnCount}/{totalColumnCount} columns</span>
+                                            <span className="text-[11px] text-gray-400">{enabledColumnCount}/{totalColumnCount} columns</span>
                                         </div>
 
                                         <div className="mb-3">
@@ -614,7 +615,7 @@ export default function StrategyBuilder() {
                                             </div>
                                         </div>
 
-                                        <button onClick={resetChainSettings} className="text-[11px] font-semibold text-blue-600 hover:underline">
+                                        <button onClick={resetChainSettings} className="text-[12px] font-semibold text-blue-600 hover:underline">
                                             Reset to defaults
                                         </button>
                                     </div>
@@ -629,7 +630,7 @@ export default function StrategyBuilder() {
                                 <button
                                     key={exp}
                                     onClick={() => load(symbol, exp)}
-                                    className={`shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
+                                    className={`shrink-0 rounded-lg px-2.5 py-1 text-[12px] font-semibold transition ${
                                         exp === data.selectedExpiry
                                             ? "bg-blue-600 text-white"
                                             : "bg-gray-100 text-gray-600 hover:bg-gray-200"
@@ -643,7 +644,7 @@ export default function StrategyBuilder() {
                 </div>
 
                 {data && (
-                    <div className="mb-3 flex items-center gap-4 rounded-xl border border-gray-200 bg-white px-4 py-2 text-xs shadow-sm">
+                    <div className="mb-3 flex items-center gap-4 rounded-xl border border-gray-200 bg-white px-4 py-2 text-[13px] shadow-sm">
                         <div>
                             <span className="text-gray-400">SPOT: </span>
                             <span className="font-bold tabular-nums text-gray-900">{formatPrice(data.spotPrice)}</span>
@@ -667,13 +668,13 @@ export default function StrategyBuilder() {
                     </div>
                 )}
 
-                {error && <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>}
-                {loading && !data && <div className="rounded-xl border border-gray-200 bg-white px-3 py-12 text-center text-xs text-gray-400">Fetching option matrix...</div>}
+                {error && <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-700">{error}</div>}
+                {loading && !data && <div className="rounded-xl border border-gray-200 bg-white px-3 py-12 text-center text-[13px] text-gray-400">Fetching option matrix...</div>}
 
                 {data && data.rows && (
                     <div className="relative">
                         <div className="max-h-[82vh] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-sm custom-scrollbar">
-                            <table className="w-full border-collapse text-[11px]">
+                            <table className="w-full border-collapse text-[12px]">
                                 <thead className="sticky top-0 bg-gray-50 border-b border-gray-200 z-10 shadow-[0_1px_0_0_rgba(229,231,235,1)]">
                                     <tr>
                                         {columns.theta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Theta</th>}
@@ -729,7 +730,7 @@ export default function StrategyBuilder() {
                                                 {/* CALL SIDE */}
                                                 <td className={`group px-1.5 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-amber-50/60" : ""}`}>
                                                     {ceNet !== 0 && (
-                                                        <span className={`absolute -top-0.5 right-0.5 z-[1] rounded px-1 text-[8px] font-bold leading-tight ${ceNet > 0 ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"}`}>
+                                                        <span className={`absolute -top-0.5 right-0.5 z-[1] rounded px-1 text-[9px] font-bold leading-tight ${ceNet > 0 ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"}`}>
                                                             {ceNet > 0 ? `+${ceNet}` : ceNet}
                                                         </span>
                                                     )}
@@ -737,31 +738,31 @@ export default function StrategyBuilder() {
                                                     <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white">
                                                         {ceLeg ? (
                                                             <>
-                                                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty - 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] font-bold text-gray-600 hover:bg-gray-100">−</button>
-                                                                <span className="w-4 text-center text-[9px] font-bold tabular-nums text-gray-700">{ceLeg.qty}</span>
-                                                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty + 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] font-bold text-gray-600 hover:bg-gray-100">+</button>
+                                                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty - 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] font-bold text-gray-600 hover:bg-gray-100">−</button>
+                                                                <span className="w-4 text-center text-[10px] font-bold tabular-nums text-gray-700">{ceLeg.qty}</span>
+                                                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty + 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] font-bold text-gray-600 hover:bg-gray-100">+</button>
                                                             </>
                                                         ) : (
                                                             <>
-                                                                <button onClick={() => addLeg(row, "CE", "buy")} className="rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 px-1.5 py-0.5 text-[9px] font-extrabold">B</button>
-                                                                <button onClick={() => addLeg(row, "CE", "sell")} className="rounded border border-rose-500 text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 text-[9px] font-extrabold">S</button>
+                                                                <button onClick={() => addLeg(row, "CE", "buy")} className="rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 px-1.5 py-0.5 text-[10px] font-extrabold">B</button>
+                                                                <button onClick={() => addLeg(row, "CE", "sell")} className="rounded border border-rose-500 text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 text-[10px] font-extrabold">S</button>
                                                             </>
                                                         )}
-                                                        <button onClick={() => setChartModal({ strike: row.strike, right: "CE" })} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
+                                                        <button onClick={() => setChartModal({ strike: row.strike, right: "CE" })} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
                                                     </div>
                                                 </td>
                                                 {columns.oi && (
                                                     <td className={`p-0 tabular-nums ${ceItm ? "bg-amber-50/60" : ""}`}>
                                                         <OiBar value={row.ce?.oi} max={maxCeOi} side="ce" />
-                                                        {columns.lot && <div className="px-1 pb-0.5 text-[9px] text-gray-400 text-right">{lots ?? "-"} lots</div>}
+                                                        {columns.lot && <div className="px-1 pb-0.5 text-[10px] text-gray-400 text-right">{lots ?? "-"} lots</div>}
                                                     </td>
                                                 )}
 
                                                 {/* STRIKE PRICE */}
-                                                <td className="py-1.5 text-center font-bold text-gray-900 bg-gray-50/40 border-x border-gray-100 text-xs tabular-nums">
+                                                <td className="py-1.5 text-center font-bold text-gray-900 bg-gray-50/40 border-x border-gray-100 text-[13px] tabular-nums">
                                                     {row.strike}
                                                     {showAtmDistance && (
-                                                        <div className="text-[9px] font-normal text-gray-400">
+                                                        <div className="text-[10px] font-normal text-gray-400">
                                                             {atmOffset === 0 ? "ATM" : `ATM${atmOffset > 0 ? "+" : ""}${atmOffset}`}
                                                         </div>
                                                     )}
@@ -771,12 +772,12 @@ export default function StrategyBuilder() {
                                                 {columns.oi && (
                                                     <td className={`p-0 tabular-nums ${peItm ? "bg-amber-50/60" : ""}`}>
                                                         <OiBar value={row.pe?.oi} max={maxPeOi} side="pe" />
-                                                        {columns.lot && <div className="px-1 pb-0.5 text-[9px] text-gray-400">{putLots ?? "-"} lots</div>}
+                                                        {columns.lot && <div className="px-1 pb-0.5 text-[10px] text-gray-400">{putLots ?? "-"} lots</div>}
                                                     </td>
                                                 )}
                                                 <td className={`group px-1.5 py-1.5 text-left tabular-nums relative ${peItm ? "bg-amber-50/60" : ""}`}>
                                                     {peNet !== 0 && (
-                                                        <span className={`absolute -top-0.5 left-0.5 z-[1] rounded px-1 text-[8px] font-bold leading-tight ${peNet > 0 ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"}`}>
+                                                        <span className={`absolute -top-0.5 left-0.5 z-[1] rounded px-1 text-[9px] font-bold leading-tight ${peNet > 0 ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"}`}>
                                                             {peNet > 0 ? `+${peNet}` : peNet}
                                                         </span>
                                                     )}
@@ -784,17 +785,17 @@ export default function StrategyBuilder() {
                                                     <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white">
                                                         {peLeg ? (
                                                             <>
-                                                                <button onClick={() => updateQty(peLeg.id, peLeg.qty - 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] font-bold text-gray-600 hover:bg-gray-100">−</button>
-                                                                <span className="w-4 text-center text-[9px] font-bold tabular-nums text-gray-700">{peLeg.qty}</span>
-                                                                <button onClick={() => updateQty(peLeg.id, peLeg.qty + 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] font-bold text-gray-600 hover:bg-gray-100">+</button>
+                                                                <button onClick={() => updateQty(peLeg.id, peLeg.qty - 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] font-bold text-gray-600 hover:bg-gray-100">−</button>
+                                                                <span className="w-4 text-center text-[10px] font-bold tabular-nums text-gray-700">{peLeg.qty}</span>
+                                                                <button onClick={() => updateQty(peLeg.id, peLeg.qty + 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] font-bold text-gray-600 hover:bg-gray-100">+</button>
                                                             </>
                                                         ) : (
                                                             <>
-                                                                <button onClick={() => addLeg(row, "PE", "buy")} className="rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 px-1.5 py-0.5 text-[9px] font-extrabold">B</button>
-                                                                <button onClick={() => addLeg(row, "PE", "sell")} className="rounded border border-rose-500 text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 text-[9px] font-extrabold">S</button>
+                                                                <button onClick={() => addLeg(row, "PE", "buy")} className="rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 px-1.5 py-0.5 text-[10px] font-extrabold">B</button>
+                                                                <button onClick={() => addLeg(row, "PE", "sell")} className="rounded border border-rose-500 text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 text-[10px] font-extrabold">S</button>
                                                             </>
                                                         )}
-                                                        <button onClick={() => setChartModal({ strike: row.strike, right: "PE" })} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
+                                                        <button onClick={() => setChartModal({ strike: row.strike, right: "PE" })} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
                                                     </div>
                                                 </td>
                                                 {columns.putDelta && (
@@ -816,7 +817,7 @@ export default function StrategyBuilder() {
                         {/* Floating "Go to ATM" pill */}
                         <button
                             onClick={() => scrollToAtm("smooth")}
-                            className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-gray-900/85 px-3 py-1.5 text-[11px] font-semibold text-white shadow-lg hover:bg-gray-900"
+                            className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-gray-900/85 px-3 py-1.5 text-[12px] font-semibold text-white shadow-lg hover:bg-gray-900"
                         >
                             Go to ATM
                         </button>
@@ -828,7 +829,7 @@ export default function StrategyBuilder() {
             {hideChain && (
                 <button
                     onClick={() => setHideChain(false)}
-                    className="fixed left-3 top-20 z-30 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-600 shadow-md hover:bg-gray-50"
+                    className="fixed left-3 top-20 z-30 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-gray-600 shadow-md hover:bg-gray-50"
                 >
                     Show Option Chain
                 </button>
@@ -849,11 +850,11 @@ export default function StrategyBuilder() {
                             />
                             <button
                                 onClick={() => setSavedOpen(true)}
-                                className="rounded-xl border border-gray-300 px-4 py-1.5 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition"
+                                className="rounded-xl border border-gray-300 px-4 py-1.5 text-[13px] font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition"
                             >
                                 Saved
                             </button>
-                            <button onClick={resetLegs} className="rounded-xl border border-gray-300 px-4 py-1.5 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition">
+                            <button onClick={resetLegs} className="rounded-xl border border-gray-300 px-4 py-1.5 text-[13px] font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition">
                                 Reset Workspace
                             </button>
                         </div>
@@ -890,7 +891,7 @@ export default function StrategyBuilder() {
                                         <button
                                             key={key}
                                             onClick={() => setChartTab(key)}
-                                            className={`rounded-t-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                                            className={`rounded-t-md px-3 py-1.5 text-[13px] font-semibold transition-colors ${
                                                 chartTab === key
                                                     ? "bg-white text-blue-600 border border-b-0 border-gray-200"
                                                     : "text-gray-500 hover:text-gray-800"
@@ -914,7 +915,7 @@ export default function StrategyBuilder() {
 
                         {/* Interactive Position and Greeks Segment Control */}
                         <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-                            <div className="flex border-b border-gray-200 bg-gray-50/50 text-xs font-semibold">
+                            <div className="flex border-b border-gray-200 bg-gray-50/50 text-[13px] font-semibold">
                                 <button
                                     onClick={() => setTab("positions")}
                                     className={`px-5 py-3 transition-colors ${tab === "positions" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
@@ -931,7 +932,7 @@ export default function StrategyBuilder() {
 
                             {tab === "positions" ? (
                                 <>
-                                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 bg-gray-50/40 px-4 py-2 text-[11px]">
+                                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 bg-gray-50/40 px-4 py-2 text-[12px]">
                                         <div className="flex items-center gap-3">
                                             <label className="flex items-center gap-1.5 text-gray-600 cursor-pointer">
                                                 <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} /> Select All
@@ -961,7 +962,7 @@ export default function StrategyBuilder() {
                                             {totalLivePnl != null && (
                                                 <span className="ml-1 text-gray-400" title="vs. total premium across all legs">
                                                     ({(() => {
-                                                        const exposure = legs.reduce((s, l) => s + Math.abs(l.premium * l.qty), 0);
+                                                        const exposure = legs.reduce((s, l) => s + Math.abs(l.premium * legMultiplier(l)), 0);
                                                         return exposure > 0 ? `${((totalLivePnl / exposure) * 100).toFixed(1)}%` : "—";
                                                     })()})
                                                 </span>
@@ -969,7 +970,7 @@ export default function StrategyBuilder() {
                                         </div>
                                     </div>
 
-                                    <table className="w-full border-collapse text-xs">
+                                    <table className="w-full border-collapse text-[13px]">
                                         <thead>
                                             <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-100">
                                                 <th className="px-2 py-2.5 w-8"></th>
@@ -996,7 +997,7 @@ export default function StrategyBuilder() {
                                                             <input type="checkbox" checked={selectedLegIds.has(leg.id)} onChange={() => toggleLegSelected(leg.id)} />
                                                         </td>
                                                         <td className="px-4 py-2.5">
-                                                            <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold text-white shadow-sm ${leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"}`}>
+                                                            <span className={`rounded-md px-2 py-0.5 text-[11px] font-bold text-white shadow-sm ${leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"}`}>
                                                                 {leg.action === "buy" ? "B" : "S"}
                                                             </span>
                                                         </td>
@@ -1013,7 +1014,7 @@ export default function StrategyBuilder() {
                                                             <select
                                                                 value={leg.expiry || ""}
                                                                 onChange={(e) => rollLegExpiry(leg.id, e.target.value)}
-                                                                className="rounded-md border border-gray-200 bg-white px-1.5 py-1 text-[11px] font-medium text-gray-700 outline-none focus:border-blue-500"
+                                                                className="rounded-md border border-gray-200 bg-white px-1.5 py-1 text-[12px] font-medium text-gray-700 outline-none focus:border-blue-500"
                                                             >
                                                                 {(data?.expiries || [leg.expiry]).map((exp) => (
                                                                     <option key={exp} value={exp}>{formatExpiryShort(exp)} ({daysUntilExpiry(exp)}d)</option>
@@ -1022,13 +1023,13 @@ export default function StrategyBuilder() {
                                                         </td>
                                                         <td className="px-4 py-2.5 text-right">
                                                             <div className="flex items-center justify-end gap-1">
-                                                                <button onClick={() => rollLegStrike(leg.id, -1)} className="rounded border border-gray-200 px-1 text-[10px] font-bold text-gray-500 hover:bg-gray-100" title="Roll to lower strike">−</button>
+                                                                <button onClick={() => rollLegStrike(leg.id, -1)} className="rounded border border-gray-200 px-1 text-[11px] font-bold text-gray-500 hover:bg-gray-100" title="Roll to lower strike">−</button>
                                                                 <span className="font-bold tabular-nums text-gray-900">{leg.strike}</span>
-                                                                <button onClick={() => rollLegStrike(leg.id, 1)} className="rounded border border-gray-200 px-1 text-[10px] font-bold text-gray-500 hover:bg-gray-100" title="Roll to higher strike">+</button>
+                                                                <button onClick={() => rollLegStrike(leg.id, 1)} className="rounded border border-gray-200 px-1 text-[11px] font-bold text-gray-500 hover:bg-gray-100" title="Roll to higher strike">+</button>
                                                             </div>
                                                         </td>
                                                         <td className="px-4 py-2.5">
-                                                            <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${leg.type === "CE" ? "bg-blue-50 text-blue-700" : "bg-purple-50 text-purple-700"}`}>
+                                                            <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold ${leg.type === "CE" ? "bg-blue-50 text-blue-700" : "bg-purple-50 text-purple-700"}`}>
                                                                 {leg.type}
                                                             </span>
                                                         </td>
@@ -1046,16 +1047,16 @@ export default function StrategyBuilder() {
                                                                 ⚙
                                                             </button>
                                                             {(leg.slPercent != null || leg.tgPercent != null) && (
-                                                                <div className="text-[9px] text-gray-400">SL {leg.slPercent ?? "—"}% / TG {leg.tgPercent ?? "—"}%</div>
+                                                                <div className="text-[10px] text-gray-400">SL {leg.slPercent ?? "—"}% / TG {leg.tgPercent ?? "—"}%</div>
                                                             )}
                                                             {slTgEditId === leg.id && (
                                                                 <>
                                                                     <div className="fixed inset-0 z-10" onClick={() => setSlTgEditId(null)} />
                                                                     <div className="absolute right-0 z-20 mt-1 w-52 rounded-lg border border-gray-200 bg-white p-3 text-left shadow-xl">
-                                                                        <div className="mb-2 text-[10px] text-gray-400">
+                                                                        <div className="mb-2 text-[11px] text-gray-400">
                                                                             Planning note only — not auto-executed here. Use Backtest for SL%/target%-driven exits.
                                                                         </div>
-                                                                        <label className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
+                                                                        <label className="mb-1.5 flex items-center justify-between gap-2 text-[12px]">
                                                                             SL %
                                                                             <input
                                                                                 type="number"
@@ -1064,7 +1065,7 @@ export default function StrategyBuilder() {
                                                                                 className="w-16 rounded border border-gray-200 px-1.5 py-0.5 text-right outline-none focus:border-blue-500"
                                                                             />
                                                                         </label>
-                                                                        <label className="flex items-center justify-between gap-2 text-[11px]">
+                                                                        <label className="flex items-center justify-between gap-2 text-[12px]">
                                                                             TG %
                                                                             <input
                                                                                 type="number"
@@ -1090,7 +1091,7 @@ export default function StrategyBuilder() {
                                     </table>
                                 </>
                             ) : (
-                                <table className="w-full border-collapse text-xs">
+                                <table className="w-full border-collapse text-[13px]">
                                     <thead>
                                         <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-100">
                                             <th className="px-4 py-2.5 text-left font-medium">Leg Matrix</th>

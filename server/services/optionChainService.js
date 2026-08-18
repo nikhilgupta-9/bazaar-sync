@@ -151,6 +151,32 @@ class OptionChainService {
         return Number((((current - previous) / previous) * 100).toFixed(1));
     }
 
+    /**
+     * Previous trading day's 3:30pm market-close spot for the underlying
+     * itself (not per-strike) — powers the "Spot vs last EOD" change shown
+     * in the header. Always the most recent day strictly before `beforeDateStr`,
+     * capped at NSE's 15:30 close so a stray after-hours row can never be
+     * picked up instead of the real EOD candle. Reads ohlcv_data (the index
+     * candle table the nightly cron already fills), not option_chain_history
+     * — the underlying's own close is the correct anchor, and this stays a
+     * single query regardless of how many strikes are in the chain. Returns
+     * null on a lookup miss (first day of data, brand-new symbol) rather
+     * than throwing.
+     */
+    async getPreviousDayClose(displaySymbol, beforeDateStr) {
+        try {
+            const rows = await db.query(
+                `SELECT close FROM ohlcv_data WHERE symbol = ? AND trade_date < ? AND trade_time <= '15:30:00'
+                 ORDER BY trade_date DESC, trade_time DESC LIMIT 1`,
+                [displaySymbol, beforeDateStr]
+            );
+            return rows?.[0]?.close != null ? Number(rows[0].close) : null;
+        } catch (err) {
+            console.error("[PrevDayClose] Error:", err);
+            return null;
+        }
+    }
+
     // Long Buildup / Short Buildup / Short Covering / Long Unwinding — the
     // classic 2x2 read of price direction vs OI direction. Was previously
     // hardcoded to null everywhere (no price-change signal existed yet to

@@ -11,6 +11,7 @@ import { createChart, AreaSeries } from "lightweight-charts";
 import { fetchIntraday } from "../services/optionChainApi";
 import { subscribeLiveTicks } from "../services/liveSocket";
 import { bsPrice, yearsToExpiry } from "../utils/blackScholes";
+import { legMultiplier } from "../utils/payoff";
 
 /** IST wall-clock date+"HH:MM" -> epoch seconds, treating the wall-clock
  * numbers as the timestamp lightweight-charts should display (same trick
@@ -35,7 +36,7 @@ function strategyPnlAt(spot, legs, t) {
             ? bsPrice({ spot, strike: leg.strike, t, vol, right: leg.type })
             : Math.max(0, leg.type === "CE" ? spot - leg.strike : leg.strike - spot);
         const diff = leg.action === "buy" ? value - leg.premium : leg.premium - value;
-        pnl += diff * leg.qty;
+        pnl += diff * legMultiplier(leg);
     }
     return pnl;
 }

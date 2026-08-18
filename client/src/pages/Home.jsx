@@ -7,17 +7,7 @@
 // reproduced here rather than linking to pages that don't exist.
 import { Link } from "react-router-dom";
 import ToolIcon from "../components/ToolIcon";
-
-const TOOLS = [
-    { to: "/option-chain", title: "Option Chain", image: "/images/oi.png", desc: "Full chain with OI, buildup, Greeks" },
-    { to: "/strategy-builder", title: "Strategy Builder", icon: "strategy", desc: "Multi-leg payoff + live Greeks" },
-    { to: "/simulator", title: "Simulator", icon: "backtest", desc: "Replay a real past day minute by minute" },
-    { to: "/paper-trade", title: "Paper Trade", icon: "papertrade", desc: "Trade virtual capital on real historical data" },
-    { to: "/historical-chart", title: "Historical Chart", icon: "historicalchart", desc: "Multi-day historical price charts" },
-    { to: "/equity-data", title: "Equity Data", icon: "equitydata", desc: "Sector rotation, market map, 52W high/low & more" },
-];
-
-const POPULAR = ["/option-chain", "/strategy-builder", "/paper-trade", "/simulator", "/historical-chart"];
+import { TOOLS, POPULAR } from "../data/tools";
 
 function SectionHeading({ children }) {
     return (
@@ -114,43 +104,6 @@ export default function Home() {
                     on it.
                 </p>
             </section>
-
-            <footer className="mt-12 border-t border-gray-200 pt-8 text-sm text-gray-500">
-                <div className="grid grid-cols-1 gap-8 sm:grid-cols-3">
-                    <div>
-                        <div className="flex items-center gap-1 text-base font-bold">
-                            <span className="text-blue-600">Bazaar</span>
-                            <span className="text-gray-900">Sync</span>
-                        </div>
-                        <div className="mt-2">Made in India</div>
-                        <div className="mt-1">
-                            Built by{" "}
-                            <a href="https://nikhilworks.com" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
-                                NikhilWorks
-                            </a>
-                        </div>
-                    </div>
-                    <div>
-                        <div className="mb-2 font-semibold text-gray-900">Tools</div>
-                        <ul className="space-y-1.5">
-                            {TOOLS.map((t) => (
-                                <li key={t.to}>
-                                    <Link to={t.to} className="hover:text-blue-600">{t.title}</Link>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                    <div>
-                        <div className="mb-2 font-semibold text-gray-900">Account</div>
-                        <ul className="space-y-1.5">
-                            <li><Link to="/login" className="hover:text-blue-600">Log in / Sign up</Link></li>
-                        </ul>
-                    </div>
-                </div>
-                <div className="mt-8 border-t border-gray-100 pt-4 text-xs text-gray-400">
-                    © {new Date().getFullYear()} Bazaar Sync. All rights reserved.
-                </div>
-            </footer>
         </div>
     );
 }

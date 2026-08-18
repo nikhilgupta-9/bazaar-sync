@@ -123,19 +123,12 @@ export default function OptionChainSettingsDrawer({
 
                         <div className="mb-3">
                             <div className="mb-1.5 font-semibold text-gray-600">Greeks</div>
-                            {[["iv", "IV"], ["ivChangePercent", "IV Change %"], ["delta", "Delta"], ["gamma", "Gamma"], ["theta", "Theta"], ["vega", "Vega"]].map(([key, label]) => (
+                            {[["iv", "IV"], ["delta", "Delta"], ["gamma", "Gamma"], ["theta", "Theta"], ["vega", "Vega"]].map(([key, label]) => (
                                 <label key={key} className="mb-1 flex items-center justify-between cursor-pointer">
                                     <span className="text-gray-700">{label}</span>
                                     <input type="checkbox" checked={columns[key]} onChange={() => onToggleColumn(key)} />
                                 </label>
                             ))}
-                        </div>
-
-                        <div>
-                            <label className="flex items-center justify-between cursor-pointer">
-                                <span className="font-semibold text-gray-600">Buildup</span>
-                                <input type="checkbox" checked={columns.buildup} onChange={() => onToggleColumn("buildup")} />
-                            </label>
                         </div>
                     </div>
 

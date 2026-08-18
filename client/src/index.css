@@ -16,6 +16,94 @@ body {
   color: #111827;
 }
 
+/*
+ * Site-wide dark theme (toggled via the navbar switch, see ThemeContext.jsx).
+ * This does NOT touch component markup — every existing Tailwind utility
+ * class in the app (bg-gray-500, text-blue-600, border-rose-200, etc.)
+ * already compiles to `var(--color-gray-500)` / `var(--color-blue-600)` /
+ * etc under Tailwind v4's CSS-variable-driven theme. Redefining those same
+ * variables here, scoped under `.dark` (applied to <html>), re-themes the
+ * whole site at once — including every hover:/disabled:/opacity-modifier
+ * variant, since they all reference the same base variable. No per-file
+ * className changes needed; the light theme (Tailwind's own defaults,
+ * defined at :root) is untouched when `.dark` isn't present.
+ *
+ * Brand palette (given): bg #030108, surface #010814, red #EB090B,
+ * green #02CA3A, neon-green #0BE55C, dark-red #610103, text #F5F7FA,
+ * text-muted #8B93A7, border #18202C. The neutral gray/slate scale is
+ * inverted (low stops -> dark surfaces, high stops -> bright text, since
+ * that's how the app already uses them); blue (the app's original accent)
+ * and emerald (profit) both map to the green family, rose (loss) maps to
+ * the red family, amber/purple keep their hue but get dark-safe tints.
+ */
+.dark {
+  --color-white: #010814;
+  --color-black: #000000;
+
+  --color-gray-50: #0b1420;
+  --color-gray-100: #0f1a28;
+  --color-gray-200: #18202c;
+  --color-gray-300: #232c3b;
+  --color-gray-400: #8b93a7;
+  --color-gray-500: #96a0b4;
+  --color-gray-600: #a9b2c4;
+  --color-gray-700: #c6ccda;
+  --color-gray-800: #e3e6ee;
+  --color-gray-900: #f5f7fa;
+
+  --color-slate-50: #030108;
+  --color-slate-100: #0b1420;
+  --color-slate-200: #18202c;
+
+  --color-blue-50: #0a1f12;
+  --color-blue-100: #0f2e1a;
+  --color-blue-300: #0be55c;
+  --color-blue-400: #0be55c;
+  --color-blue-500: #02ca3a;
+  --color-blue-600: #02ca3a;
+  --color-blue-700: #029e2e;
+  --color-blue-800: #017a24;
+
+  --color-emerald-50: #0a1f12;
+  --color-emerald-200: #1e4a2c;
+  --color-emerald-500: #02ca3a;
+  --color-emerald-600: #02ca3a;
+  --color-emerald-700: #029e2e;
+  --color-emerald-800: #017a24;
+
+  --color-rose-50: #240607;
+  --color-rose-100: #341012;
+  --color-rose-200: #4a1618;
+  --color-rose-400: #eb090b;
+  --color-rose-500: #eb090b;
+  --color-rose-600: #eb090b;
+  --color-rose-700: #c40709;
+  --color-rose-800: #610103;
+
+  --color-green-100: #123321;
+  --color-green-300: #0be55c;
+  --color-green-500: #0be55c;
+  --color-green-700: #02ca3a;
+
+  --color-amber-50: #2a1d08;
+  --color-amber-100: #3a290c;
+  --color-amber-200: #4f3812;
+  --color-amber-300: #f5a623;
+  --color-amber-500: #f5a623;
+  --color-amber-600: #db8f12;
+  --color-amber-700: #b36f0a;
+
+  --color-purple-50: #1e1330;
+  --color-purple-100: #2a1b44;
+  --color-purple-300: #c084fc;
+  --color-purple-700: #9333ea;
+}
+
+.dark body {
+  background: #030108;
+  color: #f5f7fa;
+}
+
 #root {
   min-height: 100vh;
 }
@@ -23,4 +111,21 @@ body {
 /* tabular figures for price/OI columns so digits align */
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+/* Shared body/UI text size for dense pages (option chain table, badges,
+   labels, prose copy) — one class instead of scattering text-xs/text-[Npx]
+   everywhere, and it scales up on bigger screens instead of staying fixed. */
+.text-chain {
+  font-size: 12px;
+}
+@media (min-width: 640px) {
+  .text-chain {
+    font-size: 12.5px;
+  }
+}
+@media (min-width: 1024px) {
+  .text-chain {
+    font-size: 13px;
+  }
 }

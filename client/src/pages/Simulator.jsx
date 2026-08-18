@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   LineChart,
   Line,
@@ -248,7 +249,14 @@ function Stat({ label, value, tone, hint }) {
 }
 
 export default function Simulator() {
-  const [symbol, setSymbol] = useState("NIFTY");
+  // Deep-linked from Option Chain's "Historical"/"Previous day" controls:
+  // ?symbol=BANKNIFTY opens on that symbol instead of always NIFTY, and
+  // ?jump=prev selects the previous trading day (dates[1]) instead of the
+  // latest one on first load. Consumed once — a later manual symbol switch
+  // via the picker shouldn't keep re-applying "prev".
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialJumpRef = useRef(searchParams.get("jump"));
+  const [symbol, setSymbol] = useState(() => searchParams.get("symbol")?.toUpperCase() || "NIFTY");
   const [dates, setDates] = useState([]); // DESC (most recent first), per /dates
   const [datesLoaded, setDatesLoaded] = useState(false); // distinguishes "still fetching" from "fetched, genuinely empty"
   const [sparseDates, setSparseDates] = useState([]); // dates with only 1 stored snapshot (EOD-only, no scrubbing)
@@ -375,11 +383,23 @@ export default function Simulator() {
           // Fetches directly (not via selectDate/loadChain) to avoid
           // closing over this render's stale `chainData` from the
           // previous symbol when switching symbols.
-          const latestDate = res.dates[0];
-          const [y, m] = latestDate.split("-").map(Number);
+          // ?jump=prev (from Option Chain's "Previous day" control) picks
+          // the day before that instead — consumed once, then stripped from
+          // the URL so a later manual symbol switch doesn't reapply it.
+          const wantsPrevDay = initialJumpRef.current === "prev";
+          const targetDate = wantsPrevDay && res.dates[1] ? res.dates[1] : res.dates[0];
+          if (wantsPrevDay) {
+            initialJumpRef.current = null;
+            setSearchParams((prev) => {
+              const next = new URLSearchParams(prev);
+              next.delete("jump");
+              return next;
+            }, { replace: true });
+          }
+          const [y, m] = targetDate.split("-").map(Number);
           setCalendarYm({ y, m });
-          setSelectedDate(latestDate);
-          fetchSimulatorChain(symbol, { date: latestDate })
+          setSelectedDate(targetDate);
+          fetchSimulatorChain(symbol, { date: targetDate })
             .then((chainRes) => {
               setChainData(chainRes);
               setLiveChain(chainRes);
@@ -389,6 +409,7 @@ export default function Simulator() {
       })
       .catch((err) => setChainError(err.message))
       .finally(() => setDatesLoaded(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol]);
 
   function shiftCalendarMonth(dir) {

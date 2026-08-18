@@ -219,8 +219,39 @@ const SHAPES = {
 
 const COLORS = { green: "#10b981", red: "#f43f5e" };
 
-function pointsToStr(points) {
-    return points.map(([x, y]) => `${x},${y}`).join(" ");
+// Bottom edge of the viewBox — used as the fill's closing edge for every
+// segment. There's no single "zero P&L" y-value shared across these hand-
+// tuned shapes, so the fill is a decorative wash grounded at the icon's
+// floor rather than a literal zero-line area (same wash convention as
+// marks-and-anatomy's "~10% opacity, never a saturated block").
+const BASELINE_Y = 49;
+
+// Catmull-Rom -> cubic Bezier, so each segment reads as a soft curve instead
+// of a jointed polyline while still passing through every real data point
+// (including flat plateau runs, which stay flat). Kinks are only introduced
+// at segment boundaries (color changes), which is where the shape's real
+// pivots already are.
+function smoothPath(points) {
+    if (points.length < 2) return "";
+    let d = `M ${points[0][0]},${points[0][1]}`;
+    for (let i = 0; i < points.length - 1; i++) {
+        const p0 = points[i - 1] || points[i];
+        const p1 = points[i];
+        const p2 = points[i + 1];
+        const p3 = points[i + 2] || p2;
+        const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+        const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+        const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+        const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+        d += ` C ${c1x},${c1y} ${c2x},${c2y} ${p2[0]},${p2[1]}`;
+    }
+    return d;
+}
+
+function areaPath(points) {
+    const [firstX] = points[0];
+    const [lastX] = points[points.length - 1];
+    return `${smoothPath(points)} L ${lastX},${BASELINE_Y} L ${firstX},${BASELINE_Y} Z`;
 }
 
 export default function PayoffIcon({ shape }) {
@@ -229,12 +260,15 @@ export default function PayoffIcon({ shape }) {
     return (
         <svg viewBox="0 0 100 50" className="h-12 w-full" preserveAspectRatio="none">
             {segments.map((seg, i) => (
-                <polyline
-                    key={i}
-                    points={pointsToStr(seg.pts)}
+                <path key={`fill-${i}`} d={areaPath(seg.pts)} fill={COLORS[seg.c]} fillOpacity="0.12" stroke="none" />
+            ))}
+            {segments.map((seg, i) => (
+                <path
+                    key={`line-${i}`}
+                    d={smoothPath(seg.pts)}
                     fill="none"
                     stroke={COLORS[seg.c]}
-                    strokeWidth="2.5"
+                    strokeWidth="3"
                     strokeLinecap="round"
                     strokeLinejoin="round"
                 />

@@ -1,15 +1,13 @@
-// pages/EquityData.jsx — shared placeholder for every Equity Data submenu
-// item (sector rotation, sector performance, market map, 52-week high/low,
-// industry momentum, most active). One dynamic route instead of 6 nearly
-// identical files; each becomes a real page in a later phase once a data
-// source for these (none of them come from Angel One) is decided.
+// pages/EquityData.jsx — shared placeholder for the remaining Equity Data
+// submenu items (sector performance, market map, 52-week high/low, industry
+// momentum, most active). Sector Rotation now has its own real page
+// (SectorRotation.jsx, routed directly in App.jsx) — removed from this
+// TOOLS map since it's no longer reachable through the :tool wildcard.
+// Each of the rest becomes a real page in a later phase once a data source
+// for it (none of them come from Angel One) is decided.
 import { useParams } from "react-router-dom";
 
 const TOOLS = {
-    "sector-rotation": {
-        title: "Sector Rotation",
-        desc: "See which sectors are gaining or losing relative strength over time.",
-    },
     "sector-performance": {
         title: "Sector Performance",
         desc: "Compare sector-wise returns across timeframes.",

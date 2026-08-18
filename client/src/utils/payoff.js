@@ -1,11 +1,18 @@
 // Pure P&L/Greeks math for the Strategy Builder. Legs are:
-// { action: 'buy'|'sell', type: 'CE'|'PE', strike, premium, qty, iv, delta, gamma, theta, vega, expiry }
+// { action: 'buy'|'sell', type: 'CE'|'PE', strike, premium, qty, lotSize, iv, delta, gamma, theta, vega, expiry }
 // premium = entry LTP at the time the leg was added (from the option chain).
-// qty is a raw contract count, not lots — the option-chain payload doesn't
-// carry lot size today, and lot sizes change periodically by exchange
-// circular, so we don't fabricate one; the user enters quantity directly.
-// (Angel One's instrument master does have lotsize — wiring it through the
-// chain payload is a possible follow-up.)
+// qty is a LOT count (matches the "Lots" column/stepper in the UI), and
+// lotSize is the real per-lot share count for that symbol at the moment the
+// leg was built (from the instrument master, via the option-chain payload's
+// `lotSize` field — see optionChainController.js/marketCache.getLotSize).
+// Every money figure below is qty * lotSize, never qty alone. A leg with no
+// lotSize (e.g. built before this field existed, or while the live cache has
+// none cached yet) falls back to lotSize=1 rather than a fabricated constant
+// — this makes the P&L a raw per-share number in that case, not silently
+// wrong by a hardcoded guess; Greeks fall back the same way.
+export function legMultiplier(leg) {
+    return leg.qty * (leg.lotSize || 1);
+}
 //
 // Multi-expiry legs (e.g. a calendar spread: sell a near-dated call, buy a
 // far-dated one at the same strike) are supported: the "expiry" payoff curve
@@ -51,7 +58,7 @@ function legPayoffAtPrice(leg, price, evaluationExpiry) {
         value = leg.type === "CE" ? Math.max(0, price - leg.strike) : Math.max(0, leg.strike - price);
     }
     const pnlPerUnit = leg.action === "buy" ? value - leg.premium : leg.premium - value;
-    return pnlPerUnit * leg.qty;
+    return pnlPerUnit * legMultiplier(leg);
 }
 
 export function totalPayoffAtPrice(legs, price, evaluationExpiry) {
@@ -114,7 +121,7 @@ function legMarkToMarketAtPrice(leg, price, t) {
     if (leg.iv == null) return null; // can't reprice without an IV snapshot
     const theoPrice = bsPrice({ spot: price, strike: leg.strike, t, vol: leg.iv / 100, right: leg.type });
     const pnlPerUnit = leg.action === "buy" ? theoPrice - leg.premium : leg.premium - theoPrice;
-    return pnlPerUnit * leg.qty;
+    return pnlPerUnit * legMultiplier(leg);
 }
 
 // Adds a `todayPnl` field to each point of an existing payoff curve (reuses
@@ -171,11 +178,12 @@ export function computeNetGreeks(legs) {
     return legs.reduce(
         (net, leg) => {
             const sign = leg.action === "buy" ? 1 : -1;
+            const mult = legMultiplier(leg);
             return {
-                delta: net.delta + sign * (leg.delta ?? 0) * leg.qty,
-                gamma: net.gamma + sign * (leg.gamma ?? 0) * leg.qty,
-                theta: net.theta + sign * (leg.theta ?? 0) * leg.qty,
-                vega: net.vega + sign * (leg.vega ?? 0) * leg.qty,
+                delta: net.delta + sign * (leg.delta ?? 0) * mult,
+                gamma: net.gamma + sign * (leg.gamma ?? 0) * mult,
+                theta: net.theta + sign * (leg.theta ?? 0) * mult,
+                vega: net.vega + sign * (leg.vega ?? 0) * mult,
             };
         },
         { delta: 0, gamma: 0, theta: 0, vega: 0 }

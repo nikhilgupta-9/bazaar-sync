@@ -16,7 +16,7 @@ function buildPresets(data) {
         if (!row) return null;
         const side = type === "CE" ? row.ce : row.pe;
         return {
-            action, type, strike, premium: side.ltp, qty, iv: side.iv,
+            action, type, strike, premium: side.ltp, qty, lotSize: data.lotSize, iv: side.iv,
             delta: side.delta, gamma: side.gamma, theta: side.theta, vega: side.vega,
             expiry: data.selectedExpiry, // see utils/payoff.js — needed for calendar-spread math
         };
@@ -100,7 +100,7 @@ function buildPresets(data) {
                     const farRow = farRows.find((r) => r.strike === atm);
                     if (!farRow || farRow.ce?.ltp == null) return [];
                     const farLeg = {
-                        action: "buy", type: "CE", strike: atm, qty: 1,
+                        action: "buy", type: "CE", strike: atm, qty: 1, lotSize: data.lotSize,
                         premium: farRow.ce.ltp, iv: farRow.ce.iv,
                         delta: farRow.ce.delta, gamma: farRow.ce.gamma, theta: farRow.ce.theta, vega: farRow.ce.vega,
                         expiry: farExpiry,
@@ -152,7 +152,7 @@ function buildPresets(data) {
                     const farRow = farRows.find((r) => r.strike === atm);
                     if (!farRow || farRow.pe?.ltp == null) return [];
                     const farLeg = {
-                        action: "buy", type: "PE", strike: atm, qty: 1,
+                        action: "buy", type: "PE", strike: atm, qty: 1, lotSize: data.lotSize,
                         premium: farRow.pe.ltp, iv: farRow.pe.iv,
                         delta: farRow.pe.delta, gamma: farRow.pe.gamma, theta: farRow.pe.theta, vega: farRow.pe.vega,
                         expiry: farExpiry,
@@ -359,9 +359,11 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
                                 key={p.name}
                                 onClick={() => handleApply(p)}
                                 disabled={!legCount || isLoading}
-                                className="rounded-lg border border-gray-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50 disabled:opacity-40"
+                                className="group rounded-xl border border-gray-200 p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:shadow-sm"
                             >
-                                <PayoffIcon shape={p.shape} />
+                                <div className="rounded-lg bg-gray-50 p-2 transition group-hover:bg-blue-50">
+                                    <PayoffIcon shape={p.shape} />
+                                </div>
                                 <div className="mt-2 text-sm font-semibold text-gray-900">{p.name}</div>
                                 <div className="mt-0.5 text-[11px] text-gray-500">
                                     {isLoading ? "Loading other expiry…" : `${legCount} legs`}

@@ -6,10 +6,20 @@ async function handle(res) {
     return body;
 }
 
-export async function createProOrder(token) {
+// Public — no token needed, the Pricing page shows real prices to
+// logged-out visitors too.
+export async function fetchProPlans() {
+    const res = await fetch(`${API_URL}/api/subscription/plans`);
+    return handle(res);
+}
+
+// planId is optional — omitting it (as PaperTrade.jsx's existing "Get Pro"
+// button does) defaults to the base 1-month plan server-side.
+export async function createProOrder(token, planId) {
     const res = await fetch(`${API_URL}/api/subscription/order`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ planId }),
     });
     return handle(res);
 }
