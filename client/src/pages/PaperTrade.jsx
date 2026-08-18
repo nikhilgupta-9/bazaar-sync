@@ -366,8 +366,7 @@ export default function PaperTrade() {
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
                     <div className="flex flex-wrap items-center gap-4">
                         <div className="flex items-baseline gap-1 text-sm font-bold">
-                            <span style={{ color: GREEN }}>Bazaar</span>
-                            <span style={{ color: TEXT }}>Sync</span>
+                            
                             <span className="ml-1 text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Paper Trading</span>
                         </div>
                         <select
