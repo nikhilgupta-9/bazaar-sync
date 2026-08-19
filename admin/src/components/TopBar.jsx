@@ -1,29 +1,20 @@
-import { useAdminAuth } from "../context/AdminAuthContext";
-
+// Per-page header, AdminLTE's "app-content-header" pattern: page title on
+// the left, a Home / {title} breadcrumb on the right, descriptive subtitle
+// underneath. The persistent user menu lives in AppHeader now, not here —
+// this keeps the exact same {title, subtitle} prop shape every page already
+// calls it with, so no page file needed to change for the reskin.
 export default function TopBar({ title, subtitle }) {
-    const { user, logout } = useAdminAuth();
-
     return (
-        <header className="flex items-center justify-between border-b border-white/10 bg-[#0b0b0f]/80 px-6 py-4 backdrop-blur">
-            <div>
+        <div className="border-b border-white/10 px-6 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
                 <h1 className="text-lg font-bold text-white">{title}</h1>
-                {subtitle && <p className="mt-0.5 text-xs text-gray-500">{subtitle}</p>}
+                <nav aria-label="breadcrumb" className="text-xs text-gray-500">
+                    <span className="text-gray-600">Home</span>
+                    <span className="mx-1.5 text-gray-700">/</span>
+                    <span className="text-gray-400">{title}</span>
+                </nav>
             </div>
-            <div className="flex items-center gap-3">
-                <div className="text-right">
-                    <div className="text-sm font-semibold text-gray-200">{user?.name}</div>
-                    <div className="text-[11px] text-gray-500">{user?.email}</div>
-                </div>
-                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-violet-600 text-xs font-bold text-white">
-                    {user?.name?.trim()?.[0]?.toUpperCase() || "A"}
-                </div>
-                <button
-                    onClick={logout}
-                    className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-semibold text-gray-400 hover:border-white/20 hover:text-gray-200"
-                >
-                    Log out
-                </button>
-            </div>
-        </header>
+            {subtitle && <p className="mt-1 text-xs text-gray-500">{subtitle}</p>}
+        </div>
     );
 }
