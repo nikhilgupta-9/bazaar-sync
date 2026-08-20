@@ -36,7 +36,12 @@ export async function fetchOptionChain(symbol, expiry, forceLive = false) {
         
         return await res.json();
     } catch (err) {
-        if (err.name === 'AbortError') {
+        // AbortSignal.timeout() rejects with a DOMException named
+        // 'TimeoutError', not 'AbortError' — checking only 'AbortError' let
+        // the raw browser message ("signal timed out") leak straight to the
+        // UI instead of this friendly one. A manual AbortController().abort()
+        // elsewhere would still be 'AbortError', so both are checked.
+        if (err.name === 'AbortError' || err.name === 'TimeoutError') {
             throw new Error('Request timeout - server took too long to respond');
         }
         if (err.code === 'ECONNREFUSED' || err.message.includes('Failed to fetch')) {
