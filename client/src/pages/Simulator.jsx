@@ -212,7 +212,7 @@ function istWallClockToUtcMs(dateStr, timeStr) {
   return Date.UTC(y, m - 1, d, hh, mm, ss || 0) - 5.5 * 60 * 60 * 1000;
 }
 
-function legFromRow(row, right, action, expiry) {
+function legFromRow(row, right, action, expiry, lotSize) {
   const side = right === "CE" ? row.ce : row.pe;
   return {
     id: ++legIdCounter,
@@ -221,6 +221,7 @@ function legFromRow(row, right, action, expiry) {
     strike: row.strike,
     premium: side.ltp,
     qty: 1,
+    lotSize,
     iv: side.iv,
     delta: side.delta,
     gamma: side.gamma,
@@ -635,8 +636,9 @@ export default function Simulator() {
 
   function addLeg(row, right, action) {
     if (replayData) return; // legs lock once a replay has been run
+    const lotSize = chainData?.lotSize ?? liveChain?.lotSize;
     setLegs((prev) =>
-      prev.length >= 6 ? prev : [...prev, legFromRow(row, right, action, chainData?.selectedExpiry)],
+      prev.length >= 6 ? prev : [...prev, legFromRow(row, right, action, chainData?.selectedExpiry, lotSize)],
     );
   }
 

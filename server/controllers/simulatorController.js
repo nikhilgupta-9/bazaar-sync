@@ -1,12 +1,21 @@
 // controllers/simulatorController.js
 //
 // "Simulator" — replays ONE real historical trading day minute-by-minute so
-// a strategy's P&L can be watched evolving like it's happening live. Reads
-// ONLY option_chain_history + ohlcv_data (same hard rule as backtestEngine.js
-// and the same query patterns — getEntryPrices/getForwardMinutes there are
-// the batch-backtest version of exactly what this does for a single day).
-// Never touches Angel One.
+// a strategy's P&L can be watched evolving like it's happening live. All
+// PRICING reads ONLY option_chain_history + ohlcv_data (same hard rule as
+// backtestEngine.js and the same query patterns — getEntryPrices/
+// getForwardMinutes there are the batch-backtest version of exactly what
+// this does for a single day) — replay math never depends on Angel One.
+// getChainAtTime additionally reads instrumentMaster.getLotSize (the daily
+// scrip-master cache, same static reference lookup optionChainController.js
+// already uses) purely to attach a real lot size to the response — option_
+// chain_history has no lot_size column (never stored historically), and
+// without a real value every leg silently defaulted to lotSize=1 in
+// payoff.js's legMultiplier, scaling every P&L/Greek number wrong. This is a
+// read-only cached-file lookup, not a live broker call — it doesn't touch
+// the replay's price determinism, only the quantity multiplier.
 const { pool } = require("../config/db");
+const instrumentMaster = require("../services/instrumentMaster");
 
 // listDates scans every row for a symbol (NIFTY alone is 6M+ rows after
 // Phase 7's backfills) to compute a per-date distinct-snapshot count — even
@@ -175,6 +184,13 @@ async function getChainAtTime(req, res) {
         const fallbackSpot = rawRows.find((r) => r.underlying_price != null)?.underlying_price;
         const spotPrice = (await getSpotAt(symbol, date, selectedTime)) ?? (fallbackSpot != null ? Number(fallbackSpot) : null);
 
+        let lotSize = null;
+        try {
+            lotSize = await instrumentMaster.getLotSize(symbol);
+        } catch (err) {
+            console.error("[simulator/chain] lot size lookup failed:", err.message);
+        }
+
         const rows = rawRows.map((r) => ({
             strike: Number(r.strike),
             ce: {
@@ -209,6 +225,7 @@ async function getChainAtTime(req, res) {
             times,
             selectedTime,
             spotPrice,
+            lotSize,
             atmStrike: computeAtmStrike(rows.map((r) => r.strike), spotPrice),
             maxPainStrike: computeMaxPain(rows.map((r) => ({ strike: r.strike, ceOi: r.ce.oi, peOi: r.pe.oi }))),
             pcr: computePcr(rows.map((r) => ({ ceOi: r.ce.oi, peOi: r.pe.oi }))),
@@ -245,6 +262,19 @@ async function replay(req, res) {
         }
 
         const strikes = [...new Set(legs.map((l) => Number(l.strike)))];
+
+        // Real lot size (see getChainAtTime above) — every leg's `qty` is a
+        // LOT count (same convention as payoff.js's legMultiplier), so the
+        // pnl series below must scale by lotSize, not just qty, or every
+        // P&L figure is wrong by a factor of the real lot size (e.g. NIFTY's
+        // 75) — this was previously missing entirely (qty used bare).
+        let lotSize = null;
+        try {
+            lotSize = await instrumentMaster.getLotSize(symbol);
+        } catch (err) {
+            console.error("[simulator/replay] lot size lookup failed:", err.message);
+        }
+        const shareMultiplier = lotSize || 1;
 
         const [timeRows] = await pool.query(
             `SELECT DISTINCT trade_time FROM option_chain_history
@@ -297,14 +327,14 @@ async function replay(req, res) {
                         break;
                     }
                     const diff = leg.action === "buy" ? price - leg.entryPrice : leg.entryPrice - price;
-                    pnl += diff * leg.qty;
+                    pnl += diff * leg.qty * shareMultiplier;
                 }
             }
             const spot = spotByTime.get(time) ?? fallbackSpotByTime.get(time) ?? null;
             return { time, spot, pnl: pnl != null ? Number(pnl.toFixed(2)) : null };
         });
 
-        res.json({ symbol, date, expiry, entryTime, legs: legsWithEntry, series });
+        res.json({ symbol, date, expiry, entryTime, lotSize, legs: legsWithEntry, series });
     } catch (err) {
         console.error("[simulator/replay]", err);
         res.status(500).json({ error: err.message });
