@@ -3,6 +3,7 @@ const {
     listUsers, getUserDetail, getOverview, listPayments, listAllPositions, listAllStrategies,
     listInstituteIps, addInstituteIp, removeInstituteIp,
     listCoupons, createCoupon, setCouponActive, deleteCoupon,
+    listLotSizeHistoryAdmin, addLotSizeHistoryEntry, removeLotSizeHistoryEntry,
 } = require("../controllers/adminController");
 const { requireAuth } = require("../middleware/auth");
 const { requireAdmin } = require("../middleware/requireAdmin");
@@ -25,5 +26,9 @@ router.get("/coupons", listCoupons);
 router.post("/coupons", createCoupon);
 router.patch("/coupons/:id", setCouponActive);
 router.delete("/coupons/:id", deleteCoupon);
+
+router.get("/lot-size-history", listLotSizeHistoryAdmin);
+router.post("/lot-size-history", addLotSizeHistoryEntry);
+router.delete("/lot-size-history/:id", removeLotSizeHistoryEntry);
 
 module.exports = router;

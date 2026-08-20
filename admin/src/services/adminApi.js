@@ -148,3 +148,22 @@ export async function upsertSeoMeta(token, payload) {
 export async function deleteSeoMeta(token, id) {
     return handle(await fetch(`${API_URL}/api/seo/admin/${id}`, { method: "DELETE", ...authed(token) }));
 }
+
+// --- Lot Size History ---
+
+export async function fetchLotSizeHistory(token, symbol) {
+    const qs = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+    return handle(await fetch(`${API_URL}/api/admin/lot-size-history${qs}`, authed(token)));
+}
+
+export async function addLotSizeHistoryEntry(token, { symbol, lotSize, effectiveFrom, effectiveTo }) {
+    return handle(await fetch(`${API_URL}/api/admin/lot-size-history`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, lotSize, effectiveFrom, effectiveTo }),
+    }));
+}
+
+export async function removeLotSizeHistoryEntry(token, id) {
+    return handle(await fetch(`${API_URL}/api/admin/lot-size-history/${id}`, { method: "DELETE", ...authed(token) }));
+}

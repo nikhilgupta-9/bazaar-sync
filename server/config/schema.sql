@@ -353,6 +353,28 @@ CREATE TABLE IF NOT EXISTS seo_meta (
   FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
+-- Real historical lot sizes, effective-dated — NSE revises F&O lot sizes
+-- periodically (SEBI-driven review, roughly every 6 months), so a multi-
+-- year Simulator replay or Backtest run must use the lot size that was
+-- actually in effect on the historical trade date, not today's. Neither
+-- Bhavcopy/Breeze/Upstox (services/nseBhavcopy.js etc.) nor Angel One's
+-- scrip master carry historical lot-size-by-date — only today's value —
+-- so this is admin-seeded from NSE's own published lot-size-revision
+-- circulars (admin/src/pages/LotSizeHistory.jsx), deliberately NOT
+-- auto-populated or guessed (see services/lotSizeHistoryService.js's own
+-- header comment). effective_to NULL = still in effect.
+CREATE TABLE IF NOT EXISTS lot_size_history (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  symbol VARCHAR(20) NOT NULL,
+  lot_size INT NOT NULL,
+  effective_from DATE NOT NULL,
+  effective_to DATE,
+  created_by BIGINT UNSIGNED,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+  KEY idx_symbol_effective (symbol, effective_from)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS paper_positions (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT UNSIGNED NOT NULL,

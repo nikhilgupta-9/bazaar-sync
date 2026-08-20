@@ -7,6 +7,7 @@ const { pool } = require("../config/db");
 const { getRecentLedger } = require("../services/paperWalletService");
 const { listOpenPositions, listClosedPositions, getLiveContractPrice } = require("../services/paperPositionService");
 const { PRO_PRICE_PAISE, REFILL_PRICE_PAISE } = require("../config/paperTradeConfig");
+const lotSizeHistoryService = require("../services/lotSizeHistoryService");
 
 async function listUsers(req, res) {
     try {
@@ -244,6 +245,46 @@ async function removeInstituteIp(req, res) {
     }
 }
 
+// --- Lot Size History (see lotSizeHistoryService.js's header comment for
+// why this is admin-entered rather than auto-populated: NSE revises F&O lot
+// sizes periodically and none of our historical data sources record it) ---
+
+async function listLotSizeHistoryAdmin(req, res) {
+    try {
+        const entries = await lotSizeHistoryService.listLotSizeHistory(req.query.symbol);
+        res.json({ entries });
+    } catch (err) {
+        console.error("[admin:listLotSizeHistory]", err);
+        res.status(500).json({ error: "failed to load lot size history" });
+    }
+}
+
+async function addLotSizeHistoryEntry(req, res) {
+    try {
+        const { symbol, lotSize, effectiveFrom, effectiveTo } = req.body || {};
+        const id = await lotSizeHistoryService.addLotSizeEntry({
+            symbol,
+            lotSize: Number(lotSize),
+            effectiveFrom,
+            effectiveTo,
+            userId: req.user.sub,
+        });
+        res.status(201).json({ id });
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message || "failed to add entry" });
+    }
+}
+
+async function removeLotSizeHistoryEntry(req, res) {
+    try {
+        await lotSizeHistoryService.deleteLotSizeEntry(req.params.id);
+        res.status(204).end();
+    } catch (err) {
+        console.error("[admin:removeLotSizeHistoryEntry]", err);
+        res.status(500).json({ error: "failed to remove entry" });
+    }
+}
+
 // --- Plans & Coupons ---
 
 async function listCoupons(req, res) {
@@ -308,4 +349,5 @@ module.exports = {
     listUsers, getUserDetail, getOverview, listPayments, listAllPositions, listAllStrategies,
     listInstituteIps, addInstituteIp, removeInstituteIp,
     listCoupons, createCoupon, setCouponActive, deleteCoupon,
+    listLotSizeHistoryAdmin, addLotSizeHistoryEntry, removeLotSizeHistoryEntry,
 };

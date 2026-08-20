@@ -1,7 +1,7 @@
 import { NavLink } from "react-router-dom";
 import {
     FiGrid, FiUsers, FiCreditCard, FiTrendingUp, FiFileText,
-    FiMapPin, FiTag, FiCalendar, FiBook, FiSearch, FiX, FiLayout,
+    FiMapPin, FiTag, FiCalendar, FiBook, FiSearch, FiX, FiLayout, FiLayers,
 } from "react-icons/fi";
 
 const LIVE_LINKS = [
@@ -23,6 +23,7 @@ const MANAGEMENT_LINKS = [
     { to: "/events", label: "Events", icon: FiCalendar },
     { to: "/terms", label: "T&C", icon: FiBook },
     { to: "/seo", label: "SEO Tool", icon: FiSearch },
+    { to: "/lot-size-history", label: "Lot Size History", icon: FiLayers },
 ];
 
 function NavItem({ to, label, icon: Icon, end, onNavigate }) {

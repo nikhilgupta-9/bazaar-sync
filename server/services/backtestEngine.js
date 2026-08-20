@@ -1,4 +1,5 @@
 const { pool } = require("../config/db");
+const lotSizeHistoryService = require("./lotSizeHistoryService");
 
 // Reads ONLY from MySQL (option_chain_history + ohlcv_data) — never a live
 // broker API, per project hard rule. `option_chain_history.underlying_price`
@@ -120,7 +121,12 @@ async function getForwardMinutes(symbol, expiry, date, fromTime, strikes) {
     return byMinute; // Map<time, Map<strike, row>>
 }
 
-function legPnlAtPrices(legs, priceByStrike) {
+// `leg.qty` is a LOT count (same convention as payoff.js's legMultiplier on
+// the frontend) — `shareMultiplier` is the real lot size in effect on the
+// trading day being priced (see lotSizeHistoryService.getLotSizeAsOf in
+// runBacktest below), not today's. Without it every trade's P&L was wrong
+// by a factor of the real lot size.
+function legPnlAtPrices(legs, priceByStrike, shareMultiplier) {
     let pnl = 0;
     for (const leg of legs) {
         const row = priceByStrike.get(leg.strike);
@@ -128,7 +134,7 @@ function legPnlAtPrices(legs, priceByStrike) {
         const price = leg.type === "CE" ? row.ce_ltp : row.pe_ltp;
         if (price == null) return null;
         const diff = leg.action === "buy" ? price - leg.entryPrice : leg.entryPrice - price;
-        pnl += diff * leg.qty;
+        pnl += diff * leg.qty * shareMultiplier;
     }
     return pnl;
 }
@@ -175,6 +181,12 @@ async function runBacktest({ symbol, expiryType, startDate, endDate, legs, entry
     }
     const classify = classifyExpiries(expiries);
     const strikeGapCache = new Map();
+    // Lot size AS OF each trading day (not today's) — a backtest can span
+    // years, and NSE revises F&O lot sizes periodically, so a range that
+    // crosses a revision genuinely needs a different multiplier on either
+    // side of it. Cached per day since lookups are cheap but this loop can
+    // run over hundreds of days.
+    const lotSizeCache = new Map();
 
     const trades = [];
     const skipped = [];
@@ -193,6 +205,9 @@ async function runBacktest({ symbol, expiryType, startDate, endDate, legs, entry
         const dayLegs = legs.map((l) => ({ ...l, strike: atmStrike + l.strikeOffset * gap }));
         const strikes = [...new Set(dayLegs.map((l) => l.strike))];
 
+        if (!lotSizeCache.has(day)) lotSizeCache.set(day, await lotSizeHistoryService.getLotSizeAsOf(symbol, day));
+        const shareMultiplier = lotSizeCache.get(day) || 1;
+
         const entryRows = await getEntryPrices(symbol, expiry, day, entryTime, strikes);
         let missingEntry = false;
         for (const leg of dayLegs) {
@@ -203,7 +218,7 @@ async function runBacktest({ symbol, expiryType, startDate, endDate, legs, entry
         }
         if (missingEntry) { skipped.push({ day, reason: "no entry price data" }); continue; }
 
-        const entryCost = dayLegs.reduce((s, l) => s + l.entryPrice * l.qty, 0);
+        const entryCost = dayLegs.reduce((s, l) => s + l.entryPrice * l.qty, 0) * shareMultiplier;
         const slAmount = stopLossPct ? (stopLossPct / 100) * Math.abs(entryCost) : null;
         const targetAmount = targetPct ? (targetPct / 100) * Math.abs(entryCost) : null;
 
@@ -213,7 +228,7 @@ async function runBacktest({ symbol, expiryType, startDate, endDate, legs, entry
         let exitTime = null, exitReason = "eod", finalPnl = 0;
         for (const time of times) {
             const priceByStrike = forwardMinutes.get(time);
-            const pnl = legPnlAtPrices(dayLegs, priceByStrike);
+            const pnl = legPnlAtPrices(dayLegs, priceByStrike, shareMultiplier);
             if (pnl == null) continue;
             finalPnl = pnl;
             if (slAmount != null && pnl <= -slAmount) { exitTime = time; exitReason = "stop_loss"; break; }
@@ -225,7 +240,7 @@ async function runBacktest({ symbol, expiryType, startDate, endDate, legs, entry
         }
 
         trades.push({
-            entryDate: day, expiry, legs: dayLegs, entryTime, exitTime,
+            entryDate: day, expiry, legs: dayLegs, entryTime, exitTime, lotSize: shareMultiplier,
             entryCost: Number(entryCost.toFixed(2)), pnl: Number(finalPnl.toFixed(2)), exitReason,
         });
     }

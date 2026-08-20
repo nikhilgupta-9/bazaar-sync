@@ -12,6 +12,7 @@ import Events from "./pages/Events";
 import Terms from "./pages/Terms";
 import Seo from "./pages/Seo";
 import HomePage from "./pages/HomePage";
+import LotSizeHistory from "./pages/LotSizeHistory";
 
 export default function App() {
     return (
@@ -29,6 +30,7 @@ export default function App() {
                 <Route path="/events" element={<Events />} />
                 <Route path="/terms" element={<Terms />} />
                 <Route path="/seo" element={<Seo />} />
+                <Route path="/lot-size-history" element={<LotSizeHistory />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

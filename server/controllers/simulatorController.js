@@ -6,16 +6,19 @@
 // backtestEngine.js and the same query patterns — getEntryPrices/
 // getForwardMinutes there are the batch-backtest version of exactly what
 // this does for a single day) — replay math never depends on Angel One.
-// getChainAtTime additionally reads instrumentMaster.getLotSize (the daily
-// scrip-master cache, same static reference lookup optionChainController.js
-// already uses) purely to attach a real lot size to the response — option_
-// chain_history has no lot_size column (never stored historically), and
-// without a real value every leg silently defaulted to lotSize=1 in
-// payoff.js's legMultiplier, scaling every P&L/Greek number wrong. This is a
-// read-only cached-file lookup, not a live broker call — it doesn't touch
-// the replay's price determinism, only the quantity multiplier.
+// getChainAtTime/replay additionally read lotSizeHistoryService.getLotSizeAsOf
+// (the historical trade date's real lot size, not today's — NSE revises F&O
+// lot sizes periodically, so a 2022 replay must not use 2026's lot size;
+// falls back to instrumentMaster's current scrip-master value only when no
+// historical entry has been recorded yet) purely to attach/apply a real lot
+// size — option_chain_history has no lot_size column (never stored
+// historically), and without a real value every leg silently defaulted to
+// lotSize=1 in payoff.js's legMultiplier, scaling every P&L/Greek number
+// wrong. This is a read-only DB/cached-file lookup, not a live broker call —
+// it doesn't touch the replay's price determinism, only the quantity
+// multiplier.
 const { pool } = require("../config/db");
-const instrumentMaster = require("../services/instrumentMaster");
+const lotSizeHistoryService = require("../services/lotSizeHistoryService");
 
 // listDates scans every row for a symbol (NIFTY alone is 6M+ rows after
 // Phase 7's backfills) to compute a per-date distinct-snapshot count — even
@@ -186,7 +189,7 @@ async function getChainAtTime(req, res) {
 
         let lotSize = null;
         try {
-            lotSize = await instrumentMaster.getLotSize(symbol);
+            lotSize = await lotSizeHistoryService.getLotSizeAsOf(symbol, date);
         } catch (err) {
             console.error("[simulator/chain] lot size lookup failed:", err.message);
         }
@@ -263,14 +266,15 @@ async function replay(req, res) {
 
         const strikes = [...new Set(legs.map((l) => Number(l.strike)))];
 
-        // Real lot size (see getChainAtTime above) — every leg's `qty` is a
-        // LOT count (same convention as payoff.js's legMultiplier), so the
-        // pnl series below must scale by lotSize, not just qty, or every
-        // P&L figure is wrong by a factor of the real lot size (e.g. NIFTY's
-        // 75) — this was previously missing entirely (qty used bare).
+        // Real lot size AS OF `date` (see getChainAtTime above) — every leg's
+        // `qty` is a LOT count (same convention as payoff.js's
+        // legMultiplier), so the pnl series below must scale by lotSize, not
+        // just qty, or every P&L figure is wrong by a factor of the real lot
+        // size (e.g. NIFTY's 75) — this was previously missing entirely (qty
+        // used bare).
         let lotSize = null;
         try {
-            lotSize = await instrumentMaster.getLotSize(symbol);
+            lotSize = await lotSizeHistoryService.getLotSizeAsOf(symbol, date);
         } catch (err) {
             console.error("[simulator/replay] lot size lookup failed:", err.message);
         }
