@@ -31,6 +31,23 @@ async function withMarketExtras(payload, displaySymbol) {
         console.error("[optionChain] expiry list lookup failed, using payload's own list:", err.message);
     }
 
+    // Live cache only ever has a lot size when the worker is running AND has
+    // ticked this symbol (only NIFTY/BANKNIFTY/FINNIFTY are ever
+    // live-subscribed) — meaning it was null for every stock, and null for
+    // the indices too whenever the worker was stopped/market closed. Falls
+    // back to the scrip master (instrumentMaster.getLotSize — works for any
+    // F&O underlying, live or not) so Strategy Builder's payoff math always
+    // has a real lot size instead of silently defaulting to 1 (see
+    // payoff.js's legMultiplier fallback comment).
+    let lotSize = marketCache.getLotSize(displaySymbol);
+    if (!lotSize) {
+        try {
+            lotSize = await instrumentMaster.getLotSize(displaySymbol);
+        } catch (err) {
+            console.error("[optionChain] lot size lookup failed:", err.message);
+        }
+    }
+
     // Spot vs the last recorded end-of-day close (ohlcv_data, previous
     // trading day) — the header's "Spot" figure shows this delta next to
     // the price. Null (not a fabricated 0%) when there's no prior day's
@@ -45,7 +62,7 @@ async function withMarketExtras(payload, displaySymbol) {
         vix: vixEntry ? vixEntry.ltp : null,
         futurePrice: futureEntry ? futureEntry.ltp : null,
         futureExpiry: futureEntry ? futureEntry.expiry : null,
-        lotSize: marketCache.getLotSize(displaySymbol),
+        lotSize,
         spotPrevClose: prevClose,
         spotChange,
         spotChangePercent,

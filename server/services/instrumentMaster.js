@@ -98,6 +98,18 @@ async function loadRaw() {
 
 const OPTION_UNDERLYINGS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY"]);
 
+// Every F&O underlying's lot size (indices AND the ~200+ stocks), keyed by
+// symbol name — unlike `options`/`futures` above (full per-contract chain
+// data, kept only for the 3 index underlyings we actually build option
+// chains for), this is a single number per underlying and costs nothing
+// extra to collect from the same scrip-master pass, for every NFO row
+// regardless of underlying. Lot size doesn't vary by strike/expiry at a
+// point in time, so one row per underlying is enough. This is what makes
+// lot size available even when the live worker/marketCache has nothing for
+// a symbol (market closed, worker stopped, or a stock that's never been
+// live-subscribed at all — see optionChainController.js's withMarketExtras).
+const LOT_SIZE_TYPES = new Set(["OPTIDX", "OPTSTK", "FUTIDX", "FUTSTK"]);
+
 async function ensureLoaded({ force = false } = {}) {
     if (parsed && !force && Date.now() - parsed.loadedAt < CACHE_MAX_AGE_MS) return parsed;
 
@@ -106,6 +118,7 @@ async function ensureLoaded({ force = false } = {}) {
 
     const options = new Map();
     const futures = new Map();
+    const lotSizeByUnderlying = new Map();
     for (const u of OPTION_UNDERLYINGS) {
         options.set(u, []);
         futures.set(u, []);
@@ -114,6 +127,12 @@ async function ensureLoaded({ force = false } = {}) {
     for (const row of all) {
         if (row.exch_seg !== "NFO") continue;
         const name = (row.name || "").toUpperCase();
+
+        if (name && LOT_SIZE_TYPES.has(row.instrumenttype)) {
+            const lotSize = Number(row.lotsize);
+            if (lotSize > 0 && !lotSizeByUnderlying.has(name)) lotSizeByUnderlying.set(name, lotSize);
+        }
+
         if (!OPTION_UNDERLYINGS.has(name)) continue;
 
         if (row.instrumenttype === "OPTIDX") {
@@ -156,8 +175,20 @@ async function ensureLoaded({ force = false } = {}) {
         list.sort((a, b) => a.expiry.localeCompare(b.expiry));
         workerLogger.info(`Scrip master: ${list.length} index future contracts for ${name}`);
     }
-    parsed = { loadedAt: Date.now(), options, futures };
+    parsed = { loadedAt: Date.now(), options, futures, lotSizeByUnderlying };
     return parsed;
+}
+
+/**
+ * Lot size for ANY NSE F&O underlying (index or stock), from the scrip
+ * master alone — works regardless of whether the live worker has ever
+ * subscribed this symbol. Returns null only if the underlying has no F&O
+ * contracts in the current scrip master at all (e.g. a symbol that's been
+ * delisted from F&O, or a typo).
+ */
+async function getLotSize(underlying) {
+    const { lotSizeByUnderlying } = await ensureLoaded();
+    return lotSizeByUnderlying.get((underlying || "").toUpperCase()) || null;
 }
 
 /** All expiries (sorted 'YYYY-MM-DD' strings) on/after today for an underlying. */
@@ -216,6 +247,7 @@ module.exports = {
     getIndexToken,
     getVixToken,
     getNearestFuture,
+    getLotSize,
     expiryToSql,
     todayIst,
     INDEX_TOKENS,
