@@ -1,6 +1,7 @@
 const { pool } = require("../config/db");
 const razorpayService = require("../services/razorpayService");
 const paperWalletService = require("../services/paperWalletService");
+const { isInstituteIp } = require("../services/instituteAccessService");
 const { REFILL_PRICE_PAISE } = require("../config/paperTradeConfig");
 
 async function getWallet(req, res) {
@@ -9,8 +10,9 @@ async function getWallet(req, res) {
         if (!user) return res.status(404).json({ error: "user not found" });
 
         const status = await paperWalletService.getWalletStatus(req.user.sub, user);
+        const instituteAccess = await isInstituteIp(req.ip);
         const ledger = await paperWalletService.getRecentLedger(req.user.sub);
-        res.json({ ...status, ledger });
+        res.json({ ...status, instituteAccess, accessAllowed: status.accessAllowed || instituteAccess, ledger });
     } catch (err) {
         console.error("[paperTrade:getWallet]", err);
         res.status(500).json({ error: "failed to load wallet" });

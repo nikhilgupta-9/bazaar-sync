@@ -4,13 +4,6 @@ import {
     FiMapPin, FiTag, FiCalendar, FiBook, FiSearch, FiX,
 } from "react-icons/fi";
 
-// Real, working sections (backed by real endpoints/data) vs. sections the
-// rest of the admin panel (institute allowlist, plans/coupons, events,
-// T&C, SEO) hasn't been built for yet — see CLAUDE.md Phase 9/10. Kept as
-// visible-but-"Coming soon" nav entries rather than hidden, so the full
-// intended shape of the panel is discoverable, but nothing here is faked
-// with placeholder data (project convention — see e.g. Strategy Builder's
-// "Est. Margin: —").
 const LIVE_LINKS = [
     { to: "/", label: "Overview", icon: FiGrid, end: true },
     { to: "/users", label: "Users", icon: FiUsers },
@@ -19,7 +12,11 @@ const LIVE_LINKS = [
     { to: "/strategies", label: "Strategies", icon: FiFileText },
 ];
 
-const COMING_SOON_LINKS = [
+// Phase 11: was "Coming Soon" (Phase 9/10) — all five now have real
+// endpoints/data behind them, moved into their own labeled section rather
+// than merged into Menu above, since they're management/config tools
+// (site-wide settings) rather than the operational-data views above.
+const MANAGEMENT_LINKS = [
     { to: "/institute-access", label: "Institute Access", icon: FiMapPin },
     { to: "/plans", label: "Plans & Coupons", icon: FiTag },
     { to: "/events", label: "Events", icon: FiCalendar },
@@ -97,9 +94,9 @@ export default function Sidebar({ open = false, onClose }) {
                     {LIVE_LINKS.map((l) => <NavItem key={l.to} {...l} onNavigate={onClose} />)}
                 </nav>
 
-                <div className="mb-2 mt-6 px-3 text-[10px] font-bold uppercase tracking-wider text-gray-600">Coming Soon</div>
+                <div className="mb-2 mt-6 px-3 text-[10px] font-bold uppercase tracking-wider text-gray-600">Management</div>
                 <nav className="flex flex-col gap-1">
-                    {COMING_SOON_LINKS.map((l) => <NavItem key={l.to} {...l} onNavigate={onClose} />)}
+                    {MANAGEMENT_LINKS.map((l) => <NavItem key={l.to} {...l} onNavigate={onClose} />)}
                 </nav>
             </aside>
         </>

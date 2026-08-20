@@ -6,7 +6,11 @@ import Users from "./pages/Users";
 import Payments from "./pages/Payments";
 import Positions from "./pages/Positions";
 import Strategies from "./pages/Strategies";
-import ComingSoon from "./pages/ComingSoon";
+import InstituteAccess from "./pages/InstituteAccess";
+import Plans from "./pages/Plans";
+import Events from "./pages/Events";
+import Terms from "./pages/Terms";
+import Seo from "./pages/Seo";
 
 export default function App() {
     return (
@@ -18,11 +22,11 @@ export default function App() {
                 <Route path="/payments" element={<Payments />} />
                 <Route path="/positions" element={<Positions />} />
                 <Route path="/strategies" element={<Strategies />} />
-                <Route path="/institute-access" element={<ComingSoon title="Institute Access" description="Free access by IP allowlist — not built yet." />} />
-                <Route path="/plans" element={<ComingSoon title="Plans & Coupons" description="Plan/discount/coupon management — not built yet." />} />
-                <Route path="/events" element={<ComingSoon title="Events" description="Event management — not built yet." />} />
-                <Route path="/terms" element={<ComingSoon title="T&C" description="Terms & Conditions editor — not built yet." />} />
-                <Route path="/seo" element={<ComingSoon title="SEO Tool" description="Scope not yet defined — ask before building." />} />
+                <Route path="/institute-access" element={<InstituteAccess />} />
+                <Route path="/plans" element={<Plans />} />
+                <Route path="/events" element={<Events />} />
+                <Route path="/terms" element={<Terms />} />
+                <Route path="/seo" element={<Seo />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

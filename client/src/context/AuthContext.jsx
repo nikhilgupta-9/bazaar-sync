@@ -7,12 +7,13 @@ const TOKEN_KEY = "bazaar_sync_token";
 export function AuthProvider({ children }) {
     const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
     const [user, setUser] = useState(null);
+    const [instituteAccess, setInstituteAccess] = useState(false);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         if (!token) { setLoading(false); return; }
         authApi.fetchMe(token)
-            .then((r) => setUser(r.user))
+            .then((r) => { setUser(r.user); setInstituteAccess(!!r.instituteAccess); })
             .catch(() => { setToken(null); localStorage.removeItem(TOKEN_KEY); })
             .finally(() => setLoading(false));
     }, [token]);
@@ -21,6 +22,7 @@ export function AuthProvider({ children }) {
         localStorage.setItem(TOKEN_KEY, data.token);
         setToken(data.token);
         setUser(data.user);
+        setInstituteAccess(!!data.instituteAccess);
     }, []);
 
     const login = useCallback(async (email, password) => {
@@ -45,12 +47,17 @@ export function AuthProvider({ children }) {
         if (!token) return;
         const r = await authApi.fetchMe(token);
         setUser(r.user);
+        setInstituteAccess(!!r.instituteAccess);
     }, [token]);
 
-    const isPro = user?.tier === "pro" && (!user.pro_expires_at || new Date(user.pro_expires_at) > new Date());
+    // instituteAccess (see instituteAccessService.js) grants Pro-equivalent
+    // access from an allowlisted network without ever touching user.tier —
+    // OR'd in here so the UI doesn't show "Get Pro" prompts to someone the
+    // backend would let through anyway.
+    const isPro = (user?.tier === "pro" && (!user.pro_expires_at || new Date(user.pro_expires_at) > new Date())) || instituteAccess;
 
     return (
-        <AuthContext.Provider value={{ token, user, loading, isPro, login, register, logout, refreshUser }}>
+        <AuthContext.Provider value={{ token, user, loading, isPro, instituteAccess, login, register, logout, refreshUser }}>
             {children}
         </AuthContext.Provider>
     );

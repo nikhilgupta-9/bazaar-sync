@@ -4,12 +4,13 @@
 // `side` param; this page previously only exposed BUY, which is what that
 // phase's write-up flagged as stale. Both sides are wired up below.
 //
-// Dark trading-terminal theme, scoped to just this page (the rest of the
-// app is light-themed) — a self-contained hex palette below, deliberately
-// NOT reusing the app-wide `.dark` CSS-variable theme that ThemeContext.jsx
-// / index.css carry, since that block is still sitting uncommitted mid a
-// paused cherry-pick when this was written; depending on it would make this
-// page's look silently hinge on unrelated in-progress work.
+// Follows the app-wide light/dark theme (ThemeContext.jsx toggles `.dark`
+// on <html>; index.css redefines Tailwind's CSS color variables under it) —
+// plain semantic Tailwind classes (bg-white, text-gray-900, emerald-600 for
+// buy/profit, rose-600 for sell/loss, amber for Pro/warning), same
+// convention OptionChain.jsx/StrategyBuilder.jsx already use. No page-local
+// hex palette anymore — this page previously had one, scoped here only
+// because the app-wide theme wasn't committed yet when it was written.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from "recharts";
@@ -27,19 +28,6 @@ import { fetchSymbolList } from "../services/optionChainApi";
 // live-worker symbols OptionChain.jsx falls back to.
 const FALLBACK_SYMBOLS = { indices: ["NIFTY", "BANKNIFTY", "FINNIFTY"], stocks: [], liveSymbols: ["NIFTY", "BANKNIFTY", "FINNIFTY"] };
 const POSITIONS_POLL_MS = 12000;
-
-// Brand hex values, kept as plain Tailwind arbitrary-value classes rather
-// than CSS variables — see file header for why this doesn't reuse the
-// app-wide dark theme scaffolding.
-const BG = "#030108";
-const SURFACE = "#0b1420";
-const SURFACE_2 = "#0f1a28";
-const BORDER = "#18202c";
-const TEXT = "#f5f7fa";
-const MUTED = "#8b93a7";
-const GREEN = "#0be55c";
-const RED = "#eb090b";
-const AMBER = "#f5a623";
 
 const LEDGER_LABELS = {
     trial_grant: "Free trial grant",
@@ -69,9 +57,11 @@ function isToday(dateTimeStr) {
     return typeof dateTimeStr === "string" && dateTimeStr.slice(0, 10) === todayIst();
 }
 
-function pnlColor(v) {
-    if (v == null) return MUTED;
-    return v > 0 ? GREEN : v < 0 ? RED : MUTED;
+// Tailwind class (not a color value) for P&L-colored text — emerald/rose
+// both flip correctly under the app-wide `.dark` theme automatically.
+function pnlClass(v) {
+    if (v == null) return "text-gray-400";
+    return v > 0 ? "text-emerald-600" : v < 0 ? "text-rose-600" : "text-gray-400";
 }
 
 // Simplified from the old inline draft-side/lots-stepper cell: clicking
@@ -80,16 +70,15 @@ function pnlColor(v) {
 // explicit request to move order entry off the cramped inline cell and
 // into a dedicated panel showing the trade's payoff chart.
 function TradeCell({ strike, optRight, side, loggedIn, canTrade, onOpenTrade, onLoginRequired }) {
-    if (!side || side.ltp == null) return <span style={{ color: MUTED }}>-</span>;
+    if (!side || side.ltp == null) return <span className="text-gray-400">-</span>;
 
     return (
         <div className="group relative text-right">
-            <span className="group-hover:invisible tabular-nums" style={{ color: TEXT }}>{formatPrice(side.ltp)}</span>
+            <span className="tabular-nums text-gray-900 group-hover:invisible">{formatPrice(side.ltp)}</span>
             {!loggedIn ? (
                 <button
                     onClick={onLoginRequired}
-                    className="invisible absolute inset-y-0 right-0 whitespace-nowrap rounded px-2 text-[11px] font-semibold hover:opacity-90 group-hover:visible"
-                    style={{ background: SURFACE_2, border: `1px solid ${BORDER}`, color: TEXT }}
+                    className="invisible absolute inset-y-0 right-0 whitespace-nowrap rounded border border-gray-200 bg-gray-50 px-2 text-[11px] font-semibold text-gray-900 hover:bg-gray-100 group-hover:visible"
                 >
                     Login to trade
                 </button>
@@ -98,15 +87,13 @@ function TradeCell({ strike, optRight, side, loggedIn, canTrade, onOpenTrade, on
                     <div className="invisible absolute inset-y-0 right-0 flex items-center gap-1 group-hover:visible">
                         <button
                             onClick={() => onOpenTrade(strike, optRight, "long", side)}
-                            className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-white hover:opacity-90"
-                            style={{ background: GREEN }}
+                            className="rounded bg-emerald-600 px-1.5 py-0.5 text-[11px] font-semibold text-white hover:bg-emerald-700"
                         >
                             B
                         </button>
                         <button
                             onClick={() => onOpenTrade(strike, optRight, "short", side)}
-                            className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-white hover:opacity-90"
-                            style={{ background: RED }}
+                            className="rounded bg-rose-600 px-1.5 py-0.5 text-[11px] font-semibold text-white hover:bg-rose-700"
                         >
                             S
                         </button>
@@ -117,11 +104,11 @@ function TradeCell({ strike, optRight, side, loggedIn, canTrade, onOpenTrade, on
     );
 }
 
-function StatTile({ label, value, valueColor }) {
+function StatTile({ label, value, valueClassName }) {
     return (
-        <div className="rounded-xl p-3" style={{ background: SURFACE_2, border: `1px solid ${BORDER}` }}>
-            <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: MUTED }}>{label}</div>
-            <div className="mt-1 text-base font-bold tabular-nums" style={{ color: valueColor || TEXT }}>{value}</div>
+        <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-gray-400">{label}</div>
+            <div className={`mt-1 text-base font-bold tabular-nums ${valueClassName || "text-gray-900"}`}>{value}</div>
         </div>
     );
 }
@@ -135,32 +122,28 @@ function StatTile({ label, value, valueColor }) {
 function TradeDrawer({ symbol, draft, lots, setLots, lotSize, spotPrice, curveInfo, submitting, success, onConfirm, onClose }) {
     if (!draft) return null;
     const isShort = draft.side === "short";
-    const sideColor = isShort ? RED : GREEN;
+    const sideClasses = isShort
+        ? { text: "text-rose-600", tint: "bg-rose-100 text-rose-700", solid: "bg-rose-600 hover:bg-rose-700" }
+        : { text: "text-emerald-600", tint: "bg-emerald-100 text-emerald-700", solid: "bg-emerald-600 hover:bg-emerald-700" };
     const estAmount = draft.row.ltp * lots * (lotSize || 1);
 
     return (
         <>
             <div className="fixed inset-0 z-40 bg-black/60" onClick={onClose} />
-            <div
-                className="fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-y-auto p-4 shadow-2xl"
-                style={{ background: SURFACE, borderLeft: `1px solid ${BORDER}`, color: TEXT }}
-            >
+            <div className="fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-y-auto border-l border-gray-200 bg-white p-4 text-gray-900 shadow-2xl">
                 <div className="flex items-start justify-between">
                     <div>
-                        <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
                             {success ? "Trade placed" : "Place order"}
                         </div>
                         <div className="mt-0.5 text-lg font-bold">
                             {symbol} {draft.strike} {draft.optRight}
-                            <span
-                                className="ml-2 rounded px-1.5 py-0.5 align-middle text-[10px] font-bold uppercase"
-                                style={{ background: isShort ? "rgba(235,9,11,0.15)" : "rgba(11,229,92,0.15)", color: sideColor }}
-                            >
+                            <span className={`ml-2 rounded px-1.5 py-0.5 align-middle text-[10px] font-bold uppercase ${sideClasses.tint}`}>
                                 {isShort ? "Sell" : "Buy"}
                             </span>
                         </div>
                     </div>
-                    <button onClick={onClose} className="text-lg hover:opacity-80" style={{ color: MUTED }}>✕</button>
+                    <button onClick={onClose} className="text-lg text-gray-400 hover:text-gray-600">✕</button>
                 </div>
 
                 {!success ? (
@@ -170,21 +153,19 @@ function TradeDrawer({ symbol, draft, lots, setLots, lotSize, spotPrice, curveIn
                             <StatTile label="Lot size" value={lotSize ?? "-"} />
                         </div>
 
-                        <div className="mt-3 flex items-center justify-between rounded-xl p-3" style={{ background: SURFACE_2, border: `1px solid ${BORDER}` }}>
-                            <span className="text-xs font-medium" style={{ color: MUTED }}>Lots</span>
+                        <div className="mt-3 flex items-center justify-between rounded-xl border border-gray-200 bg-gray-50 p-3">
+                            <span className="text-xs font-medium text-gray-400">Lots</span>
                             <div className="flex items-center gap-3">
                                 <button
                                     onClick={() => setLots((l) => Math.max(1, l - 1))}
-                                    className="h-7 w-7 rounded text-sm hover:opacity-80"
-                                    style={{ border: `1px solid ${BORDER}`, color: TEXT }}
+                                    className="h-7 w-7 rounded border border-gray-200 text-sm text-gray-900 hover:bg-gray-100"
                                 >
                                     −
                                 </button>
                                 <span className="w-6 text-center text-sm font-semibold tabular-nums">{lots}</span>
                                 <button
                                     onClick={() => setLots((l) => Math.min(100, l + 1))}
-                                    className="h-7 w-7 rounded text-sm hover:opacity-80"
-                                    style={{ border: `1px solid ${BORDER}`, color: TEXT }}
+                                    className="h-7 w-7 rounded border border-gray-200 text-sm text-gray-900 hover:bg-gray-100"
                                 >
                                     +
                                 </button>
@@ -196,27 +177,25 @@ function TradeDrawer({ symbol, draft, lots, setLots, lotSize, spotPrice, curveIn
                             <StatTile
                                 label="Max Loss"
                                 value={curveInfo.maxLoss === "Unlimited" ? "Unlimited" : curveInfo.maxLoss != null ? formatRupees(curveInfo.maxLoss) : "—"}
-                                valueColor={RED}
+                                valueClassName="text-rose-600"
                             />
                         </div>
 
-                        <div className="mt-4 overflow-hidden rounded-xl bg-white p-1">
+                        <div className="mt-4 overflow-hidden rounded-xl border border-gray-200 bg-white p-1">
                             <PayoffChart curve={curveInfo.curve} spotPrice={spotPrice} breakevens={curveInfo.breakevens} expectedMove={null} />
                         </div>
 
                         <div className="mt-4 flex gap-2">
                             <button
                                 onClick={onClose}
-                                className="flex-1 rounded-lg py-2 text-sm font-semibold hover:opacity-80"
-                                style={{ border: `1px solid ${BORDER}`, color: TEXT }}
+                                className="flex-1 rounded-lg border border-gray-200 py-2 text-sm font-semibold text-gray-900 hover:bg-gray-50"
                             >
                                 Cancel
                             </button>
                             <button
                                 onClick={onConfirm}
                                 disabled={submitting}
-                                className="flex-1 rounded-lg py-2 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50"
-                                style={{ background: sideColor }}
+                                className={`flex-1 rounded-lg py-2 text-sm font-bold text-white disabled:opacity-50 ${sideClasses.solid}`}
                             >
                                 {submitting ? "Placing…" : isShort ? "Sell" : "Buy"}
                             </button>
@@ -224,18 +203,17 @@ function TradeDrawer({ symbol, draft, lots, setLots, lotSize, spotPrice, curveIn
                     </>
                 ) : (
                     <>
-                        <div className="mt-4 rounded-xl px-3 py-2.5 text-sm" style={{ background: "rgba(11,229,92,0.1)", border: `1px solid ${GREEN}`, color: GREEN }}>
+                        <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-700">
                             ✓ {isShort ? "Sold" : "Bought"} {lots} lot{lots > 1 ? "s" : ""} of {symbol} {draft.strike}{draft.optRight} at {formatPrice(draft.row.ltp)}
                         </div>
 
-                        <div className="mt-4 overflow-hidden rounded-xl bg-white p-1">
+                        <div className="mt-4 overflow-hidden rounded-xl border border-gray-200 bg-white p-1">
                             <PayoffChart curve={curveInfo.curve} spotPrice={spotPrice} breakevens={curveInfo.breakevens} expectedMove={null} />
                         </div>
 
                         <button
                             onClick={onClose}
-                            className="mt-4 w-full rounded-lg py-2 text-sm font-bold text-black hover:opacity-90"
-                            style={{ background: GREEN }}
+                            className="mt-4 w-full rounded-lg bg-emerald-600 py-2 text-sm font-bold text-white hover:bg-emerald-700"
                         >
                             Done
                         </button>
@@ -249,8 +227,7 @@ function TradeDrawer({ symbol, draft, lots, setLots, lotSize, spotPrice, curveIn
 // Searchable symbol picker — was a plain 3-option <select>, mirrors
 // OptionChain.jsx's index/stocks picker (same "Historical" badge for
 // non-live symbols) so the full symbol universe (~280 indices+stocks from
-// Bhavcopy/Breeze/Upstox backfills) is browsable here too, dark-themed to
-// match this page.
+// Bhavcopy/Breeze/Upstox backfills) is browsable here too.
 function SymbolPicker({ symbol, symbolList, onPick }) {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
@@ -268,65 +245,58 @@ function SymbolPicker({ symbol, symbolList, onPick }) {
         <div className="relative">
             <button
                 onClick={() => setOpen((v) => !v)}
-                className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold outline-none hover:opacity-90"
-                style={{ background: SURFACE_2, border: `1px solid ${BORDER}`, color: TEXT }}
+                className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 text-sm font-semibold text-gray-900 outline-none hover:bg-gray-100"
             >
                 {symbol}
-                <span style={{ color: MUTED }}>▾</span>
+                <span className="text-gray-400">▾</span>
             </button>
             {open && (
                 <>
                     <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-                    <div
-                        className="absolute left-0 top-full z-50 mt-1.5 max-h-96 w-64 overflow-y-auto rounded-xl shadow-2xl"
-                        style={{ background: SURFACE, border: `1px solid ${BORDER}` }}
-                    >
-                        <div className="sticky top-0 p-2" style={{ background: SURFACE, borderBottom: `1px solid ${BORDER}` }}>
+                    <div className="absolute left-0 top-full z-50 mt-1.5 max-h-96 w-64 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-2xl">
+                        <div className="sticky top-0 border-b border-gray-100 bg-white p-2">
                             <input
                                 autoFocus
                                 value={query}
                                 onChange={(e) => setQuery(e.target.value)}
                                 placeholder="Search symbol…"
-                                className="w-full rounded-lg px-2.5 py-1.5 text-xs outline-none"
-                                style={{ background: SURFACE_2, border: `1px solid ${BORDER}`, color: TEXT }}
+                                className="w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs text-gray-900 outline-none focus:border-blue-400"
                             />
                         </div>
                         {filteredIndices.length > 0 && (
                             <div className="py-1">
-                                <div className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide" style={{ color: MUTED }}>Index</div>
+                                <div className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide text-gray-400">Index</div>
                                 {filteredIndices.map((s) => (
                                     <button
                                         key={s}
                                         onClick={() => pick(s)}
-                                        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs font-medium hover:opacity-90"
-                                        style={{ color: s === symbol ? GREEN : TEXT, background: s === symbol ? "rgba(11,229,92,0.08)" : "transparent" }}
+                                        className={`flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs font-medium hover:bg-gray-50 ${s === symbol ? "bg-emerald-50 text-emerald-700" : "text-gray-900"}`}
                                     >
                                         {s}
                                         {!symbolList.liveSymbols.includes(s) && (
-                                            <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold" style={{ background: SURFACE_2, color: MUTED }}>Historical</span>
+                                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[9px] font-semibold text-gray-400">Historical</span>
                                         )}
                                     </button>
                                 ))}
                             </div>
                         )}
                         {filteredStocks.length > 0 && (
-                            <div className="py-1" style={{ borderTop: `1px solid ${BORDER}` }}>
-                                <div className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide" style={{ color: MUTED }}>Stocks</div>
+                            <div className="border-t border-gray-100 py-1">
+                                <div className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide text-gray-400">Stocks</div>
                                 {filteredStocks.map((s) => (
                                     <button
                                         key={s}
                                         onClick={() => pick(s)}
-                                        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs font-medium hover:opacity-90"
-                                        style={{ color: s === symbol ? GREEN : TEXT, background: s === symbol ? "rgba(11,229,92,0.08)" : "transparent" }}
+                                        className={`flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs font-medium hover:bg-gray-50 ${s === symbol ? "bg-emerald-50 text-emerald-700" : "text-gray-900"}`}
                                     >
                                         {s}
-                                        <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold" style={{ background: SURFACE_2, color: MUTED }}>Historical</span>
+                                        <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[9px] font-semibold text-gray-400">Historical</span>
                                     </button>
                                 ))}
                             </div>
                         )}
                         {!filteredIndices.length && !filteredStocks.length && (
-                            <div className="px-3 py-8 text-center text-xs" style={{ color: MUTED }}>No matches</div>
+                            <div className="px-3 py-8 text-center text-xs text-gray-400">No matches</div>
                         )}
                     </div>
                 </>
@@ -444,7 +414,7 @@ export default function PaperTrade() {
                     }
                 },
                 modal: { ondismiss: () => setBusy(null) },
-                theme: { color: GREEN },
+                theme: { color: "#059669" },
             });
             rzp.on("payment.failed", (resp) => {
                 setError(resp.error?.description || "Payment failed");
@@ -611,7 +581,7 @@ export default function PaperTrade() {
 
     if (loading) {
         return (
-            <div className="flex min-h-[calc(100vh-57px)] items-center justify-center text-sm" style={{ background: BG, color: MUTED }}>
+            <div className="flex min-h-[calc(100vh-57px)] items-center justify-center bg-gray-50 text-sm text-gray-400">
                 Loading…
             </div>
         );
@@ -626,51 +596,49 @@ export default function PaperTrade() {
     const goToLogin = () => navigate("/login");
 
     return (
-        <div className="min-h-[calc(100vh-57px)] w-full" style={{ background: BG, color: TEXT }}>
+        <div className="min-h-[calc(100vh-57px)] w-full bg-gray-50 text-gray-900">
             <div className="mx-auto max-w-[1600px] px-4 py-4 sm:px-6">
                 {/* Header strip */}
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
                     <div className="flex flex-wrap items-center gap-4">
                         <div className="flex items-baseline gap-1 text-sm font-bold">
-                            
-                            <span className="ml-1 text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Paper Trading</span>
+                            <span className="ml-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400">Paper Trading</span>
                         </div>
                         <SymbolPicker symbol={symbol} symbolList={symbolList} onPick={setSymbol} />
                         {data && (
                             <div className="flex items-baseline gap-1.5 text-sm">
                                 <span className="font-bold tabular-nums">{formatPrice(data.spotPrice)}</span>
-                                <span className="tabular-nums" style={{ color: pnlColor(data.spotChange) }}>
+                                <span className={`tabular-nums ${pnlClass(data.spotChange)}`}>
                                     {data.spotChange != null ? `${data.spotChange >= 0 ? "▲" : "▼"} ${formatPrice(Math.abs(data.spotChange))} (${formatPercent(data.spotChangePercent)})` : ""}
                                 </span>
                             </div>
                         )}
                         {data?.vix != null && (
-                            <div className="text-xs" style={{ color: MUTED }}>VIX <span className="font-semibold tabular-nums" style={{ color: TEXT }}>{formatPrice(data.vix)}</span></div>
+                            <div className="text-xs text-gray-400">VIX <span className="font-semibold tabular-nums text-gray-900">{formatPrice(data.vix)}</span></div>
                         )}
                         {data?.futurePrice != null && (
-                            <div className="text-xs" style={{ color: MUTED }}>FUT <span className="font-semibold tabular-nums" style={{ color: TEXT }}>{formatPrice(data.futurePrice)}</span></div>
+                            <div className="text-xs text-gray-400">FUT <span className="font-semibold tabular-nums text-gray-900">{formatPrice(data.futurePrice)}</span></div>
                         )}
                     </div>
 
                     {wallet && (
                         <div className="flex flex-wrap items-center gap-3">
                             <div className="text-right">
-                                <div className="text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>Balance</div>
+                                <div className="text-[10px] uppercase tracking-wide text-gray-400">Balance</div>
                                 <div className="text-sm font-bold tabular-nums">{formatRupees(wallet.balance)}</div>
                             </div>
                             {wallet.isPro ? (
-                                <span className="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase" style={{ background: "rgba(245,166,35,0.15)", color: AMBER }}>Pro</span>
+                                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700">Pro</span>
                             ) : wallet.trialActive ? (
-                                <span className="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase" style={{ background: "rgba(11,229,92,0.15)", color: GREEN }}>{timeLeft(wallet.trialExpiresAt)}</span>
+                                <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-emerald-700">{timeLeft(wallet.trialExpiresAt)}</span>
                             ) : (
-                                <span className="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase" style={{ background: "rgba(235,9,11,0.15)", color: RED }}>Trial ended</span>
+                                <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-rose-700">Trial ended</span>
                             )}
                             {!wallet.isPro && (
                                 <button
                                     onClick={buyPro}
                                     disabled={busy === "pro"}
-                                    className="rounded-lg px-3 py-1.5 text-xs font-semibold text-black hover:opacity-90 disabled:opacity-50"
-                                    style={{ background: GREEN }}
+                                    className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
                                 >
                                     {busy === "pro" ? "Opening…" : "Get Pro — ₹499/mo"}
                                 </button>
@@ -679,8 +647,7 @@ export default function PaperTrade() {
                                 <button
                                     onClick={buyRefill}
                                     disabled={busy === "refill"}
-                                    className="rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
-                                    style={{ border: `1px solid ${GREEN}`, color: GREEN }}
+                                    className="rounded-lg border border-emerald-500 px-3 py-1.5 text-xs font-semibold text-emerald-600 hover:bg-emerald-50 disabled:opacity-50"
                                 >
                                     {busy === "refill" ? "Opening…" : "Refill ₹5L — ₹100"}
                                 </button>
@@ -690,8 +657,7 @@ export default function PaperTrade() {
                     {!wallet && !user && (
                         <button
                             onClick={goToLogin}
-                            className="rounded-lg px-4 py-1.5 text-xs font-semibold text-black hover:opacity-90"
-                            style={{ background: GREEN }}
+                            className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
                         >
                             Log in to start your 2-day free trial
                         </button>
@@ -699,25 +665,25 @@ export default function PaperTrade() {
                 </div>
 
                 {error && (
-                    <div className="mt-3 rounded-lg px-4 py-2 text-sm" style={{ background: "rgba(235,9,11,0.1)", border: `1px solid ${RED}`, color: "#ff8f90" }}>
+                    <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
                         {error}
                     </div>
                 )}
 
                 {wallet && !wallet.accessAllowed && (
-                    <div className="mt-3 rounded-full px-4 py-1.5 text-center text-xs font-semibold" style={{ background: "rgba(245,166,35,0.12)", color: AMBER }}>
+                    <div className="mt-3 rounded-full bg-amber-50 px-4 py-1.5 text-center text-xs font-semibold text-amber-700">
                         Get Pro above to keep trading — your free trial has ended.
                     </div>
                 )}
 
                 {!marketStatus?.isOpen && (
-                    <div className="mt-3 rounded-lg px-4 py-2 text-xs" style={{ background: "rgba(245,166,35,0.1)", border: `1px solid ${AMBER}`, color: AMBER }}>
+                    <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700">
                         Market is closed — buying/selling requires live market data, so it's disabled until the next session.
                     </div>
                 )}
 
                 {marketStatus?.isOpen && !isLiveSymbol && (
-                    <div className="mt-3 rounded-lg px-4 py-2 text-xs" style={{ background: "rgba(245,166,35,0.1)", border: `1px solid ${AMBER}`, color: AMBER }}>
+                    <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700">
                         {symbol} isn't live-streamed yet — only NIFTY, BANKNIFTY and FINNIFTY support paper trading right now. Showing {symbol}'s latest stored chain for reference.
                     </div>
                 )}
@@ -725,11 +691,11 @@ export default function PaperTrade() {
                 {/* Main grid */}
                 <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
                     {/* Left: option chain */}
-                    <div className="rounded-xl lg:col-span-2" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
-                        <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3" style={{ borderColor: BORDER }}>
+                    <div className="rounded-xl border border-gray-200 bg-white shadow-sm lg:col-span-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 px-4 py-3">
                             <div className="flex items-center gap-2">
-                                <span className="rounded-md px-3 py-1 text-xs font-semibold" style={{ background: SURFACE_2, color: TEXT, border: `1px solid ${BORDER}` }}>Option Chain</span>
-                                {data && <span className="text-xs" style={{ color: MUTED }}>Lot size {data.lotSize ?? "-"}</span>}
+                                <span className="rounded-md border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-semibold text-gray-900">Option Chain</span>
+                                {data && <span className="text-xs text-gray-400">Lot size {data.lotSize ?? "-"}</span>}
                             </div>
                             {data?.expiries?.length > 0 && (
                                 <div className="flex flex-wrap items-center gap-1.5">
@@ -741,12 +707,11 @@ export default function PaperTrade() {
                                             key={exp}
                                             disabled
                                             title={exp === data.selectedExpiry ? "Currently selected — live" : "Only the nearest expiry is tradeable live"}
-                                            className="rounded-full px-2.5 py-1 text-[11px] font-semibold"
-                                            style={
+                                            className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
                                                 exp === data.selectedExpiry
-                                                    ? { background: GREEN, color: "#031a0d" }
-                                                    : { background: SURFACE_2, color: MUTED, border: `1px solid ${BORDER}` }
-                                            }
+                                                    ? "bg-emerald-600 text-white"
+                                                    : "border border-gray-200 bg-gray-50 text-gray-400"
+                                            }`}
                                         >
                                             {exp}
                                         </button>
@@ -762,12 +727,12 @@ export default function PaperTrade() {
                         <div className="max-h-[560px] overflow-y-auto overflow-x-auto">
                             <table className="w-full text-xs">
                                 <thead>
-                                    <tr className="sticky top-0 z-10" style={{ color: MUTED, background: SURFACE }}>
+                                    <tr className="sticky top-0 z-10 bg-white text-gray-400">
                                         <th className="px-3 py-2 text-right font-medium">OI</th>
                                         <th className="px-3 py-2 text-right font-medium">Volume</th>
                                         <th className="px-3 py-2 text-right font-medium">IV</th>
                                         <th className="px-3 py-2 text-right font-medium">LTP</th>
-                                        <th className="px-3 py-2 text-center font-semibold" style={{ color: TEXT }}>Strike</th>
+                                        <th className="px-3 py-2 text-center font-semibold text-gray-900">Strike</th>
                                         <th className="px-3 py-2 text-left font-medium">LTP</th>
                                         <th className="px-3 py-2 text-left font-medium">IV</th>
                                         <th className="px-3 py-2 text-left font-medium">Volume</th>
@@ -781,66 +746,61 @@ export default function PaperTrade() {
                                             <tr
                                                 key={row.strike}
                                                 ref={isAtm ? atmRowRef : null}
-                                                className="border-t"
-                                                style={{
-                                                    ...(isAtm ? { background: "rgba(11,229,92,0.06)", boxShadow: `inset 0 0 0 1px ${AMBER}` } : {}),
-                                                    borderColor: BORDER,
-                                                }}
+                                                className={`border-t border-gray-100 ${isAtm ? "bg-emerald-50/60 ring-1 ring-inset ring-amber-400" : ""}`}
                                             >
-                                                <td className="px-3 py-1.5 text-right tabular-nums" style={{ color: MUTED }}>{formatOi(row.ce?.oi)}</td>
-                                                <td className="px-3 py-1.5 text-right tabular-nums" style={{ color: MUTED }}>{formatOi(row.ce?.volume)}</td>
-                                                <td className="px-3 py-1.5 text-right tabular-nums" style={{ color: MUTED }}>{row.ce?.iv != null ? `${Number(row.ce.iv).toFixed(1)}%` : "-"}</td>
+                                                <td className="px-3 py-1.5 text-right tabular-nums text-gray-400">{formatOi(row.ce?.oi)}</td>
+                                                <td className="px-3 py-1.5 text-right tabular-nums text-gray-400">{formatOi(row.ce?.volume)}</td>
+                                                <td className="px-3 py-1.5 text-right tabular-nums text-gray-400">{row.ce?.iv != null ? `${Number(row.ce.iv).toFixed(1)}%` : "-"}</td>
                                                 <td className="px-3 py-1.5">
                                                     <TradeCell strike={row.strike} optRight="CE" side={row.ce} loggedIn={!!user} canTrade={canTrade} onOpenTrade={openTrade} onLoginRequired={goToLogin} />
                                                 </td>
-                                                <td className="px-3 py-1.5 text-center font-semibold tabular-nums" style={{ color: isAtm ? GREEN : TEXT }}>{row.strike}</td>
+                                                <td className={`px-3 py-1.5 text-center font-semibold tabular-nums ${isAtm ? "text-emerald-600" : "text-gray-900"}`}>{row.strike}</td>
                                                 <td className="px-3 py-1.5">
                                                     <TradeCell strike={row.strike} optRight="PE" side={row.pe} loggedIn={!!user} canTrade={canTrade} onOpenTrade={openTrade} onLoginRequired={goToLogin} />
                                                 </td>
-                                                <td className="px-3 py-1.5 text-left tabular-nums" style={{ color: MUTED }}>{row.pe?.iv != null ? `${Number(row.pe.iv).toFixed(1)}%` : "-"}</td>
-                                                <td className="px-3 py-1.5 text-left tabular-nums" style={{ color: MUTED }}>{formatOi(row.pe?.volume)}</td>
-                                                <td className="px-3 py-1.5 text-left tabular-nums" style={{ color: MUTED }}>{formatOi(row.pe?.oi)}</td>
+                                                <td className="px-3 py-1.5 text-left tabular-nums text-gray-400">{row.pe?.iv != null ? `${Number(row.pe.iv).toFixed(1)}%` : "-"}</td>
+                                                <td className="px-3 py-1.5 text-left tabular-nums text-gray-400">{formatOi(row.pe?.volume)}</td>
+                                                <td className="px-3 py-1.5 text-left tabular-nums text-gray-400">{formatOi(row.pe?.oi)}</td>
                                             </tr>
                                         );
                                     })}
                                     {!data?.rows?.length && (
-                                        <tr><td colSpan={9} className="px-3 py-8 text-center text-sm" style={{ color: MUTED }}>No chain data.</td></tr>
+                                        <tr><td colSpan={9} className="px-3 py-8 text-center text-sm text-gray-400">No chain data.</td></tr>
                                     )}
                                 </tbody>
                             </table>
                         </div>
-                        <div className="flex flex-wrap items-center gap-4 border-t px-4 py-2 text-[11px]" style={{ borderColor: BORDER, color: MUTED }}>
-                            <span>Underlying: <span className="font-semibold tabular-nums" style={{ color: TEXT }}>{formatPrice(data?.spotPrice)}</span></span>
-                            <span>Max Pain: <span className="font-semibold tabular-nums" style={{ color: TEXT }}>{data?.maxPainStrike ?? "-"}</span></span>
-                            <span>PCR: <span className="font-semibold tabular-nums" style={{ color: TEXT }}>{data?.pcr ?? "-"}</span></span>
+                        <div className="flex flex-wrap items-center gap-4 border-t border-gray-200 px-4 py-2 text-[11px] text-gray-400">
+                            <span>Underlying: <span className="font-semibold tabular-nums text-gray-900">{formatPrice(data?.spotPrice)}</span></span>
+                            <span>Max Pain: <span className="font-semibold tabular-nums text-gray-900">{data?.maxPainStrike ?? "-"}</span></span>
+                            <span>PCR: <span className="font-semibold tabular-nums text-gray-900">{data?.pcr ?? "-"}</span></span>
                         </div>
                     </div>
 
                     {/* Right: P&L + positions */}
                     <div className="flex flex-col gap-4">
                         {!user ? (
-                            <div className="rounded-xl p-6 text-center" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
-                                <div className="text-sm font-bold" style={{ color: TEXT }}>Paper Trading P&L</div>
-                                <p className="mt-2 text-xs" style={{ color: MUTED }}>
+                            <div className="rounded-xl border border-gray-200 bg-white p-6 text-center shadow-sm">
+                                <div className="text-sm font-bold text-gray-900">Paper Trading P&L</div>
+                                <p className="mt-2 text-xs text-gray-400">
                                     Log in to start your 2-day free trial (₹50,000 virtual capital) and track real-time P&L and positions here.
                                 </p>
                                 <button
                                     onClick={goToLogin}
-                                    className="mt-4 rounded-lg px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
-                                    style={{ background: GREEN }}
+                                    className="mt-4 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
                                 >
                                     Log in to trade
                                 </button>
                             </div>
                         ) : (
                             <>
-                        <div className="rounded-xl p-4" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
-                            <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Paper Trading P&L</div>
-                            <div className="mt-1 text-2xl font-bold tabular-nums" style={{ color: pnlColor(totalPnl) }}>
+                        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">Paper Trading P&L</div>
+                            <div className={`mt-1 text-2xl font-bold tabular-nums ${pnlClass(totalPnl)}`}>
                                 {totalPnl != null ? formatRupees(totalPnl) : "—"}
                             </div>
                             {totalPnlPct != null && (
-                                <div className="text-xs font-semibold tabular-nums" style={{ color: pnlColor(totalPnl) }}>{formatPercent(totalPnlPct)}</div>
+                                <div className={`text-xs font-semibold tabular-nums ${pnlClass(totalPnl)}`}>{formatPercent(totalPnlPct)}</div>
                             )}
                             {equitySeries.length > 1 && (
                                 <div className="mt-2 h-16">
@@ -848,16 +808,16 @@ export default function PaperTrade() {
                                         <AreaChart data={equitySeries} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
                                             <defs>
                                                 <linearGradient id="ptEquity" x1="0" y1="0" x2="0" y2="1">
-                                                    <stop offset="0%" stopColor={GREEN} stopOpacity={0.4} />
-                                                    <stop offset="100%" stopColor={GREEN} stopOpacity={0} />
+                                                    <stop offset="0%" stopColor="var(--color-emerald-500)" stopOpacity={0.4} />
+                                                    <stop offset="100%" stopColor="var(--color-emerald-500)" stopOpacity={0} />
                                                 </linearGradient>
                                             </defs>
                                             <Tooltip
-                                                contentStyle={{ background: SURFACE_2, border: `1px solid ${BORDER}`, borderRadius: 8, fontSize: 11 }}
+                                                contentStyle={{ background: "var(--color-white)", border: "1px solid var(--color-gray-200)", borderRadius: 8, fontSize: 11, color: "var(--color-gray-900)" }}
                                                 labelFormatter={() => ""}
                                                 formatter={(v) => [formatRupees(v), "Balance"]}
                                             />
-                                            <Area type="monotone" dataKey="balance" stroke={GREEN} strokeWidth={2} fill="url(#ptEquity)" />
+                                            <Area type="monotone" dataKey="balance" stroke="var(--color-emerald-500)" strokeWidth={2} fill="url(#ptEquity)" />
                                         </AreaChart>
                                     </ResponsiveContainer>
                                 </div>
@@ -865,21 +825,20 @@ export default function PaperTrade() {
                         </div>
 
                         <div className="grid grid-cols-2 gap-3">
-                            <StatTile label="Total P&L" value={totalPnl != null ? formatRupees(totalPnl) : "—"} valueColor={pnlColor(totalPnl)} />
-                            <StatTile label="Today's P&L" value={formatRupees(todaysPnl)} valueColor={pnlColor(todaysPnl)} />
+                            <StatTile label="Total P&L" value={totalPnl != null ? formatRupees(totalPnl) : "—"} valueClassName={pnlClass(totalPnl)} />
+                            <StatTile label="Today's P&L" value={formatRupees(todaysPnl)} valueClassName={pnlClass(todaysPnl)} />
                             <StatTile label="Win Rate" value={winRate != null ? `${winRate.toFixed(0)}%` : "—"} />
                             <StatTile label="Capital Deployed" value={formatRupees(capitalDeployed)} />
                         </div>
 
-                        <div className="rounded-xl p-4" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+                        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                             <div className="flex items-center justify-between">
-                                <h2 className="text-sm font-bold">Positions ({positions.length})</h2>
+                                <h2 className="text-sm font-bold text-gray-900">Positions ({positions.length})</h2>
                                 {positions.length > 0 && (
                                     <button
                                         onClick={handleCloseAll}
                                         disabled={closingAll}
-                                        className="rounded-full px-2.5 py-1 text-[11px] font-semibold hover:opacity-90 disabled:opacity-50"
-                                        style={{ border: `1px solid ${RED}`, color: RED }}
+                                        className="rounded-full border border-rose-500 px-2.5 py-1 text-[11px] font-semibold text-rose-600 hover:bg-rose-50 disabled:opacity-50"
                                     >
                                         {closingAll ? "Closing…" : "Close All"}
                                     </button>
@@ -888,25 +847,24 @@ export default function PaperTrade() {
                             {positions.length ? (
                                 <div className="mt-3 space-y-2">
                                     {positions.map((p) => (
-                                        <div key={p.id} className="flex items-center justify-between rounded-lg px-3 py-2 text-xs" style={{ background: SURFACE_2, border: `1px solid ${BORDER}` }}>
+                                        <div key={p.id} className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs">
                                             <div>
-                                                <div className="font-semibold" style={{ color: TEXT }}>
+                                                <div className="font-semibold text-gray-900">
                                                     {p.symbol} {p.strike}{p.opt_right}
-                                                    <span className="ml-1 rounded px-1 py-0.5 text-[9px] font-bold uppercase" style={{ background: p.side === "short" ? "rgba(235,9,11,0.15)" : "rgba(11,229,92,0.15)", color: p.side === "short" ? RED : GREEN }}>
+                                                    <span className={`ml-1 rounded px-1 py-0.5 text-[9px] font-bold uppercase ${p.side === "short" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
                                                         {p.side === "short" ? "Short" : "Long"}
                                                     </span>
                                                 </div>
-                                                <div style={{ color: MUTED }}>Qty {p.lots} · Entry {formatPrice(p.entry_price)} · LTP {p.livePrice != null ? formatPrice(p.livePrice) : "—"}</div>
+                                                <div className="text-gray-400">Qty {p.lots} · Entry {formatPrice(p.entry_price)} · LTP {p.livePrice != null ? formatPrice(p.livePrice) : "—"}</div>
                                             </div>
                                             <div className="flex items-center gap-2">
-                                                <span className="font-semibold tabular-nums" style={{ color: pnlColor(p.unrealizedPnl) }}>
+                                                <span className={`font-semibold tabular-nums ${pnlClass(p.unrealizedPnl)}`}>
                                                     {p.unrealizedPnl != null ? formatRupees(p.unrealizedPnl) : "unavailable"}
                                                 </span>
                                                 <button
                                                     onClick={() => handleClose(p.id)}
                                                     disabled={closingId === p.id}
-                                                    className="rounded px-2 py-1 text-[10px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
-                                                    style={{ background: RED }}
+                                                    className="rounded bg-rose-600 px-2 py-1 text-[10px] font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
                                                 >
                                                     {closingId === p.id ? "…" : "Close"}
                                                 </button>
@@ -915,7 +873,7 @@ export default function PaperTrade() {
                                     ))}
                                 </div>
                             ) : (
-                                <p className="mt-3 text-sm" style={{ color: MUTED }}>No open positions.</p>
+                                <p className="mt-3 text-sm text-gray-400">No open positions.</p>
                             )}
                         </div>
                             </>
@@ -924,13 +882,13 @@ export default function PaperTrade() {
                 </div>
 
                 {/* Recent activity */}
-                <div className="mt-4 rounded-xl p-4" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
-                    <h2 className="mb-2 text-sm font-bold">Recent activity</h2>
+                <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                    <h2 className="mb-2 text-sm font-bold text-gray-900">Recent activity</h2>
                     {wallet?.ledger?.length ? (
                         <div className="overflow-x-auto">
                             <table className="w-full text-left text-xs">
                                 <thead>
-                                    <tr style={{ color: MUTED }}>
+                                    <tr className="text-gray-400">
                                         <th className="px-3 py-2 font-medium">When</th>
                                         <th className="px-3 py-2 font-medium">Type</th>
                                         <th className="px-3 py-2 text-right font-medium">Amount</th>
@@ -939,20 +897,20 @@ export default function PaperTrade() {
                                 </thead>
                                 <tbody>
                                     {wallet.ledger.map((row, i) => (
-                                        <tr key={i} className="border-t" style={{ borderColor: BORDER }}>
-                                            <td className="px-3 py-2" style={{ color: MUTED }}>{formatDateTime(row.created_at)}</td>
-                                            <td className="px-3 py-2" style={{ color: TEXT }}>{LEDGER_LABELS[row.type] || row.type}</td>
-                                            <td className="px-3 py-2 text-right tabular-nums" style={{ color: pnlColor(Number(row.amount)) }}>
+                                        <tr key={i} className="border-t border-gray-100">
+                                            <td className="px-3 py-2 text-gray-400">{formatDateTime(row.created_at)}</td>
+                                            <td className="px-3 py-2 text-gray-900">{LEDGER_LABELS[row.type] || row.type}</td>
+                                            <td className={`px-3 py-2 text-right tabular-nums ${pnlClass(Number(row.amount))}`}>
                                                 {Number(row.amount) >= 0 ? "+" : ""}{formatRupees(row.amount)}
                                             </td>
-                                            <td className="px-3 py-2 text-right tabular-nums" style={{ color: MUTED }}>{formatRupees(row.balance_after)}</td>
+                                            <td className="px-3 py-2 text-right tabular-nums text-gray-400">{formatRupees(row.balance_after)}</td>
                                         </tr>
                                     ))}
                                 </tbody>
                             </table>
                         </div>
                     ) : (
-                        <p className="text-sm" style={{ color: MUTED }}>No activity yet.</p>
+                        <p className="text-sm text-gray-400">No activity yet.</p>
                     )}
                 </div>
             </div>

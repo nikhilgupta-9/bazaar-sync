@@ -195,4 +195,117 @@ async function listAllStrategies(req, res) {
     }
 }
 
-module.exports = { listUsers, getUserDetail, getOverview, listPayments, listAllPositions, listAllStrategies };
+// --- Institute Access (IP allowlist) ---
+
+async function listInstituteIps(req, res) {
+    try {
+        const [rows] = await pool.query(
+            `SELECT a.id, a.ip_or_cidr, a.label, a.created_at, u.name AS created_by_name
+             FROM institute_ip_allowlist a LEFT JOIN users u ON u.id = a.created_by
+             ORDER BY a.created_at DESC`
+        );
+        res.json({ entries: rows });
+    } catch (err) {
+        console.error("[admin:listInstituteIps]", err);
+        res.status(500).json({ error: "failed to load institute IP allowlist" });
+    }
+}
+
+// Validates the entry shape server-side (not just relying on the DB's plain
+// VARCHAR column) since a malformed value would silently never match any
+// real request IP in instituteAccessService.js — better to reject it here.
+const IP_OR_CIDR_RE = /^((\d{1,3}\.){3}\d{1,3})(\/(\d|[1-2]\d|3[0-2]))?$|^[0-9a-fA-F:]+$/;
+
+async function addInstituteIp(req, res) {
+    try {
+        const { ipOrCidr, label } = req.body || {};
+        if (!ipOrCidr || !IP_OR_CIDR_RE.test(ipOrCidr.trim())) {
+            return res.status(400).json({ error: "enter a valid IPv4 address, IPv4 CIDR range, or IPv6 address" });
+        }
+        const [result] = await pool.query(
+            "INSERT INTO institute_ip_allowlist (ip_or_cidr, label, created_by) VALUES (?, ?, ?)",
+            [ipOrCidr.trim(), label || null, req.user.sub]
+        );
+        res.status(201).json({ id: result.insertId });
+    } catch (err) {
+        if (err.code === "ER_DUP_ENTRY") return res.status(409).json({ error: "this IP/range is already allowlisted" });
+        console.error("[admin:addInstituteIp]", err);
+        res.status(500).json({ error: "failed to add entry" });
+    }
+}
+
+async function removeInstituteIp(req, res) {
+    try {
+        await pool.query("DELETE FROM institute_ip_allowlist WHERE id = ?", [req.params.id]);
+        res.status(204).end();
+    } catch (err) {
+        console.error("[admin:removeInstituteIp]", err);
+        res.status(500).json({ error: "failed to remove entry" });
+    }
+}
+
+// --- Plans & Coupons ---
+
+async function listCoupons(req, res) {
+    try {
+        const [rows] = await pool.query(
+            `SELECT c.*, u.name AS created_by_name FROM coupons c
+             LEFT JOIN users u ON u.id = c.created_by ORDER BY c.created_at DESC`
+        );
+        res.json({ coupons: rows });
+    } catch (err) {
+        console.error("[admin:listCoupons]", err);
+        res.status(500).json({ error: "failed to load coupons" });
+    }
+}
+
+async function createCoupon(req, res) {
+    try {
+        const { code, discountType, discountValue, maxRedemptions, expiresAt } = req.body || {};
+        if (!code || !["percent", "flat"].includes(discountType) || !(Number(discountValue) > 0)) {
+            return res.status(400).json({ error: "code, discountType (percent/flat) and a positive discountValue are required" });
+        }
+        if (discountType === "percent" && Number(discountValue) > 100) {
+            return res.status(400).json({ error: "a percent discount can't exceed 100" });
+        }
+        const [result] = await pool.query(
+            `INSERT INTO coupons (code, discount_type, discount_value, max_redemptions, expires_at, created_by)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [code.trim().toUpperCase(), discountType, discountValue, maxRedemptions || null, expiresAt || null, req.user.sub]
+        );
+        res.status(201).json({ id: result.insertId });
+    } catch (err) {
+        if (err.code === "ER_DUP_ENTRY") return res.status(409).json({ error: "a coupon with this code already exists" });
+        console.error("[admin:createCoupon]", err);
+        res.status(500).json({ error: "failed to create coupon" });
+    }
+}
+
+// Only `active` is mutable after creation — changing discount terms on a
+// code that may already be in a customer's hands would be confusing; make a
+// new code instead.
+async function setCouponActive(req, res) {
+    try {
+        await pool.query("UPDATE coupons SET active = ? WHERE id = ?", [!!req.body?.active, req.params.id]);
+        res.status(204).end();
+    } catch (err) {
+        console.error("[admin:setCouponActive]", err);
+        res.status(500).json({ error: "failed to update coupon" });
+    }
+}
+
+async function deleteCoupon(req, res) {
+    try {
+        await pool.query("DELETE FROM coupons WHERE id = ?", [req.params.id]);
+        res.status(204).end();
+    } catch (err) {
+        console.error("[admin:deleteCoupon]", err);
+        res.status(500).json({ error: "failed to delete coupon" });
+    }
+}
+
+module.exports = {
+    listUsers, getUserDetail, getOverview, listPayments, listAllPositions, listAllStrategies,
+    listInstituteIps, addInstituteIp, removeInstituteIp,
+    listCoupons, createCoupon, setCouponActive, deleteCoupon,
+};

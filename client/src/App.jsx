@@ -10,9 +10,14 @@ import HistoricalChart from "./pages/HistoricalChart";
 import EquityData from "./pages/EquityData";
 import SectorRotation from "./pages/SectorRotation";
 import Pricing from "./pages/Pricing";
+import EventsPage from "./pages/Events";
+import Terms from "./pages/Terms";
 import Auth from "./pages/Auth";
+import { usePageSeo } from "./hooks/usePageSeo";
 
 function App() {
+    usePageSeo();
+
     return (
         <div className="flex min-h-screen flex-col bg-gray-50">
             <TopNav />
@@ -29,6 +34,8 @@ function App() {
                     <Route path="/equity-data/sector-rotation" element={<SectorRotation />} />
                     <Route path="/equity-data/:tool" element={<EquityData />} />
                     <Route path="/pricing" element={<Pricing />} />
+                    <Route path="/events" element={<EventsPage />} />
+                    <Route path="/terms" element={<Terms />} />
                     <Route path="/login" element={<Auth />} />
                     <Route path="*" element={<Navigate to="/option-chain" replace />} />
                 </Routes>

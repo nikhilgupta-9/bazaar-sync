@@ -1,0 +1,120 @@
+/* Landing page theme tokens — scoped to `.landing-page` (Home.jsx's root),
+   deliberately NOT touching the app-wide `.dark` toggle theme in index.css
+   (ThemeContext.jsx). Same self-contained-palette precedent PaperTrade.jsx
+   already set: this page is always dark regardless of the site's light/dark
+   toggle, since a premium fintech landing page reads as one fixed look, not
+   a themeable one. Values follow the fxreplay.com-style spec given: near-
+   black background (not gray-black), white/muted-gray text, blue accent
+   reserved for primary CTAs and active states only. */
+.landing-page {
+    --landing-bg: #050505;
+    --landing-bg-alt: #0a0a0a;
+    --landing-text: #ffffff;
+    --landing-text-muted: #8a8f98;
+    --landing-accent: #2f6fed;
+    --landing-accent-hover: #4a80f5;
+    --landing-card-bg: rgba(255, 255, 255, 0.03);
+    --landing-card-bg-hover: rgba(255, 255, 255, 0.05);
+    --landing-card-border: rgba(255, 255, 255, 0.08);
+    --landing-card-radius: 18px;
+    --font-headline: "Lato", system-ui, "Segoe UI", sans-serif;
+    --font-body: "Nunito Sans", system-ui, "Segoe UI", sans-serif;
+
+    background: var(--landing-bg);
+    color: var(--landing-text);
+    font-family: var(--font-body);
+}
+
+.landing-page .eyebrow {
+    font-family: var(--font-body);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--landing-text-muted);
+}
+
+.landing-page .headline {
+    font-family: var(--font-headline);
+    font-weight: 900;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+}
+
+.landing-page .headline-muted {
+    color: var(--landing-text-muted);
+    font-weight: 700;
+}
+
+.landing-page .landing-card {
+    background: var(--landing-card-bg);
+    border: 1px solid var(--landing-card-border);
+    border-radius: var(--landing-card-radius);
+    transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+
+.landing-page .landing-card:hover {
+    background: var(--landing-card-bg-hover);
+    border-color: rgba(255, 255, 255, 0.14);
+}
+
+.landing-page .landing-cta {
+    background: var(--landing-accent);
+    color: #ffffff;
+    font-family: var(--font-body);
+    transition: background 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+}
+
+.landing-page .landing-cta:hover {
+    background: var(--landing-accent-hover);
+    transform: scale(1.03);
+    box-shadow: 0 8px 30px rgba(47, 111, 237, 0.35);
+}
+
+/* Floating micro-interaction badges (Hero/PinnedWalkthrough mockups) —
+   plain CSS transition driven by IntersectionObserver toggling this class,
+   deliberately not GSAP (see the "keep it lightweight" instruction). */
+.landing-page .float-badge {
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 400ms ease, transform 400ms ease;
+}
+.landing-page .float-badge.in-view {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* PinnedWalkthrough's bottom tab bar — active tab (driven by GSAP
+   ScrollTrigger progress) gets the white-pill/dark-text treatment. */
+.landing-page .walkthrough-tab {
+    color: var(--landing-text-muted);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+}
+.landing-page .walkthrough-tab.active-tab {
+    background: #ffffff;
+    color: #050505;
+}
+
+/* prefers-reduced-motion fallback for PinnedWalkthrough — stacked steps
+   that fade in on scroll instead of pinning (StackedWalkthrough below). */
+.landing-page .fade-step {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 500ms ease, transform 500ms ease;
+}
+.landing-page .fade-step.in-view {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .landing-page .landing-cta:hover {
+        transform: none;
+    }
+    .landing-page .float-badge {
+        transition: opacity 200ms ease;
+        transform: none;
+    }
+}

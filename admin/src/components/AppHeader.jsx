@@ -6,7 +6,7 @@ import { useAdminAuth } from "../context/AdminAuthContext";
 // toggle on the left, a user menu on the right. Deliberately no
 // notification/message bell dropdowns like AdminLTE's reference — there's
 // no real notification/message data source behind them (project convention:
-// don't build UI ahead of what's real, see ComingSoon.jsx).
+// don't build UI ahead of what's real).
 export default function AppHeader({ onToggleSidebar }) {
     const { user, logout } = useAdminAuth();
     const [menuOpen, setMenuOpen] = useState(false);

@@ -36,8 +36,20 @@ const simulatorRoutes = require("./routes/simulator");
 const subscriptionRoutes = require("./routes/subscription");
 const paperTradeRoutes = require("./routes/paperTrade");
 const adminRoutes = require("./routes/admin");
+const eventsRoutes = require("./routes/events");
+const contentRoutes = require("./routes/content");
+const seoRoutes = require("./routes/seo");
 
 const app = express();
+
+// Institute IP allowlist (Phase 11, instituteAccessService.js) reads
+// req.ip — behind nginx in production that's the proxy's own IP unless
+// Express is told to trust the X-Forwarded-For header from it. Set
+// TRUST_PROXY=true in .env only in that deployment; left off (Express
+// default) in local dev where there's no reverse proxy.
+if (process.env.TRUST_PROXY === "true") {
+    app.set("trust proxy", true);
+}
 
 // 5174 is the separate admin/ app's dev port (Phase 10) — a genuinely
 // different app/deployment from client/'s 5173, not a route inside it. In
@@ -95,6 +107,9 @@ app.use("/api/simulator", simulatorRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/paper-trade", paperTradeRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/events", eventsRoutes);
+app.use("/api/content", contentRoutes);
+app.use("/api/seo", seoRoutes);
 
 // 404 handler
 app.use((req, res) => {

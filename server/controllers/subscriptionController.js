@@ -1,5 +1,6 @@
 const razorpayService = require("../services/razorpayService");
 const subscriptionService = require("../services/subscriptionService");
+const couponService = require("../services/couponService");
 const { PRO_PLANS } = require("../config/paperTradeConfig");
 
 function findPlan(planId) {
@@ -18,12 +19,25 @@ async function createProOrder(req, res) {
         const plan = findPlan(planId);
         if (!plan) return res.status(400).json({ error: "invalid plan" });
 
+        let amountPaise = plan.priceInPaise;
+        let couponCode = null;
+        if (req.body?.couponCode) {
+            try {
+                const result = await couponService.validateCoupon(req.body.couponCode, plan.priceInPaise);
+                amountPaise = result.finalAmountPaise;
+                couponCode = result.coupon.code;
+            } catch (err) {
+                return res.status(err.status || 400).json({ error: err.message });
+            }
+        }
+
         const order = await razorpayService.createOrder({
-            amountPaise: plan.priceInPaise,
+            amountPaise,
             receipt: `pro_${req.user.sub}_${Date.now()}`,
             // Stashed server-side now so verifyProPayment can learn the plan
-            // back from Razorpay itself later, never from client input.
-            notes: { planId: plan.id, userId: String(req.user.sub) },
+            // (and which coupon, if any, was actually applied) back from
+            // Razorpay itself later, never from client input.
+            notes: { planId: plan.id, userId: String(req.user.sub), couponCode: couponCode || "" },
         });
         res.json(order);
     } catch (err) {
@@ -59,6 +73,24 @@ async function verifyProPayment(req, res) {
             razorpayPaymentId: razorpay_payment_id,
             days: plan.days,
         });
+
+        // Redeem the coupon only now that payment is actually confirmed —
+        // never at order-creation time, so an abandoned checkout never
+        // consumes a redemption. order.amount is what was actually charged
+        // (the discounted amount); the discount itself is plan.priceInPaise
+        // minus that.
+        if (order.notes?.couponCode) {
+            try {
+                const discountPaise = Math.max(0, plan.priceInPaise - Number(order.amount));
+                await couponService.redeemCouponByCode(order.notes.couponCode, req.user.sub, razorpay_payment_id, discountPaise);
+            } catch (err) {
+                // Payment already succeeded and Pro is already granted — a
+                // redemption-bookkeeping failure here shouldn't fail the
+                // whole request, just log it for manual follow-up.
+                console.error("[subscription:verifyProPayment] coupon redemption failed", err);
+            }
+        }
+
         const { password_hash, ...safeUser } = user;
         res.json({ user: safeUser });
     } catch (err) {

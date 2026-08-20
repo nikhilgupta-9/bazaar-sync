@@ -255,6 +255,104 @@ CREATE TABLE IF NOT EXISTS paper_wallet_ledger (
 --   ALTER TABLE paper_positions
 --     ADD COLUMN side ENUM('long','short') NOT NULL DEFAULT 'long' AFTER opt_right,
 --     ADD COLUMN margin_blocked DECIMAL(14,2) NULL AFTER entry_price;
+-- ---------------------------------------------------------------------------
+-- Phase 11: remaining admin-panel sections (Institute Access, Plans &
+-- Coupons, Events, T&C, SEO Tool) — see CLAUDE.md. All management is
+-- requireAuth+requireAdmin; only events/site_content/seo_meta have a public
+-- read side (published content, current T&C text, per-page meta tags).
+-- ---------------------------------------------------------------------------
+
+-- Institute free access: an allowlisted IP or CIDR range (e.g.
+-- '203.0.113.0/24') grants a logged-in user Pro-equivalent access for
+-- requests from that network — see services/instituteAccessService.js. Not
+-- MAC-based (browsers don't expose device MAC addresses to a website).
+CREATE TABLE IF NOT EXISTS institute_ip_allowlist (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  ip_or_cidr VARCHAR(45) NOT NULL UNIQUE,   -- IPv4 exact ('203.0.113.5') or CIDR ('203.0.113.0/24'); IPv6 exact-match only
+  label VARCHAR(150),                       -- e.g. institute/college name, admin-facing only
+  created_by BIGINT UNSIGNED,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- Coupon codes against the existing PRO_PLANS catalog (paperTradeConfig.js)
+-- — NOT a second pricing-plan system, per the user's explicit scope choice
+-- (2026-08-20): plans stay exactly as they are, coupons just discount the
+-- Razorpay order amount at checkout. See services/couponService.js.
+CREATE TABLE IF NOT EXISTS coupons (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  code VARCHAR(30) NOT NULL UNIQUE,
+  discount_type ENUM('percent','flat') NOT NULL,
+  discount_value DECIMAL(10,2) NOT NULL,    -- percent: 0-100; flat: rupees
+  max_redemptions INT,                      -- NULL = unlimited
+  redemption_count INT NOT NULL DEFAULT 0,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  expires_at DATETIME,
+  created_by BIGINT UNSIGNED,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- One row per successful redemption. razorpay_payment_id is UNIQUE — same
+-- idempotency guard convention as paper_wallet_ledger, so a retried verify
+-- call can never double-count a redemption against max_redemptions.
+CREATE TABLE IF NOT EXISTS coupon_redemptions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  coupon_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  razorpay_payment_id VARCHAR(64) NOT NULL UNIQUE,
+  discount_paise INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (coupon_id) REFERENCES coupons(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Simple announcement/webinar listing, admin-managed, shown on the public
+-- /events page — no registration/ticketing.
+CREATE TABLE IF NOT EXISTS events (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  title VARCHAR(200) NOT NULL,
+  description TEXT,
+  event_date DATE NOT NULL,
+  event_time TIME,
+  link VARCHAR(500),
+  is_published BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by BIGINT UNSIGNED,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+  KEY idx_published_date (is_published, event_date)
+) ENGINE=InnoDB;
+
+-- Generic slug->content store. Only 'terms' is used today (T&C editor); the
+-- shape generalizes to other legal/static pages later without a new table.
+CREATE TABLE IF NOT EXISTS site_content (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  slug VARCHAR(50) NOT NULL UNIQUE,
+  title VARCHAR(150),
+  content LONGTEXT,
+  updated_by BIGINT UNSIGNED,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- Per-page meta tags (SEO Tool). `path` is a client route like '/', '/pricing',
+-- '/events' — client/src/hooks/usePageSeo.js fetches by current path and sets
+-- document.title + <meta description>/<meta og:image> on route change. This
+-- is a client-side-only SPA, no server-side rendering — so these tags help
+-- JS-executing crawlers (Googlebot) but not simpler ones; stated honestly,
+-- not oversold as full SSR-grade SEO.
+CREATE TABLE IF NOT EXISTS seo_meta (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  path VARCHAR(255) NOT NULL UNIQUE,
+  title VARCHAR(200),
+  description VARCHAR(500),
+  og_image VARCHAR(500),
+  updated_by BIGINT UNSIGNED,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS paper_positions (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT UNSIGNED NOT NULL,

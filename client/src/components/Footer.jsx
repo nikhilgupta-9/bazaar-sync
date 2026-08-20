@@ -39,6 +39,8 @@ export default function Footer() {
                     <div className="mb-2 font-semibold text-gray-900">More</div>
                     <ul className="space-y-1.5">
                         <li><Link to="/pricing" className="hover:text-blue-600">Pricing</Link></li>
+                        <li><Link to="/events" className="hover:text-blue-600">Events</Link></li>
+                        <li><Link to="/terms" className="hover:text-blue-600">Terms & Conditions</Link></li>
                         <li><Link to="/login" className="hover:text-blue-600">Log in / Sign up</Link></li>
                     </ul>
                 </div>
