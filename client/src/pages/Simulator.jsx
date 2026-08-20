@@ -256,6 +256,7 @@ export default function Simulator() {
   // via the picker shouldn't keep re-applying "prev".
   const [searchParams, setSearchParams] = useSearchParams();
   const initialJumpRef = useRef(searchParams.get("jump"));
+  const atmRowRef = useRef(null);
   const [symbol, setSymbol] = useState(() => searchParams.get("symbol")?.toUpperCase() || "NIFTY");
   const [dates, setDates] = useState([]); // DESC (most recent first), per /dates
   const [datesLoaded, setDatesLoaded] = useState(false); // distinguishes "still fetching" from "fetched, genuinely empty"
@@ -871,6 +872,22 @@ export default function Simulator() {
     [liveChain, chainData],
   );
   const displaySpot = liveChain?.spotPrice ?? chainData?.spotPrice;
+
+  function scrollToAtm(behavior = "smooth") {
+    atmRowRef.current?.scrollIntoView({ behavior, block: "center" });
+  }
+
+  // Auto-center the chain on the SPOT/ATM row as soon as a chain loads for a
+  // fresh symbol/date/expiry (page open, symbol switch, date-picker pick, or
+  // expiry-tab switch) — same pattern StrategyBuilder.jsx/OptionChain.jsx
+  // already use. Keyed off chainData.date (not liveChain, which also updates
+  // on every scrub-time tick during playback) so scrubbing/autoplay never
+  // yanks the user's scroll position mid-session.
+  useEffect(() => {
+    if (!chainData?.rows?.length) return;
+    const raf = requestAnimationFrame(() => scrollToAtm("instant"));
+    return () => cancelAnimationFrame(raf);
+  }, [chainData?.date, chainData?.selectedExpiry, symbol]);
   const maxCeOi = Math.max(0, ...displayRows.map((r) => r.ce?.oi || 0));
   const maxPeOi = Math.max(0, ...displayRows.map((r) => r.pe?.oi || 0));
   const currentPoint = replayData?.series?.[cursor];
@@ -1726,7 +1743,8 @@ export default function Simulator() {
                     return (
                       <tr
                         key={row.strike}
-                        className={`border-b border-gray-100/70 ${isAtm ? "bg-blue-50/60 font-semibold" : "hover:bg-gray-50/80"}`}
+                        ref={isAtm ? atmRowRef : null}
+                        className={`border-b border-gray-100/70 ${isAtm ? "bg-blue-50/70 font-semibold border-l-4 border-l-blue-500 ring-1 ring-inset ring-blue-200" : "hover:bg-gray-50/80"}`}
                       >
                         {columns.gamma && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.gamma)}</td>}
                         {columns.vega && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.vega)}</td>}

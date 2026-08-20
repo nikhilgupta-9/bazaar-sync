@@ -13,6 +13,9 @@ server/logs/
 # Angel One scrip-master disk cache (large, refreshed daily)
 server/data/
 
+# Admin-uploaded content images (Home page editor — server/middleware/upload.js)
+server/uploads/
+
 # Mac
 .DS_Store
 

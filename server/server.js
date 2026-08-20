@@ -16,6 +16,7 @@
 
 const express = require("express");
 const http = require("http");
+const path = require("path");
 const cors = require("cors");
 require("dotenv").config();
 
@@ -70,6 +71,12 @@ app.use(
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Admin-uploaded content images (Home page hero/about/tool-card pictures —
+// see middleware/upload.js). Plain static serving, same box as the API in
+// every deployment this project has (README.md's Hostinger VPS guide) — no
+// CDN/cloud storage exists here.
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Request logging middleware
 app.use((req, res, next) => {

@@ -11,6 +11,7 @@ import Plans from "./pages/Plans";
 import Events from "./pages/Events";
 import Terms from "./pages/Terms";
 import Seo from "./pages/Seo";
+import HomePage from "./pages/HomePage";
 
 export default function App() {
     return (
@@ -22,6 +23,7 @@ export default function App() {
                 <Route path="/payments" element={<Payments />} />
                 <Route path="/positions" element={<Positions />} />
                 <Route path="/strategies" element={<Strategies />} />
+                <Route path="/home-page" element={<HomePage />} />
                 <Route path="/institute-access" element={<InstituteAccess />} />
                 <Route path="/plans" element={<Plans />} />
                 <Route path="/events" element={<Events />} />

@@ -1,8 +1,13 @@
 // controllers/contentController.js — generic slug->content editor (site_content
-// table). Only 'terms' is used today (T&C editor), see CLAUDE.md Phase 11.
+// table). 'terms' is the plain-text T&C editor (CLAUDE.md Phase 11); 'home'
+// (added later) stores the Home page's editable copy/images as a JSON blob
+// in the same LONGTEXT `content` column — client/src/pages/Home.jsx parses
+// it and merges over its own hardcoded defaults, so an empty/never-edited
+//'home' row (or a row missing a given field) still renders the original
+// page, never a blank section.
 const { pool } = require("../config/db");
 
-const ALLOWED_SLUGS = ["terms"];
+const ALLOWED_SLUGS = ["terms", "home"];
 
 // Public — returns null fields (not 404) when nothing's been written yet,
 // so the client page can show "not published yet" instead of erroring.
@@ -35,4 +40,16 @@ async function updateContent(req, res) {
     }
 }
 
-module.exports = { getContent, updateContent };
+// POST /api/content/uploads — admin-only image upload backing the Home page
+// editor (hero/about/tool-card images). multer has already written the file
+// to server/uploads/ by the time this runs (see middleware/upload.js); this
+// just reports back the public URL the client should store in the JSON
+// content it saves via PUT /api/content/home.
+function uploadImage(req, res) {
+    if (!req.file) {
+        return res.status(400).json({ error: "No image file uploaded" });
+    }
+    res.json({ url: `/uploads/${req.file.filename}` });
+}
+
+module.exports = { getContent, updateContent, uploadImage };

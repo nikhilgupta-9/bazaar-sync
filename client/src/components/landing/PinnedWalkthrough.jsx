@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import DashboardMockup from "./DashboardMockup";
+import SectionVisual from "./SectionVisual";
 import useInView from "./useInView";
 
 gsap.registerPlugin(ScrollTrigger);
@@ -35,7 +35,7 @@ function StackedStep({ step, index }) {
                 <h3 className="headline mt-3 text-3xl">{step.title}</h3>
                 <p className="mt-4 text-sm leading-relaxed" style={{ color: "var(--landing-text-muted)" }}>{step.description}</p>
             </div>
-            <DashboardMockup variant={index} />
+            <SectionVisual image={step.image} variant={index} />
         </div>
     );
 }
@@ -109,7 +109,7 @@ export default function PinnedWalkthrough({ steps }) {
                             <h3 className="headline mt-3 text-3xl sm:text-4xl">{step.title}</h3>
                             <p className="mt-4 text-sm leading-relaxed" style={{ color: "var(--landing-text-muted)" }}>{step.description}</p>
                         </div>
-                        <DashboardMockup variant={i} />
+                        <SectionVisual image={step.image} variant={i} />
                     </div>
                 </div>
             ))}

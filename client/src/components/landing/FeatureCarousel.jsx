@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import useEmblaCarousel from "embla-carousel-react";
 import { Link } from "react-router-dom";
 import ToolIcon from "../ToolIcon";
+import { resolveImageUrl } from "../../services/contentApi";
 
 export default function FeatureCarousel({ features }) {
     const [emblaRef, emblaApi] = useEmblaCarousel({ align: "start", containScroll: "trimSnaps" });
@@ -54,9 +55,13 @@ export default function FeatureCarousel({ features }) {
                             className="landing-card flex-[0_0_260px] p-5 sm:flex-[0_0_280px]"
                         >
                             <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg" style={{ background: "rgba(255,255,255,0.06)" }}>
-                                <div className="h-5 w-5">
-                                    <ToolIcon name={f.icon} />
-                                </div>
+                                {f.image ? (
+                                    <img src={resolveImageUrl(f.image)} alt="" className="h-full w-full object-cover" />
+                                ) : (
+                                    <div className="h-5 w-5">
+                                        <ToolIcon name={f.icon} />
+                                    </div>
+                                )}
                             </div>
                             <div className="mt-4 text-sm font-bold" style={{ fontFamily: "var(--font-headline)" }}>{f.title}</div>
                             <div className="mt-1.5 text-xs leading-relaxed" style={{ color: "var(--landing-text-muted)" }}>{f.desc}</div>

@@ -1,7 +1,7 @@
 import { NavLink } from "react-router-dom";
 import {
     FiGrid, FiUsers, FiCreditCard, FiTrendingUp, FiFileText,
-    FiMapPin, FiTag, FiCalendar, FiBook, FiSearch, FiX,
+    FiMapPin, FiTag, FiCalendar, FiBook, FiSearch, FiX, FiLayout,
 } from "react-icons/fi";
 
 const LIVE_LINKS = [
@@ -17,6 +17,7 @@ const LIVE_LINKS = [
 // than merged into Menu above, since they're management/config tools
 // (site-wide settings) rather than the operational-data views above.
 const MANAGEMENT_LINKS = [
+    { to: "/home-page", label: "Home Page", icon: FiLayout },
     { to: "/institute-access", label: "Institute Access", icon: FiMapPin },
     { to: "/plans", label: "Plans & Coupons", icon: FiTag },
     { to: "/events", label: "Events", icon: FiCalendar },

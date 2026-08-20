@@ -3,14 +3,24 @@
 // blue-accent-on-CTAs-only). Scoped to `.landing-page` (theme.css) so this
 // look doesn't leak into the rest of the app, which stays light-themed —
 // same self-contained-dark-palette precedent PaperTrade.jsx already set.
-// All copy/content below is grounded in tools that actually exist in this
-// app (data/tools.js) — no fabricated features, same convention the old
-// stockmojo-style homepage this replaces already followed.
+//
+// Every section's text and images are admin-editable from the admin panel
+// (admin/src/pages/HomePage.jsx -> PUT /api/content/home, site_content
+// table). This fetches that override JSON and deep-merges it over
+// data/homeContentDefaults.js's original hardcoded copy — an admin who
+// hasn't opened the editor yet (or left a field blank) still gets the exact
+// original page, never a blank/broken section (fetch failure falls back the
+// same way). The six tool cards (walkthrough + carousel) stay grounded in
+// data/tools.js's real routes — the admin editor can only override each
+// tool's title/desc/image, never invent a new card pointing nowhere.
+import { useEffect, useState } from "react";
 import "../components/landing/theme.css";
 import Hero from "../components/landing/Hero";
 import PinnedWalkthrough from "../components/landing/PinnedWalkthrough";
 import FeatureCarousel from "../components/landing/FeatureCarousel";
 import { TOOLS } from "../data/tools";
+import { HOME_CONTENT_DEFAULTS, mergeHomeContent } from "../data/homeContentDefaults";
+import { fetchHomeContent, resolveImageUrl } from "../services/contentApi";
 
 const EYEBROWS = {
     "/option-chain": "Live Data",
@@ -21,18 +31,43 @@ const EYEBROWS = {
     "/equity-data": "Equity Data",
 };
 
-const WALKTHROUGH_STEPS = TOOLS.map((t) => ({
-    eyebrow: EYEBROWS[t.to] || "Tool",
-    title: t.title,
-    description: t.desc,
-}));
-
-const CAROUSEL_FEATURES = TOOLS.map((t) => ({ ...t, icon: t.icon || "chain" }));
+function buildToolCards(toolOverrides) {
+    return TOOLS.map((t) => {
+        const o = toolOverrides[t.to] || {};
+        return {
+            ...t,
+            title: o.title || t.title,
+            desc: o.desc || t.desc,
+            image: o.image || null,
+            icon: t.icon || "chain",
+        };
+    });
+}
 
 export default function Home() {
+    const [content, setContent] = useState(HOME_CONTENT_DEFAULTS);
+
+    useEffect(() => {
+        let cancelled = false;
+        fetchHomeContent()
+            .then((overrides) => {
+                if (!cancelled) setContent(mergeHomeContent(overrides));
+            })
+            .catch(() => { /* keep defaults — see file header */ });
+        return () => { cancelled = true; };
+    }, []);
+
+    const toolCards = buildToolCards(content.tools);
+    const walkthroughSteps = toolCards.map((t) => ({
+        eyebrow: EYEBROWS[t.to] || "Tool",
+        title: t.title,
+        description: t.desc,
+        image: t.image,
+    }));
+
     return (
         <div className="landing-page">
-            <Hero />
+            <Hero {...content.hero} />
 
             <div className="eyebrow mx-auto max-w-5xl px-6 pt-24 text-center">How it works</div>
             <h2 className="headline mx-auto mt-3 max-w-3xl px-6 text-center text-3xl sm:text-4xl">
@@ -40,33 +75,30 @@ export default function Home() {
             </h2>
 
             <div className="pt-16">
-                <PinnedWalkthrough steps={WALKTHROUGH_STEPS} />
+                <PinnedWalkthrough steps={walkthroughSteps} />
             </div>
 
             <div className="py-28">
-                <FeatureCarousel features={CAROUSEL_FEATURES} />
+                <FeatureCarousel features={toolCards} />
             </div>
 
             {/* Closing About section — same accurate copy the previous
                 homepage had, restyled to match this page's dark theme. */}
             <section className="mx-auto max-w-3xl px-6 pb-32 pt-8">
-                <div className="landing-card p-8">
-                    <h2 className="headline text-xl">About Bazaar Sync</h2>
-                    <p className="mt-4 text-sm leading-relaxed" style={{ color: "var(--landing-text-muted)" }}>
-                        Bazaar Sync is an options analytics and backtesting platform built for NSE F&amp;O traders.
-                        It turns Nifty, BankNifty and FinNifty options data into the live dashboards and strategy
-                        tools you'd otherwise have to build yourself in a spreadsheet — live option chain with IV
-                        and Greeks computed by our own Black-Scholes engine, a multi-leg Strategy Builder with
-                        real-time payoff/breakevens, a Simulator that replays real past days minute by minute, and
-                        a Backtesting engine that runs entirely on stored historical NSE data, never a live broker
-                        call. Paper Trade lets you run a strategy forward with virtual capital against real prices,
-                        so results don't move under you.
-                    </p>
-                    <p className="mt-4 text-sm leading-relaxed" style={{ color: "var(--landing-text-muted)" }}>
-                        Built for active NSE options traders who want live index and options analytics without a
-                        Bloomberg terminal, and anyone who wants to test a strategy against real history before
-                        risking capital on it.
-                    </p>
+                <div className="landing-card overflow-hidden p-8">
+                    {content.about.image && (
+                        <img
+                            src={resolveImageUrl(content.about.image)}
+                            alt=""
+                            className="-mx-8 -mt-8 mb-6 h-auto w-[calc(100%+4rem)] object-cover"
+                        />
+                    )}
+                    <h2 className="headline text-xl">{content.about.heading}</h2>
+                    {content.about.paragraphs.map((p, i) => (
+                        <p key={i} className="mt-4 text-sm leading-relaxed" style={{ color: "var(--landing-text-muted)" }}>
+                            {p}
+                        </p>
+                    ))}
                 </div>
             </section>
         </div>

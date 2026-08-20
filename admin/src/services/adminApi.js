@@ -118,6 +118,19 @@ export async function saveContent(token, slug, payload) {
     }));
 }
 
+// --- Image uploads (Home Page editor) ---
+// multipart/form-data — no Content-Type header set manually, the browser
+// fills in the multipart boundary itself when the body is a FormData.
+export async function uploadContentImage(token, file) {
+    const form = new FormData();
+    form.append("image", file);
+    return handle(await fetch(`${API_URL}/api/content/uploads`, {
+        method: "POST",
+        headers: authed(token).headers,
+        body: form,
+    }));
+}
+
 // --- SEO meta ---
 
 export async function fetchAllSeoMeta(token) {

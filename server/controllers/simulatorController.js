@@ -8,6 +8,17 @@
 // Never touches Angel One.
 const { pool } = require("../config/db");
 
+// listDates scans every row for a symbol (NIFTY alone is 6M+ rows after
+// Phase 7's backfills) to compute a per-date distinct-snapshot count — even
+// with idx_symbol_date_time in place, that's an ~8s covering-index scan,
+// not something to redo on every Simulator page load. The underlying data
+// is effectively append-only (only nightly cron/backfill scripts add rows;
+// nothing edits a past date's rows in place), so a short TTL cache is safe
+// and turns every repeat load (same user switching back, another user on
+// the same symbol) instant. Same in-memory-Map convention as marketCache.js.
+const DATES_CACHE_TTL_MS = 10 * 60 * 1000;
+const datesCache = new Map(); // symbol -> { expiresAt, payload }
+
 function computeAtmStrike(strikes, spot) {
     if (!strikes.length || spot == null) return null;
     return strikes.reduce((best, s) => (Math.abs(s - spot) < Math.abs(best - spot) ? s : best), strikes[0]);
@@ -76,14 +87,31 @@ async function listDates(req, res) {
     try {
         const symbol = resolveSymbol(req, res);
         if (!symbol) return;
+
+        const cached = datesCache.get(symbol);
+        if (cached && cached.expiresAt > Date.now()) {
+            return res.json(cached.payload);
+        }
+
+        // FORCE INDEX: the optimizer's row-count estimate for idx_backtest_range
+        // (symbol, expiry, trade_date, trade_time) makes it look cheaper than
+        // idx_symbol_date_time here, but expiry sitting before trade_date in
+        // that index means MySQL can't stream trade_date-grouped order from it
+        // and falls back to a full filesort over every row for the symbol
+        // (measured ~13s for NIFTY). idx_symbol_date_time (symbol, trade_date,
+        // trade_time) was built for exactly this query and needs to be forced.
         const [rows] = await pool.query(
             `SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
-             FROM option_chain_history WHERE symbol = ? GROUP BY trade_date ORDER BY trade_date DESC`,
+             FROM option_chain_history FORCE INDEX (idx_symbol_date_time)
+             WHERE symbol = ? GROUP BY trade_date ORDER BY trade_date DESC`,
             [symbol]
         );
         const dates = rows.map((r) => r.trade_date);
         const sparseDates = rows.filter((r) => Number(r.snapshotCount) <= 1).map((r) => r.trade_date);
-        res.json({ symbol, dates, sparseDates });
+        const payload = { symbol, dates, sparseDates };
+
+        datesCache.set(symbol, { expiresAt: Date.now() + DATES_CACHE_TTL_MS, payload });
+        res.json(payload);
     } catch (err) {
         console.error("[simulator/dates]", err);
         res.status(500).json({ error: err.message });
