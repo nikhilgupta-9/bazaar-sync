@@ -13,6 +13,13 @@
 export function legMultiplier(leg) {
     return leg.qty * (leg.lotSize || 1);
 }
+
+// Flips a leg's side in place ('buy' <-> 'sell') — the single shared rule
+// both StrategyBuilder.jsx and Simulator.jsx use for their clickable B/S
+// position-side chip, so the flip logic isn't duplicated per page.
+export function otherAction(action) {
+    return action === "buy" ? "sell" : "buy";
+}
 //
 // Multi-expiry legs (e.g. a calendar spread: sell a near-dated call, buy a
 // far-dated one at the same strike) are supported: the "expiry" payoff curve

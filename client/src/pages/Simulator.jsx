@@ -30,6 +30,7 @@ import {
   computeExpectedMove,
   computePOP,
   evaluationExpiryOf,
+  otherAction,
 } from "../utils/payoff";
 import { yearsToExpiry } from "../utils/blackScholes";
 import OiBar from "../components/OiBar";
@@ -663,6 +664,17 @@ export default function Simulator() {
   function toggleLegActive(id) {
     setLegs((prev) =>
       prev.map((l) => (l.id === id ? { ...l, active: !l.active } : l)),
+    );
+  }
+
+  // Flips a leg's side in place (Buy <-> Sell) without deleting/re-adding it
+  // — same convention as StrategyBuilder.jsx's identical function. Locked
+  // once a replay has run, same as every other leg edit in this page (see
+  // the `replayData` guards on updateQty/rollLegStrike/etc above).
+  function toggleLegSide(id) {
+    if (replayData) return;
+    setLegs((prev) =>
+      prev.map((l) => (l.id === id ? { ...l, action: otherAction(l.action) } : l)),
     );
   }
 
@@ -1736,6 +1748,8 @@ export default function Simulator() {
                     const isAtm =
                       row.strike ===
                       (liveChain?.atmStrike ?? chainData?.atmStrike);
+                    const ceItm = displaySpot != null && row.strike < displaySpot;
+                    const peItm = displaySpot != null && row.strike > displaySpot;
                     const ceLeg = legsAt(row.strike, "CE")[0] || null;
                     const peLeg = legsAt(row.strike, "PE")[0] || null;
                     const ceNet = netPositionAt(row.strike, "CE");
@@ -1751,13 +1765,13 @@ export default function Simulator() {
                         {columns.theta && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.theta)}</td>}
                         {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.iv != null ? `${row.ce.iv.toFixed(1)}%` : "-"}</td>}
                         {columns.callDelta && (
-                          <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">
+                          <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-[#FFFEE5]" : ""}`}>
                             {formatDelta(row.ce?.delta)}
                           </td>
                         )}
-                        <td className="group px-1.5 py-1.5 text-right tabular-nums relative">
+                        <td className={`group px-1.5 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-[#FFFEE5]" : ""}`}>
                           {ceNet !== 0 && (
-                            <span className={`absolute -top-0.5 right-0.5 z-[1] rounded px-1 text-[8px] font-bold leading-tight ${ceNet > 0 ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"}`}>
+                            <span className={`absolute -top-0.5 right-0.5 z-[1] rounded-full border bg-white px-1 text-[8px] font-bold leading-tight ${ceNet > 0 ? "border-[#52C41A] text-[#52C41A]" : "border-[#FF4D4F] text-[#FF4D4F]"}`}>
                               {ceNet > 0 ? `+${ceNet}` : ceNet}
                             </span>
                           )}
@@ -1775,13 +1789,13 @@ export default function Simulator() {
                               <>
                                 <button
                                   onClick={() => addLeg(row, "CE", "buy")}
-                                  className="rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 px-1.5 py-0.5 text-[9px] font-extrabold"
+                                  className="rounded border border-[#52C41A] text-[#52C41A] hover:bg-[#52C41A] hover:text-white px-1.5 py-0.5 text-[9px] font-extrabold transition-colors"
                                 >
                                   B
                                 </button>
                                 <button
                                   onClick={() => addLeg(row, "CE", "sell")}
-                                  className="rounded border border-rose-500 text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 text-[9px] font-extrabold"
+                                  className="rounded border border-[#FF4D4F] text-[#FF4D4F] hover:bg-[#FF4D4F] hover:text-white px-1.5 py-0.5 text-[9px] font-extrabold transition-colors"
                                 >
                                   S
                                 </button>
@@ -1791,7 +1805,7 @@ export default function Simulator() {
                           </div>
                         </td>
                         {columns.oi && (
-                          <td className="p-0 tabular-nums">
+                          <td className={`p-0 tabular-nums ${ceItm ? "bg-[#FFFEE5]" : ""}`}>
                             <OiBar value={row.ce?.oi} max={maxCeOi} side="ce" />
                           </td>
                         )}
@@ -1799,13 +1813,13 @@ export default function Simulator() {
                           {row.strike}
                         </td>
                         {columns.oi && (
-                          <td className="p-0 tabular-nums">
+                          <td className={`p-0 tabular-nums ${peItm ? "bg-[#FFFEE5]" : ""}`}>
                             <OiBar value={row.pe?.oi} max={maxPeOi} side="pe" />
                           </td>
                         )}
-                        <td className="group px-1.5 py-1.5 text-left tabular-nums relative">
+                        <td className={`group px-1.5 py-1.5 text-left tabular-nums relative ${peItm ? "bg-[#FFFEE5]" : ""}`}>
                           {peNet !== 0 && (
-                            <span className={`absolute -top-0.5 left-0.5 z-[1] rounded px-1 text-[8px] font-bold leading-tight ${peNet > 0 ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"}`}>
+                            <span className={`absolute -top-0.5 left-0.5 z-[1] rounded-full border bg-white px-1 text-[8px] font-bold leading-tight ${peNet > 0 ? "border-[#52C41A] text-[#52C41A]" : "border-[#FF4D4F] text-[#FF4D4F]"}`}>
                               {peNet > 0 ? `+${peNet}` : peNet}
                             </span>
                           )}
@@ -1823,13 +1837,13 @@ export default function Simulator() {
                               <>
                                 <button
                                   onClick={() => addLeg(row, "PE", "buy")}
-                                  className="rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 px-1.5 py-0.5 text-[9px] font-extrabold"
+                                  className="rounded border border-[#52C41A] text-[#52C41A] hover:bg-[#52C41A] hover:text-white px-1.5 py-0.5 text-[9px] font-extrabold transition-colors"
                                 >
                                   B
                                 </button>
                                 <button
                                   onClick={() => addLeg(row, "PE", "sell")}
-                                  className="rounded border border-rose-500 text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 text-[9px] font-extrabold"
+                                  className="rounded border border-[#FF4D4F] text-[#FF4D4F] hover:bg-[#FF4D4F] hover:text-white px-1.5 py-0.5 text-[9px] font-extrabold transition-colors"
                                 >
                                   S
                                 </button>
@@ -1839,7 +1853,7 @@ export default function Simulator() {
                           </div>
                         </td>
                         {columns.callDelta && (
-                          <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">
+                          <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-[#FFFEE5]" : ""}`}>
                             {formatDelta(row.pe?.delta)}
                           </td>
                         )}
@@ -2182,11 +2196,14 @@ export default function Simulator() {
                               />
                             </td>
                             <td className="px-4 py-2.5">
-                              <span
-                                className={`rounded-md px-2 py-0.5 text-[10px] font-bold text-white shadow-sm ${leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"}`}
+                              <button
+                                onClick={() => toggleLegSide(leg.id)}
+                                disabled={!!replayData}
+                                title="Click to flip Buy/Sell"
+                                className={`rounded-md px-2 py-0.5 text-[10px] font-bold text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-70 ${!replayData ? "cursor-pointer hover:opacity-80" : ""} ${leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"}`}
                               >
                                 {leg.action === "buy" ? "BUY" : "SELL"}
-                              </span>
+                              </button>
                             </td>
                             <td className="px-4 py-2.5">
                               <span

@@ -4,7 +4,7 @@ import { fetchOptionChain, fetchSymbolList } from "../services/optionChainApi";
 import { formatPrice } from "../utils/format";
 import {
     computePayoffCurve, computeBreakevens, computeMaxProfitLoss, computeNetGreeks,
-    addMarkToMarketCurve, computeExpectedMove, computePOP, evaluationExpiryOf, legMultiplier,
+    addMarkToMarketCurve, computeExpectedMove, computePOP, evaluationExpiryOf, legMultiplier, otherAction,
 } from "../utils/payoff";
 import { yearsToExpiry, daysUntilExpiry } from "../utils/blackScholes";
 import PayoffChart from "../components/PayoffChart";
@@ -80,6 +80,7 @@ function legFromRow(row, right, action, expiry, lotSize) {
         theta: side.theta,
         vega: side.vega,
         expiry, // which expiry this leg's premium/greeks came from — see payoff.js
+        active: true, // unchecked in the Positions table = kept but excluded from payoff/metrics (see Simulator.jsx's identical convention)
     };
 }
 
@@ -198,11 +199,15 @@ export default function StrategyBuilder() {
 
     function removeLeg(id) {
         setLegs((prev) => prev.filter((l) => l.id !== id));
-        setSelectedLegIds((prev) => {
-            const next = new Set(prev);
-            next.delete(id);
-            return next;
-        });
+    }
+
+    // Flips a leg's side in place (Buy <-> Sell) — the Positions table's B/S
+    // chip and the chain row's hover B/S buttons both add legs, but only the
+    // Positions table chip flips an EXISTING leg without deleting/re-adding
+    // it. SL/TG (if set) are left untouched on flip — they're a % threshold
+    // on premium, not something that needs to reset/invert with the side.
+    function toggleLegSide(id) {
+        setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, action: otherAction(l.action) } : l)));
     }
 
     function updateQty(id, qty) {
@@ -234,27 +239,25 @@ export default function StrategyBuilder() {
 
     function resetLegs() {
         setLegs([]);
-        setSelectedLegIds(new Set());
     }
 
-    // --- Positions table: selection, bulk lots, expiry/strike rolling, SL/TG ---
-    const [selectedLegIds, setSelectedLegIds] = useState(new Set());
+    // --- Positions table: active/include-in-calc, bulk lots, expiry/strike rolling, SL/TG ---
     const [legsTopFirst, setLegsTopFirst] = useState(true);
     const [slTgEditId, setSlTgEditId] = useState(null);
 
     const orderedLegs = useMemo(() => (legsTopFirst ? legs : [...legs].reverse()), [legs, legsTopFirst]);
-    const allSelected = legs.length > 0 && legs.every((l) => selectedLegIds.has(l.id));
 
-    function toggleSelectAll() {
-        setSelectedLegIds(allSelected ? new Set() : new Set(legs.map((l) => l.id)));
+    // Positions table checkbox — doesn't delete the leg, just excludes it
+    // from the payoff curve / Greeks / POP / max-profit-loss calculation
+    // below (see the activeLegs filter), same "what-if" toggle Simulator.jsx
+    // already has (this page's checkbox used to be purely cosmetic — fixed).
+    function toggleLegActive(id) {
+        setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, active: !l.active } : l)));
     }
-    function toggleLegSelected(id) {
-        setSelectedLegIds((prev) => {
-            const next = new Set(prev);
-            if (next.has(id)) next.delete(id);
-            else next.add(id);
-            return next;
-        });
+    const allLegsActive = legs.length > 0 && legs.every((l) => l.active !== false);
+    function toggleSelectAllLegs() {
+        const shouldInclude = !allLegsActive;
+        setLegs((prev) => prev.map((l) => ({ ...l, active: shouldInclude })));
     }
 
     // Scales EVERY leg's lot count by the same delta at once (min 1) —
@@ -325,7 +328,7 @@ export default function StrategyBuilder() {
     }
 
     function applyPreset(presetLegs) {
-        setLegs(presetLegs.map((l) => ({ ...l, id: ++legIdCounter })));
+        setLegs(presetLegs.map((l) => ({ active: true, ...l, id: ++legIdCounter })));
     }
 
     const rowByStrike = useMemo(() => {
@@ -422,27 +425,34 @@ export default function StrategyBuilder() {
         return sum;
     }, [legs, rowByStrike]);
 
+    // Legs the Positions table checkbox has left checked — the payoff curve,
+    // Greeks, POP, and max-profit/loss below are recalculated from only
+    // these, so unchecking a leg removes it from every metric without
+    // deleting the row (see toggleLegActive). Live P&L per row/total stays
+    // based on ALL legs, same convention as Simulator.jsx.
+    const activeLegs = useMemo(() => legs.filter((l) => l.active !== false), [legs]);
+
     const { curve, breakevens, maxProfit, maxLoss, netGreeks, currentPnl, pop, expectedMove } = useMemo(() => {
-        if (!legs.length || !data || !data.spotPrice) {
+        if (!activeLegs.length || !data || !data.spotPrice) {
             return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, currentPnl: null, pop: null, expectedMove: null };
         }
 
         try {
             const spread = data.spotPrice * 0.08;
-            let curveData = computePayoffCurve(legs, { minPrice: data.spotPrice - spread, maxPrice: data.spotPrice + spread }) || [];
+            let curveData = computePayoffCurve(activeLegs, { minPrice: data.spotPrice - spread, maxPrice: data.spotPrice + spread }) || [];
             const breakEvs = computeBreakevens(curveData) || [];
-            const { maxProfit: mxProf, maxLoss: mxLoss } = computeMaxProfitLoss(legs, curveData);
-            const netGrks = computeNetGreeks(legs);
+            const { maxProfit: mxProf, maxLoss: mxLoss } = computeMaxProfitLoss(activeLegs, curveData);
+            const netGrks = computeNetGreeks(activeLegs);
 
             // For a single-expiry strategy this is just data.selectedExpiry; for
             // a calendar spread it's the near leg's expiry — the meaningful
             // horizon for "at expiry" (see payoff.js's evaluationExpiryOf).
-            const evaluationExpiry = evaluationExpiryOf(legs) || data.selectedExpiry;
+            const evaluationExpiry = evaluationExpiryOf(activeLegs) || data.selectedExpiry;
             const yearsRemaining = yearsToExpiry(evaluationExpiry);
             const atmRow = data.rows ? data.rows.find((r) => r.strike === data.atmStrike) : null;
             const atmIv = atmRow?.iv ?? null;
 
-            curveData = (atmIv && typeof addMarkToMarketCurve === "function") ? addMarkToMarketCurve(curveData, legs, yearsRemaining, Date.now()) : curveData;
+            curveData = (atmIv && typeof addMarkToMarketCurve === "function") ? addMarkToMarketCurve(curveData, activeLegs, yearsRemaining, Date.now()) : curveData;
             const expMv = (atmIv && typeof computeExpectedMove === "function") ? computeExpectedMove(data.spotPrice, atmIv, yearsRemaining) : null;
             const popVal = (atmIv && typeof computePOP === "function") ? computePOP(curveData, data.spotPrice, atmIv, yearsRemaining) : null;
 
@@ -455,7 +465,7 @@ export default function StrategyBuilder() {
             console.error(err);
             return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, currentPnl: null, pop: null, expectedMove: null };
         }
-    }, [legs, data]);
+    }, [activeLegs, data]);
 
     return (
         <div className="mx-auto flex max-w-[1600px] gap-5 px-5 py-5 bg-gray-50/40 min-h-screen">
@@ -723,14 +733,14 @@ export default function StrategyBuilder() {
                                                 {columns.gamma && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.gamma ?? "-"}</td>}
                                                 {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.iv ?? "-"}</td>}
                                                 {columns.callDelta && (
-                                                    <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                    <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-[#FFFEE5]" : ""}`}>
                                                         {formatDelta(row.ce?.delta)}
                                                     </td>
                                                 )}
                                                 {/* CALL SIDE */}
-                                                <td className={`group px-1.5 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                <td className={`group px-1.5 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-[#FFFEE5]" : ""}`}>
                                                     {ceNet !== 0 && (
-                                                        <span className={`absolute -top-0.5 right-0.5 z-[1] rounded px-1 text-[9px] font-bold leading-tight ${ceNet > 0 ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"}`}>
+                                                        <span className={`absolute -top-0.5 right-0.5 z-[1] rounded-full border bg-white px-1.5 text-[9px] font-bold leading-tight ${ceNet > 0 ? "border-[#52C41A] text-[#52C41A]" : "border-[#FF4D4F] text-[#FF4D4F]"}`}>
                                                             {ceNet > 0 ? `+${ceNet}` : ceNet}
                                                         </span>
                                                     )}
@@ -744,15 +754,15 @@ export default function StrategyBuilder() {
                                                             </>
                                                         ) : (
                                                             <>
-                                                                <button onClick={() => addLeg(row, "CE", "buy")} className="rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 px-1.5 py-0.5 text-[10px] font-extrabold">B</button>
-                                                                <button onClick={() => addLeg(row, "CE", "sell")} className="rounded border border-rose-500 text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 text-[10px] font-extrabold">S</button>
+                                                                <button onClick={() => addLeg(row, "CE", "buy")} className="rounded border border-[#52C41A] text-[#52C41A] hover:bg-[#52C41A] hover:text-white px-1.5 py-0.5 text-[10px] font-extrabold transition-colors">B</button>
+                                                                <button onClick={() => addLeg(row, "CE", "sell")} className="rounded border border-[#FF4D4F] text-[#FF4D4F] hover:bg-[#FF4D4F] hover:text-white px-1.5 py-0.5 text-[10px] font-extrabold transition-colors">S</button>
                                                             </>
                                                         )}
                                                         <button onClick={() => setChartModal({ strike: row.strike, right: "CE" })} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
                                                     </div>
                                                 </td>
                                                 {columns.oi && (
-                                                    <td className={`p-0 tabular-nums ${ceItm ? "bg-amber-50/60" : ""}`}>
+                                                    <td className={`p-0 tabular-nums ${ceItm ? "bg-[#FFFEE5]" : ""}`}>
                                                         <OiBar value={row.ce?.oi} max={maxCeOi} side="ce" />
                                                         {columns.lot && <div className="px-1 pb-0.5 text-[10px] text-gray-400 text-right">{lots ?? "-"} lots</div>}
                                                     </td>
@@ -770,14 +780,14 @@ export default function StrategyBuilder() {
 
                                                 {/* PUT SIDE */}
                                                 {columns.oi && (
-                                                    <td className={`p-0 tabular-nums ${peItm ? "bg-amber-50/60" : ""}`}>
+                                                    <td className={`p-0 tabular-nums ${peItm ? "bg-[#FFFEE5]" : ""}`}>
                                                         <OiBar value={row.pe?.oi} max={maxPeOi} side="pe" />
                                                         {columns.lot && <div className="px-1 pb-0.5 text-[10px] text-gray-400">{putLots ?? "-"} lots</div>}
                                                     </td>
                                                 )}
-                                                <td className={`group px-1.5 py-1.5 text-left tabular-nums relative ${peItm ? "bg-amber-50/60" : ""}`}>
+                                                <td className={`group px-1.5 py-1.5 text-left tabular-nums relative ${peItm ? "bg-[#FFFEE5]" : ""}`}>
                                                     {peNet !== 0 && (
-                                                        <span className={`absolute -top-0.5 left-0.5 z-[1] rounded px-1 text-[9px] font-bold leading-tight ${peNet > 0 ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"}`}>
+                                                        <span className={`absolute -top-0.5 left-0.5 z-[1] rounded-full border bg-white px-1.5 text-[9px] font-bold leading-tight ${peNet > 0 ? "border-[#52C41A] text-[#52C41A]" : "border-[#FF4D4F] text-[#FF4D4F]"}`}>
                                                             {peNet > 0 ? `+${peNet}` : peNet}
                                                         </span>
                                                     )}
@@ -791,15 +801,15 @@ export default function StrategyBuilder() {
                                                             </>
                                                         ) : (
                                                             <>
-                                                                <button onClick={() => addLeg(row, "PE", "buy")} className="rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 px-1.5 py-0.5 text-[10px] font-extrabold">B</button>
-                                                                <button onClick={() => addLeg(row, "PE", "sell")} className="rounded border border-rose-500 text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 text-[10px] font-extrabold">S</button>
+                                                                <button onClick={() => addLeg(row, "PE", "buy")} className="rounded border border-[#52C41A] text-[#52C41A] hover:bg-[#52C41A] hover:text-white px-1.5 py-0.5 text-[10px] font-extrabold transition-colors">B</button>
+                                                                <button onClick={() => addLeg(row, "PE", "sell")} className="rounded border border-[#FF4D4F] text-[#FF4D4F] hover:bg-[#FF4D4F] hover:text-white px-1.5 py-0.5 text-[10px] font-extrabold transition-colors">S</button>
                                                             </>
                                                         )}
                                                         <button onClick={() => setChartModal({ strike: row.strike, right: "PE" })} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
                                                     </div>
                                                 </td>
                                                 {columns.putDelta && (
-                                                    <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-amber-50/60" : ""}`}>
+                                                    <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-[#FFFEE5]" : ""}`}>
                                                         {formatDelta(row.pe?.delta)}
                                                     </td>
                                                 )}
@@ -878,7 +888,7 @@ export default function StrategyBuilder() {
                                 <Stat label="Max Profit Potential" value={maxProfit == null ? "—" : typeof maxProfit === "number" ? formatPrice(maxProfit) : maxProfit} tone="positive" />
                                 <Stat label="Max Loss Risk" value={maxLoss == null ? "—" : typeof maxLoss === "number" ? formatPrice(maxLoss) : maxLoss} tone="negative" />
                                 <Stat label="Breakeven Thresholds" value={breakevens && breakevens.length ? breakevens.join(", ") : "None"} />
-                                <Stat label="Workspace Constraints" value={`${legs.length} of 6 active legs`} />
+                                <Stat label="Workspace Constraints" value={`${legs.length} of 6 legs (${activeLegs.length} active)`} />
                             </div>
 
                             <div className="flex-1 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col">
@@ -934,8 +944,8 @@ export default function StrategyBuilder() {
                                 <>
                                     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 bg-gray-50/40 px-4 py-2 text-[12px]">
                                         <div className="flex items-center gap-3">
-                                            <label className="flex items-center gap-1.5 text-gray-600 cursor-pointer">
-                                                <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} /> Select All
+                                            <label className="flex items-center gap-1.5 text-gray-600 cursor-pointer" title="Include/exclude every leg in the payoff calculation">
+                                                <input type="checkbox" checked={allLegsActive} onChange={toggleSelectAllLegs} /> Select All
                                             </label>
                                             <button
                                                 onClick={() => setLegsTopFirst((v) => !v)}
@@ -973,7 +983,7 @@ export default function StrategyBuilder() {
                                     <table className="w-full border-collapse text-[13px]">
                                         <thead>
                                             <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-100">
-                                                <th className="px-2 py-2.5 w-8"></th>
+                                                <th className="px-2 py-2.5 w-8" title="Include in payoff calculation"></th>
                                                 <th className="px-4 py-2.5 text-left font-medium">Action</th>
                                                 <th className="px-4 py-2.5 text-right font-medium">Lots</th>
                                                 <th className="px-4 py-2.5 text-left font-medium">Expiry</th>
@@ -991,15 +1001,26 @@ export default function StrategyBuilder() {
                                                 const row = rowByStrike.get(leg.strike);
                                                 const currentLtp = row ? (leg.type === "CE" ? row.ce?.ltp : row.pe?.ltp) : null;
                                                 const livePnl = legLivePnl(leg);
+                                                const included = leg.active !== false;
                                                 return (
-                                                    <tr key={leg.id} className="hover:bg-gray-50/40 transition-colors">
+                                                    <tr key={leg.id} className={`hover:bg-gray-50/40 transition-colors ${included ? "" : "opacity-50"}`}>
                                                         <td className="px-2 py-2.5 text-center">
-                                                            <input type="checkbox" checked={selectedLegIds.has(leg.id)} onChange={() => toggleLegSelected(leg.id)} />
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={included}
+                                                                onChange={() => toggleLegActive(leg.id)}
+                                                                title={included ? "Included in payoff calculation — uncheck to exclude" : "Excluded from payoff calculation — check to include"}
+                                                                className="cursor-pointer"
+                                                            />
                                                         </td>
                                                         <td className="px-4 py-2.5">
-                                                            <span className={`rounded-md px-2 py-0.5 text-[11px] font-bold text-white shadow-sm ${leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"}`}>
+                                                            <button
+                                                                onClick={() => toggleLegSide(leg.id)}
+                                                                title="Click to flip Buy/Sell"
+                                                                className={`rounded-md px-2 py-0.5 text-[11px] font-bold text-white shadow-sm cursor-pointer hover:opacity-80 transition ${leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"}`}
+                                                            >
                                                                 {leg.action === "buy" ? "B" : "S"}
-                                                            </span>
+                                                            </button>
                                                         </td>
                                                         <td className="px-4 py-2.5 text-right">
                                                             <input

@@ -3,6 +3,7 @@ import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { FiSun, FiMoon, FiMenu, FiX } from "react-icons/fi";
+import Logo from "./Logo";
 
 function ThemeToggle() {
     const { isDark, toggleTheme } = useTheme();
@@ -84,9 +85,8 @@ export default function TopNav() {
     return (
         <header className="border-b border-gray-200 bg-white">
             <div className="flex items-center justify-between px-4 py-3 sm:px-6">
-                <NavLink to="/" onClick={() => setMobileOpen(false)} className="flex items-center gap-1 text-lg font-bold">
-                    <span className="text-blue-600">Bazaar</span>
-                    <span className="text-gray-900">Sync</span>
+                <NavLink to="/" onClick={() => setMobileOpen(false)}>
+                    <Logo />
                 </NavLink>
 
                 {/* Full nav — hidden below md, where it would overflow the viewport
