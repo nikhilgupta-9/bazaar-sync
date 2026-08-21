@@ -8,9 +8,19 @@
 // the last ~6 months at minute-level granularity. For real multi-year depth
 // at daily granularity, see scripts/backfillBhavcopy.js instead.
 //
-// Usage: node scripts/backfillUpstox.js [SYMBOL] [STRIKES_PER_SIDE]
-//   SYMBOL           - NIFTY | BANKNIFTY | FINNIFTY (default NIFTY)
+// Usage: node scripts/backfillUpstox.js [SYMBOL] [STRIKES_PER_SIDE] [FROM_DATE] [TO_DATE]
+//   SYMBOL           - a symbol, or ALL (every symbol already in
+//                       option_chain_history — see backfillBhavcopyAll.js)
 //   STRIKES_PER_SIDE - how many strikes either side of ATM to pull (default 10)
+//   FROM_DATE/TO_DATE - 'YYYY-MM-DD', both optional. Restricts which expiries
+//                       get processed to this range — WITHOUT this, Upstox's
+//                       own expiry list for a symbol can include expiries
+//                       over a year old (well past Upstox's actual candle
+//                       availability), wasting API calls on expiries that
+//                       will just fail/fall back. Pass these to backfill only
+//                       a specific window (e.g. just this July+August), not
+//                       everything Upstox has ever heard of for that symbol.
+//                       Example: node scripts/backfillUpstox.js ALL 10 2026-07-01 2026-08-19
 //
 // Per expiry: fetch ~35 days of underlying daily candles ending at expiry
 // (for strike-centering + a per-day spot to compute Greeks from), fetch that
@@ -255,19 +265,32 @@ async function resolveUnderlyingKey(symbol) {
     return upstoxInstruments.resolveInstrumentKey(symbol);
 }
 
-async function backfillOneSymbol(symbol, strikesPerSide) {
+// fromDate/toDate ('YYYY-MM-DD', both optional) restrict WHICH expiries get
+// processed. Without this, `upstox.getExpiries()` returns every expiry
+// Upstox still has ANY record of for that underlying — for a stock this can
+// be a dozen+ expiries stretching back well over a year, most of which are
+// past Upstox's actual ~6-month candle-availability window and just waste
+// rate-limited API calls failing/falling back (see the "no Bhavcopy OI data
+// found" warning in backfillExpiry) instead of ever being skipped. A caller
+// who only wants e.g. July-August needs this filter, not "everything Upstox
+// has ever heard of for this symbol" — found 2026-08-21 running `ALL` for a
+// 2-month window and seeing 360ONE process a 2025-07-31 expiry.
+async function backfillOneSymbol(symbol, strikesPerSide, fromDate, toDate) {
     const underlyingKey = await resolveUnderlyingKey(symbol);
     if (!underlyingKey) {
         console.warn(`[upstox] ${symbol}: no Upstox instrument_key found (not an index, not in the equity instrument master) — skipped`);
         return;
     }
 
-    const expiries = await upstox.getExpiries(underlyingKey);
+    let expiries = await upstox.getExpiries(underlyingKey);
+    if (fromDate || toDate) {
+        expiries = expiries.filter((e) => (!fromDate || e >= fromDate) && (!toDate || e <= toDate));
+    }
     if (!expiries.length) {
-        console.log(`[upstox] ${symbol} (${underlyingKey}): 0 expiries available in Upstox's ~6-month window — skipped`);
+        console.log(`[upstox] ${symbol} (${underlyingKey}): 0 expiries in range — skipped`);
         return;
     }
-    console.log(`[upstox] ${symbol} (${underlyingKey}): ${expiries.length} expiries available, ±${strikesPerSide} strikes each`);
+    console.log(`[upstox] ${symbol} (${underlyingKey}): ${expiries.length} expiries in range, ±${strikesPerSide} strikes each`);
 
     for (const expirySql of expiries) {
         await backfillExpiry(symbol, underlyingKey, expirySql, strikesPerSide);
@@ -277,10 +300,15 @@ async function backfillOneSymbol(symbol, strikesPerSide) {
 async function main() {
     const symbolArg = (process.argv[2] || "NIFTY").toUpperCase();
     const strikesPerSide = Number(process.argv[3] || 10);
+    // Optional — restrict to expiries in [FROM_DATE, TO_DATE] (see
+    // backfillOneSymbol's comment above). Omit both for the old
+    // "everything Upstox has" behavior.
+    const fromDate = process.argv[4] || null;
+    const toDate = process.argv[5] || null;
 
     if (symbolArg !== "ALL") {
-        console.log(`[upstox] starting ${symbolArg}, ±${strikesPerSide} strikes per expiry`);
-        await backfillOneSymbol(symbolArg, strikesPerSide);
+        console.log(`[upstox] starting ${symbolArg}, ±${strikesPerSide} strikes per expiry${fromDate || toDate ? ` (expiry range ${fromDate || "-inf"}..${toDate || "+inf"})` : ""}`);
+        await backfillOneSymbol(symbolArg, strikesPerSide, fromDate, toDate);
         console.log("[upstox] complete");
         await pool.end();
         return;
@@ -294,13 +322,18 @@ async function main() {
     // parsing) caught 2026-08-07 before this ALL-mode path was ever run for
     // real. todayIst() is the same IST-string helper every other date
     // computation in this codebase uses.
-    const sixMonthsAgo = addDays(instrumentMaster.todayIst(), -190);
+    //
+    // When FROM_DATE is given, symbol discovery scopes to trade_date >=
+    // FROM_DATE instead of the fixed 190-day window — a caller who only
+    // Bhavcopy'd a narrow recent range (e.g. 2 months) shouldn't have this
+    // step silently widen back out to 6 months of symbols.
+    const discoverFrom = fromDate || addDays(instrumentMaster.todayIst(), -190);
     const [rows] = await pool.query(
         `SELECT DISTINCT symbol FROM option_chain_history WHERE trade_date >= ? ORDER BY symbol`,
-        [sixMonthsAgo]
+        [discoverFrom]
     );
     const symbols = rows.map((r) => r.symbol);
-    console.log(`[upstox-all] ${symbols.length} symbols found (trade_date >= ${sixMonthsAgo}), ±${strikesPerSide} strikes each`);
+    console.log(`[upstox-all] ${symbols.length} symbols found (trade_date >= ${discoverFrom}), ±${strikesPerSide} strikes each${fromDate || toDate ? `, expiry range ${fromDate || "-inf"}..${toDate || "+inf"}` : ""}`);
     if (!symbols.length) {
         console.log("[upstox-all] nothing to do — run scripts/backfillBhavcopyAll.js for a recent range first.");
         await pool.end();
@@ -310,7 +343,7 @@ async function main() {
     let done = 0, skipped = 0;
     for (const symbol of symbols) {
         try {
-            await backfillOneSymbol(symbol, strikesPerSide);
+            await backfillOneSymbol(symbol, strikesPerSide, fromDate, toDate);
             done += 1;
         } catch (err) {
             skipped += 1;
