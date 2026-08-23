@@ -55,7 +55,15 @@ export default function Login() {
                         />
                     </div>
                     <div>
-                        <label className="mb-1 block text-xs font-medium text-gray-400">Password</label>
+                        <div className="mb-1 flex items-center justify-between">
+                            <label className="block text-xs font-medium text-gray-400">Password</label>
+                            <a
+                                href={`${import.meta.env.VITE_CLIENT_URL || "http://localhost:5173"}/forgot-password`}
+                                className="text-xs text-gray-500 hover:text-violet-400"
+                            >
+                                Forgot password?
+                            </a>
+                        </div>
                         <input
                             type="password" required value={password} onChange={(e) => setPassword(e.target.value)}
                             className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500"

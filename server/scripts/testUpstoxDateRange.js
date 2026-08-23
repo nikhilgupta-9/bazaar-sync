@@ -10,8 +10,13 @@
 // Upstox's expired-instruments historical-candle endpoint is silently
 // truncating wide date-range requests to a single day.
 //
-// Run: cd server && node scripts/testUpstoxDateRange.js SYMBOL [STRIKES_PER_SIDE]
-//   Picks the nearest available expiry and its ATM-ish strike automatically.
+// Run: cd server && node scripts/testUpstoxDateRange.js SYMBOL [EXPIRY]
+//   Picks a middle-of-the-list expiry and an ATM-ish strike automatically
+//   when EXPIRY ('YYYY-MM-DD') is omitted — pass it explicitly to test a
+//   SPECIFIC expiry that showed a suspicious row count during a real
+//   backfillUpstox.js run, since Upstox's retention behavior may differ by
+//   how long ago the contract expired (this script's default middle-of-list
+//   pick won't necessarily match the one that misbehaved).
 
 require("dotenv").config();
 const { pool } = require("../config/db");
@@ -39,7 +44,11 @@ async function resolveUnderlyingKey(symbol) {
         console.error(`No expiries available for ${symbol} (${underlyingKey})`);
         process.exit(1);
     }
-    const expirySql = expiries[Math.floor(expiries.length / 2)]; // a middle-of-the-list expiry, not the newest/oldest edge case
+    const requestedExpiry = process.argv[3] || null;
+    const expirySql = requestedExpiry || expiries[Math.floor(expiries.length / 2)]; // explicit, or a middle-of-the-list expiry
+    if (requestedExpiry && !expiries.includes(requestedExpiry)) {
+        console.warn(`[test] warning: ${requestedExpiry} not in Upstox's own expiry list for ${symbol} (${expiries.join(", ")}) — trying anyway`);
+    }
     const windowStart = addDays(expirySql, -LOOKBACK_DAYS);
 
     console.log(`[test] ${symbol} (${underlyingKey}), expiry ${expirySql}, requesting range ${windowStart}..${expirySql} (${LOOKBACK_DAYS} days)`);
