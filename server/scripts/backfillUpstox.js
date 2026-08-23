@@ -71,15 +71,27 @@ async function storeUnderlyingDaily(symbol, candles) {
 }
 
 // Merge same-minute CE/PE rows (with computed IV/Greeks) into option_chain_history.
+//
+// Real bug fixed 2026-08-21: this used to key `byTime` on `r.time` alone
+// (e.g. "09:15") — since every trading day repeats the same times, rows from
+// DIFFERENT DAYS at the SAME time-of-day silently overwrote each other in
+// the Map, leaving only the LAST date processed (candles arrive sorted
+// date+time ascending, see mapCandles). A 24-trading-day contract collapsed
+// to ~1 day's worth of rows (~375, one session's 1-minute bars) — exactly
+// what a real backfillUpstox.js run showed (7093 rows / 19 strikes ≈ 373),
+// while a direct getExpiredCandles call for the same symbol+expiry proved
+// Upstox itself really did return all 24 days (scripts/testUpstoxDateRange.js).
+// The key must include the date, not just the time-of-day.
 async function storeOptionChainRows(symbol, expirySql, strike, ceRows, peRows) {
     const byTime = new Map();
     for (const r of ceRows) {
-        byTime.set(r.time, { date: r.date, time: r.time, ce: r });
+        byTime.set(`${r.date}|${r.time}`, { date: r.date, time: r.time, ce: r });
     }
     for (const r of peRows) {
-        const row = byTime.get(r.time) || { date: r.date, time: r.time };
+        const key = `${r.date}|${r.time}`;
+        const row = byTime.get(key) || { date: r.date, time: r.time };
         row.pe = r;
-        byTime.set(r.time, row);
+        byTime.set(key, row);
     }
     const rows = [...byTime.values()];
     if (!rows.length) return 0;
