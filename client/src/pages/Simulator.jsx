@@ -2135,12 +2135,6 @@ export default function Simulator() {
               >
                 Saved
               </button>
-              <button
-                onClick={resetWorkspace}
-                className="rounded-xl border border-gray-300 px-4 py-1.5 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-sm transition"
-              >
-                Reset Workspace
-              </button>
             </div>
           )}
 
@@ -2354,11 +2348,19 @@ export default function Simulator() {
                         <span className="font-bold tabular-nums text-gray-800">{totalLots}</span>
                       </div>
                     </div>
-                    <div>
-                      <span className="text-gray-400">Total P&L: </span>
-                      <span className={`font-bold tabular-nums ${totalLivePnl != null && totalLivePnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                        {totalLivePnl != null ? formatPrice(totalLivePnl) : "-"}
-                      </span>
+                    <div className="flex items-center gap-3">
+                      <div>
+                        <span className="text-gray-400">Total P&L: </span>
+                        <span className={`font-bold tabular-nums ${totalLivePnl != null && totalLivePnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                          {totalLivePnl != null ? formatPrice(totalLivePnl) : "-"}
+                        </span>
+                      </div>
+                      <button
+                        onClick={resetWorkspace}
+                        className="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-600 hover:bg-gray-100"
+                      >
+                        Reset Workspace
+                      </button>
                     </div>
                   </div>
                   <table className="w-full border-collapse text-xs">
