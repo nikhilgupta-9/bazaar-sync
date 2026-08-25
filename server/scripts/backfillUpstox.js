@@ -257,18 +257,40 @@ async function backfillExpiry(symbol, underlyingKey, expirySql, strikesPerSide) 
 // computes per (strike, trade_date) whether that day has a minute-level
 // row; the outer MIN(...) collapses that to "does EVERY day for this strike
 // have one" — same logic the old per-strike loop version had, just batched.
+// Real bug fixed 2026-08-21 (see storeOptionChainRows above) means some
+// strikes already have rows in the DB from a pre-fix run that collapsed
+// most of their real trading days down to just one — but MIN(has_minute)
+// over "whichever trade_dates happen to have a row" reads that lone day as
+// 100% complete (there's no ROW for the missing days to fail the check on),
+// so those strikes were wrongly skipped forever on re-run even after the
+// storage bug itself was fixed. Compare against the REAL trading-day count
+// instead (ohlcv_data — storeUnderlyingDaily inserts full daily candle sets
+// directly with no per-time Map collapse, so it was never affected by the
+// bug and is a trustworthy baseline) — a strike only counts as enriched if
+// it has minute data on at least as many days as the symbol actually
+// traded. This makes a plain re-run self-heal previously-corrupted strikes
+// with no manual DELETE needed: ON DUPLICATE KEY UPDATE safely fills in
+// whatever's missing without touching already-correct rows.
 async function loadFullyEnrichedStrikes(symbol, expiry, fromDate, toDate) {
+    const [dayRows] = await pool.query(
+        `SELECT COUNT(DISTINCT trade_date) AS cnt FROM ohlcv_data WHERE symbol = ? AND trade_date BETWEEN ? AND ?`,
+        [symbol, fromDate, toDate]
+    );
+    const expectedDays = Number(dayRows[0]?.cnt || 0);
+    if (!expectedDays) return new Set(); // no real trading-day baseline yet — don't skip anything
+
     const [rows] = await pool.query(
-        `SELECT strike, MIN(has_minute) AS fully_enriched FROM (
+        `SELECT strike, COUNT(*) AS enriched_days FROM (
              SELECT strike, trade_date, MAX(trade_time <> '15:30:00') AS has_minute
              FROM option_chain_history
              WHERE symbol = ? AND expiry = ? AND trade_date BETWEEN ? AND ?
              GROUP BY strike, trade_date
-         ) per_day
+             HAVING has_minute = 1
+         ) minute_days
          GROUP BY strike`,
         [symbol, expiry, fromDate, toDate]
     );
-    return new Set(rows.filter((r) => Number(r.fully_enriched) === 1).map((r) => Number(r.strike)));
+    return new Set(rows.filter((r) => Number(r.enriched_days) >= expectedDays).map((r) => Number(r.strike)));
 }
 
 /** Resolve a symbol to its Upstox underlying instrument_key — indices first (hardcoded, confirmed), stocks via the downloaded instrument master. */
