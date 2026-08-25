@@ -356,6 +356,7 @@ export default function Simulator() {
   const [hideChain, setHideChain] = useState(false);
   const [legsTopFirst, setLegsTopFirst] = useState(true);
   const [slTgEditId, setSlTgEditId] = useState(null);
+  const [slTgDraft, setSlTgDraft] = useState({ sl: "", tg: "" });
 
   const [columns, setColumns] = useState(DEFAULT_COLUMNS);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -910,15 +911,31 @@ export default function Simulator() {
     updateLeg(id, { premium: currentLtp });
   }
 
-  // SL/TG here are a planning note stored on the leg, NOT an executed order —
-  // same as StrategyBuilder.jsx (this workspace has no live monitoring/
-  // auto-exit engine; automatic SL%/target% exits only exist in the separate
-  // Backtest engine, which runs against a date range, not a single replayed day).
+  // SL/TG stored on the leg are actually applied by the backend during Run
+  // Simulation (see server/controllers/simulatorController.js's replay) —
+  // once a leg's own running P&L crosses ±this %, that leg's P&L freezes at
+  // the triggering minute. Set via the modal below (openSlTgModal/
+  // closeSlTgModal), not inline, so there's room to show the real ₹ amount
+  // each % resolves to before committing.
   function setLegSlTg(id, slPercent, tgPercent) {
     updateLeg(id, {
       slPercent: slPercent === "" ? null : Number(slPercent),
       tgPercent: tgPercent === "" ? null : Number(tgPercent),
     });
+  }
+
+  function openSlTgModal(leg) {
+    setSlTgDraft({ sl: leg.slPercent ?? "", tg: leg.tgPercent ?? "" });
+    setSlTgEditId(leg.id);
+  }
+
+  function closeSlTgModal() {
+    setSlTgEditId(null);
+  }
+
+  function saveSlTgModal(legId) {
+    setLegSlTg(legId, slTgDraft.sl, slTgDraft.tg);
+    setSlTgEditId(null);
   }
 
   // Scales EVERY leg's lot count by the same delta at once (min 1) — same as
@@ -2515,7 +2532,7 @@ export default function Simulator() {
                             </td>
                             <td className="px-4 py-2.5 text-center relative">
                               <button
-                                onClick={() => setSlTgEditId(slTgEditId === leg.id ? null : leg.id)}
+                                onClick={() => openSlTgModal(leg)}
                                 disabled={!!replayData}
                                 className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
                                 title={leg.slPercent != null || leg.tgPercent != null ? `SL ${leg.slPercent ?? "—"}% / TG ${leg.tgPercent ?? "—"}%` : "Set SL/TG"}
@@ -2529,34 +2546,6 @@ export default function Simulator() {
                                 <div className={`mt-0.5 text-[9px] font-bold ${replayOutcome.exitReason === "target" ? "text-emerald-600" : "text-rose-600"}`}>
                                   {replayOutcome.exitReason === "target" ? "Target hit" : "SL hit"} @ {replayOutcome.exitTime?.slice(0, 5)}
                                 </div>
-                              )}
-                              {slTgEditId === leg.id && (
-                                <>
-                                  <div className="fixed inset-0 z-10" onClick={() => setSlTgEditId(null)} />
-                                  <div className="absolute right-0 z-20 mt-1 w-52 rounded-lg border border-gray-300 bg-white p-3 text-left shadow-xl">
-                                    <div className="mb-2 text-[10px] text-gray-400">
-                                      Applied per leg during Run Simulation — % of this leg's own entry notional (entry price × lots × lot size). Once hit, this leg's P&L freezes at that minute; other legs keep running.
-                                    </div>
-                                    <label className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
-                                      SL %
-                                      <input
-                                        type="number"
-                                        defaultValue={leg.slPercent ?? ""}
-                                        onBlur={(e) => setLegSlTg(leg.id, e.target.value, leg.tgPercent ?? "")}
-                                        className="w-16 rounded border border-gray-300 px-1.5 py-0.5 text-right outline-none focus:border-blue-500"
-                                      />
-                                    </label>
-                                    <label className="flex items-center justify-between gap-2 text-[11px]">
-                                      TG %
-                                      <input
-                                        type="number"
-                                        defaultValue={leg.tgPercent ?? ""}
-                                        onBlur={(e) => setLegSlTg(leg.id, leg.slPercent ?? "", e.target.value)}
-                                        className="w-16 rounded border border-gray-300 px-1.5 py-0.5 text-right outline-none focus:border-blue-500"
-                                      />
-                                    </label>
-                                  </div>
-                                </>
                               )}
                             </td>
                             <td className="px-4 py-2.5 text-center">
@@ -2714,6 +2703,78 @@ export default function Simulator() {
           onClose={() => setChartModal(null)}
         />
       )}
+
+      {slTgEditId != null && (() => {
+        const editingLeg = legs.find((l) => l.id === slTgEditId);
+        if (!editingLeg) return null;
+        // Same basis the backend replay actually checks against (see
+        // simulatorController.js's replay): % of THIS leg's own entry
+        // notional (entry price × qty × real lot size), not the whole
+        // strategy's combined cost. Shown as a real ₹ figure here so the %
+        // isn't entered blind.
+        const legNotional = editingLeg.premium != null ? Math.abs(editingLeg.premium * legMultiplier(editingLeg)) : null;
+        const slNum = slTgDraft.sl === "" ? null : Number(slTgDraft.sl);
+        const tgNum = slTgDraft.tg === "" ? null : Number(slTgDraft.tg);
+        const slAmount = slNum != null && legNotional != null ? (slNum / 100) * legNotional : null;
+        const tgAmount = tgNum != null && legNotional != null ? (tgNum / 100) * legNotional : null;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={closeSlTgModal}>
+            <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="mb-1 flex items-center justify-between">
+                <h3 className="text-sm font-bold text-gray-900">Stop Loss / Target</h3>
+                <button onClick={closeSlTgModal} className="text-gray-400 hover:text-gray-700" aria-label="Close">
+                  ✕
+                </button>
+              </div>
+              <div className="mb-4 text-xs text-gray-500">
+                <span className={`mr-1.5 rounded px-1.5 py-0.5 text-[10px] font-bold text-white ${editingLeg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"}`}>
+                  {editingLeg.action === "buy" ? "BUY" : "SELL"}
+                </span>
+                {symbol} {editingLeg.strike} {editingLeg.type} · Entry {formatPrice(editingLeg.premium)} · Lot {editingLeg.lotSize ?? "1 (unknown)"} × {editingLeg.qty}
+              </div>
+
+              <label className="mb-1 block text-xs font-medium text-gray-600">Stop Loss %</label>
+              <input
+                type="number"
+                min="0"
+                value={slTgDraft.sl}
+                onChange={(e) => setSlTgDraft((d) => ({ ...d, sl: e.target.value }))}
+                placeholder="e.g. 30"
+                className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-rose-500"
+              />
+              <div className="mb-3 text-[11px] text-gray-400">
+                {slAmount != null ? `≈ ${formatPrice(slAmount)} loss on this leg triggers it` : "% of this leg's own entry notional"}
+              </div>
+
+              <label className="mb-1 block text-xs font-medium text-gray-600">Target %</label>
+              <input
+                type="number"
+                min="0"
+                value={slTgDraft.tg}
+                onChange={(e) => setSlTgDraft((d) => ({ ...d, tg: e.target.value }))}
+                placeholder="e.g. 50"
+                className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-emerald-500"
+              />
+              <div className="mb-4 text-[11px] text-gray-400">
+                {tgAmount != null ? `≈ ${formatPrice(tgAmount)} profit on this leg triggers it` : "% of this leg's own entry notional"}
+              </div>
+
+              <div className="mb-4 rounded-lg bg-blue-50 p-2.5 text-[11px] text-blue-700">
+                Applied automatically when you Run Simulation — once this leg's own running P&L crosses either threshold, its P&L freezes at that minute while other legs keep going.
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <button onClick={closeSlTgModal} className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50">
+                  Cancel
+                </button>
+                <button onClick={() => saveSlTgModal(editingLeg.id)} className="rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-700">
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
