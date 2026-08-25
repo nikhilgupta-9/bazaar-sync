@@ -13,6 +13,8 @@ import Pricing from "./pages/Pricing";
 import EventsPage from "./pages/Events";
 import Terms from "./pages/Terms";
 import Auth from "./pages/Auth";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 import { usePageSeo } from "./hooks/usePageSeo";
 
 function App() {
@@ -37,6 +39,8 @@ function App() {
                     <Route path="/events" element={<EventsPage />} />
                     <Route path="/terms" element={<Terms />} />
                     <Route path="/login" element={<Auth />} />
+                    <Route path="/forgot-password" element={<ForgotPassword />} />
+                    <Route path="/reset-password" element={<ResetPassword />} />
                     <Route path="*" element={<Navigate to="/option-chain" replace />} />
                 </Routes>
             </div>

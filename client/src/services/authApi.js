@@ -30,3 +30,21 @@ export async function fetchMe(token) {
     });
     return handle(res);
 }
+
+export async function forgotPassword(email) {
+    const res = await fetch(`${API_URL}/api/auth/forgot-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+    });
+    return handle(res);
+}
+
+export async function resetPassword(token, newPassword) {
+    const res = await fetch(`${API_URL}/api/auth/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, newPassword }),
+    });
+    return handle(res);
+}

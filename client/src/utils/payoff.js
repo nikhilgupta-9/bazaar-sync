@@ -180,6 +180,24 @@ export function computePOP(curve, spot, atmIvPercent, yearsRemaining) {
     return Math.max(0, Math.min(100, pop * 100));
 }
 
+// Estimated margin — the same flat 15%-of-notional approximation
+// server/config/paperTradeConfig.js's MARGIN_PERCENT_OF_NOTIONAL uses for
+// real short paper-trade positions (services/paperPositionService.js:
+// marginBlocked = spot * lotSize * lots * 0.15). Kept in sync intentionally,
+// same convention as paperWalletService.getWalletStatus mirroring
+// requirePro.js's isPro check. Only short (sell) legs block margin — a long
+// leg's max risk is already its paid premium, already reflected in P&L/max
+// loss, not a separate margin requirement. Returns null when spot isn't
+// known yet (can't estimate), 0 for an all-long strategy (no margin needed).
+const MARGIN_PERCENT_OF_NOTIONAL = 0.15;
+
+export function computeEstMargin(legs, spot) {
+    if (!spot) return null;
+    return legs
+        .filter((leg) => leg.action === "sell")
+        .reduce((sum, leg) => sum + spot * legMultiplier(leg) * MARGIN_PERCENT_OF_NOTIONAL, 0);
+}
+
 // Net Greeks — sum of each leg's per-unit Greek × qty × (+1 buy / -1 sell).
 export function computeNetGreeks(legs) {
     return legs.reduce(

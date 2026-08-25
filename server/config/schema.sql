@@ -67,6 +67,24 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
+-- Forgot-password flow (Phase 12). Only the SHA-256 hash of the reset token
+-- is stored, never the raw token — the raw token only ever exists in the
+-- emailed link and briefly in the request body of the reset call, same
+-- "never store the secret itself" instinct as password_hash above. A token
+-- is single-use (used_at) and short-lived (expires_at, set by
+-- authController.js — 1 hour). One user can have multiple outstanding
+-- tokens (e.g. they requested twice); all of them are invalidated the
+-- moment any one of them is successfully used, see resetPassword.
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  token_hash CHAR(64) NOT NULL UNIQUE,  -- SHA-256 hex digest of the raw token
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS strategies (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT UNSIGNED NOT NULL,

@@ -4,7 +4,7 @@ import { fetchOptionChain, fetchSymbolList } from "../services/optionChainApi";
 import { formatPrice } from "../utils/format";
 import {
     computePayoffCurve, computeBreakevens, computeMaxProfitLoss, computeNetGreeks,
-    addMarkToMarketCurve, computeExpectedMove, computePOP, evaluationExpiryOf, legMultiplier, otherAction,
+    addMarkToMarketCurve, computeExpectedMove, computePOP, computeEstMargin, evaluationExpiryOf, legMultiplier, otherAction,
 } from "../utils/payoff";
 import { yearsToExpiry, daysUntilExpiry, bsPrice } from "../utils/blackScholes";
 import PayoffChart from "../components/PayoffChart";
@@ -125,6 +125,7 @@ export default function StrategyBuilder() {
     const [hideChain, setHideChain] = useState(false);
     const [strikeAsc, setStrikeAsc] = useState(true);
     const atmRowRef = useRef(null);
+    const chainScrollRef = useRef(null);
 
     function toggleColumn(key) {
         setColumns((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -379,8 +380,17 @@ export default function StrategyBuilder() {
         ).strike;
     }, [data, effectiveAtmPrice]);
 
+    // Scrolls only the chain table's own container, never the page — native
+    // scrollIntoView({block:"center"}) walks up every scrollable ancestor
+    // including the window, so on a tall page it was also yanking the whole
+    // page down (hiding the top navbar) whenever the ATM row wasn't already
+    // within the window's viewport, not just within the table.
     function scrollToAtm(behavior = "smooth") {
-        atmRowRef.current?.scrollIntoView({ behavior, block: "center" });
+        const row = atmRowRef.current;
+        const container = chainScrollRef.current;
+        if (!row || !container) return;
+        const target = row.offsetTop - container.clientHeight / 2 + row.clientHeight / 2;
+        container.scrollTo({ top: Math.max(0, target), behavior });
     }
 
     // Auto-center the chain on the SPOT/ATM row whenever a fresh chain loads
@@ -439,9 +449,9 @@ export default function StrategyBuilder() {
     // based on ALL legs, same convention as Simulator.jsx.
     const activeLegs = useMemo(() => legs.filter((l) => l.active !== false), [legs]);
 
-    const { curve, breakevens, maxProfit, maxLoss, netGreeks, currentPnl, pop, expectedMove } = useMemo(() => {
+    const { curve, breakevens, maxProfit, maxLoss, netGreeks, currentPnl, pop, expectedMove, estMargin } = useMemo(() => {
         if (!activeLegs.length || !data || !data.spotPrice) {
-            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, currentPnl: null, pop: null, expectedMove: null };
+            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, currentPnl: null, pop: null, expectedMove: null, estMargin: null };
         }
 
         try {
@@ -462,15 +472,16 @@ export default function StrategyBuilder() {
             curveData = (atmIv && typeof addMarkToMarketCurve === "function") ? addMarkToMarketCurve(curveData, activeLegs, yearsRemaining, Date.now()) : curveData;
             const expMv = (atmIv && typeof computeExpectedMove === "function") ? computeExpectedMove(data.spotPrice, atmIv, yearsRemaining) : null;
             const popVal = (atmIv && typeof computePOP === "function") ? computePOP(curveData, data.spotPrice, atmIv, yearsRemaining) : null;
+            const marginVal = computeEstMargin(activeLegs, data.spotPrice);
 
             const closest = curveData.length > 0
                 ? curveData.reduce((a, b) => (Math.abs(b.price - data.spotPrice) < Math.abs(a.price - data.spotPrice) ? b : a))
                 : { pnl: 0 };
 
-            return { curve: curveData, breakevens: breakEvs, maxProfit: mxProf, maxLoss: mxLoss, netGreeks: netGrks, currentPnl: closest.pnl, pop: popVal, expectedMove: expMv };
+            return { curve: curveData, breakevens: breakEvs, maxProfit: mxProf, maxLoss: mxLoss, netGreeks: netGrks, currentPnl: closest.pnl, pop: popVal, expectedMove: expMv, estMargin: marginVal };
         } catch (err) {
             console.error(err);
-            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, currentPnl: null, pop: null, expectedMove: null };
+            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, currentPnl: null, pop: null, expectedMove: null, estMargin: null };
         }
     }, [activeLegs, data]);
 
@@ -722,7 +733,7 @@ export default function StrategyBuilder() {
 
                 {data && data.rows && (
                     <div className="relative">
-                        <div className="max-h-[82vh] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-sm custom-scrollbar">
+                        <div ref={chainScrollRef} className="max-h-[82vh] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-sm custom-scrollbar">
                             <table className="w-full border-collapse text-[12px]">
                                 <thead className="sticky top-0 bg-gray-50 border-b border-gray-200 z-10 shadow-[0_1px_0_0_rgba(229,231,235,1)]">
                                     <tr>
@@ -730,7 +741,7 @@ export default function StrategyBuilder() {
                                         {columns.vega && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Vega</th>}
                                         {columns.gamma && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Gamma</th>}
                                         {columns.iv && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">IV</th>}
-                                        {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[13%]">Call Δ</th>}
+                                        {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[13%]">CallΔ</th>}
                                         <th className="px-1.5 py-2 text-right font-semibold text-gray-400 w-[15%]">LTP</th>
                                         {columns.oi && <th className="px-1.5 py-2 text-right font-semibold text-gray-400 w-[18%]">OI{columns.lot ? " / Lot" : ""}</th>}
                                         <th
@@ -742,7 +753,7 @@ export default function StrategyBuilder() {
                                         </th>
                                         {columns.oi && <th className="px-1.5 py-2 text-left font-semibold text-gray-400 w-[18%]">OI{columns.lot ? " / Lot" : ""}</th>}
                                         <th className="px-1.5 py-2 text-left font-semibold text-gray-400 w-[18%]">LTP</th>
-                                        {columns.putDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Put Δ</th>}
+                                        {columns.putDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">PutΔ</th>}
                                         {columns.iv && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">IV</th>}
                                         {columns.gamma && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Gamma</th>}
                                         {columns.vega && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Vega</th>}
@@ -772,12 +783,12 @@ export default function StrategyBuilder() {
                                                 {columns.gamma && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.gamma ?? "-"}</td>}
                                                 {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.iv ?? "-"}</td>}
                                                 {columns.callDelta && (
-                                                    <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-[#FFFEE5]" : ""}`}>
+                                                    <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-amber-50" : ""}`}>
                                                         {formatDelta(row.ce?.delta)}
                                                     </td>
                                                 )}
                                                 {/* CALL SIDE */}
-                                                <td className={`group px-1.5 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-[#FFFEE5]" : ""}`}>
+                                                <td className={`group px-1.5 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-amber-50" : ""}`}>
                                                     {ceNet !== 0 && (
                                                         <span className={`absolute -top-0.5 right-0.5 z-[1] rounded-full border bg-white px-1.5 text-[9px] font-bold leading-tight ${ceNet > 0 ? "border-[#52C41A] text-[#52C41A]" : "border-[#FF4D4F] text-[#FF4D4F]"}`}>
                                                             {ceNet > 0 ? `+${ceNet}` : ceNet}
@@ -801,7 +812,7 @@ export default function StrategyBuilder() {
                                                     </div>
                                                 </td>
                                                 {columns.oi && (
-                                                    <td className={`p-0 tabular-nums ${ceItm ? "bg-[#FFFEE5]" : ""}`}>
+                                                    <td className={`p-0 tabular-nums ${ceItm ? "bg-amber-50" : ""}`}>
                                                         <OiBar value={row.ce?.oi} max={maxCeOi} side="ce" />
                                                         {columns.lot && <div className="px-1 pb-0.5 text-[10px] text-gray-400 text-right">{lots ?? "-"} lots</div>}
                                                     </td>
@@ -819,12 +830,12 @@ export default function StrategyBuilder() {
 
                                                 {/* PUT SIDE */}
                                                 {columns.oi && (
-                                                    <td className={`p-0 tabular-nums ${peItm ? "bg-[#FFFEE5]" : ""}`}>
+                                                    <td className={`p-0 tabular-nums ${peItm ? "bg-amber-50" : ""}`}>
                                                         <OiBar value={row.pe?.oi} max={maxPeOi} side="pe" />
                                                         {columns.lot && <div className="px-1 pb-0.5 text-[10px] text-gray-400">{putLots ?? "-"} lots</div>}
                                                     </td>
                                                 )}
-                                                <td className={`group px-1.5 py-1.5 text-left tabular-nums relative ${peItm ? "bg-[#FFFEE5]" : ""}`}>
+                                                <td className={`group px-1.5 py-1.5 text-left tabular-nums relative ${peItm ? "bg-amber-50" : ""}`}>
                                                     {peNet !== 0 && (
                                                         <span className={`absolute -top-0.5 left-0.5 z-[1] rounded-full border bg-white px-1.5 text-[9px] font-bold leading-tight ${peNet > 0 ? "border-[#52C41A] text-[#52C41A]" : "border-[#FF4D4F] text-[#FF4D4F]"}`}>
                                                             {peNet > 0 ? `+${peNet}` : peNet}
@@ -848,7 +859,7 @@ export default function StrategyBuilder() {
                                                     </div>
                                                 </td>
                                                 {columns.putDelta && (
-                                                    <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-[#FFFEE5]" : ""}`}>
+                                                    <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-amber-50" : ""}`}>
                                                         {formatDelta(row.pe?.delta)}
                                                     </td>
                                                 )}
@@ -923,6 +934,7 @@ export default function StrategyBuilder() {
                             {/* StockMojo Matched Vertical Status Column */}
                             <div className="w-48 shrink-0 flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
                                 <Stat label="Strategy P&L" value={formatPrice(currentPnl)} tone={currentPnl == null ? undefined : currentPnl >= 0 ? "positive" : "negative"} />
+                                <Stat label="Est. Margin" value={estMargin == null ? "—" : estMargin === 0 ? "Not required" : formatPrice(estMargin)} hint="Approximation: 15% of notional on short legs only, same formula Paper Trade uses for real margin — not real SPAN margin" />
                                 <Stat label="Probability of Profit (POP)" value={pop != null ? `${pop.toFixed(0)}%` : "—"} hint="Normal distribution assumption breakdown strategy" />
                                 <Stat label="Max Profit Potential" value={maxProfit == null ? "—" : typeof maxProfit === "number" ? formatPrice(maxProfit) : maxProfit} tone="positive" />
                                 <Stat label="Max Loss Risk" value={maxLoss == null ? "—" : typeof maxLoss === "number" ? formatPrice(maxLoss) : maxLoss} tone="negative" />

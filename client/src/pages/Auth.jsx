@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { FcGoogle } from "react-icons/fc";
@@ -120,7 +120,14 @@ export default function Auth() {
                             />
                         </div>
                         <div>
-                            <label className="mb-1 block text-xs font-medium" style={{ color: c.muted }}>Password</label>
+                            <div className="mb-1 flex items-center justify-between">
+                                <label className="block text-xs font-medium" style={{ color: c.muted }}>Password</label>
+                                {mode === "login" && (
+                                    <Link to="/forgot-password" className="text-xs hover:opacity-80" style={{ color: c.muted }}>
+                                        Forgot password?
+                                    </Link>
+                                )}
+                            </div>
                             <input
                                 type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)}
                                 className="w-full rounded-lg px-3 py-2 text-sm outline-none"

@@ -19,7 +19,9 @@ import {
   addMarkToMarketCurve,
   computeExpectedMove,
   computePOP,
+  computeEstMargin,
   evaluationExpiryOf,
+  legMultiplier,
   otherAction,
 } from "../utils/payoff";
 import { yearsToExpiry } from "../utils/blackScholes";
@@ -87,6 +89,80 @@ function loadFavorites() {
     return Array.isArray(parsed) && parsed.length ? parsed : DEFAULT_FAVORITES;
   } catch {
     return DEFAULT_FAVORITES;
+  }
+}
+
+// Positions the user has placed (buy/sell legs) survive expiry/time
+// navigation within Simulator AND leaving the page entirely (switching to
+// another route, or reloading) — persisted per symbol so switching symbols
+// still starts fresh for that symbol, matching favoriteSymbols' localStorage
+// convention above. Switching to a different DATE is a separate case (see
+// upcomingPositions below): whatever's in `legs` at that point is archived
+// as a dated entry rather than just carried over, and `legs` starts empty
+// again for the newly-viewed date. Only "Reset Workspace" (an explicit user
+// action) discards a position outright without archiving it first.
+const SIM_LEGS_KEY_PREFIX = "bazaarSync.simulator.legs.";
+
+function loadSavedLegs(sym) {
+  try {
+    const raw = localStorage.getItem(SIM_LEGS_KEY_PREFIX + sym);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!Array.isArray(parsed)) return [];
+    // Keep legIdCounter past any restored id so newly-added legs never
+    // collide with a restored one.
+    const maxId = parsed.reduce((m, l) => Math.max(m, l.id || 0), 0);
+    if (maxId >= legIdCounter) legIdCounter = maxId + 1;
+    return parsed;
+  } catch {
+    return [];
+  }
+}
+
+function saveLegs(sym, legsToSave) {
+  try {
+    if (legsToSave.length) {
+      localStorage.setItem(SIM_LEGS_KEY_PREFIX + sym, JSON.stringify(legsToSave));
+    } else {
+      localStorage.removeItem(SIM_LEGS_KEY_PREFIX + sym);
+    }
+  } catch {
+    // localStorage unavailable — positions just won't survive navigation this session
+  }
+}
+
+// "Upcoming Positions" — a read-only journal of legs that were being built
+// for a given date, archived the moment the user navigates to a different
+// date (see selectDate) rather than silently carried over or discarded.
+// Each entry is a snapshot, not a live position: nothing here is re-priced
+// or editable, it's just a record of "this is what was built, for this
+// date" — same "gap, not a guess" honesty convention the rest of this app
+// uses, rather than pretending a snapshot from one day is still tradeable
+// state on another. Persisted per symbol, same pattern as legs above.
+const SIM_UPCOMING_KEY_PREFIX = "bazaarSync.simulator.upcoming.";
+let upcomingIdCounter = 0;
+
+function loadUpcomingPositions(sym) {
+  try {
+    const raw = localStorage.getItem(SIM_UPCOMING_KEY_PREFIX + sym);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!Array.isArray(parsed)) return [];
+    const maxId = parsed.reduce((m, e) => Math.max(m, e.id || 0), 0);
+    if (maxId >= upcomingIdCounter) upcomingIdCounter = maxId + 1;
+    return parsed;
+  } catch {
+    return [];
+  }
+}
+
+function saveUpcomingPositions(sym, entries) {
+  try {
+    if (entries.length) {
+      localStorage.setItem(SIM_UPCOMING_KEY_PREFIX + sym, JSON.stringify(entries));
+    } else {
+      localStorage.removeItem(SIM_UPCOMING_KEY_PREFIX + sym);
+    }
+  } catch {
+    // localStorage unavailable — the journal just won't survive navigation this session
   }
 }
 
@@ -223,7 +299,7 @@ function Stat({ label, value, tone, hint }) {
   return (
     <div
       title={hint}
-      className="border-b border-gray-100 pb-2 last:border-0 last:pb-0"
+      className="border-b border-gray-200 pb-2 last:border-0 last:pb-0"
     >
       <div className="text-[11px] font-medium text-gray-400 uppercase tracking-wider">
         {label}
@@ -246,6 +322,7 @@ export default function Simulator() {
   const [searchParams, setSearchParams] = useSearchParams();
   const initialJumpRef = useRef(searchParams.get("jump"));
   const atmRowRef = useRef(null);
+  const chainScrollRef = useRef(null);
   const [symbol, setSymbol] = useState(() => searchParams.get("symbol")?.toUpperCase() || "NIFTY");
   const [dates, setDates] = useState([]); // DESC (most recent first), per /dates
   const [datesLoaded, setDatesLoaded] = useState(false); // distinguishes "still fetching" from "fetched, genuinely empty"
@@ -255,8 +332,17 @@ export default function Simulator() {
   const [liveChain, setLiveChain] = useState(null); // chain rows at whichever instant is being viewed
   const [chainError, setChainError] = useState(null);
   const [scrubError, setScrubError] = useState(null); // -1m/+5m/etc failures — previously swallowed silently
-  const [legs, setLegs] = useState([]);
-  const [tab, setTab] = useState("positions"); // 'positions' | 'greeks'
+  const [legs, setLegs] = useState(() => loadSavedLegs(searchParams.get("symbol")?.toUpperCase() || "NIFTY"));
+  useEffect(() => {
+    saveLegs(symbol, legs);
+  }, [symbol, legs]);
+  const [upcomingPositions, setUpcomingPositions] = useState(() =>
+    loadUpcomingPositions(searchParams.get("symbol")?.toUpperCase() || "NIFTY")
+  );
+  useEffect(() => {
+    saveUpcomingPositions(symbol, upcomingPositions);
+  }, [symbol, upcomingPositions]);
+  const [tab, setTab] = useState("positions"); // 'positions' | 'greeks' | 'upcoming'
   const [chartTab, setChartTab] = useState("payoff"); // 'payoff' | 'strategy' | 'nifty' | 'combined'
   // Underlying lightweight-charts instances, exposed via forwardRef, so the
   // "combined" tab can sync crosshair + pan/zoom between the two separate
@@ -265,6 +351,25 @@ export default function Simulator() {
   // need to be told to move together, see the sync effect below).
   const strategyChartRef = useRef(null);
   const niftyChartRef = useRef(null);
+
+  const [savedOpen, setSavedOpen] = useState(false);
+  const [hideChain, setHideChain] = useState(false);
+  const [legsTopFirst, setLegsTopFirst] = useState(true);
+  const [slTgEditId, setSlTgEditId] = useState(null);
+
+  const [columns, setColumns] = useState(DEFAULT_COLUMNS);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [expiryDropdownOpen, setExpiryDropdownOpen] = useState(false);
+
+  function toggleColumn(key) {
+    setColumns((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
+  function resetChainSettings() {
+    setColumns(DEFAULT_COLUMNS);
+  }
+
+  const [replayData, setReplayData] = useState(null);
+  const [replayError, setReplayError] = useState(null);
 
   // Syncs crosshair + visible time range between StrategyChart and
   // CandlestickChart's underlying lightweight-charts instances when the
@@ -335,24 +440,7 @@ export default function Simulator() {
       unsubscribers.forEach((unsub) => unsub());
     };
   }, [chartTab, replayData, selectedDate]);
-  const [savedOpen, setSavedOpen] = useState(false);
-  const [hideChain, setHideChain] = useState(false);
-  const [legsTopFirst, setLegsTopFirst] = useState(true);
-  const [slTgEditId, setSlTgEditId] = useState(null);
 
-  const [columns, setColumns] = useState(DEFAULT_COLUMNS);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [expiryDropdownOpen, setExpiryDropdownOpen] = useState(false);
-
-  function toggleColumn(key) {
-    setColumns((prev) => ({ ...prev, [key]: !prev[key] }));
-  }
-  function resetChainSettings() {
-    setColumns(DEFAULT_COLUMNS);
-  }
-
-  const [replayData, setReplayData] = useState(null);
-  const [replayError, setReplayError] = useState(null);
   const [running, setRunning] = useState(false);
   const [cursor, setCursor] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -432,7 +520,8 @@ export default function Simulator() {
     setLiveChain(null);
     setChainError(null);
     setScrubError(null);
-    setLegs([]);
+    setLegs(loadSavedLegs(symbol));
+    setUpcomingPositions(loadUpcomingPositions(symbol));
     setReplayData(null);
     setReplayError(null);
     setChartTab("payoff");
@@ -613,8 +702,22 @@ export default function Simulator() {
   }
 
   function selectDate(date, time) {
+    // Whatever was being built for the date we're LEAVING gets archived as
+    // a dated "Upcoming Positions" journal entry rather than carried into
+    // the new date or silently dropped — see upcomingPositions above. Guard
+    // on `selectedDate` being non-empty so the very first auto-select on
+    // page load (selectedDate === "") doesn't archive legs that were just
+    // restored from a previous session with no date attached yet.
+    if (selectedDate && date !== selectedDate && legs.length > 0) {
+      const archived = ++upcomingIdCounter;
+      setUpcomingPositions((prev) => [
+        { id: archived, date: selectedDate, legs, archivedAt: Date.now() },
+        ...prev,
+      ]);
+      setLegs([]);
+      setTab("upcoming");
+    }
     setSelectedDate(date);
-    setLegs([]);
     setReplayData(null);
     setChartTab("payoff");
     if (date) {
@@ -635,7 +738,7 @@ export default function Simulator() {
   }
 
   function selectExpiry(expiry) {
-    setLegs([]);
+    // Positions the user already built are kept — see selectDate above.
     setReplayData(null);
     setChartTab("payoff");
     loadChain(selectedDate, expiry);
@@ -951,8 +1054,17 @@ export default function Simulator() {
   );
   const displaySpot = liveChain?.spotPrice ?? chainData?.spotPrice;
 
+  // Scrolls only the chain table's own container, never the page — native
+  // scrollIntoView({block:"center"}) walks up every scrollable ancestor
+  // including the window, so on a tall page it was also yanking the whole
+  // page down (hiding the top navbar) whenever the ATM row wasn't already
+  // within the window's viewport, not just within the table.
   function scrollToAtm(behavior = "smooth") {
-    atmRowRef.current?.scrollIntoView({ behavior, block: "center" });
+    const row = atmRowRef.current;
+    const container = chainScrollRef.current;
+    if (!row || !container) return;
+    const target = row.offsetTop - container.clientHeight / 2 + row.clientHeight / 2;
+    container.scrollTo({ top: Math.max(0, target), behavior });
   }
 
   // Auto-center the chain on the SPOT/ATM row as soon as a chain loads for a
@@ -1039,6 +1151,7 @@ export default function Simulator() {
     currentPnl,
     pop,
     expectedMove,
+    estMargin,
   } = useMemo(() => {
     const empty = {
       curve: [],
@@ -1049,6 +1162,7 @@ export default function Simulator() {
       currentPnl: null,
       pop: null,
       expectedMove: null,
+      estMargin: null,
     };
     if (!activeLegs.length || !displaySpot || !chainData?.selectedExpiry)
       return empty;
@@ -1086,6 +1200,7 @@ export default function Simulator() {
       const popVal = atmIv
         ? computePOP(curveData, displaySpot, atmIv, yearsRemaining)
         : null;
+      const marginVal = computeEstMargin(activeLegs, displaySpot);
 
       const closest = curveData.length
         ? curveData.reduce((a, b) =>
@@ -1104,6 +1219,7 @@ export default function Simulator() {
         currentPnl: closest.pnl,
         pop: popVal,
         expectedMove: expMv,
+        estMargin: marginVal,
       };
     } catch (err) {
       console.error(err);
@@ -1144,10 +1260,13 @@ export default function Simulator() {
   }
 
   return (
-    <div className="bg-gray-50/40">
-      <div className="mx-auto max-w-[1600px] px-5 pt-2">
+    <div
+      className="bg-gray-50/40 w-full min-h-screen"
+      style={{ fontFamily: "'Poppins', sans-serif" }}
+    >
+      <div className="w-full px-5 pt-2">
         <div className="w-full shrink-0 flex flex-col">
-          <div className="rounded-xl border border-gray-200 bg-white p-2 shadow-sm">
+          <div className="rounded-xl border border-gray-300 bg-white p-2 shadow-sm">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5 relative">
                 <button
@@ -1160,7 +1279,7 @@ export default function Simulator() {
                 </button>
                 <button
                   onClick={() => setPickerOpen((v) => !v)}
-                  className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-sm font-bold text-gray-900 hover:border-blue-400 hover:bg-blue-50"
+                  className="rounded-full border border-gray-300 bg-gray-50 px-3 py-1 text-sm font-bold text-gray-900 hover:border-blue-400 hover:bg-blue-50"
                 >
                   {symbol}
                 </button>
@@ -1176,14 +1295,14 @@ export default function Simulator() {
                 {pickerOpen && (
                   <>
                     <div className="fixed inset-0 z-10" onClick={() => setPickerOpen(false)} />
-                    <div className="absolute left-0 top-full z-20 mt-1 w-64 max-h-96 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-xl text-xs">
-                      <div className="sticky top-0 border-b border-gray-100 bg-white p-2">
+                    <div className="absolute left-0 top-full z-20 mt-1 w-64 max-h-96 overflow-y-auto rounded-lg border border-gray-300 bg-white shadow-xl text-xs">
+                      <div className="sticky top-0 border-b border-gray-200 bg-white p-2">
                         <input
                           autoFocus
                           value={pickerQuery}
                           onChange={(e) => setPickerQuery(e.target.value)}
                           placeholder="Search symbol…"
-                          className="w-full rounded-md border border-gray-200 px-2 py-1 text-xs outline-none focus:border-blue-500"
+                          className="w-full rounded-md border border-gray-300 px-2 py-1 text-xs outline-none focus:border-blue-500"
                         />
                       </div>
                       {filteredIndices.length > 0 && (
@@ -1227,7 +1346,7 @@ export default function Simulator() {
                   <button
                     onClick={() => setSpeedOpen((v) => !v)}
                     disabled={!replayData}
-                    className="rounded-md border border-gray-200 px-2 py-1 text-[11px] font-medium bg-gray-50 text-gray-700 outline-none disabled:opacity-40 hover:bg-gray-100"
+                    className="rounded-md border border-gray-300 px-2 py-1 text-[11px] font-medium bg-gray-50 text-gray-700 outline-none disabled:opacity-40 hover:bg-gray-100"
                   >
                     {MOVE_OPTIONS.find((o) => o.key === moveKey)?.label} / {EVERY_OPTIONS.find((o) => o.key === everyKey)?.label}
                   </button>
@@ -1235,7 +1354,7 @@ export default function Simulator() {
                   {speedOpen && (
                     <>
                       <div className="fixed inset-0 z-10" onClick={() => setSpeedOpen(false)} />
-                      <div className="absolute right-0 z-20 mt-1 w-56 rounded-lg border border-gray-200 bg-white p-3 shadow-xl text-xs">
+                      <div className="absolute right-0 z-20 mt-1 w-56 rounded-lg border border-gray-300 bg-white p-3 shadow-xl text-xs">
                         <div className="mb-3">
                           <div className="mb-1.5 font-semibold text-gray-600">Move</div>
                           <div className="flex flex-col gap-1">
@@ -1322,7 +1441,7 @@ export default function Simulator() {
                 <button
                   onClick={() => (calendarOpen ? setCalendarOpen(false) : openCalendar())}
                   disabled={!dates.length}
-                  className="flex w-full items-center justify-center gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 font-bold text-gray-800 hover:bg-gray-100 disabled:opacity-40"
+                  className="flex w-full items-center justify-center gap-1 rounded-md border border-gray-300 bg-gray-50 px-2 py-1.5 font-bold text-gray-800 hover:bg-gray-100 disabled:opacity-40"
                 >
                   <SlCalender /> {formatDateTimeLabel(selectedDate, currentTime)}
                 </button>
@@ -1330,9 +1449,9 @@ export default function Simulator() {
                 {calendarOpen && calendarYm && (
                   <>
                     <div className="fixed inset-0 z-10" onClick={() => setCalendarOpen(false)} />
-                    <div className="absolute left-0 z-20 mt-1 flex w-[440px] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl">
+                    <div className="absolute left-0 z-20 mt-1 flex w-[440px] overflow-hidden rounded-lg border border-gray-300 bg-white shadow-xl">
                       {/* Month calendar */}
-                      <div className="flex-1 border-r border-gray-100 p-3">
+                      <div className="flex-1 border-r border-gray-200 p-3">
                         <div className="mb-2 flex items-center justify-between">
                           <div className="flex items-center gap-0.5">
                             <button onClick={() => shiftCalendarYear(-1)} className="rounded p-1 text-gray-400 hover:bg-gray-100" aria-label="Previous year">«</button>
@@ -1401,7 +1520,7 @@ export default function Simulator() {
                           scroll within a compact box instead of stretching
                           the whole popover to cover the page. */}
                       <div className="flex w-[130px] shrink-0 flex-col">
-                        <div className="flex h-72 divide-x divide-gray-100 overflow-hidden">
+                        <div className="flex h-72 divide-x divide-gray-200 overflow-hidden">
                           <div className="flex-1 overflow-y-auto py-1 text-center">
                             {pendingHours.map((h) => (
                               <button
@@ -1429,7 +1548,7 @@ export default function Simulator() {
                             ))}
                           </div>
                         </div>
-                        <div className="border-t border-gray-100 p-2">
+                        <div className="border-t border-gray-200 p-2">
                           <button
                             onClick={confirmCalendarSelection}
                             disabled={!pendingDate}
@@ -1509,12 +1628,12 @@ export default function Simulator() {
         </div>
       </div>
 
-      <div className="mx-auto flex max-w-[1600px] gap-3 px-5 pt-2 min-h-screen">
+      <div className="w-full flex gap-3 px-5 pt-2 min-h-screen">
         {/* Left Column: Option Chain Window */}
         {!hideChain && (
-        <div className="w-[560px] shrink-0 flex flex-col">
+        <div className="w-[650px] shrink-0 flex flex-col">
           {chainData && (
-            <div className="mb-3 rounded-xl border border-gray-200 bg-white px-4 py-1 shadow-sm transition-all hover:shadow-md">
+            <div className="mb-3 rounded-xl border border-gray-300 bg-white px-4 py-1 shadow-sm transition-all hover:shadow-md">
   
               {/* Row 1 */}
               <div className="flex items-center justify-between">
@@ -1538,9 +1657,18 @@ export default function Simulator() {
                   <span className="text-xs font-medium text-gray-400">FUT:</span>
                   <span className="font-bold tabular-nums text-gray-400">—</span>
                 </div>
+                <div className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-blue-50">
+                  <button
+                    onClick={() => setHideChain(true)}
+                    className="rounded-md bg-blue-50 px-3 py-1.5 text-[11px] font-semibold text-blue-600 transition-colors hover:bg-blue-100 hover:text-blue-700"
+                    title="Hide Chain — give the right panel full width"
+                  >
+                    Hide Chain
+                  </button>
+                </div>
               </div>
 
-              <hr className="my-1.5 border-gray-200" />
+              <hr className="my-1.5 border-gray-300" />
 
               {/* Row 2 */}
               <div className="flex items-center gap-3">
@@ -1600,7 +1728,7 @@ export default function Simulator() {
                           {expiryDropdownOpen && (
                             <>
                               <div className="fixed inset-0 z-10" onClick={() => setExpiryDropdownOpen(false)} />
-                              <div className="absolute left-0 top-full z-20 mt-1.5 min-w-[160px] max-h-72 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-xl text-[11px] animate-in fade-in slide-in-from-top-1 duration-200">
+                              <div className="absolute left-0 top-full z-20 mt-1.5 min-w-[160px] max-h-72 overflow-y-auto rounded-lg border border-gray-300 bg-white py-1 shadow-xl text-[11px] animate-in fade-in slide-in-from-top-1 duration-200">
                                 {chainData.expiries.slice(1).map((exp) => (
                                   <button
                                     key={exp}
@@ -1626,13 +1754,7 @@ export default function Simulator() {
                 <div className="h-5 w-px bg-gray-200 flex-shrink-0" />
 
                 <div className="flex-shrink-0 flex items-center gap-1">
-                  <button
-                    onClick={() => setHideChain(true)}
-                    className="rounded-md px-2 py-1 text-[11px] font-semibold text-gray-500 hover:bg-gray-100"
-                    title="Hide Chain — give the right panel full width"
-                  >
-                    Hide Chain
-                  </button>
+                 
                   <div className="relative">
                     <button
                       onClick={() => setSettingsOpen((v) => !v)}
@@ -1646,7 +1768,7 @@ export default function Simulator() {
                     {settingsOpen && (
                       <>
                         <div className="fixed inset-0 z-10" onClick={() => setSettingsOpen(false)} />
-                        <div className="absolute right-0 top-full z-20 mt-1.5 w-56 rounded-lg border border-gray-200 bg-white p-4 shadow-xl text-xs animate-in fade-in slide-in-from-top-1 duration-200">
+                        <div className="absolute right-0 top-full z-20 mt-1.5 w-56 rounded-lg border border-gray-300 bg-white p-4 shadow-xl text-xs animate-in fade-in slide-in-from-top-1 duration-200">
                           <div className="mb-3 flex items-center justify-between">
                             <span className="font-bold text-gray-800">Chain Settings</span>
                             <button 
@@ -1742,36 +1864,36 @@ export default function Simulator() {
           
 
           {displayRows.length > 0 && (
-            <div className="max-h-[68vh] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-sm custom-scrollbar">
-              <table className="w-full border-collapse text-[11px]">
-                <thead className="sticky top-0 bg-gray-50 border-b border-gray-200 z-10">
+            <div ref={chainScrollRef} className="max-h-[82vh] overflow-y-auto rounded-xl border border-gray-300 bg-white shadow-sm custom-scrollbar">
+              <table className="w-full border-collapse text-[12.5px]">
+                <thead className="sticky top-0 bg-gray-50 border-b border-gray-300 z-10">
                   <tr className="text-center font-bold text-xs">
-                    <th colSpan={chainCeColCount} className="bg-emerald-50 text-emerald-800 border-b border-gray-200 py-1.5">CALL</th>
-                    <th className="bg-gray-100/80 border-b border-gray-200"></th>
-                    <th colSpan={chainPeColCount} className="bg-rose-50 text-rose-800 border-b border-gray-200 py-1.5">PUT</th>
+                    <th colSpan={chainCeColCount} className="bg-emerald-50 text-emerald-800 border-b border-gray-300 py-1.5">CALL</th>
+                    <th className="bg-gray-100/80 border-b border-gray-300"></th>
+                    <th colSpan={chainPeColCount} className="bg-rose-50 text-rose-800 border-b border-gray-300 py-1.5">PUT</th>
                   </tr>
                   <tr>
-                    {columns.gamma && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Γ</th>}
-                    {columns.vega && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Vega</th>}
-                    {columns.theta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Theta</th>}
-                    {columns.iv && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">IV</th>}
-                    {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[13%]">Delta Δ</th>}
-                    <th className="px-1.5 py-2 text-right font-semibold text-gray-400 w-[15%]">
+                    {columns.gamma && <th className="px-1.5 py-2 text-center font-semibold text-gray-500 bg-emerald-50/50">Γ</th>}
+                    {columns.vega && <th className="px-1.5 py-2 text-center font-semibold text-gray-500 bg-emerald-50/50">Vega</th>}
+                    {columns.theta && <th className="px-1.5 py-2 text-center font-semibold text-gray-500 bg-emerald-50/50">Theta</th>}
+                    {columns.iv && <th className="px-1.5 py-2 text-center font-semibold text-gray-500 bg-emerald-50/50">IV</th>}
+                    {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-500 bg-emerald-50/50 w-[13%]">CallΔ</th>}
+                    <th className="px-1.5 py-2 text-right font-semibold text-gray-500 bg-emerald-50/50 w-[15%]">
                       LTP
                     </th>
-                    {columns.oi && <th className="px-1.5 py-2 text-right font-semibold text-gray-400 w-[18%]">OI</th>}
-                    <th className="py-2 text-center font-bold text-gray-700 bg-gray-100/80 w-[16%] border-x border-gray-200">
+                    {columns.oi && <th className="px-1.5 py-2 text-right font-semibold text-gray-500 bg-emerald-50/50 w-[18%]">OI</th>}
+                    <th className="py-2 text-center font-bold text-gray-700 bg-gray-100/80 w-[16%] border-x border-gray-300">
                       Strike
                     </th>
-                    {columns.oi && <th className="px-1.5 py-2 text-left font-semibold text-gray-400 w-[18%]">OI</th>}
-                    <th className="px-1.5 py-2 text-left font-semibold text-gray-400 w-[18%]">
+                    {columns.oi && <th className="px-1.5 py-2 text-left font-semibold text-gray-500 bg-rose-50/50 w-[18%]">OI</th>}
+                    <th className="px-1.5 py-2 text-left font-semibold text-gray-500 bg-rose-50/50 w-[18%]">
                       LTP
                     </th>
-                    {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Delta Δ</th>}
-                    {columns.iv && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">IV</th>}
-                    {columns.theta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Theta</th>}
-                    {columns.vega && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Vega</th>}
-                    {columns.gamma && <th className="px-1.5 py-2 text-center font-semibold text-gray-400">Γ</th>}
+                    {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold text-gray-500 bg-rose-50/50 w-[10%]">PutΔ</th>}
+                    {columns.iv && <th className="px-1.5 py-2 text-center font-semibold text-gray-500 bg-rose-50/50">IV</th>}
+                    {columns.theta && <th className="px-1.5 py-2 text-center font-semibold text-gray-500 bg-rose-50/50">Theta</th>}
+                    {columns.vega && <th className="px-1.5 py-2 text-center font-semibold text-gray-500 bg-rose-50/50">Vega</th>}
+                    {columns.gamma && <th className="px-1.5 py-2 text-center font-semibold text-gray-500 bg-rose-50/50">Γ</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -1789,102 +1911,129 @@ export default function Simulator() {
                       <tr
                         key={row.strike}
                         ref={isAtm ? atmRowRef : null}
-                        className={`border-b border-gray-100/70 ${isAtm ? "bg-blue-50/70 font-semibold border-l-4 border-l-blue-500 ring-1 ring-inset ring-blue-200" : "hover:bg-gray-50/80"}`}
+                        className={`border-b border-gray-200/70 ${isAtm ? "bg-blue-50/70 font-semibold border-l-4 border-l-blue-500 ring-1 ring-inset ring-blue-200" : "hover:bg-gray-50/80"}`}
                       >
                         {columns.gamma && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.gamma)}</td>}
                         {columns.vega && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.vega)}</td>}
                         {columns.theta && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.theta)}</td>}
                         {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.iv != null ? `${row.ce.iv.toFixed(1)}%` : "-"}</td>}
                         {columns.callDelta && (
-                          <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-[#FFFEE5]" : ""}`}>
+                          <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-amber-50" : ""}`}>
                             {formatDelta(row.ce?.delta)}
                           </td>
                         )}
-                        <td className={`group px-1.5 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-[#FFFEE5]" : ""}`}>
+                        <td className={`group px-1.5 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-amber-50" : ""}`}>
                           {ceNet !== 0 && (
                             <span className={`absolute -top-0.5 right-0.5 z-[1] rounded-full border bg-white px-1 text-[8px] font-bold leading-tight ${ceNet > 0 ? "border-[#52C41A] text-[#52C41A]" : "border-[#FF4D4F] text-[#FF4D4F]"}`}>
                               {ceNet > 0 ? `+${ceNet}` : ceNet}
                             </span>
                           )}
-                          <span className="text-gray-700 group-hover:invisible">
+                          <span
+                            className={`group-hover:invisible ${
+                              isAtm
+                                ? "inline-flex items-center gap-1 rounded-md bg-blue-600 px-1.5 text-white shadow-sm"
+                                : "text-gray-700"
+                            }`}
+                          >
                             {formatPrice(row.ce?.ltp)}
+                            {isAtm && <span className="text-[8px] font-bold tracking-wide">ATM</span>}
                           </span>
                           <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white">
                             {!replayData && (ceLeg ? (
                               <>
-                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty - 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] font-bold text-gray-600 hover:bg-gray-100">−</button>
-                                <span className="w-4 text-center text-[9px] font-bold tabular-nums text-gray-700">{ceLeg.qty}</span>
-                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty + 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] font-bold text-gray-600 hover:bg-gray-100">+</button>
+                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty - 1)} className="rounded border border-gray-300 px-1.5 py-1 text-[11px] font-bold text-gray-600 hover:bg-gray-100">−</button>
+                                <span className="w-5 text-center text-[11px] font-bold tabular-nums text-gray-700">{ceLeg.qty}</span>
+                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty + 1)} className="rounded border border-gray-300 px-1.5 py-1 text-[11px] font-bold text-gray-600 hover:bg-gray-100">+</button>
                               </>
                             ) : (
                               <>
                                 <button
                                   onClick={() => addLeg(row, "CE", "buy")}
-                                  className="rounded border border-[#52C41A] text-[#52C41A] hover:bg-[#52C41A] hover:text-white px-1.5 py-0.5 text-[9px] font-extrabold transition-colors"
+                                  className="rounded border border-[#52C41A] text-[#52C41A] hover:bg-[#52C41A] hover:text-white px-2.5 py-1 text-[12px] font-extrabold transition-colors"
                                 >
                                   B
                                 </button>
                                 <button
                                   onClick={() => addLeg(row, "CE", "sell")}
-                                  className="rounded border border-[#FF4D4F] text-[#FF4D4F] hover:bg-[#FF4D4F] hover:text-white px-1.5 py-0.5 text-[9px] font-extrabold transition-colors"
+                                  className="rounded border border-[#FF4D4F] text-[#FF4D4F] hover:bg-[#FF4D4F] hover:text-white px-2.5 py-1 text-[12px] font-extrabold transition-colors"
                                 >
                                   S
                                 </button>
                               </>
                             ))}
-                            <button onClick={() => setChartModal({ strike: row.strike, right: "CE" })} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
+                            <button onClick={() => setChartModal({ strike: row.strike, right: "CE" })} className="rounded border border-gray-300 px-1.5 py-1 text-[13px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
                           </div>
                         </td>
                         {columns.oi && (
-                          <td className={`p-0 tabular-nums ${ceItm ? "bg-[#FFFEE5]" : ""}`}>
+                          <td className={`p-0 tabular-nums ${ceItm ? "bg-amber-50" : ""}`}>
                             <OiBar value={row.ce?.oi} max={maxCeOi} side="ce" />
                           </td>
                         )}
-                        <td className="py-1.5 text-center font-bold text-gray-900 bg-gray-50/40 border-x border-gray-100 text-xs tabular-nums">
-                          {row.strike}
+                        <td className="py-1.5 text-center bg-gray-50/40 border-x border-gray-200">
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-0.5 text-xs font-bold tabular-nums ${
+                              isAtm
+                                ? "border-blue-600 bg-blue-600 text-white shadow-sm"
+                                : "border-gray-300 bg-white text-gray-900"
+                            }`}
+                          >
+                            {row.strike}
+                            {isAtm && (
+                              <span className="rounded-sm bg-white/20 px-1 text-[8px] font-bold tracking-wide">
+                                ATM
+                              </span>
+                            )}
+                          </span>
                         </td>
                         {columns.oi && (
-                          <td className={`p-0 tabular-nums ${peItm ? "bg-[#FFFEE5]" : ""}`}>
+                          <td className={`p-0 tabular-nums ${peItm ? "bg-amber-50" : ""}`}>
                             <OiBar value={row.pe?.oi} max={maxPeOi} side="pe" />
                           </td>
                         )}
-                        <td className={`group px-1.5 py-1.5 text-left tabular-nums relative ${peItm ? "bg-[#FFFEE5]" : ""}`}>
+                        <td className={`group px-1.5 py-1.5 text-left tabular-nums relative ${peItm ? "bg-amber-50" : ""}`}>
                           {peNet !== 0 && (
                             <span className={`absolute -top-0.5 left-0.5 z-[1] rounded-full border bg-white px-1 text-[8px] font-bold leading-tight ${peNet > 0 ? "border-[#52C41A] text-[#52C41A]" : "border-[#FF4D4F] text-[#FF4D4F]"}`}>
                               {peNet > 0 ? `+${peNet}` : peNet}
                             </span>
                           )}
-                          <span className="text-gray-700 group-hover:invisible">
+                          <span
+                            className={`group-hover:invisible ${
+                              isAtm
+                                ? "inline-flex items-center gap-1 rounded-md bg-blue-600 px-1.5 text-white shadow-sm"
+                                : "text-gray-700"
+                            }`}
+                          >
                             {formatPrice(row.pe?.ltp)}
+                            {isAtm && <span className="text-[8px] font-bold tracking-wide">ATM</span>}
                           </span>
                           <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white">
                             {!replayData && (peLeg ? (
                               <>
-                                <button onClick={() => updateQty(peLeg.id, peLeg.qty - 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] font-bold text-gray-600 hover:bg-gray-100">−</button>
-                                <span className="w-4 text-center text-[9px] font-bold tabular-nums text-gray-700">{peLeg.qty}</span>
-                                <button onClick={() => updateQty(peLeg.id, peLeg.qty + 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] font-bold text-gray-600 hover:bg-gray-100">+</button>
+                                <button onClick={() => updateQty(peLeg.id, peLeg.qty - 1)} className="rounded border border-gray-300 px-1.5 py-1 text-[11px] font-bold text-gray-600 hover:bg-gray-100">−</button>
+                                <span className="w-5 text-center text-[11px] font-bold tabular-nums text-gray-700">{peLeg.qty}</span>
+                                <button onClick={() => updateQty(peLeg.id, peLeg.qty + 1)} className="rounded border border-gray-300 px-1.5 py-1 text-[11px] font-bold text-gray-600 hover:bg-gray-100">+</button>
                               </>
                             ) : (
                               <>
                                 <button
                                   onClick={() => addLeg(row, "PE", "buy")}
-                                  className="rounded border border-[#52C41A] text-[#52C41A] hover:bg-[#52C41A] hover:text-white px-1.5 py-0.5 text-[9px] font-extrabold transition-colors"
+                                  className="rounded border border-[#52C41A] text-[#52C41A] hover:bg-[#52C41A] hover:text-white px-2.5 py-1 text-[12px] font-extrabold transition-colors"
                                 >
                                   B
                                 </button>
                                 <button
                                   onClick={() => addLeg(row, "PE", "sell")}
-                                  className="rounded border border-[#FF4D4F] text-[#FF4D4F] hover:bg-[#FF4D4F] hover:text-white px-1.5 py-0.5 text-[9px] font-extrabold transition-colors"
+                                  className="rounded border border-[#FF4D4F] text-[#FF4D4F] hover:bg-[#FF4D4F] hover:text-white px-2.5 py-1 text-[12px] font-extrabold transition-colors"
                                 >
                                   S
                                 </button>
                               </>
                             ))}
-                            <button onClick={() => setChartModal({ strike: row.strike, right: "PE" })} className="rounded border border-gray-300 px-1 py-0.5 text-[9px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
+                            <button onClick={() => setChartModal({ strike: row.strike, right: "PE" })} className="rounded border border-gray-300 px-1.5 py-1 text-[13px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
                           </div>
                         </td>
                         {columns.callDelta && (
-                          <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-[#FFFEE5]" : ""}`}>
+                          <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-amber-50" : ""}`}>
                             {formatDelta(row.pe?.delta)}
                           </td>
                         )}
@@ -1901,7 +2050,7 @@ export default function Simulator() {
           )}
 
           {!selectedDate && !chainError && (
-            <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-xs text-gray-400 shadow-sm">
+            <div className="rounded-xl border border-gray-300 bg-white p-8 text-center text-xs text-gray-400 shadow-sm">
               Pick a symbol and a historical trading day above. The chain is
               real data stored from that day — build legs the same way as
               Strategy Builder, then replay the whole day minute by minute from
@@ -1914,7 +2063,7 @@ export default function Simulator() {
         {hideChain && (
           <button
             onClick={() => setHideChain(false)}
-            className="fixed left-3 top-20 z-30 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-600 shadow-md hover:bg-gray-50"
+            className="fixed left-3 top-20 z-30 rounded-full border border-gray-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-600 shadow-md hover:bg-gray-50"
           >
             Show Option Chain
           </button>
@@ -1990,11 +2139,22 @@ export default function Simulator() {
 
           <div className="mb-4 flex gap-4 items-stretch">
             {legs.length > 0 && (
-              <div className="w-48 shrink-0 flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
+              <div className="w-48 shrink-0 flex flex-col justify-between rounded-xl border border-gray-300 bg-white p-4 shadow-sm space-y-3">
                 <Stat
                   label="Strategy P&L"
                   value={formatPrice(currentPnl)}
                   tone={currentPnl >= 0 ? "positive" : "negative"}
+                />
+                <Stat
+                  label="Est. Margin"
+                  value={
+                    estMargin == null
+                      ? "—"
+                      : estMargin === 0
+                        ? "Not required"
+                        : formatPrice(estMargin)
+                  }
+                  hint="Approximation: 15% of notional on short legs only, same formula Paper Trade uses for real margin — not real SPAN margin"
                 />
                 <Stat
                   label="Probability of Profit (POP)"
@@ -2038,15 +2198,15 @@ export default function Simulator() {
               </div>
             )}
 
-            <div className="flex-1 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col">
-              <div className="flex gap-1 border-b border-gray-100 bg-gray-50/50 px-3 pt-2 overflow-x-auto">
+            <div className="flex-1 rounded-xl border border-gray-300 bg-white shadow-sm overflow-hidden flex flex-col">
+              <div className="flex gap-1 border-b border-gray-200 bg-gray-50/50 px-3 pt-2 overflow-x-auto">
                 {CHART_TABS.map(([key, label]) => (
                   <button
                     key={key}
                     onClick={() => setChartTab(key)}
                     className={`shrink-0 rounded-t-md px-3 py-1.5 text-xs font-semibold transition-colors ${
                       chartTab === key
-                        ? "bg-white text-blue-600 border border-b-0 border-gray-200"
+                        ? "bg-white text-blue-600 border border-b-0 border-gray-300"
                         : "text-gray-500 hover:text-gray-800"
                     }`}
                   >
@@ -2088,7 +2248,7 @@ export default function Simulator() {
                 {chartTab === "combined" && (
                   <div className="space-y-4">
                     <div>{renderStrategyChart(220)}</div>
-                    <div className="border-t border-gray-100 pt-4">
+                    <div className="border-t border-gray-200 pt-4">
                       <CandlestickChart ref={niftyChartRef} symbol={symbol} date={selectedDate} compact />
                     </div>
                     {legs.length > 0 && (
@@ -2102,9 +2262,9 @@ export default function Simulator() {
             </div>
           </div>
 
-          {legs.length > 0 && (
-            <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-              <div className="flex border-b border-gray-100 text-xs font-semibold">
+          {(legs.length > 0 || upcomingPositions.length > 0) && (
+            <div className="rounded-xl border border-gray-300 bg-white shadow-sm overflow-hidden">
+              <div className="flex border-b border-gray-200 text-xs font-semibold">
                 <button
                   onClick={() => setTab("positions")}
                   className={`px-5 py-3 transition-colors ${tab === "positions" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
@@ -2117,11 +2277,17 @@ export default function Simulator() {
                 >
                   Portfolio Greeks
                 </button>
+                <button
+                  onClick={() => setTab("upcoming")}
+                  className={`px-5 py-3 transition-colors ${tab === "upcoming" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
+                >
+                  Upcoming Positions{upcomingPositions.length > 0 ? ` (${upcomingPositions.length})` : ""}
+                </button>
               </div>
 
               {tab === "positions" ? (
                 <>
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 bg-gray-50/40 px-4 py-2 text-[11px]">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-gray-50/40 px-4 py-2 text-[11px]">
                     <div className="flex items-center gap-3">
                       <label className="flex items-center gap-1.5 text-gray-600 cursor-pointer">
                         <input
@@ -2135,7 +2301,7 @@ export default function Simulator() {
                       </label>
                       <button
                         onClick={() => setLegsTopFirst((v) => !v)}
-                        className="rounded-md border border-gray-200 px-2 py-1 font-semibold text-gray-600 hover:bg-gray-100"
+                        className="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-600 hover:bg-gray-100"
                       >
                         {legsTopFirst ? "Top ↓" : "Bottom ↑"}
                       </button>
@@ -2144,7 +2310,7 @@ export default function Simulator() {
                         <button
                           onClick={() => bulkAdjustLots(-1)}
                           disabled={!!replayData}
-                          className="rounded border border-gray-200 px-1.5 py-0.5 font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-30"
+                          className="rounded border border-gray-300 px-1.5 py-0.5 font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-30"
                         >
                           −
                         </button>
@@ -2152,7 +2318,7 @@ export default function Simulator() {
                         <button
                           onClick={() => bulkAdjustLots(1)}
                           disabled={!!replayData}
-                          className="rounded border border-gray-200 px-1.5 py-0.5 font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-30"
+                          className="rounded border border-gray-300 px-1.5 py-0.5 font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-30"
                         >
                           +
                         </button>
@@ -2171,7 +2337,7 @@ export default function Simulator() {
                   </div>
                   <table className="w-full border-collapse text-xs">
                     <thead>
-                      <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-100">
+                      <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-200">
                         <th className="px-3 py-2.5 w-8" title="Include in payoff calculation"></th>
                         <th className="px-4 py-2.5 text-left font-medium">
                           Action
@@ -2203,7 +2369,7 @@ export default function Simulator() {
                         <th className="px-4 py-2.5 w-10"></th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-100">
+                    <tbody className="divide-y divide-gray-200">
                       {orderedLegs.map((leg) => {
                         const row = displayRows.find(
                           (r) => r.strike === leg.strike,
@@ -2253,7 +2419,7 @@ export default function Simulator() {
                                 value={leg.expiry || ""}
                                 disabled={!!replayData || !chainData?.expiries?.length}
                                 onChange={(e) => updateLegExpiry(leg.id, e.target.value)}
-                                className="rounded-lg border border-gray-200 bg-white px-1.5 py-1 text-[11px] font-medium text-gray-700 outline-none focus:border-blue-500 disabled:opacity-50"
+                                className="rounded-lg border border-gray-300 bg-white px-1.5 py-1 text-[11px] font-medium text-gray-700 outline-none focus:border-blue-500 disabled:opacity-50"
                               >
                                 {(chainData?.expiries?.includes(leg.expiry) ? chainData.expiries : [leg.expiry, ...(chainData?.expiries || [])]).map((exp) => (
                                   <option key={exp} value={exp}>{formatExpiryShort(exp)}</option>
@@ -2266,7 +2432,7 @@ export default function Simulator() {
                                   <button
                                     onClick={() => rollLegStrike(leg.id, -1)}
                                     disabled={!!replayData}
-                                    className="rounded border border-gray-200 px-1 text-[10px] font-bold text-gray-500 hover:bg-gray-100 disabled:opacity-30"
+                                    className="rounded border border-gray-300 px-1 text-[10px] font-bold text-gray-500 hover:bg-gray-100 disabled:opacity-30"
                                     title="Roll to lower strike"
                                   >
                                     −
@@ -2275,7 +2441,7 @@ export default function Simulator() {
                                   <button
                                     onClick={() => rollLegStrike(leg.id, 1)}
                                     disabled={!!replayData}
-                                    className="rounded border border-gray-200 px-1 text-[10px] font-bold text-gray-500 hover:bg-gray-100 disabled:opacity-30"
+                                    className="rounded border border-gray-300 px-1 text-[10px] font-bold text-gray-500 hover:bg-gray-100 disabled:opacity-30"
                                     title="Roll to higher strike"
                                   >
                                     +
@@ -2336,7 +2502,7 @@ export default function Simulator() {
                               {slTgEditId === leg.id && (
                                 <>
                                   <div className="fixed inset-0 z-10" onClick={() => setSlTgEditId(null)} />
-                                  <div className="absolute right-0 z-20 mt-1 w-52 rounded-lg border border-gray-200 bg-white p-3 text-left shadow-xl">
+                                  <div className="absolute right-0 z-20 mt-1 w-52 rounded-lg border border-gray-300 bg-white p-3 text-left shadow-xl">
                                     <div className="mb-2 text-[10px] text-gray-400">
                                       Planning note only — not auto-executed here. Use Backtest for SL%/target%-driven exits.
                                     </div>
@@ -2346,7 +2512,7 @@ export default function Simulator() {
                                         type="number"
                                         defaultValue={leg.slPercent ?? ""}
                                         onBlur={(e) => setLegSlTg(leg.id, e.target.value, leg.tgPercent ?? "")}
-                                        className="w-16 rounded border border-gray-200 px-1.5 py-0.5 text-right outline-none focus:border-blue-500"
+                                        className="w-16 rounded border border-gray-300 px-1.5 py-0.5 text-right outline-none focus:border-blue-500"
                                       />
                                     </label>
                                     <label className="flex items-center justify-between gap-2 text-[11px]">
@@ -2355,7 +2521,7 @@ export default function Simulator() {
                                         type="number"
                                         defaultValue={leg.tgPercent ?? ""}
                                         onBlur={(e) => setLegSlTg(leg.id, leg.slPercent ?? "", e.target.value)}
-                                        className="w-16 rounded border border-gray-200 px-1.5 py-0.5 text-right outline-none focus:border-blue-500"
+                                        className="w-16 rounded border border-gray-300 px-1.5 py-0.5 text-right outline-none focus:border-blue-500"
                                       />
                                     </label>
                                   </div>
@@ -2388,53 +2554,120 @@ export default function Simulator() {
                     </tbody>
                   </table>
                 </>
-                ) : (
+                ) : tab === "greeks" ? (
                   <table className="w-full border-collapse text-xs">
                     <thead>
-                      <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-100">
-                        <th className="px-4 py-2.5 text-left font-medium">
-                          Greek
-                        </th>
-                        <th className="px-4 py-2.5 text-right font-medium">
-                          Net Value
-                        </th>
+                      <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-200">
+                        <th className="px-4 py-2.5 text-left font-medium">Leg Matrix</th>
+                        <th className="px-4 py-2.5 text-right font-medium">IV %</th>
+                        <th className="px-4 py-2.5 text-right font-medium">Delta</th>
+                        <th className="px-4 py-2.5 text-right font-medium">Gamma</th>
+                        <th className="px-4 py-2.5 text-right font-medium">Theta</th>
+                        <th className="px-4 py-2.5 text-right font-medium">Vega</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-100">
-                      <tr>
-                        <td className="px-4 py-2.5 font-medium text-gray-700">
-                          Delta
-                        </td>
-                        <td className="px-4 py-2.5 text-right tabular-nums font-bold text-gray-900">
-                          {netGreeks ? netGreeks.delta.toFixed(3) : "-"}
-                        </td>
-                      </tr>
-                      <tr>
-                        <td className="px-4 py-2.5 font-medium text-gray-700">
-                          Gamma
-                        </td>
-                        <td className="px-4 py-2.5 text-right tabular-nums font-bold text-gray-900">
-                          {netGreeks ? netGreeks.gamma.toFixed(4) : "-"}
-                        </td>
-                      </tr>
-                      <tr>
-                        <td className="px-4 py-2.5 font-medium text-gray-700">
-                          Theta
-                        </td>
-                        <td className="px-4 py-2.5 text-right tabular-nums font-bold text-gray-900">
-                          {netGreeks ? netGreeks.theta.toFixed(2) : "-"}
-                        </td>
-                      </tr>
-                      <tr>
-                        <td className="px-4 py-2.5 font-medium text-gray-700">
-                          Vega
-                        </td>
-                        <td className="px-4 py-2.5 text-right tabular-nums font-bold text-gray-900">
-                          {netGreeks ? netGreeks.vega.toFixed(2) : "-"}
-                        </td>
-                      </tr>
+                    <tbody className="divide-y divide-gray-200">
+                      {legs.map((leg) => (
+                        <tr key={leg.id} className="hover:bg-gray-50/40 transition-colors">
+                          <td className="px-4 py-2.5 font-medium text-gray-700">
+                            {leg.action === "buy" ? "B" : "S"} {leg.strike} {leg.type}
+                          </td>
+                          <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.iv ?? "-"}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.delta ?? "-"}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.gamma ?? "-"}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.theta ?? "-"}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.vega ?? "-"}</td>
+                        </tr>
+                      ))}
+                      {netGreeks && (
+                        <tr className="font-bold bg-blue-50/30 border-t-2 border-gray-200 text-gray-900">
+                          <td className="px-4 py-3">Net Risk Aggregates</td>
+                          <td className="px-4 py-3"></td>
+                          <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.delta || 0).toFixed(3)}</td>
+                          <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.gamma || 0).toFixed(6)}</td>
+                          <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.theta || 0).toFixed(3)}</td>
+                          <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.vega || 0).toFixed(3)}</td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
+                ) : (
+                  <div className="divide-y divide-gray-200">
+                    {upcomingPositions.length === 0 ? (
+                      <div className="px-4 py-10 text-center text-xs text-gray-400">
+                        Positions you build get archived here the moment you move to a different date — nothing archived yet.
+                      </div>
+                    ) : (
+                      upcomingPositions.map((entry) => {
+                        const netCost = entry.legs.reduce(
+                          (sum, leg) => sum + (leg.action === "buy" ? -1 : 1) * leg.premium * legMultiplier(leg),
+                          0
+                        );
+                        return (
+                          <div key={entry.id}>
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-gray-50/60 px-4 py-2 text-[11px]">
+                              <div className="font-semibold text-gray-700">
+                                {entry.date}
+                                <span className="ml-2 font-normal text-gray-400">
+                                  {entry.legs.length} leg{entry.legs.length > 1 ? "s" : ""}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-gray-400">Net {netCost >= 0 ? "Credit" : "Debit"}: </span>
+                                <span className={`font-bold tabular-nums ${netCost >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                                  {formatPrice(Math.abs(netCost))}
+                                </span>
+                              </div>
+                            </div>
+                            <table className="w-full border-collapse text-xs">
+                              <thead>
+                                <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-200">
+                                  <th className="px-4 py-2 text-left font-medium">Action</th>
+                                  <th className="px-4 py-2 text-left font-medium">Type</th>
+                                  <th className="px-4 py-2 text-right font-medium">Strike</th>
+                                  <th className="px-4 py-2 text-right font-medium">Lots</th>
+                                  <th className="px-4 py-2 text-right font-medium">Entry Price</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-gray-200">
+                                {entry.legs.map((leg) => (
+                                  <tr key={leg.id}>
+                                    <td className="px-4 py-2">
+                                      <span
+                                        className={`rounded-md px-2 py-0.5 text-[10px] font-bold text-white shadow-sm ${
+                                          leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"
+                                        }`}
+                                      >
+                                        {leg.action === "buy" ? "BUY" : "SELL"}
+                                      </span>
+                                    </td>
+                                    <td className="px-4 py-2">
+                                      <span
+                                        className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
+                                          leg.type === "CE" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
+                                        }`}
+                                      >
+                                        {leg.type}
+                                      </span>
+                                    </td>
+                                    <td className="px-4 py-2 text-right font-bold tabular-nums text-gray-900">
+                                      {leg.strike}
+                                    </td>
+                                    <td className="px-4 py-2 text-right tabular-nums text-gray-700">
+                                      {leg.qty}
+                                    </td>
+                                    <td className="px-4 py-2 text-right tabular-nums text-gray-700">
+                                      {formatPrice(leg.premium)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
                 )}
               </div>
             )}

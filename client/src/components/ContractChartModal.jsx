@@ -1,21 +1,45 @@
 // components/ContractChartModal.jsx
 import { useEffect, useRef, useState } from "react";
-import { createChart, AreaSeries } from "lightweight-charts";
+import { createChart, CandlestickSeries } from "lightweight-charts";
 import { fetchContractHistory } from "../services/optionChainApi";
 import { formatPrice } from "../utils/format";
 
 /**
- * TradingView-style price chart for a single option contract, opened from the
- * hover action on the option chain's LTP cells. Real per-strike option
- * contracts aren't listed on TradingView itself, so this renders our own
- * stored LTP snapshots (option_chain_history) through TradingView's
- * open-source Lightweight Charts library rather than an embedded widget.
+ * TradingView-style candlestick chart for a single option contract, opened
+ * from the hover action on the option chain's LTP cells. Real per-strike
+ * option contracts aren't listed on TradingView itself, so this renders our
+ * own stored per-minute LTP snapshots (option_chain_history) through
+ * TradingView's open-source Lightweight Charts library rather than an
+ * embedded widget.
+ *
+ * option_chain_history stores one LTP snapshot per minute, not real OHLC —
+ * so each minute's candle is synthesized close-to-close (open = the
+ * previous minute's close/LTP, close = this minute's LTP, high/low = the
+ * wider of the two), same convention already established for the Simulator
+ * Strategy Chart's per-minute P&L candles. Not a substitute for a real
+ * intra-minute OHLC feed, just an honest way to show minute-wise movement
+ * from what's actually stored.
+ *
+ * Presented as a bottom sheet (slides up from the bottom, not a centered
+ * dialog) rather than a modal.
  */
 export default function ContractChartModal({ symbol, strike, expiry, right, onClose }) {
     const containerRef = useRef(null);
     const chartRef = useRef(null);
     const [points, setPoints] = useState(null);
     const [error, setError] = useState(null);
+    const [open, setOpen] = useState(false);
+
+    // Slide up on mount, slide down before actually closing.
+    useEffect(() => {
+        const raf = requestAnimationFrame(() => setOpen(true));
+        return () => cancelAnimationFrame(raf);
+    }, []);
+
+    function handleClose() {
+        setOpen(false);
+        setTimeout(onClose, 220);
+    }
 
     useEffect(() => {
         let cancelled = false;
@@ -54,22 +78,43 @@ export default function ContractChartModal({ symbol, strike, expiry, right, onCl
             },
             rightPriceScale: { borderColor: "#2a2e39" },
             width: containerRef.current.clientWidth,
-            height: 360,
+            height: containerRef.current.clientHeight,
         });
 
-        const series = chart.addSeries(AreaSeries, {
-            lineColor: "#2962ff",
-            topColor: "rgba(41, 98, 255, 0.35)",
-            bottomColor: "rgba(41, 98, 255, 0.0)",
-            lineWidth: 2,
+        const series = chart.addSeries(CandlestickSeries, {
+            upColor: "#26a69a",
+            downColor: "#ef5350",
+            borderUpColor: "#26a69a",
+            borderDownColor: "#ef5350",
+            wickUpColor: "#26a69a",
+            wickDownColor: "#ef5350",
             priceFormat: { type: "price", precision: 2, minMove: 0.05 },
         });
-        series.setData(points.map((p) => ({ time: p.time, value: p.value })));
+
+        // Synthesize a minute candle from consecutive LTP snapshots — see
+        // file header comment for why (no real per-minute OHLC is stored).
+        let prevClose = null;
+        const candles = points.map((p) => {
+            const open = prevClose == null ? p.value : prevClose;
+            const close = p.value;
+            prevClose = close;
+            return {
+                time: p.time,
+                open,
+                high: Math.max(open, close),
+                low: Math.min(open, close),
+                close,
+            };
+        });
+        series.setData(candles);
         chart.timeScale().fitContent();
 
         const handleResize = () => {
             if (containerRef.current) {
-                chart.applyOptions({ width: containerRef.current.clientWidth });
+                chart.applyOptions({
+                    width: containerRef.current.clientWidth,
+                    height: containerRef.current.clientHeight,
+                });
             }
         };
         window.addEventListener("resize", handleResize);
@@ -86,13 +131,19 @@ export default function ContractChartModal({ symbol, strike, expiry, right, onCl
 
     return (
         <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-            onClick={onClose}
+            className={`fixed inset-0 z-50 flex items-end justify-center bg-black/50 transition-opacity duration-200 ${
+                open ? "opacity-100" : "opacity-0"
+            }`}
+            onClick={handleClose}
         >
             <div
-                className="w-full max-w-3xl rounded-lg bg-[#131722] shadow-xl overflow-hidden"
+                className={`w-full max-w-4xl rounded-t-2xl bg-[#131722] shadow-2xl overflow-hidden transition-transform duration-200 ease-out ${
+                    open ? "translate-y-0" : "translate-y-full"
+                }`}
                 onClick={(e) => e.stopPropagation()}
             >
+                <div className="mx-auto mt-2 h-1 w-10 rounded-full bg-gray-600" />
+
                 <div className="flex items-center justify-between border-b border-gray-700 px-4 py-3">
                     <div className="text-sm font-semibold text-gray-100">
                         {symbol} {strike} {right}
@@ -102,11 +153,11 @@ export default function ContractChartModal({ symbol, strike, expiry, right, onCl
                             </span>
                         )}
                         <span className="ml-2 text-[10px] font-normal text-gray-500">
-                            Expiry {expiry}
+                            Expiry {expiry} · 1-min candles
                         </span>
                     </div>
                     <button
-                        onClick={onClose}
+                        onClick={handleClose}
                         className="rounded p-1 text-gray-400 hover:bg-gray-700 hover:text-white transition"
                         aria-label="Close chart"
                     >
@@ -128,11 +179,14 @@ export default function ContractChartModal({ symbol, strike, expiry, right, onCl
                             No price history stored yet for this contract.
                         </div>
                     )}
-                    <div ref={containerRef} className={points && points.length > 0 ? "" : "hidden"} />
+                    <div
+                        ref={containerRef}
+                        className={`h-[50vh] max-h-[440px] ${points && points.length > 0 ? "" : "hidden"}`}
+                    />
                 </div>
 
                 <div className="border-t border-gray-700 px-4 py-2 text-[10px] text-gray-500">
-                    LTP history from our own recorded snapshots, not a live TradingView feed.
+                    Candles synthesized from our own recorded per-minute LTP snapshots, not a live TradingView feed.
                 </div>
             </div>
         </div>
