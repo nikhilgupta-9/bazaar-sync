@@ -1,10 +1,33 @@
-import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ResponsiveContainer } from "recharts";
+import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ReferenceDot, ResponsiveContainer } from "recharts";
 import { formatPrice } from "../utils/format";
+
+// Linear-interpolated value of a curve series at an arbitrary price — same
+// precision convention as payoff.js's computeBreakevens (only as accurate as
+// the curve's sample spacing, fine for a chart marker). Returns null past
+// the sampled range's edges or where the series itself is null (e.g. no IV
+// snapshot for the "today" curve).
+function interpolateAt(curve, price, key) {
+    if (!curve.length || price == null) return null;
+    if (price <= curve[0].price) return curve[0][key];
+    const last = curve[curve.length - 1];
+    if (price >= last.price) return last[key];
+    for (let i = 1; i < curve.length; i++) {
+        if (curve[i].price >= price) {
+            const a = curve[i - 1], b = curve[i];
+            if (a[key] == null || b[key] == null) return null;
+            const t = a.price === b.price ? 0 : (price - a.price) / (b.price - a.price);
+            return a[key] + t * (b[key] - a[key]);
+        }
+    }
+    return null;
+}
 
 // Shows two curves, matching stockmojo's Strategy Builder: a solid "Expiry"
 // line (intrinsic value only, hard kinks at strikes) and a dashed "Today"
 // line (Black-Scholes mark-to-market with remaining time value, smooth near
-// the money) — plus ±1SD/±2SD expected-move reference lines based on ATM IV.
+// the money) — plus ±1SD/±2SD expected-move reference lines based on ATM IV,
+// and a marker dot on each curve at the current spot price so "where do I
+// stand right now" is a glance, not a mental interpolation off the axis.
 export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove }) {
     if (!curve.length) {
         return (
@@ -21,6 +44,8 @@ export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove
     const zeroOffset = max <= 0 ? 0 : min >= 0 ? 1 : max / (max - min);
 
     const hasToday = curve.some((p) => p.todayPnl != null);
+    const spotExpiryPnl = spotPrice ? interpolateAt(curve, spotPrice, "pnl") : null;
+    const spotTodayPnl = spotPrice && hasToday ? interpolateAt(curve, spotPrice, "todayPnl") : null;
 
     return (
         <ResponsiveContainer width="100%" height={360}>
@@ -62,6 +87,29 @@ export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove
                 <Area type="monotone" dataKey="pnl" name="Expiry P&L" stroke="#2563eb" strokeWidth={2} fill="url(#payoffGradient)" />
                 {hasToday && (
                     <Line type="monotone" dataKey="todayPnl" name="Today P&L" stroke="#ea580c" strokeWidth={2} strokeDasharray="5 3" dot={false} />
+                )}
+
+                {spotExpiryPnl != null && (
+                    <ReferenceDot
+                        x={spotPrice}
+                        y={spotExpiryPnl}
+                        r={5}
+                        fill="#2563eb"
+                        stroke="#fff"
+                        strokeWidth={2}
+                        label={{ value: formatPrice(spotExpiryPnl), position: "top", fontSize: 10, fontWeight: 700, fill: "#2563eb" }}
+                    />
+                )}
+                {spotTodayPnl != null && (
+                    <ReferenceDot
+                        x={spotPrice}
+                        y={spotTodayPnl}
+                        r={5}
+                        fill="#ea580c"
+                        stroke="#fff"
+                        strokeWidth={2}
+                        label={{ value: formatPrice(spotTodayPnl), position: "bottom", fontSize: 10, fontWeight: 700, fill: "#ea580c" }}
+                    />
                 )}
             </ComposedChart>
         </ResponsiveContainer>

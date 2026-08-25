@@ -2363,6 +2363,9 @@ export default function Simulator() {
                         <th className="px-4 py-2.5 text-right font-medium">
                           Lots
                         </th>
+                        <th className="px-4 py-2.5 text-right font-medium" title="Approximation: 15% of notional (spot × lot size × lots) on short legs only — same formula Paper Trade uses for real margin, not real SPAN margin">
+                          Margin
+                        </th>
                         <th className="px-4 py-2.5 text-center font-medium">
                           SL/TG
                         </th>
@@ -2486,6 +2489,14 @@ export default function Simulator() {
                                   +
                                 </button>
                               </div>
+                              <div className="mt-0.5 text-[9px] text-gray-400" title="Real per-lot share count for this symbol, as of this trade date — used for every P&L/margin number on this leg">
+                                Lot: {leg.lotSize ?? "1 (unknown)"}
+                              </div>
+                            </td>
+                            <td className="px-4 py-2.5 text-right tabular-nums text-gray-700">
+                              {leg.action === "sell" && displaySpot
+                                ? formatPrice(computeEstMargin([leg], displaySpot))
+                                : <span className="text-gray-300">—</span>}
                             </td>
                             <td className="px-4 py-2.5 text-center relative">
                               <button
