@@ -972,10 +972,23 @@ export default function Simulator() {
   // Mini contract-chart popup, opened from the small chart icon on hover.
   const [chartModal, setChartModal] = useState(null); // { strike, right } | null
 
+  // Reset Workspace is the one deliberate discard-without-archiving action
+  // (see the SIM_LEGS_KEY_PREFIX comment above) — it now also clears this
+  // symbol's Upcoming Positions journal, not just the currently-open legs,
+  // since a user reaching for "reset everything" would otherwise still find
+  // old archived entries sitting there afterward. Confirmed first since,
+  // unlike a date switch, nothing here gets archived — it's genuinely gone.
   function resetWorkspace() {
+    if (
+      (legs.length > 0 || upcomingPositions.length > 0) &&
+      !window.confirm("Reset workspace? This clears the current legs and the Upcoming Positions journal for this symbol — permanently, nothing is archived.")
+    ) {
+      return;
+    }
     setLegs([]);
     setReplayData(null);
     setChartTab("payoff");
+    setUpcomingPositions([]);
   }
 
   function applyPreset(presetLegs) {
