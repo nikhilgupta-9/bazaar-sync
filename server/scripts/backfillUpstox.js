@@ -70,6 +70,19 @@ async function storeUnderlyingDaily(symbol, candles) {
     );
 }
 
+// MySQL/MariaDB's default max_allowed_packet (often as low as 1MB on local
+// installs) can't always hold one INSERT for a strike's ENTIRE date range in
+// a single statement — now that the byTime fix below actually stores every
+// real trading day instead of collapsing to ~1, a strike spanning 30+ days
+// can mean 10,000+ rows in one INSERT. Hit for real 2026-08-21 ("Got a
+// packet bigger than 'max_allowed_packet' bytes", then "write EPIPE" on the
+// next query since the oversized packet killed the connection). Same fix,
+// same constant name, as breeze-historical/backfillBreeze.js's identical
+// INSERT_BATCH_SIZE precedent — chunking avoids this regardless of the
+// server's configured packet size (same reasoning as workers/buffer.js's
+// bounded flush size on the live path).
+const INSERT_BATCH_SIZE = 500;
+
 // Merge same-minute CE/PE rows (with computed IV/Greeks) into option_chain_history.
 //
 // Real bug fixed 2026-08-21: this used to key `byTime` on `r.time` alone
@@ -104,20 +117,23 @@ async function storeOptionChainRows(symbol, expirySql, strike, ceRows, peRows) {
         r.pe?.close ?? null, r.pe?.oi ?? null, r.pe?.oiChange ?? null, r.pe?.iv ?? null, r.pe?.volume ?? null,
         r.pe?.delta ?? null, r.pe?.gamma ?? null, r.pe?.theta ?? null, r.pe?.vega ?? null,
     ]);
-    await pool.query(
-        `INSERT INTO option_chain_history (
-           symbol, trade_date, trade_time, expiry, strike, underlying_price,
-           ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume, ce_delta, ce_gamma, ce_theta, ce_vega,
-           pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume, pe_delta, pe_gamma, pe_theta, pe_vega
-         ) VALUES ?
-         ON DUPLICATE KEY UPDATE
-           underlying_price=VALUES(underlying_price),
-           ce_ltp=VALUES(ce_ltp), ce_oi=VALUES(ce_oi), ce_oi_change=VALUES(ce_oi_change), ce_iv=VALUES(ce_iv), ce_volume=VALUES(ce_volume),
-           ce_delta=VALUES(ce_delta), ce_gamma=VALUES(ce_gamma), ce_theta=VALUES(ce_theta), ce_vega=VALUES(ce_vega),
-           pe_ltp=VALUES(pe_ltp), pe_oi=VALUES(pe_oi), pe_oi_change=VALUES(pe_oi_change), pe_iv=VALUES(pe_iv), pe_volume=VALUES(pe_volume),
-           pe_delta=VALUES(pe_delta), pe_gamma=VALUES(pe_gamma), pe_theta=VALUES(pe_theta), pe_vega=VALUES(pe_vega)`,
-        [values]
-    );
+    for (let i = 0; i < values.length; i += INSERT_BATCH_SIZE) {
+        const batch = values.slice(i, i + INSERT_BATCH_SIZE);
+        await pool.query(
+            `INSERT INTO option_chain_history (
+               symbol, trade_date, trade_time, expiry, strike, underlying_price,
+               ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume, ce_delta, ce_gamma, ce_theta, ce_vega,
+               pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume, pe_delta, pe_gamma, pe_theta, pe_vega
+             ) VALUES ?
+             ON DUPLICATE KEY UPDATE
+               underlying_price=VALUES(underlying_price),
+               ce_ltp=VALUES(ce_ltp), ce_oi=VALUES(ce_oi), ce_oi_change=VALUES(ce_oi_change), ce_iv=VALUES(ce_iv), ce_volume=VALUES(ce_volume),
+               ce_delta=VALUES(ce_delta), ce_gamma=VALUES(ce_gamma), ce_theta=VALUES(ce_theta), ce_vega=VALUES(ce_vega),
+               pe_ltp=VALUES(pe_ltp), pe_oi=VALUES(pe_oi), pe_oi_change=VALUES(pe_oi_change), pe_iv=VALUES(pe_iv), pe_volume=VALUES(pe_volume),
+               pe_delta=VALUES(pe_delta), pe_gamma=VALUES(pe_gamma), pe_theta=VALUES(pe_theta), pe_vega=VALUES(pe_vega)`,
+            [batch]
+        );
+    }
     return rows.length;
 }
 
