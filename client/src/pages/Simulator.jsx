@@ -975,11 +975,13 @@ export default function Simulator() {
         expiry: chainData.selectedExpiry,
         // Unchecked (excluded) legs stay in the workspace but don't join the
         // replay, same as they're excluded from the theoretical payoff curve.
-        legs: legs.filter((l) => l.active !== false).map(({ strike, type, action, qty }) => ({
+        legs: legs.filter((l) => l.active !== false).map(({ strike, type, action, qty, slPercent, tgPercent }) => ({
           strike,
           type,
           action,
           qty,
+          slPercent,
+          tgPercent,
         })),
       });
       setReplayData(res);
@@ -1102,6 +1104,13 @@ export default function Simulator() {
   const canStepLater = !!(chainTimes.length && currentTime && currentTime < chainTimes[chainTimes.length - 1]);
   const onlySnapshotForDay = chainData && chainTimes.length <= 1;
 
+  // Was `diff * leg.qty` — missing the lot-size multiplier entirely, so
+  // every Live P&L number in the Positions table (and totalLivePnl below,
+  // which sums this) came out qty-scaled instead of real-share-count-scaled
+  // — off by a factor of the real lot size (e.g. 75x too small for NIFTY).
+  // legMultiplier (qty * lotSize) is the same multiplier the theoretical
+  // payoff curve and computeEstMargin already use — this brings Live P&L
+  // in line with those instead of silently disagreeing with them.
   function legLivePnl(leg) {
     const row = displayRows.find((r) => r.strike === leg.strike);
     const currentLtp = row
@@ -1114,7 +1123,7 @@ export default function Simulator() {
       leg.action === "buy"
         ? currentLtp - leg.premium
         : leg.premium - currentLtp;
-    return diff * leg.qty;
+    return diff * legMultiplier(leg);
   }
 
   // Legs the Positions table checkbox has left checked — the payoff curve,
@@ -2385,6 +2394,12 @@ export default function Simulator() {
                         const livePnl = legLivePnl(leg);
                         const included = leg.active !== false;
                         const canPickStrike = leg.expiry === chainData?.selectedExpiry;
+                        // Matched by (strike, type, action) — the replay
+                        // response mirrors the order/shape of the legs it was
+                        // sent, but doesn't carry the client-side leg.id.
+                        const replayOutcome = replayData?.legs?.find(
+                          (l) => l.strike === leg.strike && l.type === leg.type && l.action === leg.action,
+                        );
                         return (
                           <tr
                             key={leg.id}
@@ -2510,12 +2525,17 @@ export default function Simulator() {
                               {(leg.slPercent != null || leg.tgPercent != null) && (
                                 <div className="text-[9px] text-gray-400">SL {leg.slPercent ?? "—"}% / TG {leg.tgPercent ?? "—"}%</div>
                               )}
+                              {replayOutcome?.exitReason && (
+                                <div className={`mt-0.5 text-[9px] font-bold ${replayOutcome.exitReason === "target" ? "text-emerald-600" : "text-rose-600"}`}>
+                                  {replayOutcome.exitReason === "target" ? "Target hit" : "SL hit"} @ {replayOutcome.exitTime?.slice(0, 5)}
+                                </div>
+                              )}
                               {slTgEditId === leg.id && (
                                 <>
                                   <div className="fixed inset-0 z-10" onClick={() => setSlTgEditId(null)} />
                                   <div className="absolute right-0 z-20 mt-1 w-52 rounded-lg border border-gray-300 bg-white p-3 text-left shadow-xl">
                                     <div className="mb-2 text-[10px] text-gray-400">
-                                      Planning note only — not auto-executed here. Use Backtest for SL%/target%-driven exits.
+                                      Applied per leg during Run Simulation — % of this leg's own entry notional (entry price × lots × lot size). Once hit, this leg's P&L freezes at that minute; other legs keep running.
                                     </div>
                                     <label className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
                                       SL %

@@ -242,7 +242,7 @@ async function getChainAtTime(req, res) {
 
 /**
  * POST /api/simulator/replay/:symbol  body: { date, expiry, legs }
- * legs: [{ strike, type: 'CE'|'PE', action: 'buy'|'sell', qty }]
+ * legs: [{ strike, type: 'CE'|'PE', action: 'buy'|'sell', qty, slPercent?, tgPercent? }]
  *
  * Entry price for every leg is looked up from the real stored LTP at the
  * day's EARLIEST snapshot (not trusted from the client) so a replay always
@@ -250,6 +250,18 @@ async function getChainAtTime(req, res) {
  * computed from the real stored LTP at that minute too — no Black-Scholes
  * approximation needed here, unlike the live "Strategy Chart" tab, because
  * the historical per-minute option prices are already persisted.
+ *
+ * slPercent/tgPercent (optional, per leg) are now actually applied here —
+ * previously the Positions table's SL/TG editor was a planning-only note,
+ * never fed into the replay math. Each is a percentage of THAT LEG's own
+ * entry notional (|entryPrice * qty * lot size|) — per-leg, matching what
+ * the Positions table actually lets you configure (one SL/TG per leg), NOT
+ * a single whole-strategy threshold the way backtestEngine.js's
+ * stopLossPct/targetPct works against combined entryCost. Once a leg's own
+ * running P&L crosses ±its threshold, that leg "closes": its P&L freezes at
+ * the triggering minute's value for every later minute, while other legs
+ * (untriggered, or with no SL/TG set) keep moving — a multi-leg strategy can
+ * end up with some legs closed early and others still open at EOD/expiry.
  */
 async function replay(req, res) {
     try {
@@ -309,7 +321,13 @@ async function replay(req, res) {
         const legsWithEntry = legs.map((leg) => {
             const row = entryPrices?.get(Number(leg.strike));
             const entryPrice = row ? Number(leg.type === "CE" ? row.ce_ltp : row.pe_ltp) : null;
-            return { ...leg, strike: Number(leg.strike), qty: Number(leg.qty) || 1, entryPrice };
+            const qty = Number(leg.qty) || 1;
+            const slPercent = leg.slPercent != null && leg.slPercent !== "" ? Number(leg.slPercent) : null;
+            const tgPercent = leg.tgPercent != null && leg.tgPercent !== "" ? Number(leg.tgPercent) : null;
+            const legNotional = entryPrice != null ? Math.abs(entryPrice * qty * shareMultiplier) : null;
+            const slAmount = slPercent && legNotional != null ? (slPercent / 100) * legNotional : null;
+            const tgAmount = tgPercent && legNotional != null ? (tgPercent / 100) * legNotional : null;
+            return { ...leg, strike: Number(leg.strike), qty, entryPrice, slPercent, tgPercent, slAmount, tgAmount };
         });
 
         const [ohlcvRows] = await pool.query(
@@ -317,6 +335,14 @@ async function replay(req, res) {
             [symbol, date]
         );
         const spotByTime = new Map(ohlcvRows.map((r) => [r.trade_time, Number(r.close)]));
+
+        // Per-leg exit state, updated as the minute-by-minute walk below
+        // progresses. Once a leg's SL/TG triggers, its P&L freezes at that
+        // minute's value for every later minute — it no longer needs live
+        // price data, so a later gap in that specific contract's rows can't
+        // null out the whole point the way a still-open leg's missing price
+        // still does (see anyMissing below).
+        const legExit = legsWithEntry.map(() => ({ exited: false, exitTime: null, exitReason: null, frozenPnl: 0 }));
 
         // volume/oi are summed once per leg's own contract (not multiplied by
         // qty) — they're real market-wide activity on that strike, not scaled
@@ -326,41 +352,56 @@ async function replay(req, res) {
         // precise per-position figure the way pnl is.
         const series = times.map((time) => {
             const priceByStrike = byMinute.get(time);
-            let pnl = null;
-            let volume = null;
-            let oi = null;
-            if (priceByStrike) {
-                pnl = 0;
-                volume = 0;
-                oi = 0;
-                for (const leg of legsWithEntry) {
-                    const row = priceByStrike.get(leg.strike);
-                    const price = row ? Number(leg.type === "CE" ? row.ce_ltp : row.pe_ltp) : null;
-                    if (price == null || leg.entryPrice == null) {
-                        pnl = null;
-                        volume = null;
-                        oi = null;
-                        break;
-                    }
-                    const diff = leg.action === "buy" ? price - leg.entryPrice : leg.entryPrice - price;
-                    pnl += diff * leg.qty * shareMultiplier;
-                    const legVolume = row ? Number(leg.type === "CE" ? row.ce_volume : row.pe_volume) || 0 : 0;
-                    const legOi = row ? Number(leg.type === "CE" ? row.ce_oi : row.pe_oi) || 0 : 0;
-                    volume += legVolume;
-                    oi += legOi;
+            let pnl = 0;
+            let volume = 0;
+            let oi = 0;
+            let anyMissing = false;
+
+            legsWithEntry.forEach((leg, i) => {
+                const state = legExit[i];
+                if (state.exited) {
+                    pnl += state.frozenPnl;
+                    return;
                 }
-            }
+                const row = priceByStrike?.get(leg.strike);
+                const price = row ? Number(leg.type === "CE" ? row.ce_ltp : row.pe_ltp) : null;
+                if (price == null || leg.entryPrice == null) {
+                    anyMissing = true;
+                    return;
+                }
+                const diff = leg.action === "buy" ? price - leg.entryPrice : leg.entryPrice - price;
+                const legPnl = diff * leg.qty * shareMultiplier;
+                if (leg.slAmount != null && legPnl <= -leg.slAmount) {
+                    state.exited = true; state.exitTime = time; state.exitReason = "stop_loss"; state.frozenPnl = legPnl;
+                } else if (leg.tgAmount != null && legPnl >= leg.tgAmount) {
+                    state.exited = true; state.exitTime = time; state.exitReason = "target"; state.frozenPnl = legPnl;
+                }
+                pnl += legPnl;
+                volume += (row ? Number(leg.type === "CE" ? row.ce_volume : row.pe_volume) : 0) || 0;
+                oi += (row ? Number(leg.type === "CE" ? row.ce_oi : row.pe_oi) : 0) || 0;
+            });
+
             const spot = spotByTime.get(time) ?? fallbackSpotByTime.get(time) ?? null;
+            if (anyMissing) return { time, spot, pnl: null, volume: null, oi: null };
             return {
                 time,
                 spot,
-                pnl: pnl != null ? Number(pnl.toFixed(2)) : null,
+                pnl: Number(pnl.toFixed(2)),
                 volume,
                 oi,
             };
         });
 
-        res.json({ symbol, date, expiry, entryTime, lotSize, legs: legsWithEntry, series });
+        // Attach each leg's own SL/TG outcome (null/null if it had none
+        // configured, or had one but never triggered — ran the full day) so
+        // the frontend can show e.g. "Closed via SL @ 10:32" per leg.
+        const legsWithExit = legsWithEntry.map((leg, i) => ({
+            ...leg,
+            exitTime: legExit[i].exited ? legExit[i].exitTime : null,
+            exitReason: legExit[i].exited ? legExit[i].exitReason : null,
+        }));
+
+        res.json({ symbol, date, expiry, entryTime, lotSize, legs: legsWithExit, series });
     } catch (err) {
         console.error("[simulator/replay]", err);
         res.status(500).json({ error: err.message });
