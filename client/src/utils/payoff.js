@@ -180,6 +180,20 @@ export function computePOP(curve, spot, atmIvPercent, yearsRemaining) {
     return Math.max(0, Math.min(100, pop * 100));
 }
 
+// Rough relative probability-density bars drawn behind the payoff curve —
+// a decorative "how likely is each price" visualization, not a precise
+// histogram, using the same normal-distribution approximation computePOP
+// already uses. Returns one value per curve point, normalized 0-1 against
+// the curve's own peak density, so PayoffChart can render it against a
+// small fixed-height axis regardless of sigma's actual magnitude.
+export function computeDensityCurve(curve, spot, atmIvPercent, yearsRemaining) {
+    const sigma = spot * (atmIvPercent / 100) * Math.sqrt(yearsRemaining);
+    if (!sigma) return curve.map(() => 0);
+    const raw = curve.map((p) => Math.exp(-0.5 * ((p.price - spot) / sigma) ** 2));
+    const peak = Math.max(...raw, 1e-9);
+    return raw.map((v) => v / peak);
+}
+
 // Estimated margin — the same flat 15%-of-notional approximation
 // server/config/paperTradeConfig.js's MARGIN_PERCENT_OF_NOTIONAL uses for
 // real short paper-trade positions (services/paperPositionService.js:

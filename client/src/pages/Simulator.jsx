@@ -1191,6 +1191,8 @@ export default function Simulator() {
     pop,
     expectedMove,
     estMargin,
+    atmIv,
+    yearsRemaining,
   } = useMemo(() => {
     const empty = {
       curve: [],
@@ -1202,6 +1204,8 @@ export default function Simulator() {
       pop: null,
       expectedMove: null,
       estMargin: null,
+      atmIv: null,
+      yearsRemaining: null,
     };
     if (!activeLegs.length || !displaySpot || !chainData?.selectedExpiry)
       return empty;
@@ -1259,6 +1263,8 @@ export default function Simulator() {
         pop: popVal,
         expectedMove: expMv,
         estMargin: marginVal,
+        atmIv,
+        yearsRemaining,
       };
     } catch (err) {
       console.error(err);
@@ -2256,6 +2262,8 @@ export default function Simulator() {
                         spotPrice={displaySpot}
                         breakevens={breakevens}
                         expectedMove={expectedMove}
+                        atmIv={atmIv}
+                        yearsRemaining={yearsRemaining}
                       />
                     ) : (
                       <div className="py-10 text-center text-xs text-gray-400">
