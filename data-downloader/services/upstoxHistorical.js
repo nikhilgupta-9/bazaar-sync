@@ -76,6 +76,15 @@ async function withRetry(fn, label) {
             return result;
         } catch (err) {
             lastErr = err;
+            // Non-retryable: a missing token or an auth rejection (401/403)
+            // will fail identically every time — retrying just wastes the
+            // per-request gap. Fail fast so the caller (e.g. the year
+            // orchestrator) can abort the whole run instead of grinding
+            // through every symbol/month.
+            if (!process.env.UPSTOX_ACCESS_TOKEN || err.httpStatus === 401 || err.httpStatus === 403) {
+                err.upstoxAuthError = true;
+                throw err;
+            }
             const isRateLimited = err.httpStatus === 429;
             if (isRateLimited) {
                 // Respect a real Retry-After header when Upstox sends one;
@@ -190,15 +199,26 @@ async function getCandles(instrumentKey, { interval = "day", fromDate, toDate })
     return mapCandles(body.data?.candles || []);
 }
 
-// Best-known Upstox instrument keys for our three underlyings. NIFTY's is
-// confirmed from Upstox's own docs examples; BANKNIFTY/FINNIFTY are the
-// documented naming convention but NOT yet verified against a real response
-// — if either 404s/empties, check the exact string via Upstox's instrument
-// master CSV (assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz).
+// Best-known Upstox instrument keys for the index underlyings. NIFTY's is
+// confirmed from Upstox's own docs examples; the rest follow Upstox's
+// documented "NSE_INDEX|<display name>" / "BSE_INDEX|<name>" naming
+// convention but are NOT verified against a real response — if any
+// 404s/empties, check the exact string via Upstox's instrument master CSV
+// (assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz and the
+// BSE.csv.gz sibling) and override with the matching env var below.
+//
+// The 7-index goal: NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY/NIFTYNXT50 trade on
+// NSE; SENSEX/BANKEX trade on BSE. Upstox's expired-instruments API may not
+// cover the BSE indices at all — the year orchestrator reports "no-data" per
+// month rather than failing if getExpiries returns nothing for them.
 const UNDERLYING_KEYS = {
-    NIFTY: "NSE_INDEX|Nifty 50",
-    BANKNIFTY: "NSE_INDEX|Nifty Bank",
-    FINNIFTY: "NSE_INDEX|Nifty Fin Service",
+    NIFTY: process.env.UPSTOX_KEY_NIFTY || "NSE_INDEX|Nifty 50",
+    BANKNIFTY: process.env.UPSTOX_KEY_BANKNIFTY || "NSE_INDEX|Nifty Bank",
+    FINNIFTY: process.env.UPSTOX_KEY_FINNIFTY || "NSE_INDEX|Nifty Fin Service",
+    MIDCPNIFTY: process.env.UPSTOX_KEY_MIDCPNIFTY || "NSE_INDEX|NIFTY MID SELECT",
+    NIFTYNXT50: process.env.UPSTOX_KEY_NIFTYNXT50 || "NSE_INDEX|Nifty Next 50",
+    SENSEX: process.env.UPSTOX_KEY_SENSEX || "BSE_INDEX|SENSEX",
+    BANKEX: process.env.UPSTOX_KEY_BANKEX || "BSE_INDEX|BANKEX",
 };
 
 module.exports = {

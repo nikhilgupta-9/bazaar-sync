@@ -120,6 +120,50 @@ npm run backfill:upstox -- NIFTY 10                     # one symbol, ±10 strik
 npm run backfill:upstox -- ALL 10 2026-03-01 2026-09-01 # all symbols, expiry window
 ```
 
+#### Year orchestrator — `backfill:year`
+
+The self-driving version of the Upstox backfill: **you give it a year**, it
+walks the whole universe (7 indices, then ~210 F&O stocks) **month by month**,
+and after each month it queries `option_chain_history` to check the data
+actually landed — re-fetching any month that came back short before moving on.
+Fully resumable via `data/upstox-year-progress.json` (completed months are
+skipped on a re-run).
+
+```bash
+# see the plan without touching the API/DB
+npm run backfill:year -- 2026 --dry-run
+
+# the real run — one year, whole universe
+npm run backfill:year -- 2026
+
+# narrower slices
+npm run backfill:year -- 2026 --indices-only
+npm run backfill:year -- 2026 --only=NIFTY,BANKNIFTY --from-month=3
+npm run backfill:year -- 2026 --start-symbol=RELIANCE     # resume mid-universe
+
+# coverage report (read-only, queries the DB)
+npm run verify:year -- 2026
+```
+
+Per-month status is one of: `complete` (minute data verified), `partial`
+(some data, re-run to fill the rest), `no-data` (Upstox has no expiries for
+that month — **expected for anything older than ~6 months**), `error`
+(transient — retried next run).
+
+> **The ~6-month wall applies here too.** Upstox's expired-instruments API
+> does not serve data older than roughly 6 months. `backfill:year -- 2023`
+> will run, but every month Upstox can't serve is marked `no-data` and
+> skipped — it is not an error, and re-running won't change it. For 2023
+> minute data use Breeze (step 3); for 2023 EOD data use Bhavcopy (step 1).
+> If your Upstox account has a special extended-history arrangement, the
+> orchestrator picks it up automatically — it just asks `getExpiries` and
+> backfills whatever comes back.
+
+Options: `--from-month=N` `--to-month=N` `--only=SYM,SYM` `--start-symbol=SYM`
+`--indices-only` `--stocks-only` `--strikes=N` `--attempts=N`
+`--min-minute-rows=N` `--force` `--dry-run`. The 7-index list and the
+`UNIVERSE_FILE` override are documented in `.env.example`.
+
 ### 3. Breeze (~6mo–3yr back, minute-level)
 
 **Breeze needs a fresh session token pasted into `.env` every day** — see

@@ -7,6 +7,8 @@
   "private": true,
   "scripts": {
     "worker": "node workers/marketWorker.js",
+    "backfill:year": "node scripts/backfillUpstoxYear.js",
+    "verify:year": "node scripts/verifyUpstoxYear.js",
     "backfill:upstox": "node scripts/backfillUpstox.js",
     "backfill:bhavcopy": "node scripts/backfillBhavcopy.js",
     "backfill:bhavcopy-all": "node scripts/backfillBhavcopyAll.js",

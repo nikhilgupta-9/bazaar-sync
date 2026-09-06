@@ -404,7 +404,17 @@ async function main() {
     await pool.end();
 }
 
-main().catch((err) => {
-    console.error("[upstox] fatal:", err.message);
-    process.exit(1);
-});
+// Exported so the month-by-month year orchestrator (scripts/backfillUpstoxYear.js)
+// can drive the same per-symbol / per-expiry-window logic without shelling
+// out. resolveUnderlyingKey + backfillOneSymbol are the two it needs; the
+// rest are handy for tests. main() only runs when this file is the entry
+// point (plain `node scripts/backfillUpstox.js ...` still works exactly as
+// before).
+module.exports = { backfillOneSymbol, backfillExpiry, resolveUnderlyingKey, getLiquidStrikes };
+
+if (require.main === module) {
+    main().catch((err) => {
+        console.error("[upstox] fatal:", err.message);
+        process.exit(1);
+    });
+}
