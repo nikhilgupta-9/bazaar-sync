@@ -1,0 +1,17 @@
+node_modules/
+
+# Environment — real secrets, never commit
+.env
+.env.local
+.env.production
+
+# Winston log files
+logs/
+
+# On-disk caches (all re-downloadable): Angel One scrip master (~40-80 MB),
+# Upstox instrument master, Breeze NSE scrip master + daily call counter,
+# Bhavcopy zip/csv archive
+data/
+
+# Mac
+.DS_Store

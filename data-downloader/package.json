@@ -1,0 +1,30 @@
+{
+  "name": "bazaar-sync-data-downloader",
+  "version": "1.0.0",
+  "description": "Standalone market-data downloader for Bazaar Sync — live Angel One WebSocket tick ingestion + Upstox/Breeze/Bhavcopy historical backfill. Writes directly to the same MySQL schema as the main app. Runs on its own machine, no Express, no frontend.",
+  "main": "workers/marketWorker.js",
+  "type": "commonjs",
+  "private": true,
+  "scripts": {
+    "worker": "node workers/marketWorker.js",
+    "backfill:upstox": "node scripts/backfillUpstox.js",
+    "backfill:bhavcopy": "node scripts/backfillBhavcopy.js",
+    "backfill:bhavcopy-all": "node scripts/backfillBhavcopyAll.js",
+    "backfill:bse-bhavcopy-all": "node scripts/backfillBseBhavcopyAll.js",
+    "backfill:breeze": "node breeze-historical/backfillBreeze.js",
+    "backfill:breeze-all": "node breeze-historical/backfillBreezeAll.js",
+    "test:upstox": "node scripts/testUpstoxInstrumentMaster.js",
+    "test:bhavcopy": "node scripts/testBhavcopy.js",
+    "test:breeze": "node breeze-historical/testBreeze.js"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.0",
+    "axios": "^1.18.1",
+    "breezeconnect": "^1.0.31",
+    "dotenv": "^17.4.2",
+    "mysql2": "^3.22.5",
+    "otplib": "^12.0.1",
+    "winston": "^3.19.0",
+    "ws": "^8.19.0"
+  }
+}
