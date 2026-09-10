@@ -70,7 +70,7 @@ trusting a multi-year run.
 ```bash
 cd server
 node breeze-historical/testBreeze.js NIFTY          # one contract, sanity check
-node breeze-historical/backfillBreeze.js NIFTY       # full backfill for a symbol
+node breeze-historical/backfillBreeze.js NIFTY       # full backfill for one symbol, date-range args
 ```
 
 `backfillBreeze.js` does NOT discover its own strikes/expiries via Breeze —
@@ -78,3 +78,48 @@ it reads the (expiry, strike) combinations that `scripts/backfillBhavcopy.js`
 already found and stored in `option_chain_history`, then asks Breeze for
 1-minute detail on exactly those contracts. Run the Bhavcopy backfill for the
 target date range first.
+
+## `pipelineYear.js` — year in, month-by-month option-chain data out
+
+```bash
+cd server
+node breeze-historical/pipelineYear.js 2024                       # whole year, every completed month
+node breeze-historical/pipelineYear.js 2024 --symbols=NIFTY,BANKNIFTY   # testing subset
+node breeze-historical/pipelineYear.js 2024 --skip-enrich         # discovery + verify only (no Breeze calls)
+node breeze-historical/pipelineYear.js 2024 --from-month=3        # start at March
+```
+
+One command, one year. For each calendar month, in order:
+
+1. **discovery** — walks every trading day, pulls NSE + BSE bhavcopy
+   (`services/nseBhavcopy.js`, `services/bseBhavcopy.js`), upserts one EOD row
+   per `(symbol, expiry, strike)` that traded. This is the contract/expiry
+   universe — Breeze itself can't list historical contracts, so this pass has
+   to establish "what existed". Free, no call budget, reaches years back.
+2. **enrich** — for every symbol found, asks ICICI Breeze for 1-minute CE/PE
+   candles on each discovered contract + computes Greeks, upserting minute
+   rows over the EOD ones (`backfillBreeze.js`'s `backfillSymbol`).
+3. **verify** — checks every discovered contract actually got minute data,
+   every expiry looks sane (no weekend expiries, no rows dated past their own
+   expiry). Writes `server/data/breeze-pipeline-reports/<year>-<month>.json`
+   and prints a summary. Then advances to the next month.
+
+**Resumable.** Progress (`year` / `month` / `phase`) persists to
+`server/data/breeze-pipeline-progress.json`. Breeze's 5,000-calls/day limit
+is far below one month of the full ~215-symbol / every-strike / 1-minute
+universe, so the enrich phase routinely spends the day's budget mid-month,
+saves progress, and exits 0 telling you to re-run tomorrow — where it picks
+up exactly where it stopped (already-enriched contracts skip instantly). A
+full year is many real days of daily re-runs. That's ICICI's rate limit, not
+a bug.
+
+Depth: Breeze's historical F&O window is ~3 years (ICICI's claim, still not
+independently confirmed here) — years older than that get EOD-only rows from
+the discovery pass and nothing from enrich.
+
+The 7 indices: NIFTY / BANKNIFTY / FINNIFTY / MIDCPNIFTY / NIFTYNXT50 (NSE,
+exchangeCode `NFO`) + SENSEX / BANKEX (BSE, exchangeCode `BFO`). The BSE two
+and MIDCPNIFTY / NIFTYNXT50 use **unverified** Breeze stock codes
+(`symbolMap.js` `INDEX_OVERRIDES`, all env-overridable) — if a run stores 0
+minute rows for one of them while discovery found its contracts, that stock
+code is the first thing to fix.

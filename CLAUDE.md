@@ -312,6 +312,31 @@ daily manual session step (Breeze has no TOTP-style automatic login, unlike
 Angel One — this is the one piece of Phase 6's escaped pain that's back, but
 only for occasional backfills, not anything that runs daily unattended).
 
+**`breeze-historical/pipelineYear.js` (added 2026-09-10, "we are testing" —
+NOT yet run against a real Breeze session):** a single CLI —
+`node breeze-historical/pipelineYear.js <YEAR> [--symbols=…] [--from-month=N]
+[--skip-enrich] [--stop-on-verify-fail]` — that walks a calendar year one
+month at a time, each month running three phases in order: **discovery**
+(`monthDiscovery.js` — NSE + BSE bhavcopy for every trading day → one EOD row
+per `(symbol, expiry, strike)` that traded, i.e. the contract/expiry universe
+Breeze itself can't enumerate), **enrich** (`backfillBreeze.js`'s
+`backfillSymbol` per symbol → Breeze 1-minute CE/PE + Greeks over those
+contracts), **verify** (`verifyMonth.js` → per-symbol report:
+discovered-vs-minute-enriched contract counts, weekend-expiry check, rows-
+past-expiry check; written to `server/data/breeze-pipeline-reports/<ym>.json`).
+Resumable via `server/data/breeze-pipeline-progress.json` — the enrich phase
+will exhaust Breeze's 5k/day budget mid-month, save progress, exit 0, and
+resume tomorrow (a full year = many days of daily re-runs; that's ICICI's
+rate limit). Covers the "7 index + 210 stock" universe from the data itself
+(no hardcoded list). Small non-live edits made for it:
+`historicalService.js` and `backfillBreeze.js` gained an `exchangeCode` param
+(NFO default / BFO for SENSEX/BANKEX); `symbolMap.js` gained **unverified** env-overridable Breeze
+stock codes for MIDCPNIFTY/NIFTYNXT50/SENSEX/BANKEX. Verified so far: syntax,
+module wiring, and the verify phase against the real dev DB (Aug 2026:
+correctly reported 218 symbols with EOD-only data, NIFTY at 48% minute
+coverage, 0 rows past expiry). Discovery + enrich against live NSE/BSE/Breeze
+NOT yet run.
+
 **Verification status, honestly:** Angel One's pieces here were already
 verified (see Phase 6 above, plus the 2026-07-19 token fix — see Gotcha #13).
 **NSE Bhavcopy is now VERIFIED against real data (2026-07-19)** —

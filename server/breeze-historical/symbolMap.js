@@ -74,7 +74,26 @@ const INDEX_OVERRIDES = {
     NIFTY: process.env.BREEZE_STOCKCODE_NIFTY || "NIFTY",
     BANKNIFTY: process.env.BREEZE_STOCKCODE_BANKNIFTY || "CNXBAN",
     FINNIFTY: process.env.BREEZE_STOCKCODE_FINNIFTY || "NIFFIN",
+    // MIDCPNIFTY / NIFTYNXT50 (NSE) and SENSEX / BANKEX (BSE) round out the
+    // commonly-cited "7 indices". None of these four are independently
+    // confirmed against a real Breeze response — same unverified,
+    // env-overridable treatment as BANKNIFTY/FINNIFTY above. If a run stores
+    // 0 rows for one of these while Bhavcopy discovery found contracts for
+    // it, the stock code here is the first thing to fix.
+    MIDCPNIFTY: process.env.BREEZE_STOCKCODE_MIDCPNIFTY || "NIFMDCP50",
+    NIFTYNXT50: process.env.BREEZE_STOCKCODE_NIFTYNXT50 || "NIFTYNXT50",
+    SENSEX: process.env.BREEZE_STOCKCODE_SENSEX || "BSESEN",
+    BANKEX: process.env.BREEZE_STOCKCODE_BANKEX || "BANKEX",
 };
+
+// Symbols whose option contracts trade on BSE F&O, not NSE F&O — Breeze's
+// getHistoricalDatav2 needs exchangeCode "BFO" for these (see
+// historicalService.js). Everything else defaults to "NFO".
+const BSE_FO_SYMBOLS = new Set(["SENSEX", "BANKEX"]);
+
+function exchangeCodeFor(symbol) {
+    return BSE_FO_SYMBOLS.has(symbol) ? "BFO" : "NFO";
+}
 
 let cache = null; // Map<nseSymbol, isecStockCode>
 let loadPromise = null;
@@ -201,4 +220,4 @@ async function resolveStockCode(symbol) {
     return isec;
 }
 
-module.exports = { resolveStockCode, INDEX_OVERRIDES, LOCAL_FALLBACK_PATH };
+module.exports = { resolveStockCode, exchangeCodeFor, INDEX_OVERRIDES, BSE_FO_SYMBOLS, LOCAL_FALLBACK_PATH };

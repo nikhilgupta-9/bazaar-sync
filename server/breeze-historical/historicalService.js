@@ -125,7 +125,7 @@ function parseRows(rawRows) {
  * range, chunked internally to respect the 1,000-candle cap, paced via
  * rateLimiter.throttle() to respect the 100/min + 5,000/day caps.
  */
-async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fromDateStr, toDateStr }) {
+async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fromDateStr, toDateStr, exchangeCode = "NFO" }) {
     const breeze = await getBreeze();
     const breezeRight = RIGHT_MAP[right];
     if (!breezeRight) throw new Error(`Unknown right "${right}", expected CE or PE`);
@@ -146,7 +146,7 @@ async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fro
                     fromDate: isoIst(chunkFrom, "09:15:00"),
                     toDate: isoIst(chunkTo, "15:30:00"),
                     stockCode: isecStockCode,
-                    exchangeCode: "NFO",
+                    exchangeCode, // "NFO" (NSE F&O) by default; "BFO" for BSE index options (SENSEX/BANKEX)
                     productType: "options",
                     expiryDate: isoIst(expirySql, "07:00:00"), // per documented example's convention, unverified
                     right: breezeRight,

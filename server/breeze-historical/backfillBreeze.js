@@ -25,6 +25,7 @@ const { addDays } = require("../services/backtestEngine");
 const instrumentMaster = require("../services/instrumentMaster");
 const historicalService = require("./historicalService");
 const rateLimiter = require("./rateLimiter");
+const symbolMap = require("./symbolMap");
 const bs = require("../utils/blackScholes");
 
 function yearsToExpiryAsOf(expirySql, dateStr, timeStr) {
@@ -153,7 +154,8 @@ async function storeRows(symbol, expirySql, strike, ceRows, peRows) {
  * multi-symbol caller can stop the whole run cleanly rather than just this
  * symbol.
  */
-async function backfillSymbol(symbol, fromDate, toDate) {
+async function backfillSymbol(symbol, fromDate, toDate, opts = {}) {
+    const exchangeCode = opts.exchangeCode || symbolMap.exchangeCodeFor(symbol);
     const contracts = await loadContractStatuses(symbol, fromDate, toDate);
     if (!contracts.length) {
         return { rowsStored: 0, contractsFailed: 0, contractsSkipped: 0, contractsTotal: 0 };
@@ -169,10 +171,10 @@ async function backfillSymbol(symbol, fromDate, toDate) {
         try {
             const spot = spotByDate.get(range.to) ?? null;
             const ceRaw = await historicalService.getOptionMinuteCandles({
-                stockCode: symbol, expirySql: expiry, strike, right: "CE", fromDateStr: range.from, toDateStr: range.to,
+                stockCode: symbol, expirySql: expiry, strike, right: "CE", fromDateStr: range.from, toDateStr: range.to, exchangeCode,
             });
             const peRaw = await historicalService.getOptionMinuteCandles({
-                stockCode: symbol, expirySql: expiry, strike, right: "PE", fromDateStr: range.from, toDateStr: range.to,
+                stockCode: symbol, expirySql: expiry, strike, right: "PE", fromDateStr: range.from, toDateStr: range.to, exchangeCode,
             });
             const ce = enrichWithGreeks(ceRaw, { strike, right: "call", expirySql: expiry, spot });
             const pe = enrichWithGreeks(peRaw, { strike, right: "put", expirySql: expiry, spot });
