@@ -1,4 +1,4 @@
-// breeze-historical/historicalService.js — wraps breezeconnect's
+// breeze/historicalService.js — wraps breezeconnect's
 // getHistoricalDatav2 for options, chunked to respect the 1,000-candle/call
 // cap and paced via rateLimiter.js.
 //
@@ -22,7 +22,7 @@
 const { getBreeze } = require("./auth");
 const rateLimiter = require("./rateLimiter");
 const symbolMap = require("./symbolMap");
-const { addDays } = require("../services/backtestEngine");
+const { addDays } = require("../lib/dates");
 
 const CHUNK_DAYS = Number(process.env.BREEZE_CHUNK_DAYS || 2); // 2 days * 375 1-min candles ≈ 750, safely under 1000
 
@@ -162,4 +162,4 @@ async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fro
     return all.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
 }
 
-module.exports = { getOptionMinuteCandles, chunkDateRange, isoIst };
+module.exports = { getOptionMinuteCandles, chunkDateRange, isoIst, parseRows, callWithTransientRetry, TRANSIENT_ERROR_PATTERN };

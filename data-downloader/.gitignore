@@ -1,0 +1,12 @@
+# Real secrets — never commit. Template is .env.example.
+.env
+.env.local
+
+# Installed deps
+node_modules/
+
+# Runtime output — scrip-master caches, bhavcopy zips, progress files,
+# per-month verification reports, logs. All regenerable.
+data/
+logs/
+*.log

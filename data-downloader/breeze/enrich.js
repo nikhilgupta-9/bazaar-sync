@@ -1,4 +1,4 @@
-// breeze-historical/backfillBreeze.js — fills in 1-minute detail + Greeks for
+// breeze/enrich.js (was server/breeze-historical/backfillBreeze.js) — fills in 1-minute detail + Greeks for
 // the ~6mo-3yr-back window, upgrading the EOD-only rows scripts/backfillBhavcopy.js
 // already stored in option_chain_history.
 //
@@ -8,7 +8,7 @@
 // asks Breeze for 1-minute candles on exactly those known contracts. Run the
 // Bhavcopy backfill for the target range FIRST.
 //
-// Usage: node breeze-historical/backfillBreeze.js [SYMBOL] [FROM_DATE] [TO_DATE]
+// Usage: node breeze/enrich.js [SYMBOL] [FROM_DATE] [TO_DATE]
 //   SYMBOL    - NIFTY | BANKNIFTY | FINNIFTY (default NIFTY)
 //   FROM_DATE - 'YYYY-MM-DD', default ~3 years before TO_DATE
 //   TO_DATE   - 'YYYY-MM-DD', default ~6 months ago (Upstox already covers
@@ -19,14 +19,13 @@
 // backfill script here). Stops cleanly and tells you to resume tomorrow if
 // the daily call budget runs out mid-run (see rateLimiter.js).
 
-require("dotenv").config();
-const { pool } = require("../config/db");
-const { addDays } = require("../services/backtestEngine");
-const instrumentMaster = require("../services/instrumentMaster");
+require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") });
+const { pool } = require("../lib/db");
+const { addDays, todayIst } = require("../lib/dates");
 const historicalService = require("./historicalService");
 const rateLimiter = require("./rateLimiter");
 const symbolMap = require("./symbolMap");
-const bs = require("../utils/blackScholes");
+const bs = require("../lib/blackScholes");
 
 function yearsToExpiryAsOf(expirySql, dateStr, timeStr) {
     const [ey, em, ed] = expirySql.split("-").map(Number);
@@ -195,7 +194,7 @@ async function backfillSymbol(symbol, fromDate, toDate, opts = {}) {
 
 async function main() {
     const symbol = (process.argv[2] || "NIFTY").toUpperCase();
-    const today = instrumentMaster.todayIst();
+    const today = todayIst();
     // Args are [SYMBOL] [FROM_DATE] [TO_DATE], matching the header comment
     // above — do not swap these two without also updating that comment.
     const toDate = process.argv[4] || addDays(today, -180);

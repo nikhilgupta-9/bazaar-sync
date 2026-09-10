@@ -22,7 +22,7 @@ Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting
 - Auth: JWT + bcrypt built and working (email/password). Google OAuth still planned — needs a Google Cloud project + OAuth client credentials from the user, not started.
 - Payments: Razorpay, Free vs Pro ₹499/mo (planned)
 - Market data (live + recent history): **Angel One SmartAPI**, implemented directly against the documented REST + WebSocket 2.0 endpoints (no SDK dependency — Angel One has no well-maintained official npm package the way Breeze did). TOTP login is fully automated via `otplib` — no daily manual session step. All Breeze code (`breezeconnect`, `adm-zip`, the axios CVE override, `services/breeze.js`, `services/sessionManager.js`) was removed in Phase 6.
-- Market data (deep historical backfill only, Phase 7): **Upstox** (`services/upstoxHistorical.js`, ~6mo of expired-options minute data, Upstox Plus) + **NSE Bhavcopy** (`services/nseBhavcopy.js`, free, multi-year, daily/EOD-only) + **ICICI Breeze, reintroduced but isolated** (`server/breeze-historical/`, ~6mo-3yr window, minute-level). None of these three touch the live path — see Phase 7 below and `server/breeze-historical/README.md`.
+- Market data (deep historical backfill only, Phase 7): **Upstox** (`services/upstoxHistorical.js`, ~6mo of expired-options minute data, Upstox Plus) + **NSE Bhavcopy** (`services/nseBhavcopy.js`, free, multi-year, daily/EOD-only) + **ICICI Breeze, reintroduced but isolated in the standalone `data-downloader/` app** (moved there from `server/breeze-historical/` on 2026-09-10; ~3yr window, minute-level, option chain + India VIX). None of these touch the live path — see Phase 7 below and `data-downloader/README.md`.
 
 ## Hard Rules — always follow
 
@@ -44,7 +44,7 @@ Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting
 4. **Weeks 6-7 (done):** Backtesting Engine — simulation engine + API + frontend done, fully verified end-to-end against real multi-day Breeze data (2026-07-07)
 5. **Week 8 (in progress):** JWT auth + Free/Pro tier gating done (2026-07-07). Still needed: Google OAuth, Razorpay, QA, deploy to Hostinger VPS, handover.
 6. **Phase 6 (done, 2026-07-18):** Full Breeze → Angel One SmartAPI migration + real-time architecture: standalone market-worker process (auto TOTP login, WebSocket feed, tick validation, buffered bulk MySQL writes in tiers), in-memory market cache in Express fed over IPC, socket.io push to React, 08:45/15:35 IST worker lifecycle crons, nightly historical cron rewritten on Angel One's candle/OI APIs, Winston logging, PM2 config, deployment guide in README.
-7. **Phase 7 (in progress, started 2026-07-19):** Deep historical backfill for the 5-year/210-stock/commodities goal — three separate, occasional, non-live tools (never touch Express/workers/the live cache): Upstox Expired Instruments (`services/upstoxHistorical.js`, `scripts/backfillUpstox.js`), NSE Bhavcopy (`services/nseBhavcopy.js`, `scripts/backfillBhavcopy.js`, `scripts/testBhavcopy.js`), and ICICI Breeze reintroduced but fully isolated in `server/breeze-historical/` (`auth.js`, `rateLimiter.js`, `historicalService.js`, `backfillBreeze.js`, `testBreeze.js`, own `README.md`). See "Historical data sourcing (Phase 7)" below for the full picture and current verification status.
+7. **Phase 7 (in progress, started 2026-07-19):** Deep historical backfill for the 5-year/210-stock/commodities goal — three separate, occasional, non-live tools (never touch Express/workers/the live cache): Upstox Expired Instruments (`services/upstoxHistorical.js`, `scripts/backfillUpstox.js`), NSE Bhavcopy (`services/nseBhavcopy.js`, `scripts/backfillBhavcopy.js`, `scripts/testBhavcopy.js`), and ICICI Breeze reintroduced but fully isolated — now in the standalone **`data-downloader/`** app (moved out of `server/breeze-historical/` on 2026-09-10), which also carries the India VIX pipeline. See "Historical data sourcing (Phase 7)" below for the full picture and current verification status.
 8. **Phase 8 (started 2026-08-13):** Product scope expansion — Paper Trading (real-money-style virtual wallet: 2-day/₹50k trial, ₹499/mo membership for ₹5L virtual capital, ₹100 refills per 5L, unused balance rolls over on renewal), Equity Data tools (sector rotation, sector performance, market map, 52-week high/low, industry momentum, most active), Historical Chart, Google OAuth, an admin panel (institute free-access by IP allowlist, per-user strategy/balance/renewal/log, plan/discount/coupon/payment/notification management, event management, T&C, an SEO tool), and new static pages (Plans, Events, T&C, Contact Us, About Us). **This is well beyond the original ₹1,15,000/8-week engagement described in Business Terms above — worth a scope/commercial conversation with the client before building it all out.** Decisions locked in for this phase: institute access via **IP allowlist** (not MAC — browsers don't expose device MAC addresses to a website, so that part of the original ask isn't buildable as literally stated); Razorpay keys will be provided by the user; Google OAuth deferred (no credentials yet, email/password stays primary). Sub-phase 8.1 (done, this pass) is navbar-only: see below.
 
 ## What's Already Done
@@ -268,7 +268,8 @@ or any request path — each is a standalone script, run by hand when needed.
 | Angel One | `services/angelOneHistorical.js`, `services/cron.js` (nightly 23:00 IST) | current contract lifetime only | minute | free, already running |
 | Upstox Expired Instruments | `services/upstoxHistorical.js`, `services/upstoxInstrumentMaster.js` (symbol→instrument_key for the 200+ stocks, UNVERIFIED CSV format — see its header comment), `scripts/backfillUpstox.js` (now takes `SYMBOL=ALL` to loop every symbol found in `option_chain_history`, not just NIFTY/BANKNIFTY/FINNIFTY) | ~6 months back (Upstox's own hard cap, confirmed against their live docs 2026-07-19 — NOT a multi-year source despite older community reports suggesting otherwise) | minute | Upstox Plus plan required |
 | NSE Bhavcopy | `services/nseBhavcopy.js`, `scripts/backfillBhavcopy.js`, `scripts/testBhavcopy.js` | unlimited years back | **daily/EOD only** — backtestEngine.js's minute-by-minute simulation needs a daily-aware mode to use this meaningfully, not built yet | free |
-| ICICI Breeze (reintroduced, isolated) | `server/breeze-historical/*` — own README, auth, rate limiter, historical service, `backfillBreeze.js` (single symbol) + `backfillBreezeAll.js` (loops every symbol in `option_chain_history`, stops cleanly and resumably when the daily call budget runs out) | ~6mo-3yr back (ICICI's claimed limit, NOT independently confirmed) | minute | needs a Breeze account; daily manual session paste (see below) |
+| ICICI Breeze (reintroduced, isolated) | **`data-downloader/`** (standalone app, moved out of `server/breeze-historical/` on 2026-09-10) — `optionchain/run.js` = year-in month-by-month discovery→enrich→verify; `breeze/enrich.js` = one-symbol date-range enrich | ~3yr back (ICICI's claimed limit, NOT independently confirmed) | minute | needs a Breeze account; daily manual session paste (see below) |
+| India VIX (ICICI Breeze) | **`data-downloader/`** `vix/run.js` — year-in month-by-month download→verify into `ohlcv_data` (`symbol='INDIAVIX'`) | ~3yr back (same Breeze limit) | minute | same Breeze account/session |
 | BSE Bhavcopy (new 2026-07-20 — the OTHER 2 of the "7 indices": SENSEX/BANKEX trade on BSE, never appear in NSE's bhavcopy) | `services/bseBhavcopy.js`, `scripts/testBseBhavcopy.js`, `scripts/backfillBseBhavcopyAll.js` | unknown (no cutover-date handling built — untested how far back BSE's UDiFF-style file goes) | **daily/EOD only**, same limitation as NSE Bhavcopy | free |
 
 Order these run in: Bhavcopy first (discovers which (expiry, strike)
@@ -289,53 +290,71 @@ row's values (e.g. a later Breeze run legitimately overwriting an earlier
 Bhavcopy EOD row for the same contract/day). This is a schema-level guarantee,
 not something each script has to individually get right.
 
-**Scale reality for "all 7 index + 210 companies, minute-by-minute":**
-`backfillBreezeAll.js` and `backfillUpstox.js SYMBOL=ALL` both now loop over
-every symbol already discovered in `option_chain_history` (i.e. whatever
-Bhavcopy found — currently ~215 symbols). But ICICI's own rate limit is a
-hard 5,000 calls/day (`breeze-historical/rateLimiter.js`), and each contract
-needs 2 calls (CE+PE) per ~2-day chunk — at that budget, a full multi-year
-minute-level enrichment across ~215 symbols takes many real days/weeks of
-`backfillBreezeAll.js` running once daily, not one sitting. This is ICICI's
-limit, not a bug in this codebase; both multi-symbol scripts are built to be
-interrupted and re-run indefinitely (they skip any contract that already has
-at least one non-EOD-time row, so no wasted budget on repeat runs).
+**Scale reality for "all 7 index + 210 companies, minute-by-minute":** the
+`data-downloader/` option-chain pipeline's enrich phase and
+`backfillUpstox.js SYMBOL=ALL` both loop over every symbol already discovered
+in `option_chain_history` (i.e. whatever Bhavcopy found — currently ~215
+symbols). But ICICI's own rate limit is a hard 5,000 calls/day
+(`data-downloader/breeze/rateLimiter.js`), and each contract needs 2 calls
+(CE+PE) per ~2-day chunk — at that budget, a full multi-year minute-level
+enrichment across ~215 symbols takes many real days/weeks of the pipeline
+running once daily, not one sitting. This is ICICI's limit, not a bug; both
+are built to be interrupted and re-run indefinitely (they skip any contract
+that already has at least one non-EOD-time row, so no wasted budget on repeat
+runs).
 
-**Why Breeze specifically is isolated in its own folder, not `services/`:**
-Phase 6 deliberately and fully removed Breeze from the live path — that
-decision stands. Re-adding it (2026-07-19, explicit user decision, discussed
-before implementing per Hard Rule #1) is scoped ONLY to
-`server/breeze-historical/`, invoked only via its own one-off scripts. If
-this folder were deleted, nothing else in the app would break. See
-`server/breeze-historical/README.md` for the full rationale and the required
-daily manual session step (Breeze has no TOTP-style automatic login, unlike
-Angel One — this is the one piece of Phase 6's escaped pain that's back, but
-only for occasional backfills, not anything that runs daily unattended).
+**Why Breeze specifically is isolated, not in `services/`:** Phase 6
+deliberately and fully removed Breeze from the live path — that decision
+stands. Re-adding it (2026-07-19, explicit user decision, discussed before
+implementing per Hard Rule #1) is scoped to a standalone downloader, invoked
+only via its own one-off scripts, never imported by Express/workers/the live
+path. It lived in `server/breeze-historical/` until **2026-09-10**, when the
+whole thing was moved out to a separate top-level app — see
+**`data-downloader/`** below. Breeze still has no TOTP-style automatic login
+(unlike Angel One) — `BREEZE_API_SESSION` is a daily manual paste; tolerable
+because this only runs occasionally for bulk backfill.
 
-**`breeze-historical/pipelineYear.js` (added 2026-09-10, "we are testing" —
-NOT yet run against a real Breeze session):** a single CLI —
-`node breeze-historical/pipelineYear.js <YEAR> [--symbols=…] [--from-month=N]
-[--skip-enrich] [--stop-on-verify-fail]` — that walks a calendar year one
-month at a time, each month running three phases in order: **discovery**
-(`monthDiscovery.js` — NSE + BSE bhavcopy for every trading day → one EOD row
-per `(symbol, expiry, strike)` that traded, i.e. the contract/expiry universe
-Breeze itself can't enumerate), **enrich** (`backfillBreeze.js`'s
-`backfillSymbol` per symbol → Breeze 1-minute CE/PE + Greeks over those
-contracts), **verify** (`verifyMonth.js` → per-symbol report:
-discovered-vs-minute-enriched contract counts, weekend-expiry check, rows-
-past-expiry check; written to `server/data/breeze-pipeline-reports/<ym>.json`).
-Resumable via `server/data/breeze-pipeline-progress.json` — the enrich phase
-will exhaust Breeze's 5k/day budget mid-month, save progress, exit 0, and
-resume tomorrow (a full year = many days of daily re-runs; that's ICICI's
-rate limit). Covers the "7 index + 210 stock" universe from the data itself
-(no hardcoded list). Small non-live edits made for it:
-`historicalService.js` and `backfillBreeze.js` gained an `exchangeCode` param
-(NFO default / BFO for SENSEX/BANKEX); `symbolMap.js` gained **unverified** env-overridable Breeze
-stock codes for MIDCPNIFTY/NIFTYNXT50/SENSEX/BANKEX. Verified so far: syntax,
-module wiring, and the verify phase against the real dev DB (Aug 2026:
-correctly reported 218 symbols with EOD-only data, NIFTY at 48% minute
-coverage, 0 rows past expiry). Discovery + enrich against live NSE/BSE/Breeze
-NOT yet run.
+**`data-downloader/` — standalone historical-data downloader (moved/expanded
+2026-09-10 from `server/breeze-historical/`):** its own top-level app (own
+`package.json`, `node_modules`, `.env`) that pulls history into the shared
+MySQL DB. Nothing under `server/` imports it; if deleted the running app is
+fine. Vendors copies of `nseBhavcopy.js` / `bseBhavcopy.js` / `blackScholes.js`
+/ `logger.js` (fork as of the split — port fixes by hand both ways). Two
+pipelines, both year-in / month-by-month / verify-after-each-month /
+resumable:
+
+- **Option chain** — `npm run option-chain -- <YEAR> [--symbols=…]
+  [--from-month=N] [--skip-enrich] [--stop-on-verify-fail]`
+  (`optionchain/run.js`). Per month: **discovery** (`optionchain/
+  monthDiscovery.js` — NSE + BSE bhavcopy every trading day → one EOD row per
+  `(symbol, expiry, strike)` that traded, the contract/expiry universe Breeze
+  can't enumerate) → **enrich** (`breeze/enrich.js`'s `backfillSymbol` per
+  symbol → Breeze 1-minute CE/PE + Greeks) → **verify** (`optionchain/
+  verifyMonth.js` → per-symbol report: discovered-vs-minute-enriched counts,
+  weekend-expiry check, rows-past-expiry check → `data/breeze-pipeline-
+  reports/<ym>.json`). Progress in `data/breeze-pipeline-progress.json`.
+  Enrich exhausts Breeze's 5k/day budget mid-month, exits 0, resumes next day
+  (full year = many days of re-runs). 7 indices: NIFTY, BANKNIFTY, FINNIFTY,
+  MIDCPNIFTY, NIFTYNXT50 on NSE (`NFO`); SENSEX, BANKEX on BSE (`BFO`). All
+  except NIFTY/BANKNIFTY/FINNIFTY use **unverified** env-overridable Breeze
+  stock codes (`breeze/symbolMap.js` `INDEX_OVERRIDES`).
+- **India VIX** — `npm run vix -- <YEAR>` (`vix/run.js`). Per month:
+  **download** (`vix/vixHistorical.js` — Breeze 1-minute India VIX candles →
+  `ohlcv_data` with `symbol = 'INDIAVIX'`) → **verify** (every expected
+  trading day present, ~375 candles/day, no multi-day gaps; calendar from
+  `option_chain_history` NIFTY days if available, else every weekday →
+  `data/vix-pipeline-reports/<ym>.json`). Cheap (~15 Breeze calls/month).
+  The Breeze VIX code (`INDIAVIX`/`NSE`/`cash`) is **unverified** — run
+  `node test/testVix.js` first; override via `BREEZE_VIX_STOCKCODE` /
+  `_EXCHANGE` / `_PRODUCT`.
+
+`historicalService.js` + `enrich.js` carry an `exchangeCode` param (NFO
+default / BFO for SENSEX/BANKEX). Verified so far: syntax, module wiring, DB
+connectivity from the new app, and the option-chain verify phase against the
+real dev DB (Aug 2026: 218 symbols EOD-only, NIFTY 48% minute coverage, 0
+rows past expiry). **Discovery + enrich + all VIX steps against live NSE/BSE/
+Breeze NOT yet run** — and `data-downloader/.env` still needs its Breeze
+credentials pasted in (DB creds are already there).
 
 **Verification status, honestly:** Angel One's pieces here were already
 verified (see Phase 6 above, plus the 2026-07-19 token fix — see Gotcha #13).
@@ -351,7 +370,7 @@ trusted, but NOT yet run for real by the user. Breeze was built from public
 docs/community reports WITHOUT being able to reach icicidirect.com from
 where it was written — has the same defensive-parsing treatment Bhavcopy had
 before its successful run, and its own one-contract test script
-(`breeze-historical/testBreeze.js`) that must be run before trusting a
+(`data-downloader/test/testBreeze.js`) that must be run before trusting a
 multi-year backfill.
 
 ## Local Dev Setup (any machine)
@@ -395,8 +414,8 @@ Verify: `curl http://localhost:5001/health` should return `{"status":"ok","datab
 - **Decide: should Simulator be Pro-gated?** Not gated currently. The hard rule naming Backtest/Strategy-Builder-save as Pro-only predates Simulator and doesn't mention it — needs an explicit decision, not a default.
 - Ask the user for real footer contact/community info (support email, phone, WhatsApp/Telegram links, social handles) for `Home.jsx` — currently omitted rather than fabricated.
 - **Immediate: verify Phase 6.1 against real Angel One credentials/MySQL** (built 2026-07-19, this dev sandbox has neither). Priority order: (1) confirm the corrected index/VIX tokens (`99926000` etc.) actually tick — this was silently wrong before, don't assume the old values still "sort of worked"; (2) confirm `getNearestFuture` correctly matches `FUTIDX` rows in the real scrip master (field-name assumption, unverified); (3) hit `/api/option-chain/nifty/intraday` during and after market hours and confirm both the live and historical-fallback branches; (4) open the Strategy Builder in a browser and visually compare against the stockmojo reference screenshot (SPOT/VIX/FUT bar populated, expiry pills, chart tabs actually rendering via `lightweight-charts`).
-- **Remaining probes to run for real:** `server/scripts/backfillUpstox.js NIFTY 10` (Upstox, not yet run), `server/scripts/testUpstoxInstrumentMaster.js` (new 2026-07-20, checks the stock symbol→instrument_key CSV parsing before trusting `backfillUpstox.js ALL` on real stocks — not yet run). **Breeze IS now confirmed** (2026-07-20): `testBreeze.js NIFTY` returned 375 real 1-minute candles for a real contract, session/auth/response-shape all verified — `backfillBreeze.js`/`backfillBreezeAll.js` are safe to run for real. NSE Bhavcopy is confirmed working (see above, 2026-07-19) — safe to scale up `backfillBhavcopyAll.js` to more years/symbols now. Only after Upstox's instrument master is also confirmed should `backfillUpstox.js ALL` run across real stocks (index-only Upstox runs are fine now).
-- **Note (2026-07-20):** `breezeconnect`'s own `require()` sets `NODE_TLS_REJECT_UNAUTHORIZED=0` for the whole Node process (visible as a console warning when any `breeze-historical/*` script runs) — confirmed this is the npm package's own behavior, not something in this codebase's code. Scoped/acceptable because these scripts are occasional one-offs whose process never also serves Express/live traffic, but don't ever require `breeze-historical/auth.js` from a long-lived process (the market worker, Express itself) for this reason.
+- **Remaining probes to run for real:** `server/scripts/backfillUpstox.js NIFTY 10` (Upstox, not yet run), `server/scripts/testUpstoxInstrumentMaster.js` (new 2026-07-20, checks the stock symbol→instrument_key CSV parsing before trusting `backfillUpstox.js ALL` on real stocks — not yet run). **Breeze IS now confirmed** (2026-07-20): `testBreeze.js NIFTY` returned 375 real 1-minute candles for a real contract, session/auth/response-shape all verified — the `data-downloader/` Breeze enrich path is safe to run for real (**but its new discovery→enrich→verify year orchestration and the India VIX pipeline have NOT been run live yet** — 2026-09-10). NSE Bhavcopy is confirmed working (see above, 2026-07-19) — safe to scale up `backfillBhavcopyAll.js` to more years/symbols now. Only after Upstox's instrument master is also confirmed should `backfillUpstox.js ALL` run across real stocks (index-only Upstox runs are fine now).
+- **Note (2026-07-20):** `breezeconnect`'s own `require()` sets `NODE_TLS_REJECT_UNAUTHORIZED=0` for the whole Node process (visible as a console warning when any `data-downloader/` Breeze script runs) — confirmed this is the npm package's own behavior, not something in this codebase's code. Scoped/acceptable because `data-downloader/` is a separate process that never also serves Express/live traffic, but don't ever require `data-downloader/breeze/auth.js` from a long-lived process (the market worker, Express itself) for this reason.
 - Once Phase 7's data sources are confirmed, `backtestEngine.js` needs a daily-granularity mode to actually use the Bhavcopy-sourced years of EOD-only data — right now it assumes minute-by-minute rows are always available.
 - Extending Phase 7 to the full "7 indices + 210 stocks + commodities" goal is still a separate, larger task from what's built so far (which proves the pipeline on NIFTY only) — see the architecture discussion from 2026-07-19 for the index/stock/commodity/subscription-capacity gaps, still open.
 - Phases 1-6 are built. Phases 1-5 were verified against real Breeze/MySQL data (2026-07-07); Phase 6 (Angel One migration + real-time architecture) is verified everywhere it can be without live credentials — **first task when real Angel One credentials exist: run the worker during market hours and validate the login response, the WS handshake, and the binary tick decode (`workers/websocket.js parseBinaryTick` — see Gotcha #3), then a real 23:00 nightly cron run (including `getOIData`'s response shape).**

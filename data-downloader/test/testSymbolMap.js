@@ -1,15 +1,15 @@
-// breeze-historical/testSymbolMap.js — sanity check for symbolMap.js BEFORE
+// test/testSymbolMap.js — sanity check for symbolMap.js BEFORE
 // re-running backfillBreezeAll.js at scale. Confirms the NSE scrip master
 // downloads/parses correctly and resolves known-good/known-bad symbols.
 //
-// Run: cd server && node breeze-historical/testSymbolMap.js [SYMBOL...]
+// Run: cd data-downloader && node testSymbolMap.js [SYMBOL...]
 //   Defaults to a mix observed in the real 2026-08-05 run: ABB (worked with
 //   no mapping — NSE symbol happened to equal ICICI's code), 360ONE and
 //   ABCAPITAL (returned 0 rows with no mapping — the reason this file
 //   exists), plus the three indices and one more common stock.
 
-require("dotenv").config();
-const symbolMap = require("./symbolMap");
+require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") });
+const symbolMap = require("../breeze/symbolMap");
 
 (async () => {
     const symbols = process.argv.slice(2).length

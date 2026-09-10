@@ -1,4 +1,4 @@
-// breeze-historical/symbolMap.js — resolves our NSE-style symbols (as stored
+// breeze/symbolMap.js — resolves our NSE-style symbols (as stored
 // in option_chain_history, sourced from Bhavcopy/Angel One/Upstox) to
 // ICICI's own internal isec_stock_code, which is what Breeze's
 // getHistoricalDatav2 actually expects as `stockCode` for NFO contracts.

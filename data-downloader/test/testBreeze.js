@@ -1,18 +1,18 @@
-// breeze-historical/testBreeze.js — one-contract sanity check BEFORE running
+// test/testBreeze.js — one-contract sanity check BEFORE running
 // backfillBreeze.js for real. Confirms: session/auth works, the response
 // shape historicalService.js expects actually matches reality, and the
 // date/time convention (see historicalService.js header comment) round-trips
 // sensibly.
 //
-// Run: cd server && node breeze-historical/testBreeze.js [SYMBOL] [EXPIRY] [STRIKE]
+// Run: cd data-downloader && node testBreeze.js [SYMBOL] [EXPIRY] [STRIKE]
 //   If EXPIRY/STRIKE are omitted, picks one real (expiry, strike) already in
 //   option_chain_history for SYMBOL (i.e. run backfillBhavcopy.js first).
 
-require("dotenv").config();
-const { pool } = require("../config/db");
-const historicalService = require("./historicalService");
-const { addDays } = require("../services/backtestEngine");
-const instrumentMaster = require("../services/instrumentMaster");
+require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") });
+const { pool } = require("../lib/db");
+const historicalService = require("../breeze/historicalService");
+const { addDays } = require("../lib/dates");
+const instrumentMaster = require("../lib/dates");
 
 (async () => {
     const symbol = (process.argv[2] || "NIFTY").toUpperCase();

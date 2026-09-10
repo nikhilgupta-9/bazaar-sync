@@ -1,6 +1,6 @@
-// breeze-historical/pipelineYear.js — the CLI the whole folder builds toward.
+// optionchain/run.js — the CLI the whole folder builds toward.
 //
-//   node breeze-historical/pipelineYear.js <YEAR> [flags]
+//   node optionchain/run.js <YEAR> [flags]
 //
 // Walks a calendar year MONTH BY MONTH. For each month, in order:
 //   1. discovery — NSE + BSE bhavcopy → every (symbol, expiry, strike) that
@@ -15,8 +15,8 @@
 // Then it moves to the next month.
 //
 // RESUMABLE. Progress (year / month / phase) is persisted to
-// server/data/breeze-pipeline-progress.json. Breeze's real limit is
-// 5,000 calls/day (breeze-historical/rateLimiter.js) — a full month of the
+// data/breeze-pipeline-progress.json. Breeze's real limit is
+// 5,000 calls/day (breeze/rateLimiter.js) — a full month of the
 // ~215-symbol F&O universe at every-strike / 1-minute is FAR more than one
 // day's budget, so the enrich phase will routinely exhaust the budget
 // mid-month, save progress, and exit 0 telling you to re-run tomorrow. It
@@ -34,17 +34,16 @@
 //   --stop-on-verify-fail exit non-zero (and stop advancing) if any symbol fails verification for a month
 //   --reset               ignore any saved progress and start fresh from --from-month (or 1)
 //
-// ISOLATED to this folder per breeze-historical/README.md — no Express
-// route, no worker, nothing under server/workers/ touches this.
+// Standalone — see data-downloader/README.md. Nothing here is on the live path.
 
-require("dotenv").config();
+require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") });
 const fs = require("fs");
 const path = require("path");
-const { pool } = require("../config/db");
-const instrumentMaster = require("../services/instrumentMaster");
-const rateLimiter = require("./rateLimiter");
+const { pool } = require("../lib/db");
+const { todayIst } = require("../lib/dates");
+const rateLimiter = require("../breeze/rateLimiter");
 const { discoverMonth, monthBounds } = require("./monthDiscovery");
-const { backfillSymbol } = require("./backfillBreeze");
+const { backfillSymbol } = require("../breeze/enrich");
 const { verifyMonth } = require("./verifyMonth");
 
 const DATA_DIR = path.join(__dirname, "..", "data");
@@ -190,7 +189,7 @@ async function runMonth(year, month, startPhase, opts) {
 async function main() {
     const { year, flags } = parseArgs(process.argv);
     if (!Number.isInteger(year) || year < 2015 || year > 2100) {
-        console.error("Usage: node breeze-historical/pipelineYear.js <YEAR> [--from-month=N] [--to-month=N] [--symbols=A,B] [--skip-discovery] [--skip-enrich] [--skip-verify] [--stop-on-verify-fail] [--reset]");
+        console.error("Usage: node optionchain/run.js <YEAR> [--from-month=N] [--to-month=N] [--symbols=A,B] [--skip-discovery] [--skip-enrich] [--skip-verify] [--stop-on-verify-fail] [--reset]");
         process.exit(1);
     }
 
@@ -209,7 +208,7 @@ async function main() {
     }
 
     // Never process a month that isn't over yet.
-    const today = instrumentMaster.todayIst();
+    const today = todayIst();
     const [curY, curM] = today.split("-").map(Number);
     let endMonth = flags["to-month"] ? Number(flags["to-month"]) : 12;
     if (year === curY) endMonth = Math.min(endMonth, curM - 1); // last COMPLETE month

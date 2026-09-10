@@ -1,4 +1,4 @@
-// breeze-historical/auth.js — ICICI Breeze session, ISOLATED to this folder.
+// breeze/auth.js — ICICI Breeze session, ISOLATED to this folder.
 //
 // Unlike Angel One's TOTP (workers/login.js), Breeze has no automatic daily
 // login — BREEZE_API_SESSION has to be pasted in by hand each day (see
@@ -16,7 +16,7 @@ function assertCredentials() {
     if (missing.length) {
         throw new Error(
             `Missing Breeze credentials in .env: ${missing.join(", ")}. ` +
-                `BREEZE_API_SESSION expires daily — see server/breeze-historical/README.md for how to get today's value.`
+                `BREEZE_API_SESSION expires daily — see data-downloader/README.md for how to get today's value.`
         );
     }
 }

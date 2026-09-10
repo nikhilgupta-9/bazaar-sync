@@ -1,4 +1,4 @@
-// breeze-historical/verifyMonth.js — phase 3 of pipelineYear.js.
+// optionchain/verifyMonth.js — phase 3 of optionchain/run.js.
 //
 // After discovery (EOD contract universe) + enrich (Breeze 1-minute detail),
 // this checks — per symbol, for one calendar month — whether the data that
@@ -17,7 +17,7 @@
 //   - zero rows dated AFTER their own expiry (a real data-integrity bug)
 //   - zero expiries landing on a weekend (smells like an expiry parse error)
 
-const { pool } = require("../config/db");
+const { pool } = require("../lib/db");
 const { monthBounds } = require("./monthDiscovery");
 
 const INDEX_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"];

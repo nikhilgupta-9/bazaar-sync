@@ -1,4 +1,4 @@
-// breeze-historical/rateLimiter.js — enforces Breeze's real, ICICI-documented
+// breeze/rateLimiter.js — enforces Breeze's real, ICICI-documented
 // limits (confirmed against icicidirect.com's own FAQ, 2026-07-19):
 //   - 100 calls/minute
 //   - 5,000 calls/day
@@ -12,7 +12,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { todayIst } = require("../services/instrumentMaster");
+const { todayIst } = require("../lib/dates");
 
 const STATE_DIR = path.join(__dirname, "..", "data");
 const STATE_FILE = path.join(STATE_DIR, "breeze-call-count.json");

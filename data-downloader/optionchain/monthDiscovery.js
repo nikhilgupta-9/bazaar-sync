@@ -1,4 +1,4 @@
-// breeze-historical/monthDiscovery.js — phase 1 of pipelineYear.js.
+// optionchain/monthDiscovery.js — phase 1 of optionchain/run.js.
 //
 // Breeze's getHistoricalDatav2 can only fetch a contract you already name
 // (stockCode + expiry + strike + right) — it CANNOT list which strikes /
@@ -18,14 +18,14 @@
 //
 // Greeks/upsert logic mirrors scripts/backfillBhavcopyAll.js's storeSymbolDay
 // (kept as a local copy rather than a shared import so this folder stays
-// self-contained per breeze-historical/README.md — "if deleted, nothing
+// self-contained per data-downloader/README.md — "if deleted, nothing
 // else breaks").
 
-const { pool } = require("../config/db");
-const { addDays } = require("../services/backtestEngine");
-const nseBhavcopy = require("../services/nseBhavcopy");
-const bseBhavcopy = require("../services/bseBhavcopy");
-const bs = require("../utils/blackScholes");
+const { pool } = require("../lib/db");
+const { addDays } = require("../lib/dates");
+const nseBhavcopy = require("../lib/nseBhavcopy");
+const bseBhavcopy = require("../lib/bseBhavcopy");
+const bs = require("../lib/blackScholes");
 
 const EOD_TIME = "15:30:00";
 const DAY_GAP_MS = Number(process.env.BHAVCOPY_DAY_GAP_MS || 2500);
