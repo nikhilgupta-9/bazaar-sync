@@ -33,11 +33,11 @@ export async function fetchSimulatorCandles(symbol, { date } = {}) {
     return handle(res);
 }
 
-export async function runSimulatorReplay(symbol, { date, expiry, legs }) {
+export async function runSimulatorReplay(symbol, { date, expiry, legs, entryTime }) {
     const res = await fetch(`${API_URL}/api/simulator/replay/${symbol.toLowerCase()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ date, expiry, legs }),
+        body: JSON.stringify({ date, expiry, legs, entryTime }),
     });
     return handle(res);
 }

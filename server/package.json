@@ -7,6 +7,9 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "worker": "node workers/marketWorker.js",
+    "kotak": "node kotak/poller.js",
+    "kotak:once": "node scripts/kotakPollOnce.js",
+    "kotak:test": "node scripts/kotakSelfTest.js",
     "backfill": "node scripts/backfillHistory.js"
   },
   "keywords": [],

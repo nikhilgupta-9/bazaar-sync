@@ -194,22 +194,85 @@ export function computeDensityCurve(curve, spot, atmIvPercent, yearsRemaining) {
     return raw.map((v) => v / peak);
 }
 
-// Estimated margin — the same flat 15%-of-notional approximation
-// server/config/paperTradeConfig.js's MARGIN_PERCENT_OF_NOTIONAL uses for
-// real short paper-trade positions (services/paperPositionService.js:
-// marginBlocked = spot * lotSize * lots * 0.15). Kept in sync intentionally,
-// same convention as paperWalletService.getWalletStatus mirroring
-// requirePro.js's isPro check. Only short (sell) legs block margin — a long
-// leg's max risk is already its paid premium, already reflected in P&L/max
-// loss, not a separate margin requirement. Returns null when spot isn't
-// known yet (can't estimate), 0 for an all-long strategy (no margin needed).
-const MARGIN_PERCENT_OF_NOTIONAL = 0.15;
+// Estimated margin — a spread-AWARE approximation of what a broker would
+// block. Real margin is SPAN + Exposure (scenario-based, needs SPAN files
+// this app has no access to), so this is deliberately an estimate, labelled
+// as such in the UI. The model:
+//
+//   • Long legs need no margin — their worst case is the premium already
+//     paid, already in the P&L / max-loss numbers.
+//   • A short leg hedged by a long leg of the SAME type + expiry is a
+//     vertical spread: it blocks only that spread's own max loss (computed
+//     numerically at the kink points), NOT a full naked requirement. This is
+//     why an Iron Condor / credit spread / bull-call spread needs a fraction
+//     of a naked short's margin — the earlier flat "15% per short leg"
+//     ignored the hedge entirely and massively over-stated every defined-
+//     risk strategy (the user's "margin abhi tak thik nahi hua" complaint).
+//   • A still-unhedged (naked) short leg blocks NAKED_SHORT_MARGIN_PCT of
+//     its contract notional (spot × lot size × lots) — ~10%, in the ballpark
+//     of a real NSE index short-option SPAN+Exposure requirement (~7% in
+//     normal vol, higher on stressed days).
+//
+// Hedging is matched lot-by-lot: a short 3-lot CE covered by a long 1-lot CE
+// counts as 1 spread lot + 2 naked lots. A balanced condor reserves both
+// wings' max loss (slightly conservative vs. a broker that nets to the worse
+// wing — acceptable for a paper tool, and safer than under-reserving).
+//
+// Returns null when spot isn't known yet, 0 for an all-long strategy.
+const NAKED_SHORT_MARGIN_PCT = 0.1;
+
+// Max loss per unit of a two-leg vertical (one short, one long, same type),
+// evaluated at every price where the combined payoff can kink plus both
+// tails. Works for credit AND debit verticals regardless of strike order.
+function verticalMaxLossPerUnit(shortLeg, longLeg) {
+    const isCE = shortLeg.type === "CE";
+    const testPrices = [0, shortLeg.strike, longLeg.strike, Math.max(shortLeg.strike, longLeg.strike) * 10];
+    let worst = Infinity;
+    for (const p of testPrices) {
+        const shortIntrinsic = isCE ? Math.max(0, p - shortLeg.strike) : Math.max(0, shortLeg.strike - p);
+        const longIntrinsic = isCE ? Math.max(0, p - longLeg.strike) : Math.max(0, longLeg.strike - p);
+        const pnl = shortLeg.premium - shortIntrinsic + (longIntrinsic - longLeg.premium);
+        if (pnl < worst) worst = pnl;
+    }
+    return Math.max(0, -worst);
+}
 
 export function computeEstMargin(legs, spot) {
     if (!spot) return null;
-    return legs
-        .filter((leg) => leg.action === "sell")
-        .reduce((sum, leg) => sum + spot * legMultiplier(leg) * MARGIN_PERCENT_OF_NOTIONAL, 0);
+
+    // Pools of long lots still available to hedge a short, per option type.
+    const longPool = { CE: [], PE: [] };
+    for (const leg of legs) {
+        if (leg.action === "buy" && longPool[leg.type]) {
+            longPool[leg.type].push({ ...leg, lotsLeft: leg.qty });
+        }
+    }
+
+    let margin = 0;
+    for (const leg of legs) {
+        if (leg.action !== "sell" || !longPool[leg.type]) continue;
+        const lotSize = leg.lotSize || 1;
+        let lotsLeft = leg.qty;
+
+        // Nearest-strike protective long first — tightest spread, lowest
+        // margin, and matches how a trader pairs a wing to a short.
+        const candidates = longPool[leg.type]
+            .filter((l) => l.lotsLeft > 0 && (leg.expiry == null || l.expiry == null || l.expiry === leg.expiry))
+            .sort((a, b) => Math.abs(a.strike - leg.strike) - Math.abs(b.strike - leg.strike));
+
+        for (const long of candidates) {
+            if (lotsLeft <= 0) break;
+            const pairLots = Math.min(lotsLeft, long.lotsLeft);
+            margin += verticalMaxLossPerUnit(leg, long) * lotSize * pairLots;
+            lotsLeft -= pairLots;
+            long.lotsLeft -= pairLots;
+        }
+
+        if (lotsLeft > 0) {
+            margin += spot * lotSize * lotsLeft * NAKED_SHORT_MARGIN_PCT;
+        }
+    }
+    return margin;
 }
 
 // Net Greeks — sum of each leg's per-unit Greek × qty × (+1 buy / -1 sell).

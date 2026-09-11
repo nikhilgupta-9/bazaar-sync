@@ -54,7 +54,7 @@ export default function FeatureCarousel({ features }) {
                             to={f.to}
                             className="landing-card flex-[0_0_260px] p-5 sm:flex-[0_0_280px]"
                         >
-                            <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg" style={{ background: "rgba(255,255,255,0.06)" }}>
+                            <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg" style={{ background: "var(--landing-track)" }}>
                                 {f.image ? (
                                     <img src={resolveImageUrl(f.image)} alt="" className="h-full w-full object-cover" />
                                 ) : (

@@ -31,3 +31,8 @@ coverage/
 
 # npm
 package-lock.json
+
+# TradingView Charting Library — licensed, obtained from TradingView, never
+# committed (see client/public/charting_library/README.md). Keep the README.
+client/public/charting_library/*
+!client/public/charting_library/README.md

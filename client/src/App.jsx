@@ -5,10 +5,12 @@ import Home from "./pages/Home";
 import OptionChain from "./pages/OptionChain";
 import StrategyBuilder from "./pages/StrategyBuilder";
 import Simulator from "./pages/Simulator";
+import BitcoinSimulator from "./pages/BitcoinSimulator";
 import PaperTrade from "./pages/PaperTrade";
 import HistoricalChart from "./pages/HistoricalChart";
 import EquityData from "./pages/EquityData";
 import SectorRotation from "./pages/SectorRotation";
+import SectorPerformance from "./pages/SectorPerformance";
 import Pricing from "./pages/Pricing";
 import EventsPage from "./pages/Events";
 import Terms from "./pages/Terms";
@@ -30,10 +32,12 @@ function App() {
                     <Route path="/option-chain/:symbol" element={<OptionChain />} />
                     <Route path="/strategy-builder" element={<StrategyBuilder />} />
                     <Route path="/simulator" element={<Simulator />} />
+                    <Route path="/simulator/bitcoin" element={<BitcoinSimulator />} />
                     <Route path="/paper-trade" element={<PaperTrade />} />
                     <Route path="/historical-chart" element={<HistoricalChart />} />
                     <Route path="/equity-data" element={<EquityData />} />
                     <Route path="/equity-data/sector-rotation" element={<SectorRotation />} />
+                    <Route path="/equity-data/sector-performance" element={<SectorPerformance />} />
                     <Route path="/equity-data/:tool" element={<EquityData />} />
                     <Route path="/pricing" element={<Pricing />} />
                     <Route path="/events" element={<EventsPage />} />

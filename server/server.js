@@ -34,12 +34,14 @@ const backtestRoutes = require("./routes/backtest");
 const authRoutes = require("./routes/auth");
 const strategyRoutes = require("./routes/strategies");
 const simulatorRoutes = require("./routes/simulator");
+const { warmDatesCache: warmSimulatorDatesCache } = require("./controllers/simulatorController");
 const subscriptionRoutes = require("./routes/subscription");
 const paperTradeRoutes = require("./routes/paperTrade");
 const adminRoutes = require("./routes/admin");
 const eventsRoutes = require("./routes/events");
 const contentRoutes = require("./routes/content");
 const seoRoutes = require("./routes/seo");
+const tvDatafeedRoutes = require("./routes/tvDatafeed");
 
 const app = express();
 
@@ -117,6 +119,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/events", eventsRoutes);
 app.use("/api/content", contentRoutes);
 app.use("/api/seo", seoRoutes);
+app.use("/api/tv", tvDatafeedRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -151,6 +154,13 @@ server.listen(PORT, () => {
 
     // Nightly historical pull (23:00 IST Mon-Fri)
     cronService.start();
+
+    // Pre-compute the Simulator's per-symbol date list for the common index
+    // symbols so the first page load never waits on the cold ~3s scan
+    // (stale-while-revalidate + disk cache handle everything after this).
+    warmSimulatorDatesCache();
+    // Same idea for the Strategy Builder / Option Chain "Select Asset" list.
+    require("./services/optionChainService").refreshSymbolList();
 
     // Market worker lifecycle crons (08:45 fork / 15:35 graceful stop, IST)
     marketStart.schedule();

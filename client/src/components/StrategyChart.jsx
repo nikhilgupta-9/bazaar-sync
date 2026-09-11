@@ -81,7 +81,7 @@ function buildCandles(series, toEpoch, inverted) {
     return out;
 }
 
-const StrategyChart = forwardRef(function StrategyChart({ replayData, date, currentTime, height = 320 }, ref) {
+const StrategyChart = forwardRef(function StrategyChart({ replayData, date, currentTime, height = 320, preview = false }, ref) {
     const containerRef = useRef(null);
     const chartRef = useRef(null);
     const candleSeriesRef = useRef(null);
@@ -319,6 +319,11 @@ const StrategyChart = forwardRef(function StrategyChart({ replayData, date, curr
             </div>
 
             <div className="min-w-0 flex-1">
+                {preview && (
+                    <div className="mb-2 rounded-md bg-blue-50 px-3 py-1.5 text-[11px] text-blue-700">
+                        Live preview of this strategy's P&L across the day — click <span className="font-semibold">Run Simulation</span> to scrub minute-by-minute and autoplay.
+                    </div>
+                )}
                 <div className="mb-2 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-[11px]">
                         <span className="font-semibold text-gray-500">Strategy P&L (approx. candles)</span>

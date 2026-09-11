@@ -13,6 +13,24 @@ const POLLING_INTERVALS = {
 };
 const LIVE_FRAME_STALE_MS = 20000;
 
+// A single contract (one strike's CE or PE) is flagged stale — amber ⚠, last
+// value carried forward — when its own last tick is older than this while the
+// feed is otherwise live. Illiquid strikes and strikes that drifted outside
+// the worker's ±15-strike window stop ticking well before the whole feed does.
+const CONTRACT_STALE_MS = 25000;
+// Greeks/IV/delta never stream over the socket (only LTP/OI/volume do) — they
+// only refresh on a REST load. Flag them stale when the last REST load is
+// older than this during market hours.
+const GREEKS_STALE_MS = 90000;
+
+// Coerce a server timestamp (ms-epoch number, or ISO string) to ms, or null.
+function toMs(ts) {
+    if (ts == null) return null;
+    if (typeof ts === "number") return Number.isFinite(ts) && ts > 0 ? ts : null;
+    const parsed = Date.parse(ts);
+    return Number.isNaN(parsed) ? null : parsed;
+}
+
 /**
  * Shared fetch + live-update logic for every page built on top of
  * /api/option-chain (Option Chain, Max Pain, PCR, IV chart, Straddle chart,
@@ -37,6 +55,11 @@ export function useOptionChain(initialSymbol = "NIFTY") {
     const [marketStatus, setMarketStatus] = useState({ isOpen: false, nextOpen: null, timestamp: null });
     const [isLive, setIsLive] = useState(false);
     const [lastUpdated, setLastUpdated] = useState(null);
+    // ms epoch of the last REST payload (greeks/IV/delta only refresh then),
+    // and a value bumped every few seconds so consumers re-evaluate "how old
+    // is each contract now" without needing a data change.
+    const [dataLoadedAt, setDataLoadedAt] = useState(0);
+    const [staleNow, setStaleNow] = useState(() => Date.now());
 
     const requestIdRef = useRef(0);
     const expiryRef = useRef(null);
@@ -51,7 +74,21 @@ export function useOptionChain(initialSymbol = "NIFTY") {
             if (requestId !== requestIdRef.current) return; // superseded
 
             expiryRef.current = expiry ?? d.selectedExpiry ?? null;
+            // Stamp each contract's last-tick time from the server's per-side
+            // `ts` (live path) — falls back to now, so a fresh historical/
+            // market-closed load never looks stale. Consumed by ChainRow to
+            // decide which cells get the amber ⚠ + carried-forward treatment.
+            const nowMs = Date.now();
+            if (Array.isArray(d.rows)) {
+                d.rows = d.rows.map((row) => ({
+                    ...row,
+                    ce: { ...row.ce, _tickAt: toMs(row.ce?.ts) ?? nowMs },
+                    pe: { ...row.pe, _tickAt: toMs(row.pe?.ts) ?? nowMs },
+                }));
+            }
             setData(d);
+            setDataLoadedAt(nowMs);
+            setStaleNow(nowMs);
             setMarketStatus(d.marketStatus || { isOpen: false });
             setIsLive(!d.isHistorical);
             setLastUpdated(new Date().toISOString());
@@ -80,10 +117,17 @@ export function useOptionChain(initialSymbol = "NIFTY") {
                     if (frame.expiry && prev.selectedExpiry && String(frame.expiry) !== String(prev.selectedExpiry)) {
                         return prev;
                     }
+                    const frameMs = toMs(frame.timestamp) ?? Date.now();
                     const byStrike = new Map(frame.ticks.map((t) => [Number(t.strike), t]));
                     const rows = prev.rows.map((row) => {
                         const t = byStrike.get(Number(row.strike));
-                        if (!t) return row;
+                        if (!t) return row; // strike absent from the frame — keep its old _tickAt so it ages into "stale"
+                        // A side's _tickAt only advances when that side actually
+                        // carried a value this frame (t.ceLtp/t.ceOi present) —
+                        // a frame that lists the strike but with null CE data
+                        // means that contract still isn't ticking.
+                        const ceTicked = t.ceLtp != null || t.ceOi != null;
+                        const peTicked = t.peLtp != null || t.peOi != null;
                         return {
                             ...row,
                             ce: {
@@ -91,12 +135,14 @@ export function useOptionChain(initialSymbol = "NIFTY") {
                                 ltp: t.ceLtp ?? row.ce.ltp,
                                 oi: t.ceOi ?? row.ce.oi,
                                 volume: t.ceVolume ?? row.ce.volume,
+                                _tickAt: toMs(t.ceTs) ?? (ceTicked ? frameMs : row.ce._tickAt),
                             },
                             pe: {
                                 ...row.pe,
                                 ltp: t.peLtp ?? row.pe.ltp,
                                 oi: t.peOi ?? row.pe.oi,
                                 volume: t.peVolume ?? row.pe.volume,
+                                _tickAt: toMs(t.peTs) ?? (peTicked ? frameMs : row.pe._tickAt),
                             },
                         };
                     });
@@ -133,6 +179,17 @@ export function useOptionChain(initialSymbol = "NIFTY") {
             if (pollingRef.current) clearInterval(pollingRef.current);
         };
     }, [symbol, marketStatus.isOpen, load]);
+
+    // --- staleness re-tick ---------------------------------------------
+    // Bumps `staleNow` every 5s so ChainRow re-evaluates "how old is each
+    // contract" as wall-clock time passes, without needing a data change.
+    // Only runs while the market is open and we're on the live path — a
+    // static historical snapshot is never "aging".
+    useEffect(() => {
+        if (!marketStatus.isOpen || !isLive) return;
+        const id = setInterval(() => setStaleNow(Date.now()), 5000);
+        return () => clearInterval(id);
+    }, [marketStatus.isOpen, isLive]);
 
     // --- public API (kept compatible with all existing pages) ------------
     const refresh = useCallback(async () => {
@@ -187,7 +244,29 @@ export function useOptionChain(initialSymbol = "NIFTY") {
         marketStatus,
         isLive,
         lastUpdated,
+        dataLoadedAt,
+        staleNow,
         refresh,
         disconnect,
+    };
+}
+
+/**
+ * Given one contract side (row.ce / row.pe), decide whether its live data
+ * has gone stale. `opts` comes straight from the hook: { isLive, marketOpen,
+ * feedConnected, dataLoadedAt, now }. Returns per-group booleans so ChainRow
+ * can badge LTP/OI separately from delta/greeks (which never stream).
+ */
+export function contractStaleness(side, opts) {
+    const { isLive, marketOpen, feedConnected, dataLoadedAt, now } = opts || {};
+    // Only meaningful on the live path during market hours with the feed up —
+    // a historical snapshot or a closed market is "as fresh as it gets".
+    if (!side || !isLive || !marketOpen || feedConnected === false) {
+        return { priceStale: false, greeksStale: false };
+    }
+    const tickAt = side._tickAt || dataLoadedAt || 0;
+    return {
+        priceStale: tickAt > 0 && now - tickAt > CONTRACT_STALE_MS,
+        greeksStale: dataLoadedAt > 0 && now - dataLoadedAt > GREEKS_STALE_MS,
     };
 }

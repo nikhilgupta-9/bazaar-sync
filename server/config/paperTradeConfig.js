@@ -31,9 +31,16 @@ module.exports = {
     // Fat-finger guard on a single Buy/Sell, not a business rule.
     MAX_LOTS_PER_ORDER: 100,
 
-    // Margin for a written (short) option = spot * lotSize * lots * this.
-    // A flat-percentage-of-notional approximation of real SPAN margin
-    // (which this app has no data to compute) — not precise, clearly
-    // labeled as such in the UI. No intraday maintenance/auto square-off.
-    MARGIN_PERCENT_OF_NOTIONAL: 0.15,
+    // Margin for a naked written (short) option = spot * lotSize * lots * this.
+    // A flat-percentage-of-notional approximation of real SPAN + Exposure
+    // margin (which this app has no data to compute) — ~10% is in the
+    // ballpark of a real NSE index short-option requirement (~7% in normal
+    // vol, more on stressed days). Not precise, clearly labeled as such in
+    // the UI. No intraday maintenance / auto square-off.
+    //
+    // Paper Trade places ONE contract at a time, so it can't see a hedging
+    // long the way the Strategy Builder's spread-aware computeEstMargin
+    // (client/src/utils/payoff.js) can — a paper short is always margined as
+    // naked here. Keep this % in sync with that file's NAKED_SHORT_MARGIN_PCT.
+    MARGIN_PERCENT_OF_NOTIONAL: 0.1,
 };

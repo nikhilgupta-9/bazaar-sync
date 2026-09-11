@@ -20,7 +20,7 @@ export default function DashboardMockup({ variant = 0, className = "" }) {
                 <span className="h-2.5 w-2.5 rounded-full" style={{ background: "#eb090b" }} />
                 <span className="h-2.5 w-2.5 rounded-full" style={{ background: "#f5a623" }} />
                 <span className="h-2.5 w-2.5 rounded-full" style={{ background: "#0be55c" }} />
-                <div className="ml-3 flex-1 rounded-md px-3 py-1 text-[11px]" style={{ background: "var(--landing-bg-alt)", color: "var(--landing-text-muted)" }}>
+                <div className="ml-3 flex-1 rounded-md px-3 py-1 text-[11px]" style={{ background: "var(--landing-track)", color: "var(--landing-text-muted)" }}>
                     app.bazaarsync.com
                 </div>
             </div>
@@ -34,13 +34,13 @@ export default function DashboardMockup({ variant = 0, className = "" }) {
                 <div className="space-y-1.5">
                     {bars.map((b, i) => (
                         <div key={i} className="flex items-center gap-2">
-                            <div className="h-2 flex-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.06)" }}>
+                            <div className="h-2 flex-1 overflow-hidden rounded-full" style={{ background: "var(--landing-track)" }}>
                                 <div className="ml-auto h-full rounded-full" style={{ width: `${b.ce}%`, background: "rgba(11,229,92,0.6)" }} />
                             </div>
                             <div className="w-10 shrink-0 text-center text-[10px] font-semibold" style={{ color: "var(--landing-text-muted)" }}>
                                 {24600 + i * 50}
                             </div>
-                            <div className="h-2 flex-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.06)" }}>
+                            <div className="h-2 flex-1 overflow-hidden rounded-full" style={{ background: "var(--landing-track)" }}>
                                 <div className="h-full rounded-full" style={{ width: `${b.pe}%`, background: "rgba(235,9,11,0.55)" }} />
                             </div>
                         </div>

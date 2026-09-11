@@ -8,6 +8,7 @@
 const optionChainService = require("../services/optionChainService");
 const marketCache = require("../services/marketCache");
 const instrumentMaster = require("../services/instrumentMaster");
+const lotSizeHistoryService = require("../services/lotSizeHistoryService");
 const { marketHours } = require("../utils/marketUtils");
 
 // Attaches data that's independent of whether the option ROWS came back live
@@ -23,30 +24,43 @@ async function withMarketExtras(payload, displaySymbol) {
     const vixEntry = marketCache.getVix();
     const futureEntry = marketCache.getFuture(displaySymbol);
 
+    // Only widen the expiry list from the live instrument master for a LIVE
+    // payload. For a historical payload (market closed / non-live expiry),
+    // payload.expiries is the set of expiries that actually have stored rows
+    // for that snapshot's trade_date — replacing it with the instrument
+    // master's future-dated list produced a dropdown of expiries that don't
+    // match `selectedExpiry` and silently fall back to the same day's data
+    // when clicked (found 2026-09-10). Keep the payload's own list there.
     let expiries = payload.expiries;
-    try {
-        const allExpiries = await instrumentMaster.getExpiries(displaySymbol);
-        if (allExpiries.length) expiries = allExpiries;
-    } catch (err) {
-        console.error("[optionChain] expiry list lookup failed, using payload's own list:", err.message);
-    }
-
-    // Live cache only ever has a lot size when the worker is running AND has
-    // ticked this symbol (only NIFTY/BANKNIFTY/FINNIFTY are ever
-    // live-subscribed) — meaning it was null for every stock, and null for
-    // the indices too whenever the worker was stopped/market closed. Falls
-    // back to the scrip master (instrumentMaster.getLotSize — works for any
-    // F&O underlying, live or not) so Strategy Builder's payoff math always
-    // has a real lot size instead of silently defaulting to 1 (see
-    // payoff.js's legMultiplier fallback comment).
-    let lotSize = marketCache.getLotSize(displaySymbol);
-    if (!lotSize) {
+    if (!payload.isHistorical) {
         try {
-            lotSize = await instrumentMaster.getLotSize(displaySymbol);
+            const allExpiries = await instrumentMaster.getExpiries(displaySymbol);
+            if (allExpiries.length) expiries = allExpiries;
         } catch (err) {
-            console.error("[optionChain] lot size lookup failed:", err.message);
+            console.error("[optionChain] expiry list lookup failed, using payload's own list:", err.message);
         }
     }
+
+    // lot_size_history (see lotSizeHistoryService.js) is the admin-curated,
+    // authoritative source — it's what NSE's actual lot-revision circulars
+    // get entered against, and it's the only source that covers symbols the
+    // Angel One NFO-only scrip master never lists at all (BSE indices like
+    // SENSEX/BANKEX, individual F&O stocks). It already falls back to
+    // instrumentMaster.getLotSize internally when nothing's recorded for
+    // this symbol/date, so this alone is normally enough — Strategy
+    // Builder's Est. Margin/P&L math (payoff.js's legMultiplier) was
+    // previously only ever fed the live cache/scrip-master value, which
+    // could silently disagree with (or simply not know) the real current
+    // lot size for anything outside the 3 live-subscribed indices.
+    let lotSize = null;
+    try {
+        lotSize = await lotSizeHistoryService.getLotSizeAsOf(displaySymbol, instrumentMaster.todayIst());
+    } catch (err) {
+        console.error("[optionChain] lot size history lookup failed:", err.message);
+    }
+    // Last-resort fallback if the DB itself is unreachable: whatever the
+    // live worker already has ticking in memory for this symbol right now.
+    if (!lotSize) lotSize = marketCache.getLotSize(displaySymbol);
 
     // Spot vs the last recorded end-of-day close (ohlcv_data, previous
     // trading day) — the header's "Spot" figure shows this delta next to

@@ -22,7 +22,7 @@ Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting
 - Auth: JWT + bcrypt built and working (email/password). Google OAuth still planned — needs a Google Cloud project + OAuth client credentials from the user, not started.
 - Payments: Razorpay, Free vs Pro ₹499/mo (planned)
 - Market data (live + recent history): **Angel One SmartAPI**, implemented directly against the documented REST + WebSocket 2.0 endpoints (no SDK dependency — Angel One has no well-maintained official npm package the way Breeze did). TOTP login is fully automated via `otplib` — no daily manual session step. All Breeze code (`breezeconnect`, `adm-zip`, the axios CVE override, `services/breeze.js`, `services/sessionManager.js`) was removed in Phase 6.
-- Market data (deep historical backfill only, Phase 7): **Upstox** (`services/upstoxHistorical.js`, ~6mo of expired-options minute data, Upstox Plus) + **NSE Bhavcopy** (`services/nseBhavcopy.js`, free, multi-year, daily/EOD-only) + **ICICI Breeze, reintroduced but isolated in the standalone `data-downloader/` app** (moved there from `server/breeze-historical/` on 2026-09-10; ~3yr window, minute-level, option chain + India VIX). None of these touch the live path — see Phase 7 below and `data-downloader/README.md`.
+- Market data (deep historical backfill only, Phase 7): **Upstox** (`services/upstoxHistorical.js`, ~6mo of expired-options minute data, Upstox Plus) + **NSE Bhavcopy** (`services/nseBhavcopy.js`, free, multi-year, daily/EOD-only) + **ICICI Breeze, reintroduced but isolated** (`server/breeze-historical/`, ~6mo-3yr window, minute-level). None of these three touch the live path — see Phase 7 below and `server/breeze-historical/README.md`.
 
 ## Hard Rules — always follow
 
@@ -44,7 +44,7 @@ Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting
 4. **Weeks 6-7 (done):** Backtesting Engine — simulation engine + API + frontend done, fully verified end-to-end against real multi-day Breeze data (2026-07-07)
 5. **Week 8 (in progress):** JWT auth + Free/Pro tier gating done (2026-07-07). Still needed: Google OAuth, Razorpay, QA, deploy to Hostinger VPS, handover.
 6. **Phase 6 (done, 2026-07-18):** Full Breeze → Angel One SmartAPI migration + real-time architecture: standalone market-worker process (auto TOTP login, WebSocket feed, tick validation, buffered bulk MySQL writes in tiers), in-memory market cache in Express fed over IPC, socket.io push to React, 08:45/15:35 IST worker lifecycle crons, nightly historical cron rewritten on Angel One's candle/OI APIs, Winston logging, PM2 config, deployment guide in README.
-7. **Phase 7 (in progress, started 2026-07-19):** Deep historical backfill for the 5-year/210-stock/commodities goal — three separate, occasional, non-live tools (never touch Express/workers/the live cache): Upstox Expired Instruments (`services/upstoxHistorical.js`, `scripts/backfillUpstox.js`), NSE Bhavcopy (`services/nseBhavcopy.js`, `scripts/backfillBhavcopy.js`, `scripts/testBhavcopy.js`), and ICICI Breeze reintroduced but fully isolated — now in the standalone **`data-downloader/`** app (moved out of `server/breeze-historical/` on 2026-09-10), which also carries the India VIX pipeline. See "Historical data sourcing (Phase 7)" below for the full picture and current verification status.
+7. **Phase 7 (in progress, started 2026-07-19):** Deep historical backfill for the 5-year/210-stock/commodities goal — three separate, occasional, non-live tools (never touch Express/workers/the live cache): Upstox Expired Instruments (`services/upstoxHistorical.js`, `scripts/backfillUpstox.js`), NSE Bhavcopy (`services/nseBhavcopy.js`, `scripts/backfillBhavcopy.js`, `scripts/testBhavcopy.js`), and ICICI Breeze reintroduced but fully isolated in `server/breeze-historical/` (`auth.js`, `rateLimiter.js`, `historicalService.js`, `backfillBreeze.js`, `testBreeze.js`, own `README.md`). See "Historical data sourcing (Phase 7)" below for the full picture and current verification status.
 8. **Phase 8 (started 2026-08-13):** Product scope expansion — Paper Trading (real-money-style virtual wallet: 2-day/₹50k trial, ₹499/mo membership for ₹5L virtual capital, ₹100 refills per 5L, unused balance rolls over on renewal), Equity Data tools (sector rotation, sector performance, market map, 52-week high/low, industry momentum, most active), Historical Chart, Google OAuth, an admin panel (institute free-access by IP allowlist, per-user strategy/balance/renewal/log, plan/discount/coupon/payment/notification management, event management, T&C, an SEO tool), and new static pages (Plans, Events, T&C, Contact Us, About Us). **This is well beyond the original ₹1,15,000/8-week engagement described in Business Terms above — worth a scope/commercial conversation with the client before building it all out.** Decisions locked in for this phase: institute access via **IP allowlist** (not MAC — browsers don't expose device MAC addresses to a website, so that part of the original ask isn't buildable as literally stated); Razorpay keys will be provided by the user; Google OAuth deferred (no credentials yet, email/password stays primary). Sub-phase 8.1 (done, this pass) is navbar-only: see below.
 
 ## What's Already Done
@@ -185,6 +185,27 @@ Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting
 - **NOT verified:** anything through the real market worker / a real Angel One WebSocket feed during actual market hours — the synthetic-tick script above proves the trading *logic* is correct, but the real end-to-end path (worker → IPC → marketCache → this code) still needs a live credentialed run, same outstanding item Phase 6 already flagged for the rest of the live pipeline.
 - **Side note, not a bug:** while running the verification script, its console output included an unusual line from the `dotenv` package itself (`⌁ auth for agents [www.vestauth.com]`) — traced to `node_modules/dotenv/lib/main.js`'s own `TIPS` array (dotenv v17.4.2, confirmed via their own CHANGELOG), a rotating self-promotional banner the maintainer added, not a compromised package or injected content. It prints on every `dotenv.config()` call, including in the real running server's boot log — cosmetic, but worth knowing it's there; their own tip list says `{ quiet: true }` suppresses it if desired.
 
+**Simulator page load perf (2026-09-06):** the `/simulator` page took ~5-15s to become usable. Three DB hotspots, all fixed:
+- `getChainAtTime`'s `SELECT DISTINCT expiry WHERE symbol=? AND trade_date=?` (runs on every page load AND every date/expiry click) had no usable index — the optimizer scanned every row for the symbol via `uniq_snapshot` (~2.4s, NIFTY). Added `KEY idx_sym_date_expiry (symbol, trade_date, expiry)` to `option_chain_history` (schema.sql + applied to the real dev DB; existing DBs need the `ALTER TABLE ... ADD INDEX` by hand — see the note in schema.sql). Took it to ~40ms.
+- `listDates`' `GROUP BY trade_date, COUNT(DISTINCT trade_time)` is inherently a ~3s full covering-index scan (no index makes `COUNT(DISTINCT)` over 7M rows cheap). Rewritten as **stale-while-revalidate**: in-memory Map + a JSON file on disk (`server/data/simulator-dates-cache.json`, gitignored) that survives restarts, 6h TTL, a cached (even expired) answer returned instantly with a background refresh kicked off. The full scan now happens at most once per symbol ever; `warmDatesCache()` (exported, called from `server.js` boot, runs the 3 index symbols sequentially) pre-pays even that.
+- `optionChainService.listSymbols()`'s `SELECT DISTINCT symbol` is actually fast (~65ms, loose index scan) — the 10s spike seen once was just it colliding with the 3 concurrent boot warm-scans; making `warmDatesCache` sequential removed the thundering herd. (Later given the same disk-cache + boot-warm treatment — see the feature-parity entry below.)
+- **Verified against the real dev DB:** every Simulator endpoint now ~1-80ms warm; total page backend cost ~160ms (was 5-15s). Frontend untouched.
+
+**Strategy Builder ⇄ Simulator feature parity + stale-data indicator (2026-09-06):** Strategy Builder and Simulator were ~90% the same page (same chain table, leg model, payoff math, Positions/Greeks tabs) but Simulator had features Strategy Builder lacked. Decisions locked with the user first: SL/TG live-monitored with a square-off alert (no auto-close); a Live/Historical toggle added to Strategy Builder; **no** "Upcoming Positions" tab in Strategy Builder.
+- **New shared components** `client/src/components/strategy/`: `StaleBadge.jsx` (the amber ⚠), `SlTgModal.jsx` (₹-amount SL/TG editor, `footer="live"|"replay"`), `SquareOffAlertBanner.jsx` (`context="live"|"replay"`), `PortfolioGreeksTable.jsx`. Simulator's 3 inline copies were deleted and replaced with these so the two pages can't drift.
+- **Stale-data indicator.** `marketCache.getBroadcastPayload` now sends `ceTs`/`peTs` (per-contract last-tick ms); `optionChainService.getLiveOptionChain` adds `ce.ts`/`pe.ts` to REST rows. `useOptionChain` stamps `row.ce._tickAt`/`row.pe._tickAt` on every socket merge, exposes `dataLoadedAt` + `staleNow` (a 5s re-tick while live) + a `contractStaleness(side, opts)` helper — `priceStale` when a contract's own tick is >25s behind while the feed is otherwise live (illiquid strike / outside the worker's ±15-strike window), `greeksStale` when the last REST load is >90s old (greeks/IV never stream over the socket). Strategy Builder's chain table renders `<StaleBadge>` on LTP/OI/Δ for stale contracts + a faint amber row border. **Simulator historical carry-forward**: `carryForwardRows`/`absorbLastGood` + `lastGoodChainRef` in `Simulator.jsx` — scrubbing to a minute with no stored row for a strike/field now shows the last recorded value + ⚠ instead of a blank gap (chain table only; the replay P&L series keeps its honest gaps). Live-path staleness can't be exercised without Angel One creds; `carryForwardRows`/`contractStaleness` were unit-checked with throwaway node scripts.
+- **Strategy Builder feature parity.** Per-symbol leg persistence (`bazaarSync.strategyBuilder.legs.<SYM>`, same pattern as Simulator's `SIM_LEGS_KEY_PREFIX`) — switching symbol restores that symbol's legs; only "Reset Workspace" clears. **Margin column** in the Positions table (`computeEstMargin([leg], spot)`, `—` for long legs). Cramped inline SL/TG popover → `<SlTgModal footer="live">`. **Live SL/TG watch**: an effect compares each leg's live P&L to ±(threshold% × its own entry notional); first crossing per (leg, thresholds) fires the amber `<SquareOffAlertBanner context="live">` (deferred via `queueMicrotask` so it doesn't cascade a render — no new `set-state-in-effect` lint finding). Portfolio Greeks tab → shared component.
+- **Historical mode in Strategy Builder.** A Live/Historical segmented toggle in the header (remembered in `localStorage`). Historical renders `<Simulator key={symbol} embeddedSymbol={symbol} hideChrome />` — Simulator gained optional `embeddedSymbol`/`hideChrome` props (default = the standalone `/simulator` page, unchanged); embedded, it follows Strategy Builder's symbol via `key` remount (no sync effect) and hides its own symbol pill + page chrome. Legs built in Historical mode share storage with standalone `/simulator` (both `SIM_LEGS_KEY_PREFIX`); Strategy Builder's Live legs stay separate. Chose embedding over extracting Simulator's ~2900-line body — every Simulator feature is in Strategy Builder immediately at far less regression risk; a real unification is a possible follow-up.
+- **Load speed.** `optionChainService.listSymbols()` got the same stale-while-revalidate + disk cache (`server/data/symbol-list-cache.json`, gitignored) + boot-warm (`server.js` calls `refreshSymbolList()`) as `listDates`. Frontend `React.lazy` of the chart components was scoped but **not done** — follow-up; backend is already 2–250ms and the JS bundle is route-independent and cached after first visit.
+- **Verified:** `npm run build` + `npm run lint` clean on the client (no new findings), `node --check` on every changed server file, every changed module fetched through the Vite dev server returns 200, backend endpoints re-smoke-tested against the real dev DB (all 1–250ms, both disk caches written). **NOT visually verified in a browser** — no `chromium-cli`/Playwright here (same gap as Phases 10.1/11). Do a real visual pass of: Strategy Builder Live (Margin column, SL/TG modal, square-off banner via an LTP override), the Live/Historical toggle (embedded Simulator renders + works, toggle back), and Simulator scrubbing past a data gap (carry-forward ⚠).
+- **⚠ Near-total loss + recovery during this work (2026-09-06):** while these changes were still uncommitted, the repo was switched to branch `data-fetch` (which does not track `client/`/`server/`/`admin/` — see its "Keep only data-downloader folder" commit), wiping every modified tracked file from the working tree. Recovered from a dangling `git stash` commit (`git fsck --lost-found` → `git stash apply <hash>`) that a stash/pop cycle had left behind; the 4 new untracked `components/strategy/` files and the real DB index survived the switch untouched. **Lesson: commit early on this repo — branch switches here are destructive to uncommitted cross-directory work.**
+
+**Historical spot / ATM fix (2026-09-06):** the real underlying spot for a past minute is **not stored** — `ohlcv_data` is EOD-only for most days and `option_chain_history.underlying_price` is a single static per-day value (verified against the real dev DB). So the Simulator's SPOT stayed frozen all day while scrubbing, the ATM strike never moved, and every spot-derived figure (payoff reference line, POP, expected-move) was anchored to the wrong price.
+- **First attempt (wrong):** `spot ≈ strike + CE_ltp − PE_ltp`. Put-call parity gives the **forward**, not the spot — the forward runs above spot by the cost of carry (r − q ≈ 4-6% annualised for NSE indices), i.e. ~10 points on the near NIFTY weekly, ~30+ on the monthly, and the value *changed with which expiry tab was selected*. This showed as the "~10-point gap" the user caught.
+- **Fix that shipped:** `server/utils/syntheticSpot.js` — `parityForward(chainRows)` (median `K + C − P` over the ~5 strikes with smallest `|C − P|`) computed at **every expiry available that minute**, then `spotFromForwardCurve(points)` does an OLS fit of `F(T) = spot + carry·T` and returns the **intercept** (the spot); the slope is the implied carry. With only one expiry in scope it discounts by a default 5% carry. `yearsBetween(dateStr, expiryStr, timeStr)` for T (plain-string `Date.UTC`, Gotcha #12).
+- Wired into `simulatorController.getChainAtTime` (one extra all-expiry near-ATM query, ~5-10ms) and `simulatorController.replay`'s per-minute `series.spot` (a ±600-point, all-expiry window pulled once). `optionChainService.formatHistoricalPayload` uses the single-expiry default-carry path (Strategy-Builder-market-closed / non-live-expiry views — one snapshot, less critical). Responses carry `spotStored` + `spotSource` (`"parity" | "ohlcv" | "stored"`); the Simulator header shows a small `≈` + tooltip when parity-derived.
+- **Verified against real dev-DB data:** NIFTY 2026-06-19 — the parity forwards ran 23990 / 24009 / 24040 / 24068 / 24089 across the 5 expiries (clean 5.35% carry slope); the fitted spot was **23973** and is now **identical whichever expiry tab is open** (was 23990 on the weekly, 24009 on the monthly). Spot moves through the day (23973 → 23945 → 23929 → 24035) with ATM tracking (23950 → 24050); the chain endpoint and the replay series agree to the paisa. `ohlcv_data` minute bars still win when they actually exist (Angel-One-cron days); the static stored value is only the last-resort fallback.
+
 **Phase 8.4, SELL/short options + margin (undated — found undocumented 2026-08-13):** the codebase already has this built (`paper_positions.side`/`margin_blocked` columns, `MARGIN_PERCENT_OF_NOTIONAL` in `paperTradeConfig.js`, `openPosition`'s `side` param, `forceDebit` in `paperWalletService.js` for closing a short without the balance check trapping a losing position) — margin approximated as a flat 15% of notional, no intraday maintenance/auto square-off. **This phase was never written up here** — Phase 8.3's and `PaperTrade.jsx`'s header comments still say "no margin computation exists anywhere in this codebase," which is now stale/wrong. Whoever picks this up next should write a proper Phase 8.4 entry from the actual diff/git history and fix those two stale comments — flagging rather than fabricating one from guesswork.
 
 **Phase 9, Admin panel — foundation (2026-08-13):** first slice of the admin panel (see Phase 8's scope-expansion note) — read-only, no management actions yet (no ban/edit-role/refund endpoints). Scoped with the user first: build order is foundation → institute IP allowlist → plans/coupons/payments → the rest; institute free-access will mean **allowlisted IP ⇒ auto-Pro for a logged-in user** (not loginless access) when that slice is built.
@@ -234,6 +255,14 @@ Building "Bazaar Sync" — a StockMojo-style NSE Options Analytics & Backtesting
 - **Verified for real, end-to-end, against the real dev DB**: after the `users.id` fix, `schema.sql` applied cleanly (6 new tables created). Every new endpoint was hit directly via `curl` with a real JWT for the real admin account: institute IP exact-match AND CIDR-range match both correctly flipped `instituteAccess`/`accessAllowed` to `true` for a `tier='free'` account with an expired trial (confirmed on `/api/auth/me` and `/api/paper-trade/wallet`); coupon `WELCOME50` (50% off) correctly discounted a ₹499 order to ₹249.50 paise via a real Razorpay order-creation call (order-creation only, never completed — no charge, same convention as Phase 8.2's verification); an invalid coupon code was correctly rejected; events/content/seo GET+admin-CRUD round-tripped correctly (create → public/admin list → update → delete, each confirmed via a follow-up GET). All test data (institute IP entries, the coupon, the test event, the seo entry, placeholder terms text) was deleted afterward — same cleanup convention as Phase 8.3/9/10. `npm run build`/`lint` clean on all three apps (`server` via `node --check` on every changed/new file); the only lint findings anywhere are the two pre-existing `AuthContext.jsx`/`AdminAuthContext.jsx` ones already documented in earlier phases.
 - **NOT verified:** a real Razorpay Checkout completion with a coupon applied (would need `rzp_test_...` keys per the Phase 8.2 warning — still live keys today, now also just-rotated-or-not per the flag above); the admin UI pages in a real browser (no `chromium-cli`/Playwright in this environment, same gap as Phase 10.1 — build/lint/module-transform are clean but nothing has been screenshotted).
 
+**Phase 13, Kotak Neo as a SECOND live market-data source (2026-09-10):** the user has a Kotak Neo Trade API account and asked to fetch option-chain + India VIX data through it, then (follow-up same day) to cover **all 7 F&O indices + the full ~210 F&O stock universe** and to handle **current + historical** data. Explicit scope decisions (from the user, in the requests): (1) **Angel One is NOT removed** — Kotak runs *alongside* it, not as a replacement (unlike the Phase 6 Breeze→Angel One cutover); Angel One still owns the live worker / `marketCache` / socket.io pipeline, completely untouched. (2) **Option data goes into the existing `option_chain_history` table — no separate table.** (3) India VIX and each underlying's nearest future go into the existing `ohlcv_data` table under namespaced symbols (`INDIAVIX`, `NIFTYFUT`/`RELIANCEFUT`/…) that can't collide with the real index/stock symbols the backtest engine queries (there's no schema tier for VIX/futures — Gotcha #13 — and no new tables were wanted; this also finally gives a forward VIX series).
+- **HISTORICAL DATA IS NOT AVAILABLE FROM KOTAK.** Confirmed against Kotak's own support page ("Historical data is unavailable … not allowed for this platform") and a GitHub issue showing `/charts/v1/scrip/history` → 503. True back-history stays on the Phase 7 sources (Upstox/Bhavcopy/Breeze). What Kotak adds is a **forward historian**: the poller, run daily, appends real minute snapshots to `option_chain_history`/`ohlcv_data`, building self-recorded history from the day it's switched on — at full 7-index + 210-stock breadth. This is documented in `config/kotak.js`'s header and `server/kotak/README.md`.
+- **The 7 indices:** NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYNXT50 (NSE — `nse_cm`/`nse_fo`) + SENSEX, BANKEX (BSE — `bse_cm`/`bse_fo`). Config table in `config/kotak.js` → `indices`, each with its own cash/F&O segment + a `strikeStep` hint (only a hint — ATM/window is derived from the listed strikes, so it can be wrong without breaking anything). **The ~210 stocks** are auto-discovered from the scrip master (every `OPTSTK` underlying), overridable via `KOTAK_STOCKS`/`KOTAK_STOCKS_EXCLUDE`.
+- **New standalone poller, not wired into Express or the Angel One worker.** `server/kotak/` (own dir, mirrors the `breeze-historical/` isolation pattern): `auth.js` (OAuth client-credentials token → TOTP login → MPIN validate, fully automatic via `otplib`, same shape as `workers/login.js` — tokens in-memory only, never logged/persisted), `instruments.js` (downloads 4 Kotak scrip-master CSVs — `nse_cm`/`nse_fo`/`bse_cm`/`bse_fo` — disk-cached in `server/data/kotak_*.csv`; parses `OPTIDX`/`OPTSTK`/`FUTIDX`/`FUTSTK`; resolves spot/VIX/future/option tokens for any index OR stock; mirrors `services/instrumentMaster.js`'s `getExpiries`/`getOptionContracts`/`getNearestFuture` shape), `quotes.js` (REST Quotes endpoint, chunked ≤25 instruments/call, auto re-login on 401), `marketData.js` (assembles a chain snapshot + computes IV/Greeks via `utils/blackScholes.js` — identical convention to `services/cron.js`'s `storeOptionChainMinutes`), `repo.js` (upserts into `option_chain_history` with the **exact same column list + `ON DUPLICATE KEY UPDATE`** as `cron.js`, and into `ohlcv_data`; `trade_time` snapped to the current minute so repeated polls within a minute refresh one row, matching the worker's "one row per minute" rule), `poller.js` (**two concurrent tiers** — INDEX: all 7 chains + VIX every 15s; STOCK: ~210 chains as a *rolling sweep*, `KOTAK_STOCK_PER_STEP` chains/step, full universe every `KOTAK_STOCK_SWEEP_MS` ≈ 5min, keeping total REST volume to a few req/s well under the ~10/s limit — a fast full sweep would be thousands of calls; `KOTAK_MODE=index|stock|all` to split tiers across processes; IST market-hours guard). Plus `server/config/kotak.js` (every host/path/constant + the index table + tier config in ONE place), `server/scripts/kotakPollOnce.js` (one-shot verification for any symbol, `--list` shows the resolved universe), `server/kotak/README.md`. `package.json` gained `npm run kotak` + `npm run kotak:once`; `.env.example` gained the `KOTAK_*` block. **Nothing here requires express or touches `req`/`res`** — outbound surfaces are Kotak's REST API and the shared `config/db.js` MySQL pool only.
+- **This is well beyond the original ₹1,15,000/8-week engagement** (same flag as Phase 8) — a second full broker integration at 7-index + 210-stock breadth is a real scope/commercial conversation with the client.
+- **Verification:** all 8 files syntax-check (`node --check`) and require-load clean; `kotak/instruments.js`'s CSV parser + token/expiry-epoch/ATM-window logic were **unit-tested against synthetic 4-segment fixtures** (index spot NSE+BSE, stock EQ spot, VIX, OPTIDX+OPTSTK, FUTIDX, expiry `2026-09-25` round-trip, ATM window centering — all correct). **NOT verified against a live credentialed run** — this environment has no Kotak credentials (same footing Angel One's integration started from). Endpoint hosts, some header names, and the scrip-master CSV column names come from Kotak's official `neo_api_client` (v2) SDK source + its `docs/`. Everything uncertain is isolated to four spots, flagged in `server/kotak/README.md`: the 3 login endpoints + the 7 `indexName` values in `config/kotak.js`, the `COL` map + `epochToSql` in `instruments.js`, and `normalize()` in `quotes.js`. First real run is a smoke test — `npm run kotak:once` during market hours, then `... SENSEX` and `... RELIANCE`.
+- **Not built:** the binary WebSocket streamer (`wss://mlhsm.kotaksecurities.com` — proprietary binary frame format, ~1000-line decoder; REST polling is enough for "chains + VIX into MySQL"); feeding `marketCache`/socket.io from Kotak (stays Angel One's job); stock **futures** (the stock tier passes `withFuture: false` to save REST calls — index futures are still recorded).
+
 ## Gotchas — read before touching the Angel One integration
 
 (The old #1-11 were all Breeze/`breezeconnect`-specific — broken SDK methods, TLS-off-on-import, missing deps, daily manual sessions, undocumented `CNXBAN`/`NIFFIN` stock codes, request-coalescing for rate limits. All dead history since Phase 6; git history has them if ever needed.)
@@ -268,8 +297,7 @@ or any request path — each is a standalone script, run by hand when needed.
 | Angel One | `services/angelOneHistorical.js`, `services/cron.js` (nightly 23:00 IST) | current contract lifetime only | minute | free, already running |
 | Upstox Expired Instruments | `services/upstoxHistorical.js`, `services/upstoxInstrumentMaster.js` (symbol→instrument_key for the 200+ stocks, UNVERIFIED CSV format — see its header comment), `scripts/backfillUpstox.js` (now takes `SYMBOL=ALL` to loop every symbol found in `option_chain_history`, not just NIFTY/BANKNIFTY/FINNIFTY) | ~6 months back (Upstox's own hard cap, confirmed against their live docs 2026-07-19 — NOT a multi-year source despite older community reports suggesting otherwise) | minute | Upstox Plus plan required |
 | NSE Bhavcopy | `services/nseBhavcopy.js`, `scripts/backfillBhavcopy.js`, `scripts/testBhavcopy.js` | unlimited years back | **daily/EOD only** — backtestEngine.js's minute-by-minute simulation needs a daily-aware mode to use this meaningfully, not built yet | free |
-| ICICI Breeze (reintroduced, isolated) | **`data-downloader/`** (standalone app, moved out of `server/breeze-historical/` on 2026-09-10) — `optionchain/run.js` = year-in month-by-month discovery→enrich→verify; `breeze/enrich.js` = one-symbol date-range enrich | ~3yr back (ICICI's claimed limit, NOT independently confirmed) | minute | needs a Breeze account; daily manual session paste (see below) |
-| India VIX (ICICI Breeze) | **`data-downloader/`** `vix/run.js` — year-in month-by-month download→verify into `ohlcv_data` (`symbol='INDIAVIX'`) | ~3yr back (same Breeze limit) | minute | same Breeze account/session |
+| ICICI Breeze (reintroduced, isolated) | `server/breeze-historical/*` — own README, auth, rate limiter, historical service, `backfillBreeze.js` (single symbol) + `backfillBreezeAll.js` (loops every symbol in `option_chain_history`, stops cleanly and resumably when the daily call budget runs out) | ~6mo-3yr back (ICICI's claimed limit, NOT independently confirmed) | minute | needs a Breeze account; daily manual session paste (see below) |
 | BSE Bhavcopy (new 2026-07-20 — the OTHER 2 of the "7 indices": SENSEX/BANKEX trade on BSE, never appear in NSE's bhavcopy) | `services/bseBhavcopy.js`, `scripts/testBseBhavcopy.js`, `scripts/backfillBseBhavcopyAll.js` | unknown (no cutover-date handling built — untested how far back BSE's UDiFF-style file goes) | **daily/EOD only**, same limitation as NSE Bhavcopy | free |
 
 Order these run in: Bhavcopy first (discovers which (expiry, strike)
@@ -290,96 +318,28 @@ row's values (e.g. a later Breeze run legitimately overwriting an earlier
 Bhavcopy EOD row for the same contract/day). This is a schema-level guarantee,
 not something each script has to individually get right.
 
-**Scale reality for "all 7 index + 210 companies, minute-by-minute":** the
-`data-downloader/` option-chain pipeline's enrich phase and
-`backfillUpstox.js SYMBOL=ALL` both loop over every symbol already discovered
-in `option_chain_history` (i.e. whatever Bhavcopy found — currently ~215
-symbols). But ICICI's own rate limit is a hard 5,000 calls/day
-(`data-downloader/breeze/rateLimiter.js`), and each contract needs 2 calls
-(CE+PE) per ~2-day chunk — at that budget, a full multi-year minute-level
-enrichment across ~215 symbols takes many real days/weeks of the pipeline
-running once daily, not one sitting. This is ICICI's limit, not a bug; both
-are built to be interrupted and re-run indefinitely (they skip any contract
-that already has at least one non-EOD-time row, so no wasted budget on repeat
-runs).
+**Scale reality for "all 7 index + 210 companies, minute-by-minute":**
+`backfillBreezeAll.js` and `backfillUpstox.js SYMBOL=ALL` both now loop over
+every symbol already discovered in `option_chain_history` (i.e. whatever
+Bhavcopy found — currently ~215 symbols). But ICICI's own rate limit is a
+hard 5,000 calls/day (`breeze-historical/rateLimiter.js`), and each contract
+needs 2 calls (CE+PE) per ~2-day chunk — at that budget, a full multi-year
+minute-level enrichment across ~215 symbols takes many real days/weeks of
+`backfillBreezeAll.js` running once daily, not one sitting. This is ICICI's
+limit, not a bug in this codebase; both multi-symbol scripts are built to be
+interrupted and re-run indefinitely (they skip any contract that already has
+at least one non-EOD-time row, so no wasted budget on repeat runs).
 
-**Why Breeze specifically is isolated, not in `services/`:** Phase 6
-deliberately and fully removed Breeze from the live path — that decision
-stands. Re-adding it (2026-07-19, explicit user decision, discussed before
-implementing per Hard Rule #1) is scoped to a standalone downloader, invoked
-only via its own one-off scripts, never imported by Express/workers/the live
-path. It lived in `server/breeze-historical/` until **2026-09-10**, when the
-whole thing was moved out to a separate top-level app — see
-**`data-downloader/`** below. Breeze still has no TOTP-style automatic login
-(unlike Angel One) — `BREEZE_API_SESSION` is a daily manual paste; tolerable
-because this only runs occasionally for bulk backfill.
-
-**`data-downloader/` — standalone historical-data downloader (moved/expanded
-2026-09-10 from `server/breeze-historical/`):** its own top-level app (own
-`package.json`, `node_modules`, `.env`) that pulls history into the shared
-MySQL DB. Nothing under `server/` imports it; if deleted the running app is
-fine. Vendors copies of `nseBhavcopy.js` / `bseBhavcopy.js` / `blackScholes.js`
-/ `logger.js` (fork as of the split — port fixes by hand both ways). Two
-pipelines, both year-in / month-by-month / verify-after-each-month /
-resumable:
-
-- **Option chain** — `npm run option-chain -- <YEAR> [--symbols=…]
-  [--from-month=N] [--skip-enrich] [--stop-on-verify-fail]`
-  (`optionchain/run.js`). Per month: **discovery** (`optionchain/
-  monthDiscovery.js` — NSE + BSE bhavcopy every trading day → one EOD row per
-  `(symbol, expiry, strike)` that traded, the contract/expiry universe Breeze
-  can't enumerate) → **enrich** (`breeze/enrich.js`'s `backfillSymbol` per
-  symbol → Breeze 1-minute CE/PE + Greeks) → **verify** (`optionchain/
-  verifyMonth.js` → per-symbol report: discovered-vs-minute-enriched counts,
-  weekend-expiry check, rows-past-expiry check → `data/breeze-pipeline-
-  reports/<ym>.json`). Progress in `data/breeze-pipeline-progress.json`.
-  Enrich exhausts Breeze's 5k/day budget mid-month, exits 0, resumes next day
-  (full year = many days of re-runs). 7 indices: NIFTY, BANKNIFTY, FINNIFTY,
-  MIDCPNIFTY, NIFTYNXT50 on NSE (`NFO`); SENSEX, BANKEX on BSE (`BFO`). All
-  except NIFTY/BANKNIFTY/FINNIFTY use **unverified** env-overridable Breeze
-  stock codes (`breeze/symbolMap.js` `INDEX_OVERRIDES`).
-- **Futures / "future chain"** (added 2026-09-10) — `npm run futures -- <YEAR>`
-  (`futures/run.js`). The FUTIDX/FUTSTK counterpart to the option chain: per
-  month **discovery** (`futures/monthDiscovery.js` — NSE+BSE bhavcopy IDF/STF
-  rows → one EOD row per `(underlying, expiry)` in the new `futures_history`
-  table) → **enrich** (`futures/enrich.js` — Breeze `getFutureMinuteCandles`,
-  `productType: "futures"`, no strike/right/Greeks) → **verify**
-  (`futures/verifyMonth.js`). One OHLC+OI series per contract, far fewer
-  Breeze calls than options. `lib/nseBhavcopy.js` + `lib/bseBhavcopy.js`
-  gained `getDayFuturesRows`/`getDayFuturesBySymbol` (the vendored copies
-  only — the `server/services/` originals are untouched).
-- **India VIX** — `npm run vix -- <YEAR>` (`vix/run.js`). Per month:
-  **download** (`vix/vixHistorical.js` — Breeze 1-minute India VIX candles →
-  `ohlcv_data` with `symbol = 'INDIAVIX'`) → **verify** (every expected
-  trading day present, ~375 candles/day, no multi-day gaps; calendar from
-  `option_chain_history` NIFTY days if available, else every weekday →
-  `data/vix-pipeline-reports/<ym>.json`). Cheap (~15 Breeze calls/month).
-  The Breeze VIX code (`INDIAVIX`/`NSE`/`cash`) is **unverified** — run
-  `node test/testVix.js` first; override via `BREEZE_VIX_STOCKCODE` /
-  `_EXCHANGE` / `_PRODUCT`.
-
-**Server side (Angel One) for futures — forward-fill only:** new
-`futures_history` table in `schema.sql`; `services/cron.js` nightly pull now
-also stores the nearest **index** future per symbol (`pullFuturesForDate`,
-try/caught so it never breaks the option pull); `scripts/backfillFutures.js`
-is a standalone on-demand recent backfill covering FUTIDX **and** FUTSTK
-(reads the Angel scrip master directly, reaches back weeks not years —
-`node scripts/backfillFutures.js ALL 30`). Deep futures history is
-`data-downloader/`'s job.
-
-**`data-downloader/COMMANDS.md`** is the full command→data→table reference
-(both apps) — start there.
-
-`historicalService.js` + `enrich.js` carry an `exchangeCode` param (NFO
-default / BFO for SENSEX/BANKEX). Verified so far: syntax, module wiring, DB
-connectivity, the option-chain verify phase against the real dev DB, and the
-futures discovery path end-to-end against a real cached bhavcopy file (2022
-old-format: 602 futures rows / 199 symbols parsed + stored + read back
-correctly). **Breeze enrich (options, futures, VIX) against a live session
-NOT yet run** — `data-downloader/.env` has DB creds but its
-`BREEZE_API_SESSION` was stale on 2026-09-11 (needs the daily browser paste).
-Server-side `backfillFutures.js` / the cron futures hook not yet run against
-live Angel One.
+**Why Breeze specifically is isolated in its own folder, not `services/`:**
+Phase 6 deliberately and fully removed Breeze from the live path — that
+decision stands. Re-adding it (2026-07-19, explicit user decision, discussed
+before implementing per Hard Rule #1) is scoped ONLY to
+`server/breeze-historical/`, invoked only via its own one-off scripts. If
+this folder were deleted, nothing else in the app would break. See
+`server/breeze-historical/README.md` for the full rationale and the required
+daily manual session step (Breeze has no TOTP-style automatic login, unlike
+Angel One — this is the one piece of Phase 6's escaped pain that's back, but
+only for occasional backfills, not anything that runs daily unattended).
 
 **Verification status, honestly:** Angel One's pieces here were already
 verified (see Phase 6 above, plus the 2026-07-19 token fix — see Gotcha #13).
@@ -395,7 +355,7 @@ trusted, but NOT yet run for real by the user. Breeze was built from public
 docs/community reports WITHOUT being able to reach icicidirect.com from
 where it was written — has the same defensive-parsing treatment Bhavcopy had
 before its successful run, and its own one-contract test script
-(`data-downloader/test/testBreeze.js`) that must be run before trusting a
+(`breeze-historical/testBreeze.js`) that must be run before trusting a
 multi-year backfill.
 
 ## Local Dev Setup (any machine)
@@ -439,8 +399,8 @@ Verify: `curl http://localhost:5001/health` should return `{"status":"ok","datab
 - **Decide: should Simulator be Pro-gated?** Not gated currently. The hard rule naming Backtest/Strategy-Builder-save as Pro-only predates Simulator and doesn't mention it — needs an explicit decision, not a default.
 - Ask the user for real footer contact/community info (support email, phone, WhatsApp/Telegram links, social handles) for `Home.jsx` — currently omitted rather than fabricated.
 - **Immediate: verify Phase 6.1 against real Angel One credentials/MySQL** (built 2026-07-19, this dev sandbox has neither). Priority order: (1) confirm the corrected index/VIX tokens (`99926000` etc.) actually tick — this was silently wrong before, don't assume the old values still "sort of worked"; (2) confirm `getNearestFuture` correctly matches `FUTIDX` rows in the real scrip master (field-name assumption, unverified); (3) hit `/api/option-chain/nifty/intraday` during and after market hours and confirm both the live and historical-fallback branches; (4) open the Strategy Builder in a browser and visually compare against the stockmojo reference screenshot (SPOT/VIX/FUT bar populated, expiry pills, chart tabs actually rendering via `lightweight-charts`).
-- **Remaining probes to run for real:** `server/scripts/backfillUpstox.js NIFTY 10` (Upstox, not yet run), `server/scripts/testUpstoxInstrumentMaster.js` (new 2026-07-20, checks the stock symbol→instrument_key CSV parsing before trusting `backfillUpstox.js ALL` on real stocks — not yet run). **Breeze IS now confirmed** (2026-07-20): `testBreeze.js NIFTY` returned 375 real 1-minute candles for a real contract, session/auth/response-shape all verified — the `data-downloader/` Breeze enrich path is safe to run for real (**but its new discovery→enrich→verify year orchestration and the India VIX pipeline have NOT been run live yet** — 2026-09-10). NSE Bhavcopy is confirmed working (see above, 2026-07-19) — safe to scale up `backfillBhavcopyAll.js` to more years/symbols now. Only after Upstox's instrument master is also confirmed should `backfillUpstox.js ALL` run across real stocks (index-only Upstox runs are fine now).
-- **Note (2026-07-20):** `breezeconnect`'s own `require()` sets `NODE_TLS_REJECT_UNAUTHORIZED=0` for the whole Node process (visible as a console warning when any `data-downloader/` Breeze script runs) — confirmed this is the npm package's own behavior, not something in this codebase's code. Scoped/acceptable because `data-downloader/` is a separate process that never also serves Express/live traffic, but don't ever require `data-downloader/breeze/auth.js` from a long-lived process (the market worker, Express itself) for this reason.
+- **Remaining probes to run for real:** `server/scripts/backfillUpstox.js NIFTY 10` (Upstox, not yet run), `server/scripts/testUpstoxInstrumentMaster.js` (new 2026-07-20, checks the stock symbol→instrument_key CSV parsing before trusting `backfillUpstox.js ALL` on real stocks — not yet run). **Breeze IS now confirmed** (2026-07-20): `testBreeze.js NIFTY` returned 375 real 1-minute candles for a real contract, session/auth/response-shape all verified — `backfillBreeze.js`/`backfillBreezeAll.js` are safe to run for real. NSE Bhavcopy is confirmed working (see above, 2026-07-19) — safe to scale up `backfillBhavcopyAll.js` to more years/symbols now. Only after Upstox's instrument master is also confirmed should `backfillUpstox.js ALL` run across real stocks (index-only Upstox runs are fine now).
+- **Note (2026-07-20):** `breezeconnect`'s own `require()` sets `NODE_TLS_REJECT_UNAUTHORIZED=0` for the whole Node process (visible as a console warning when any `breeze-historical/*` script runs) — confirmed this is the npm package's own behavior, not something in this codebase's code. Scoped/acceptable because these scripts are occasional one-offs whose process never also serves Express/live traffic, but don't ever require `breeze-historical/auth.js` from a long-lived process (the market worker, Express itself) for this reason.
 - Once Phase 7's data sources are confirmed, `backtestEngine.js` needs a daily-granularity mode to actually use the Bhavcopy-sourced years of EOD-only data — right now it assumes minute-by-minute rows are always available.
 - Extending Phase 7 to the full "7 indices + 210 stocks + commodities" goal is still a separate, larger task from what's built so far (which proves the pipeline on NIFTY only) — see the architecture discussion from 2026-07-19 for the index/stock/commodity/subscription-capacity gaps, still open.
 - Phases 1-6 are built. Phases 1-5 were verified against real Breeze/MySQL data (2026-07-07); Phase 6 (Angel One migration + real-time architecture) is verified everywhere it can be without live credentials — **first task when real Angel One credentials exist: run the worker during market hours and validate the login response, the WS handshake, and the binary tick decode (`workers/websocket.js parseBinaryTick` — see Gotcha #3), then a real 23:00 nightly cron run (including `getOIData`'s response shape).**

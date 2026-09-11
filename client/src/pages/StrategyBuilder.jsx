@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useOptionChain } from "../hooks/useOptionChain";
+import { useOptionChain, contractStaleness } from "../hooks/useOptionChain";
+import StaleBadge from "../components/strategy/StaleBadge";
+import SlTgModal from "../components/strategy/SlTgModal";
+import SquareOffAlertBanner from "../components/strategy/SquareOffAlertBanner";
+import PortfolioGreeksTable from "../components/strategy/PortfolioGreeksTable";
 import { fetchOptionChain, fetchSymbolList } from "../services/optionChainApi";
-import { formatPrice } from "../utils/format";
+import { formatPrice, formatPercent } from "../utils/format";
 import {
     computePayoffCurve, computeBreakevens, computeMaxProfitLoss, computeNetGreeks,
     addMarkToMarketCurve, computeExpectedMove, computePOP, computeEstMargin, evaluationExpiryOf, legMultiplier, otherAction,
@@ -14,8 +18,9 @@ import SaveButton from "../components/SaveButton";
 import SavedStrategiesModal from "../components/SavedStrategiesModal";
 import OiBar from "../components/OiBar";
 import ContractChartModal from "../components/ContractChartModal";
+import Simulator from "./Simulator";
 import { saveStrategy } from "../services/strategiesApi";
-import { FiSettings } from "react-icons/fi";
+import { FiSettings, FiTrash2, FiRefreshCw } from "react-icons/fi";
 
 
 function formatDelta(value) {
@@ -45,6 +50,38 @@ function loadFavorites() {
 }
 
 let legIdCounter = 0;
+
+// Legs the user built survive symbol switches and leaving the page — stored
+// per symbol in localStorage, same convention as Simulator.jsx's
+// SIM_LEGS_KEY_PREFIX (and a shared prefix so a strategy built here can be
+// replayed in Simulator's Historical view for the same symbol and back).
+// Only the explicit "Reset Workspace" button clears a symbol's legs.
+const SB_LEGS_KEY_PREFIX = "bazaarSync.strategyBuilder.legs.";
+
+function loadSavedLegs(sym) {
+    try {
+        const raw = localStorage.getItem(SB_LEGS_KEY_PREFIX + sym);
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (!Array.isArray(parsed)) return [];
+        const maxId = parsed.reduce((m, l) => Math.max(m, l.id || 0), 0);
+        if (maxId >= legIdCounter) legIdCounter = maxId + 1;
+        return parsed;
+    } catch {
+        return [];
+    }
+}
+
+function saveLegs(sym, legsToSave) {
+    try {
+        if (legsToSave.length) {
+            localStorage.setItem(SB_LEGS_KEY_PREFIX + sym, JSON.stringify(legsToSave));
+        } else {
+            localStorage.removeItem(SB_LEGS_KEY_PREFIX + sym);
+        }
+    } catch {
+        /* localStorage unavailable — legs just won't survive navigation this session */
+    }
+}
 
 // One row in the searchable underlying-selector dropdown — a star toggles
 // membership in the favorites list the chevrons cycle through.
@@ -104,8 +141,36 @@ const DEFAULT_COLUMNS = {
 };
 
 export default function StrategyBuilder() {
-    const { symbol, setSymbol, data, loading, error, load } = useOptionChain();
-    const [legs, setLegs] = useState([]);
+    const { symbol, setSymbol, data, loading, error, load, marketStatus, isLive, dataLoadedAt, staleNow } = useOptionChain();
+
+    // Passed to contractStaleness for every chain row — recomputed only when
+    // one of these changes (staleNow ticks every 5s while live).
+    const staleOpts = useMemo(
+        () => ({
+            isLive,
+            marketOpen: marketStatus.isOpen,
+            feedConnected: marketStatus.feedConnected,
+            dataLoadedAt,
+            now: staleNow,
+        }),
+        [isLive, marketStatus.isOpen, marketStatus.feedConnected, dataLoadedAt, staleNow],
+    );
+    // Live = the real option chain (or latest snapshot when the market is
+    // closed). Historical = the full Simulator (calendar + minute scrubber +
+    // Run Simulation replay) embedded right here, following this same symbol.
+    const [mode, setMode] = useState(() => {
+        try { return localStorage.getItem("bazaarSync.strategyBuilder.mode") === "historical" ? "historical" : "live"; }
+        catch { return "live"; }
+    });
+    useEffect(() => {
+        try { localStorage.setItem("bazaarSync.strategyBuilder.mode", mode); } catch { /* ignore */ }
+    }, [mode]);
+
+    const [legs, setLegs] = useState(() => loadSavedLegs("NIFTY")); // useOptionChain defaults to NIFTY
+    // Persist legs per symbol on every change (see SB_LEGS_KEY_PREFIX).
+    useEffect(() => {
+        saveLegs(symbol, legs);
+    }, [symbol, legs]);
     const [tab, setTab] = useState("positions"); // 'positions' | 'greeks'
     const [chartTab, setChartTab] = useState("payoff"); // 'payoff' | 'strategy' | 'nifty' | 'combined'
     // "Payoff setting" what-if simulator — lets you drag Underlying/Date-Time/
@@ -177,12 +242,12 @@ export default function StrategyBuilder() {
         const base = idx >= 0 ? idx : 0;
         const next = favorites[(base + dir + favorites.length) % favorites.length];
         setSymbol(next);
-        resetLegs();
+        setLegs(loadSavedLegs(next)); // restore that symbol's saved legs, not a blank slate
     }
 
     function pickSymbol(sym) {
         setSymbol(sym);
-        resetLegs();
+        setLegs(loadSavedLegs(sym));
         setPickerOpen(false);
         setPickerQuery("");
     }
@@ -252,6 +317,14 @@ export default function StrategyBuilder() {
     // --- Positions table: active/include-in-calc, bulk lots, expiry/strike rolling, SL/TG ---
     const [legsTopFirst, setLegsTopFirst] = useState(true);
     const [slTgEditId, setSlTgEditId] = useState(null);
+    const [slTgDraft, setSlTgDraft] = useState({ sl: "", tg: "" });
+    // Live SL/TG watch — when a leg's live P&L crosses ±its threshold (% of
+    // that leg's own entry notional) a square-off alert appears. Nothing is
+    // closed automatically (no live auto-exit engine exists) — this only
+    // surfaces the crossing. Ref-keyed by leg id + thresholds so editing an
+    // SL/TG re-arms it, and it fires once per crossing, not every tick.
+    const [squareOffAlert, setSquareOffAlert] = useState(null);
+    const alertedLegsRef = useRef(new Set());
 
     const orderedLegs = useMemo(() => (legsTopFirst ? legs : [...legs].reverse()), [legs, legsTopFirst]);
 
@@ -323,16 +396,27 @@ export default function StrategyBuilder() {
         updateLeg(id, { premium: currentLtp });
     }
 
-    // SL/TG here are a planning note stored on the leg, NOT an executed
-    // order — this workspace has no live monitoring/auto-exit engine.
-    // Automatic SL%/target% exits DO exist, but only in the separate
-    // Backtest engine (server/services/backtestEngine.js), which runs
-    // against stored historical data, not this live/interactive builder.
+    // SL/TG are stored per leg as a % of that leg's own entry notional and
+    // watched live (see the square-off effect below) — a crossing raises an
+    // alert; nothing is auto-closed (no live auto-exit engine). Simulator
+    // applies the same per-leg thresholds during its Run Simulation replay.
     function setLegSlTg(id, slPercent, tgPercent) {
         updateLeg(id, {
             slPercent: slPercent === "" ? null : Number(slPercent),
             tgPercent: tgPercent === "" ? null : Number(tgPercent),
         });
+    }
+
+    function openSlTgModal(leg) {
+        setSlTgDraft({ sl: leg.slPercent ?? "", tg: leg.tgPercent ?? "" });
+        setSlTgEditId(leg.id);
+    }
+    function closeSlTgModal() {
+        setSlTgEditId(null);
+    }
+    function saveSlTgModal(legId) {
+        setLegSlTg(legId, slTgDraft.sl, slTgDraft.tg);
+        setSlTgEditId(null);
     }
 
     function applyPreset(presetLegs) {
@@ -421,9 +505,14 @@ export default function StrategyBuilder() {
         );
     }, [data]);
 
+    // ltpOverride (manually typed into the Positions table's LTP input,
+    // see updateLeg below) takes priority over the live-chain value — every
+    // P&L number for that leg re-derives from whatever's actually shown in
+    // the LTP column, not silently from the real feed underneath it.
     function legLivePnl(leg) {
         const row = rowByStrike.get(leg.strike);
-        const currentLtp = row ? (leg.type === "CE" ? row.ce.ltp : row.pe.ltp) : null;
+        const liveLtp = row ? (leg.type === "CE" ? row.ce.ltp : row.pe.ltp) : null;
+        const currentLtp = leg.ltpOverride ?? liveLtp;
         if (currentLtp == null) return null;
         const diff = leg.action === "buy" ? currentLtp - leg.premium : leg.premium - currentLtp;
         return diff * legMultiplier(leg);
@@ -449,9 +538,43 @@ export default function StrategyBuilder() {
     // based on ALL legs, same convention as Simulator.jsx.
     const activeLegs = useMemo(() => legs.filter((l) => l.active !== false), [legs]);
 
-    const { curve, breakevens, maxProfit, maxLoss, netGreeks, currentPnl, pop, expectedMove, estMargin } = useMemo(() => {
+    // Live SL/TG watch — on every chain update, check each leg's live P&L
+    // against ±(threshold% × its own entry notional). First crossing per
+    // (leg, thresholds) raises the square-off alert once. The alert setState
+    // is deferred to a microtask so it never cascades a render inside this
+    // effect's commit.
+    useEffect(() => {
+        const live = new Set();
+        let breach = null;
+        for (const leg of legs) {
+            if (leg.slPercent == null && leg.tgPercent == null) continue;
+            const key = `${leg.id}:${leg.slPercent ?? ""}:${leg.tgPercent ?? ""}`;
+            live.add(key);
+            if (alertedLegsRef.current.has(key)) continue;
+            const pnl = legLivePnl(leg);
+            if (pnl == null) continue;
+            const notional = Math.abs(leg.premium * legMultiplier(leg));
+            const slHit = leg.slPercent != null && pnl <= -(leg.slPercent / 100) * notional;
+            const tgHit = leg.tgPercent != null && pnl >= (leg.tgPercent / 100) * notional;
+            if (slHit || tgHit) {
+                alertedLegsRef.current.add(key);
+                breach = { reason: tgHit ? "target" : "stop_loss", action: leg.action, strike: leg.strike, type: leg.type };
+            }
+        }
+        if (breach) queueMicrotask(() => setSquareOffAlert(breach));
+        // Forget keys for legs/thresholds that no longer exist so re-adding
+        // an identical leg can re-arm.
+        for (const key of [...alertedLegsRef.current]) {
+            if (!live.has(key)) alertedLegsRef.current.delete(key);
+        }
+        // legLivePnl is a render-fresh closure over rowByStrike (already a dep);
+        // listing it would re-run this every render for no benefit.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [legs, rowByStrike]);
+
+    const { curve, breakevens, maxProfit, maxLoss, netGreeks, pop, expectedMove, estMargin } = useMemo(() => {
         if (!activeLegs.length || !data || !data.spotPrice) {
-            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, currentPnl: null, pop: null, expectedMove: null, estMargin: null };
+            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, pop: null, expectedMove: null, estMargin: null };
         }
 
         try {
@@ -474,14 +597,10 @@ export default function StrategyBuilder() {
             const popVal = (atmIv && typeof computePOP === "function") ? computePOP(curveData, data.spotPrice, atmIv, yearsRemaining) : null;
             const marginVal = computeEstMargin(activeLegs, data.spotPrice);
 
-            const closest = curveData.length > 0
-                ? curveData.reduce((a, b) => (Math.abs(b.price - data.spotPrice) < Math.abs(a.price - data.spotPrice) ? b : a))
-                : { pnl: 0 };
-
-            return { curve: curveData, breakevens: breakEvs, maxProfit: mxProf, maxLoss: mxLoss, netGreeks: netGrks, currentPnl: closest.pnl, pop: popVal, expectedMove: expMv, estMargin: marginVal };
+            return { curve: curveData, breakevens: breakEvs, maxProfit: mxProf, maxLoss: mxLoss, netGreeks: netGrks, pop: popVal, expectedMove: expMv, estMargin: marginVal };
         } catch (err) {
             console.error(err);
-            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, currentPnl: null, pop: null, expectedMove: null, estMargin: null };
+            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, pop: null, expectedMove: null, estMargin: null };
         }
     }, [activeLegs, data]);
 
@@ -510,7 +629,11 @@ export default function StrategyBuilder() {
             } else {
                 theoPrice = Math.max(0, leg.type === "CE" ? simSpot - leg.strike : leg.strike - simSpot);
             }
-            pnl += (leg.action === "buy" ? theoPrice - leg.premium : leg.premium - theoPrice) * leg.qty;
+            // qty * lotSize (legMultiplier), never qty alone — every other
+            // P&L number on this page already does; this what-if readout was
+            // the last spot still missing the lot-size multiplier (so it was
+            // understating P&L ~50-75x for index options).
+            pnl += (leg.action === "buy" ? theoPrice - leg.premium : leg.premium - theoPrice) * legMultiplier(leg);
         }
         return { simSpot, pnl };
     }, [payoffSettingsOpen, legs, data, whatIfSpotPct, whatIfDaysForward, whatIfIvShift]);
@@ -518,7 +641,33 @@ export default function StrategyBuilder() {
     const daysToExpiry = data?.selectedExpiry ? Math.max(1, daysUntilExpiry(data.selectedExpiry)) : 30;
 
     return (
-        <div className="mx-auto flex max-w-[1600px] gap-5 px-5 py-5 bg-gray-50/40 min-h-screen">
+        <div className="mx-auto max-w-[1600px] px-5 py-5 bg-gray-50/40 min-h-screen">
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+                <div className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5 text-[12px] font-semibold shadow-sm">
+                    <button
+                        onClick={() => setMode("live")}
+                        className={mode === "live" ? "rounded-md bg-blue-600 px-3 py-1 text-white" : "px-3 py-1 text-gray-500 hover:text-gray-800"}
+                    >
+                        Live
+                    </button>
+                    <button
+                        onClick={() => setMode("historical")}
+                        className={mode === "historical" ? "rounded-md bg-blue-600 px-3 py-1 text-white" : "px-3 py-1 text-gray-500 hover:text-gray-800"}
+                    >
+                        Historical
+                    </button>
+                </div>
+                <span className="text-[11px] text-gray-400">
+                    {mode === "live"
+                        ? "Real option chain — or the latest stored snapshot while the market is closed."
+                        : "Replay any past trading day minute-by-minute from stored data (Simulator)."}
+                </span>
+            </div>
+
+            {mode === "historical" ? (
+                <Simulator key={symbol} embeddedSymbol={symbol} hideChrome />
+            ) : (
+            <div className="flex gap-5">
             {/* Left Column: Option Chain Window */}
             {!hideChain && (
             <div className="w-[540px] shrink-0 flex flex-col">
@@ -772,11 +921,18 @@ export default function StrategyBuilder() {
                                         const peLeg = legsAt(row.strike, "PE")[0] || null;
                                         const ceNet = netPositionAt(row.strike, "CE");
                                         const peNet = netPositionAt(row.strike, "PE");
+                                        // Live-feed staleness for this strike's CE/PE — drives
+                                        // the amber ⚠ on the LTP/OI/Δ cells (see StaleBadge).
+                                        const ceStale = contractStaleness(row.ce, staleOpts);
+                                        const peStale = contractStaleness(row.pe, staleOpts);
+                                        const ceAge = staleOpts.now - (row.ce?._tickAt || 0);
+                                        const peAge = staleOpts.now - (row.pe?._tickAt || 0);
+                                        const rowStale = ceStale.priceStale || peStale.priceStale;
                                         return (
                                             <tr
                                                 key={row.strike}
                                                 ref={isAtm ? atmRowRef : null}
-                                                className={`border-b border-gray-100/70 transition-colors ${isAtm ? "bg-blue-50/60 font-semibold" : "hover:bg-gray-50/80"}`}
+                                                className={`border-b border-gray-100/70 transition-colors ${isAtm ? "bg-blue-50/60 font-semibold" : "hover:bg-gray-50/80"} ${rowStale ? "border-l-2 border-l-amber-300" : ""}`}
                                             >
                                                 {columns.theta && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.theta ?? "-"}</td>}
                                                 {columns.vega && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.vega ?? "-"}</td>}
@@ -785,6 +941,7 @@ export default function StrategyBuilder() {
                                                 {columns.callDelta && (
                                                     <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-amber-50" : ""}`}>
                                                         {formatDelta(row.ce?.delta)}
+                                                        <StaleBadge stale={ceStale.greeksStale} ageMs={staleOpts.now - staleOpts.dataLoadedAt} label="greeks/IV don't stream live — last refreshed a while ago" />
                                                     </td>
                                                 )}
                                                 {/* CALL SIDE */}
@@ -794,7 +951,10 @@ export default function StrategyBuilder() {
                                                             {ceNet > 0 ? `+${ceNet}` : ceNet}
                                                         </span>
                                                     )}
-                                                    <span className="text-gray-700 group-hover:invisible">{formatPrice(row.ce?.ltp)}</span>
+                                                    <span className="text-gray-700 group-hover:invisible">
+                                                        {formatPrice(row.ce?.ltp)}
+                                                        <StaleBadge stale={ceStale.priceStale} ageMs={ceAge} />
+                                                    </span>
                                                     <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white">
                                                         {ceLeg ? (
                                                             <>
@@ -812,8 +972,11 @@ export default function StrategyBuilder() {
                                                     </div>
                                                 </td>
                                                 {columns.oi && (
-                                                    <td className={`p-0 tabular-nums ${ceItm ? "bg-amber-50" : ""}`}>
+                                                    <td className={`relative p-0 tabular-nums ${ceItm ? "bg-amber-50" : ""}`}>
                                                         <OiBar value={row.ce?.oi} max={maxCeOi} side="ce" />
+                                                        {ceStale.priceStale && (
+                                                            <span className="absolute right-0.5 top-0.5"><StaleBadge stale ageMs={ceAge} /></span>
+                                                        )}
                                                         {columns.lot && <div className="px-1 pb-0.5 text-[10px] text-gray-400 text-right">{lots ?? "-"} lots</div>}
                                                     </td>
                                                 )}
@@ -830,8 +993,11 @@ export default function StrategyBuilder() {
 
                                                 {/* PUT SIDE */}
                                                 {columns.oi && (
-                                                    <td className={`p-0 tabular-nums ${peItm ? "bg-amber-50" : ""}`}>
+                                                    <td className={`relative p-0 tabular-nums ${peItm ? "bg-amber-50" : ""}`}>
                                                         <OiBar value={row.pe?.oi} max={maxPeOi} side="pe" />
+                                                        {peStale.priceStale && (
+                                                            <span className="absolute left-0.5 top-0.5"><StaleBadge stale ageMs={peAge} /></span>
+                                                        )}
                                                         {columns.lot && <div className="px-1 pb-0.5 text-[10px] text-gray-400">{putLots ?? "-"} lots</div>}
                                                     </td>
                                                 )}
@@ -841,7 +1007,10 @@ export default function StrategyBuilder() {
                                                             {peNet > 0 ? `+${peNet}` : peNet}
                                                         </span>
                                                     )}
-                                                    <span className="text-gray-700 group-hover:invisible">{formatPrice(row.pe?.ltp)}</span>
+                                                    <span className="text-gray-700 group-hover:invisible">
+                                                        {formatPrice(row.pe?.ltp)}
+                                                        <StaleBadge stale={peStale.priceStale} ageMs={peAge} />
+                                                    </span>
                                                     <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white">
                                                         {peLeg ? (
                                                             <>
@@ -861,6 +1030,7 @@ export default function StrategyBuilder() {
                                                 {columns.putDelta && (
                                                     <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-amber-50" : ""}`}>
                                                         {formatDelta(row.pe?.delta)}
+                                                        <StaleBadge stale={peStale.greeksStale} ageMs={staleOpts.now - staleOpts.dataLoadedAt} label="greeks/IV don't stream live — last refreshed a while ago" />
                                                     </td>
                                                 )}
                                                 {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.pe?.iv ?? "-"}</td>}
@@ -930,15 +1100,48 @@ export default function StrategyBuilder() {
                             />
                         )}
 
+                        <SquareOffAlertBanner
+                            alert={squareOffAlert}
+                            onDismiss={() => setSquareOffAlert(null)}
+                            context="live"
+                        />
+
                         <div className="mb-4 flex gap-4 items-stretch">
                             {/* StockMojo Matched Vertical Status Column */}
                             <div className="w-48 shrink-0 flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
-                                <Stat label="Strategy P&L" value={formatPrice(currentPnl)} tone={currentPnl == null ? undefined : currentPnl >= 0 ? "positive" : "negative"} />
-                                <Stat label="Est. Margin" value={estMargin == null ? "—" : estMargin === 0 ? "Not required" : formatPrice(estMargin)} hint="Approximation: 15% of notional on short legs only, same formula Paper Trade uses for real margin — not real SPAN margin" />
+                                {/* Always the real live P&L (raw LTP diff vs. each leg's entry
+                                    premium, same number the Positions table's "Total P&L" already
+                                    shows) — deliberately NEVER the Black-Scholes mark-to-market curve
+                                    estimate (that's a repriced approximation and can disagree with
+                                    what the position is actually worth, e.g. reading nonzero right when
+                                    a leg is added). Reads "-" rather than falling back to the estimate
+                                    when a leg's current LTP isn't known yet (e.g. market closed). */}
+                                <Stat label="Strategy P&L" value={formatPrice(totalLivePnl)} tone={totalLivePnl == null ? undefined : totalLivePnl >= 0 ? "positive" : "negative"} />
+                                <Stat label="Est. Margin" value={estMargin == null ? "—" : estMargin === 0 ? "Not required" : formatPrice(estMargin)} hint="Estimate, not real SPAN margin. Hedged short legs block only their spread's max loss; a naked short blocks ~10% of contract notional. Long legs need no margin." />
                                 <Stat label="Probability of Profit (POP)" value={pop != null ? `${pop.toFixed(0)}%` : "—"} hint="Normal distribution assumption breakdown strategy" />
                                 <Stat label="Max Profit Potential" value={maxProfit == null ? "—" : typeof maxProfit === "number" ? formatPrice(maxProfit) : maxProfit} tone="positive" />
                                 <Stat label="Max Loss Risk" value={maxLoss == null ? "—" : typeof maxLoss === "number" ? formatPrice(maxLoss) : maxLoss} tone="negative" />
-                                <Stat label="Breakeven Thresholds" value={breakevens && breakevens.length ? breakevens.join(", ") : "None"} />
+                                <Stat
+                                    label="Breakeven Thresholds"
+                                    value={
+                                        breakevens && breakevens.length ? (
+                                            <div className="space-y-0.5">
+                                                {breakevens.map((be, i) => (
+                                                    <div key={i}>
+                                                        {formatPrice(be)}
+                                                        {data?.spotPrice ? (
+                                                            <span className="ml-1 font-normal text-gray-400">
+                                                                ({formatPercent(((be - data.spotPrice) / data.spotPrice) * 100)})
+                                                            </span>
+                                                        ) : null}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            "None"
+                                        )
+                                    }
+                                />
                                 <Stat label="Workspace Constraints" value={`${legs.length} of 6 legs (${activeLegs.length} active)`} />
                             </div>
 
@@ -1092,13 +1295,14 @@ export default function StrategyBuilder() {
                                             <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-100">
                                                 <th className="px-2 py-2.5 w-8" title="Include in payoff calculation"></th>
                                                 <th className="px-4 py-2.5 text-left font-medium">Action</th>
-                                                <th className="px-4 py-2.5 text-right font-medium">Lots</th>
+                                                <th className="px-4 py-2.5 text-right font-medium" title="Real per-lot share count for this symbol — use the Lots stepper above to change position size">Lot Size</th>
                                                 <th className="px-4 py-2.5 text-left font-medium">Expiry</th>
                                                 <th className="px-4 py-2.5 text-right font-medium">Strike</th>
                                                 <th className="px-4 py-2.5 text-left font-medium">Type</th>
                                                 <th className="px-4 py-2.5 text-right font-medium">Entry Price</th>
                                                 <th className="px-4 py-2.5 text-right font-medium">LTP</th>
                                                 <th className="px-4 py-2.5 text-right font-medium">Live P&L</th>
+                                                <th className="px-4 py-2.5 text-right font-medium" title="This leg's standalone margin (a naked short ≈ 10% of contract notional). The strategy total above nets hedged legs down to their spread's max loss — an estimate, not real SPAN margin.">Margin</th>
                                                 <th className="px-4 py-2.5 text-center font-medium">SL/TG</th>
                                                 <th className="px-4 py-2.5 text-center font-medium">Exit</th>
                                             </tr>
@@ -1106,7 +1310,8 @@ export default function StrategyBuilder() {
                                         <tbody className="divide-y divide-gray-100">
                                             {orderedLegs.map((leg) => {
                                                 const row = rowByStrike.get(leg.strike);
-                                                const currentLtp = row ? (leg.type === "CE" ? row.ce?.ltp : row.pe?.ltp) : null;
+                                                const liveLtp = row ? (leg.type === "CE" ? row.ce?.ltp : row.pe?.ltp) : null;
+                                                const currentLtp = leg.ltpOverride ?? liveLtp;
                                                 const livePnl = legLivePnl(leg);
                                                 const included = leg.active !== false;
                                                 return (
@@ -1130,13 +1335,12 @@ export default function StrategyBuilder() {
                                                             </button>
                                                         </td>
                                                         <td className="px-4 py-2.5 text-right">
-                                                            <input
-                                                                type="number"
-                                                                min={1}
-                                                                value={leg.qty}
-                                                                onChange={(e) => updateQty(leg.id, Number(e.target.value))}
-                                                                className="w-14 rounded-lg border border-gray-200 px-2 py-1 text-right font-medium text-gray-800 focus:border-blue-500 outline-none"
-                                                            />
+                                                            <span
+                                                                className="font-bold tabular-nums text-gray-800"
+                                                                title="Real per-lot share count for this symbol, from lot_size_history — used for every P&L/margin number on this leg. Change position size via the Lots stepper above."
+                                                            >
+                                                                {leg.lotSize ?? "1 (unknown)"}
+                                                            </span>
                                                         </td>
                                                         <td className="px-4 py-2.5">
                                                             <select
@@ -1161,55 +1365,50 @@ export default function StrategyBuilder() {
                                                                 {leg.type}
                                                             </span>
                                                         </td>
-                                                        <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{formatPrice(leg.premium)}</td>
-                                                        <td className="px-4 py-2.5 text-right tabular-nums text-gray-900">{currentLtp != null ? formatPrice(currentLtp) : "-"}</td>
+                                                        <td className="px-4 py-2.5 text-right">
+                                                            <input
+                                                                type="number"
+                                                                step="0.05"
+                                                                value={leg.premium}
+                                                                onChange={(e) => updateLeg(leg.id, { premium: Number(e.target.value) })}
+                                                                title="Entry price — editable, overrides what was captured when the leg was added"
+                                                                className="w-20 rounded-lg border border-gray-200 px-2 py-1 text-right tabular-nums text-gray-800 focus:border-blue-500 outline-none"
+                                                            />
+                                                        </td>
+                                                        <td className="px-4 py-2.5 text-right">
+                                                            <input
+                                                                type="number"
+                                                                step="0.05"
+                                                                value={currentLtp ?? ""}
+                                                                onChange={(e) => updateLeg(leg.id, { ltpOverride: e.target.value === "" ? null : Number(e.target.value) })}
+                                                                title="LTP — editable, overrides the live chain price for this leg's P&L/margin. Clear to resume following the live feed."
+                                                                className={`w-20 rounded-lg border px-2 py-1 text-right tabular-nums outline-none focus:border-blue-500 ${leg.ltpOverride != null ? "border-amber-300 bg-amber-50 text-gray-900" : "border-gray-200 text-gray-900"}`}
+                                                            />
+                                                        </td>
                                                         <td className={`px-4 py-2.5 text-right font-bold tabular-nums ${livePnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
                                                             {livePnl != null ? formatPrice(livePnl) : "-"}
                                                         </td>
-                                                        <td className="px-4 py-2.5 text-center relative">
+                                                        <td className="px-4 py-2.5 text-right tabular-nums text-gray-700">
+                                                            {leg.action === "sell" && data?.spotPrice
+                                                                ? formatPrice(computeEstMargin([leg], data.spotPrice))
+                                                                : <span className="text-gray-300">—</span>}
+                                                        </td>
+                                                        <td className="px-4 py-2.5 text-center">
                                                             <button
-                                                                onClick={() => setSlTgEditId(slTgEditId === leg.id ? null : leg.id)}
+                                                                onClick={() => openSlTgModal(leg)}
                                                                 className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
                                                                 title={leg.slPercent != null || leg.tgPercent != null ? `SL ${leg.slPercent ?? "—"}% / TG ${leg.tgPercent ?? "—"}%` : "Set SL/TG"}
                                                             >
-                                                                ⚙
+                                                                <FiSettings size={13} />
                                                             </button>
                                                             {(leg.slPercent != null || leg.tgPercent != null) && (
                                                                 <div className="text-[10px] text-gray-400">SL {leg.slPercent ?? "—"}% / TG {leg.tgPercent ?? "—"}%</div>
                                                             )}
-                                                            {slTgEditId === leg.id && (
-                                                                <>
-                                                                    <div className="fixed inset-0 z-10" onClick={() => setSlTgEditId(null)} />
-                                                                    <div className="absolute right-0 z-20 mt-1 w-52 rounded-lg border border-gray-200 bg-white p-3 text-left shadow-xl">
-                                                                        <div className="mb-2 text-[11px] text-gray-400">
-                                                                            Planning note only — not auto-executed here. Use Backtest for SL%/target%-driven exits.
-                                                                        </div>
-                                                                        <label className="mb-1.5 flex items-center justify-between gap-2 text-[12px]">
-                                                                            SL %
-                                                                            <input
-                                                                                type="number"
-                                                                                defaultValue={leg.slPercent ?? ""}
-                                                                                onBlur={(e) => setLegSlTg(leg.id, e.target.value, leg.tgPercent ?? "")}
-                                                                                className="w-16 rounded border border-gray-200 px-1.5 py-0.5 text-right outline-none focus:border-blue-500"
-                                                                            />
-                                                                        </label>
-                                                                        <label className="flex items-center justify-between gap-2 text-[12px]">
-                                                                            TG %
-                                                                            <input
-                                                                                type="number"
-                                                                                defaultValue={leg.tgPercent ?? ""}
-                                                                                onBlur={(e) => setLegSlTg(leg.id, leg.slPercent ?? "", e.target.value)}
-                                                                                className="w-16 rounded border border-gray-200 px-1.5 py-0.5 text-right outline-none focus:border-blue-500"
-                                                                            />
-                                                                        </label>
-                                                                    </div>
-                                                                </>
-                                                            )}
                                                         </td>
                                                         <td className="px-4 py-2.5">
                                                             <div className="flex items-center justify-center gap-2">
-                                                                <button onClick={() => resetLegEntryToLtp(leg.id)} className="text-gray-400 hover:text-blue-600 transition" title="Reset entry to current LTP">⟳</button>
-                                                                <button onClick={() => removeLeg(leg.id)} className="text-gray-400 hover:text-rose-600 font-bold transition" title="Remove leg">✕</button>
+                                                                <button onClick={() => resetLegEntryToLtp(leg.id)} className="text-gray-400 hover:text-blue-600 transition" title="Reset entry to current LTP"><FiRefreshCw size={12} /></button>
+                                                                <button onClick={() => removeLeg(leg.id)} className="text-gray-400 hover:text-rose-600 transition" title="Remove leg"><FiTrash2 size={13} /></button>
                                                             </div>
                                                         </td>
                                                     </tr>
@@ -1219,45 +1418,26 @@ export default function StrategyBuilder() {
                                     </table>
                                 </>
                             ) : (
-                                <table className="w-full border-collapse text-[13px]">
-                                    <thead>
-                                        <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-100">
-                                            <th className="px-4 py-2.5 text-left font-medium">Leg Matrix</th>
-                                            <th className="px-4 py-2.5 text-right font-medium">IV %</th>
-                                            <th className="px-4 py-2.5 text-right font-medium">Delta</th>
-                                            <th className="px-4 py-2.5 text-right font-medium">Gamma</th>
-                                            <th className="px-4 py-2.5 text-right font-medium">Theta</th>
-                                            <th className="px-4 py-2.5 text-right font-medium">Vega</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-gray-100">
-                                        {legs.map((leg) => (
-                                            <tr key={leg.id} className="hover:bg-gray-50/40 transition-colors">
-                                                <td className="px-4 py-2.5 font-medium text-gray-700">{leg.action === "buy" ? "B" : "S"} {leg.strike} {leg.type}</td>
-                                                <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.iv ?? "-"}</td>
-                                                <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.delta ?? "-"}</td>
-                                                <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.gamma ?? "-"}</td>
-                                                <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.theta ?? "-"}</td>
-                                                <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.vega ?? "-"}</td>
-                                            </tr>
-                                        ))}
-                                        {netGreeks && (
-                                            <tr className="font-bold bg-blue-50/30 border-t-2 border-gray-200 text-gray-900">
-                                                <td className="px-4 py-3">Net Risk Aggregates</td>
-                                                <td className="px-4 py-3"></td>
-                                                <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.delta || 0).toFixed(3)}</td>
-                                                <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.gamma || 0).toFixed(6)}</td>
-                                                <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.theta || 0).toFixed(3)}</td>
-                                                <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.vega || 0).toFixed(3)}</td>
-                                            </tr>
-                                        )}
-                                    </tbody>
-                                </table>
+                                <PortfolioGreeksTable legs={legs} netGreeks={netGreeks} />
                             )}
                         </div>
                     </>
                 )}
             </div>
+            </div>
+            )}
+
+            {mode === "live" && slTgEditId != null && (
+                <SlTgModal
+                    leg={legs.find((l) => l.id === slTgEditId)}
+                    symbol={symbol}
+                    draft={slTgDraft}
+                    onDraftChange={setSlTgDraft}
+                    onClose={closeSlTgModal}
+                    onSave={() => saveSlTgModal(slTgEditId)}
+                    footer="live"
+                />
+            )}
 
             {chartModal && (
                 <ContractChartModal

@@ -17,19 +17,98 @@
 // wrong. This is a read-only DB/cached-file lookup, not a live broker call —
 // it doesn't touch the replay's price determinism, only the quantity
 // multiplier.
+const fs = require("fs");
+const path = require("path");
 const { pool } = require("../config/db");
 const lotSizeHistoryService = require("../services/lotSizeHistoryService");
+const { parityForward, spotFromForwardCurve, yearsBetween } = require("../utils/syntheticSpot");
 
-// listDates scans every row for a symbol (NIFTY alone is 6M+ rows after
-// Phase 7's backfills) to compute a per-date distinct-snapshot count — even
-// with idx_symbol_date_time in place, that's an ~8s covering-index scan,
-// not something to redo on every Simulator page load. The underlying data
-// is effectively append-only (only nightly cron/backfill scripts add rows;
-// nothing edits a past date's rows in place), so a short TTL cache is safe
-// and turns every repeat load (same user switching back, another user on
-// the same symbol) instant. Same in-memory-Map convention as marketCache.js.
-const DATES_CACHE_TTL_MS = 10 * 60 * 1000;
-const datesCache = new Map(); // symbol -> { expiresAt, payload }
+// listDates scans every (trade_date, trade_time) pair for a symbol (NIFTY
+// alone is 6M+ rows after Phase 7's backfills) to compute a per-date
+// distinct-snapshot count — even with idx_symbol_date_time forced, that's a
+// ~3s covering-index scan, and there's no index that can make COUNT(DISTINCT)
+// across every row cheap. It must not be redone in a request a user is
+// waiting on.
+//
+// The underlying data is effectively append-only (only nightly cron /
+// occasional manual backfill scripts add rows; nothing edits a past date's
+// rows in place), so the result is cached with:
+//   1. an in-memory Map (per process), AND
+//   2. a JSON file on disk (survives restarts — a fresh `npm run dev` or a
+//      PM2 reload doesn't re-pay the cold scan),
+// and served stale-while-revalidate: a cached answer (even an expired one)
+// is returned instantly and a background refresh is kicked off if it's past
+// the TTL. Worst case a page load's date picker is a few hours behind — it
+// just might not list a date the nightly cron added since the last refresh.
+// The full synchronous scan happens at most once per symbol ever (first
+// request with no memory AND no disk cache), and warmDatesCache() below
+// pre-pays even that for the common index symbols on server boot.
+const DATES_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const DATES_CACHE_FILE = path.join(__dirname, "..", "data", "simulator-dates-cache.json");
+const datesCache = new Map(); // symbol -> { computedAt, payload }
+const datesRefreshing = new Set(); // symbols with an in-flight background refresh
+
+(function loadDatesCacheFromDisk() {
+    try {
+        const raw = JSON.parse(fs.readFileSync(DATES_CACHE_FILE, "utf8"));
+        for (const [symbol, entry] of Object.entries(raw)) {
+            if (entry && entry.payload && Array.isArray(entry.payload.dates)) {
+                datesCache.set(symbol, { computedAt: Number(entry.computedAt) || 0, payload: entry.payload });
+            }
+        }
+    } catch {
+        /* no cache file yet, or unreadable — the first request rebuilds it */
+    }
+})();
+
+function persistDatesCacheToDisk() {
+    try {
+        const obj = {};
+        for (const [symbol, entry] of datesCache) obj[symbol] = entry;
+        fs.writeFileSync(DATES_CACHE_FILE, JSON.stringify(obj));
+    } catch (err) {
+        console.error("[simulator/dates] cache persist failed:", err.message);
+    }
+}
+
+async function computeDatesPayload(symbol) {
+    // FORCE INDEX: see the note on idx_symbol_date_time in schema.sql — the
+    // optimizer otherwise picks uniq_snapshot here and the scan balloons to ~12s.
+    const [rows] = await pool.query(
+        `SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
+         FROM option_chain_history FORCE INDEX (idx_symbol_date_time)
+         WHERE symbol = ? GROUP BY trade_date ORDER BY trade_date DESC`,
+        [symbol]
+    );
+    const dates = rows.map((r) => r.trade_date);
+    const sparseDates = rows.filter((r) => Number(r.snapshotCount) <= 1).map((r) => r.trade_date);
+    return { symbol, dates, sparseDates };
+}
+
+function refreshDatesCache(symbol) {
+    if (datesRefreshing.has(symbol)) return Promise.resolve();
+    datesRefreshing.add(symbol);
+    return computeDatesPayload(symbol)
+        .then((payload) => {
+            datesCache.set(symbol, { computedAt: Date.now(), payload });
+            persistDatesCacheToDisk();
+        })
+        .catch((err) => console.error("[simulator/dates] background refresh failed:", err.message))
+        .finally(() => datesRefreshing.delete(symbol));
+}
+
+// Called once on server boot (see server.js) so the first real user never
+// waits on the cold scan for the common index symbols. Runs the scans one
+// at a time — each is a multi-million-row covering-index scan, and firing
+// all three at once needlessly spikes DB load right as the server comes up.
+async function warmDatesCache(symbols = ["NIFTY", "BANKNIFTY", "FINNIFTY"]) {
+    for (const symbol of symbols) {
+        const cached = datesCache.get(symbol);
+        if (!cached || Date.now() - cached.computedAt > DATES_CACHE_TTL_MS) {
+            await refreshDatesCache(symbol);
+        }
+    }
+}
 
 function computeAtmStrike(strikes, spot) {
     if (!strikes.length || spot == null) return null;
@@ -101,28 +180,18 @@ async function listDates(req, res) {
         if (!symbol) return;
 
         const cached = datesCache.get(symbol);
-        if (cached && cached.expiresAt > Date.now()) {
+        if (cached) {
+            // Stale-while-revalidate: answer instantly, refresh in the
+            // background if the cache is past its TTL (see the cache notes above).
+            if (Date.now() - cached.computedAt > DATES_CACHE_TTL_MS) refreshDatesCache(symbol);
             return res.json(cached.payload);
         }
 
-        // FORCE INDEX: the optimizer's row-count estimate for idx_backtest_range
-        // (symbol, expiry, trade_date, trade_time) makes it look cheaper than
-        // idx_symbol_date_time here, but expiry sitting before trade_date in
-        // that index means MySQL can't stream trade_date-grouped order from it
-        // and falls back to a full filesort over every row for the symbol
-        // (measured ~13s for NIFTY). idx_symbol_date_time (symbol, trade_date,
-        // trade_time) was built for exactly this query and needs to be forced.
-        const [rows] = await pool.query(
-            `SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
-             FROM option_chain_history FORCE INDEX (idx_symbol_date_time)
-             WHERE symbol = ? GROUP BY trade_date ORDER BY trade_date DESC`,
-            [symbol]
-        );
-        const dates = rows.map((r) => r.trade_date);
-        const sparseDates = rows.filter((r) => Number(r.snapshotCount) <= 1).map((r) => r.trade_date);
-        const payload = { symbol, dates, sparseDates };
-
-        datesCache.set(symbol, { expiresAt: Date.now() + DATES_CACHE_TTL_MS, payload });
+        // First request ever for this symbol with nothing on disk either —
+        // the one time the full ~3s scan is paid inside a waited-on request.
+        const payload = await computeDatesPayload(symbol);
+        datesCache.set(symbol, { computedAt: Date.now(), payload });
+        persistDatesCacheToDisk();
         res.json(payload);
     } catch (err) {
         console.error("[simulator/dates]", err);
@@ -182,11 +251,6 @@ async function getChainAtTime(req, res) {
             [symbol, date, selectedExpiry, selectedTime]
         );
 
-        // ohlcv_data is empty for Bhavcopy-sourced (EOD-only) days — fall back to
-        // the underlying_price already stored on the option_chain_history row itself.
-        const fallbackSpot = rawRows.find((r) => r.underlying_price != null)?.underlying_price;
-        const spotPrice = (await getSpotAt(symbol, date, selectedTime)) ?? (fallbackSpot != null ? Number(fallbackSpot) : null);
-
         let lotSize = null;
         try {
             lotSize = await lotSizeHistoryService.getLotSizeAsOf(symbol, date);
@@ -220,6 +284,41 @@ async function getChainAtTime(req, res) {
             },
         }));
 
+        // Real spot for this minute: the stored underlying_price / EOD ohlcv
+        // close are static all day. Recover it by computing the put-call
+        // parity FORWARD at every expiry available this minute and fitting
+        // F(T) = spot + carry·T — the intercept is the spot (see
+        // utils/syntheticSpot.js). ohlcv_data wins only when it has a real
+        // minute bar (rare, Angel-One-cron days).
+        const storedSpot = rawRows.find((r) => r.underlying_price != null)?.underlying_price;
+        const ohlcvSpot = await getSpotAt(symbol, date, selectedTime);
+        const anchor = storedSpot != null ? Number(storedSpot) : (ohlcvSpot ?? null);
+
+        let paritySpot = null;
+        if (anchor != null) {
+            const [fwdRows] = await pool.query(
+                `SELECT expiry, strike, ce_ltp, pe_ltp FROM option_chain_history
+                 WHERE symbol = ? AND trade_date = ? AND trade_time = ?
+                   AND strike BETWEEN ? AND ? AND ce_ltp > 0 AND pe_ltp > 0`,
+                [symbol, date, selectedTime, anchor - 600, anchor + 600]
+            );
+            const byExpiry = new Map();
+            for (const r of fwdRows) {
+                if (!byExpiry.has(r.expiry)) byExpiry.set(r.expiry, []);
+                byExpiry.get(r.expiry).push({ strike: Number(r.strike), ce: { ltp: Number(r.ce_ltp) }, pe: { ltp: Number(r.pe_ltp) } });
+            }
+            const points = [];
+            for (const [exp, chainRows] of byExpiry) {
+                const forward = parityForward(chainRows);
+                if (forward != null) points.push({ t: yearsBetween(date, exp, selectedTime), forward });
+            }
+            paritySpot = spotFromForwardCurve(points);
+        }
+
+        const ohlcvIsMinuteBar = ohlcvSpot != null; // getSpotAt already filters trade_time >= selectedTime
+        const spotPrice = (ohlcvIsMinuteBar ? ohlcvSpot : null) ?? paritySpot ?? anchor;
+        const spotSource = ohlcvIsMinuteBar ? "ohlcv" : paritySpot != null ? "parity" : "stored";
+
         res.json({
             symbol,
             date,
@@ -228,6 +327,8 @@ async function getChainAtTime(req, res) {
             times,
             selectedTime,
             spotPrice,
+            spotStored: storedSpot != null ? Number(storedSpot) : null,
+            spotSource,
             lotSize,
             atmStrike: computeAtmStrike(rows.map((r) => r.strike), spotPrice),
             maxPainStrike: computeMaxPain(rows.map((r) => ({ strike: r.strike, ceOi: r.ce.oi, peOi: r.pe.oi }))),
@@ -267,7 +368,7 @@ async function replay(req, res) {
     try {
         const symbol = resolveSymbol(req, res);
         if (!symbol) return;
-        const { date, expiry, legs } = req.body || {};
+        const { date, expiry, legs, entryTime: requestedEntryTime } = req.body || {};
         if (!date || !expiry) return res.status(400).json({ error: "date and expiry are required" });
         if (!Array.isArray(legs) || !legs.length) return res.status(400).json({ error: "legs must be a non-empty array" });
         for (const leg of legs) {
@@ -299,7 +400,16 @@ async function replay(req, res) {
         );
         const times = timeRows.map((r) => r.trade_time);
         if (!times.length) return res.status(404).json({ error: `No stored option data for ${symbol} ${date} expiry ${expiry}` });
-        const entryTime = times[0];
+        // The leg's entry premium is whatever was on screen the moment the
+        // user built it (client sends the chain-scrubbed time it was viewing,
+        // same value legs' own `premium` field already came from) — NOT
+        // always the day's opening snapshot. Using the wrong entry price here
+        // was the cause of "P&L doesn't start at 0": a position built at, say,
+        // 12:00 was priced against the 09:15 open, so the replay's P&L was
+        // already nonzero drift by the time playback reached 12:00 instead of
+        // reading 0 right at the real entry instant. Falls back to the day's
+        // first snapshot only if no valid entryTime was supplied.
+        const entryTime = requestedEntryTime && times.includes(requestedEntryTime) ? requestedEntryTime : times[0];
 
         const [priceRows] = await pool.query(
             `SELECT trade_time, strike, underlying_price, ce_ltp, pe_ltp, ce_volume, pe_volume, ce_oi, pe_oi FROM option_chain_history
@@ -336,6 +446,43 @@ async function replay(req, res) {
         );
         const spotByTime = new Map(ohlcvRows.map((r) => [r.trade_time, Number(r.close)]));
 
+        // Real per-minute spot: the stored underlying_price is static all day.
+        // Per minute, compute the put-call parity FORWARD at every expiry
+        // (near-ATM strikes only) and fit F(T) = spot + carry·T — the
+        // intercept is the spot (see utils/syntheticSpot.js). A ±600-point
+        // window around the day's anchor keeps the near-ATM strikes it needs
+        // even when the strategy's own legs are all far OTM.
+        const [dayStored] = await pool.query(
+            `SELECT underlying_price FROM option_chain_history
+             WHERE symbol = ? AND trade_date = ? AND underlying_price IS NOT NULL LIMIT 1`,
+            [symbol, date]
+        );
+        const anchorSpot = dayStored[0]?.underlying_price != null ? Number(dayStored[0].underlying_price) : null;
+        const paritySpotByTime = new Map();
+        if (anchorSpot != null) {
+            const [wideRows] = await pool.query(
+                `SELECT trade_time, expiry, strike, ce_ltp, pe_ltp FROM option_chain_history
+                 WHERE symbol = ? AND trade_date = ?
+                   AND strike BETWEEN ? AND ? AND ce_ltp > 0 AND pe_ltp > 0`,
+                [symbol, date, anchorSpot - 600, anchorSpot + 600]
+            );
+            const byTimeExpiry = new Map(); // time -> Map<expiry, chainRows[]>
+            for (const r of wideRows) {
+                if (!byTimeExpiry.has(r.trade_time)) byTimeExpiry.set(r.trade_time, new Map());
+                const em = byTimeExpiry.get(r.trade_time);
+                if (!em.has(r.expiry)) em.set(r.expiry, []);
+                em.get(r.expiry).push({ strike: Number(r.strike), ce: { ltp: Number(r.ce_ltp) }, pe: { ltp: Number(r.pe_ltp) } });
+            }
+            for (const [t, em] of byTimeExpiry) {
+                const points = [];
+                for (const [exp, chainRows] of em) {
+                    const forward = parityForward(chainRows);
+                    if (forward != null) points.push({ t: yearsBetween(date, exp, t), forward });
+                }
+                paritySpotByTime.set(t, spotFromForwardCurve(points));
+            }
+        }
+
         // Per-leg exit state, updated as the minute-by-minute walk below
         // progresses. Once a leg's SL/TG triggers, its P&L freezes at that
         // minute's value for every later minute — it no longer needs live
@@ -352,6 +499,16 @@ async function replay(req, res) {
         // precise per-position figure the way pnl is.
         const series = times.map((time) => {
             const priceByStrike = byMinute.get(time);
+            const spot = spotByTime.get(time) ?? paritySpotByTime.get(time) ?? fallbackSpotByTime.get(time) ?? null;
+
+            // The position doesn't exist yet before its own entry instant —
+            // show a gap rather than a fabricated pnl (same "gap, not a
+            // guess" convention as a missing per-minute price below), so the
+            // chart/scrubber honestly reads 0 exactly at entryTime and only
+            // moves from there, instead of implying the position was already
+            // open (and drifting) since the day's opening snapshot.
+            if (time < entryTime) return { time, spot, pnl: null, volume: null, oi: null };
+
             let pnl = 0;
             let volume = 0;
             let oi = 0;
@@ -381,7 +538,6 @@ async function replay(req, res) {
                 oi += (row ? Number(leg.type === "CE" ? row.ce_oi : row.pe_oi) : 0) || 0;
             });
 
-            const spot = spotByTime.get(time) ?? fallbackSpotByTime.get(time) ?? null;
             if (anyMissing) return { time, spot, pnl: null, volume: null, oi: null };
             return {
                 time,
@@ -448,4 +604,4 @@ async function getCandles(req, res) {
     }
 }
 
-module.exports = { listDates, getChainAtTime, replay, getCandles };
+module.exports = { listDates, getChainAtTime, replay, getCandles, warmDatesCache };

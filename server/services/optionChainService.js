@@ -14,10 +14,20 @@
 // hand). It's gone: live data now comes from the in-memory cache, and the
 // historical payload gets a small in-process TTL cache instead.
 
+const fs = require("fs");
+const path = require("path");
 const bs = require("../utils/blackScholes");
 const db = require("../config/db");
 const marketCache = require("./marketCache");
 const { marketHours } = require("../utils/marketUtils");
+const { syntheticSpot, yearsBetween } = require("../utils/syntheticSpot");
+
+// `SELECT DISTINCT symbol FROM option_chain_history` is a ~65ms loose-index
+// scan warm, but a few seconds cold (empty buffer pool right after a server
+// restart) — and the in-process cache below is lost on every restart. Mirror
+// simulatorController.listDates: also persist to disk and serve
+// stale-while-revalidate, so a page load never waits on it.
+const SYMBOL_LIST_CACHE_FILE = path.join(__dirname, "..", "data", "symbol-list-cache.json");
 
 // The market worker only ever subscribes these 3 (see instrumentMaster.js) —
 // everything else in option_chain_history (the other NSE/BSE indices, the
@@ -37,7 +47,7 @@ const HISTORICAL_CACHE_TTL_MS = 60 * 1000;
 // (17M+ rows as Phase 7 backfills grow) is expensive to re-run on every
 // page load, which is what listSymbols() was doing. Cache it like
 // historicalCache above.
-const SYMBOL_LIST_CACHE_TTL_MS = 5 * 60 * 1000;
+const SYMBOL_LIST_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h — served stale-while-revalidate
 
 // Plain-string date helpers (CLAUDE.md Gotcha #12 — no local-timezone Date math)
 function utcMidnight(dateStr) {
@@ -57,6 +67,15 @@ class OptionChainService {
     constructor() {
         this.historicalCache = new Map(); // key -> { payload, cachedAt }
         this.symbolListCache = null; // { payload, cachedAt }
+        this.symbolListRefreshing = false;
+        try {
+            const raw = JSON.parse(fs.readFileSync(SYMBOL_LIST_CACHE_FILE, "utf8"));
+            if (raw && Array.isArray(raw.payload?.stocks)) {
+                this.symbolListCache = { payload: raw.payload, cachedAt: Number(raw.cachedAt) || 0 };
+            }
+        } catch {
+            /* no disk cache yet — first request rebuilds it */
+        }
     }
 
     isMarketOpen() {
@@ -84,11 +103,7 @@ class OptionChainService {
      * dropdown. Historical-data-driven (not a hardcoded "210 companies"
      * list) so it's automatically correct as Bhavcopy/Breeze coverage grows.
      */
-    async listSymbols() {
-        if (this.symbolListCache && Date.now() - this.symbolListCache.cachedAt < SYMBOL_LIST_CACHE_TTL_MS) {
-            return this.symbolListCache.payload;
-        }
-
+    async computeSymbolList() {
         const rows = await db.query(`SELECT DISTINCT symbol FROM option_chain_history ORDER BY symbol ASC`);
         const all = (rows || []).map((r) => r.symbol);
         const indices = all.filter((s) => INDEX_SYMBOLS.has(s));
@@ -99,8 +114,38 @@ class OptionChainService {
         // rather than being dropped.
         const indexOrder = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX", "SENSEX50"];
         indices.sort((a, b) => indexOrder.indexOf(a) - indexOrder.indexOf(b));
-        const payload = { indices, stocks, liveSymbols: [...LIVE_SYMBOLS] };
+        return { indices, stocks, liveSymbols: [...LIVE_SYMBOLS] };
+    }
+
+    refreshSymbolList() {
+        if (this.symbolListRefreshing) return Promise.resolve();
+        this.symbolListRefreshing = true;
+        return this.computeSymbolList()
+            .then((payload) => {
+                this.symbolListCache = { payload, cachedAt: Date.now() };
+                try {
+                    fs.writeFileSync(SYMBOL_LIST_CACHE_FILE, JSON.stringify(this.symbolListCache));
+                } catch (err) {
+                    console.error("[optionChain] symbol list cache persist failed:", err.message);
+                }
+            })
+            .catch((err) => console.error("[optionChain] symbol list refresh failed:", err.message))
+            .finally(() => { this.symbolListRefreshing = false; });
+    }
+
+    async listSymbols() {
+        if (this.symbolListCache) {
+            // Stale-while-revalidate — answer instantly, refresh in the
+            // background when past the TTL (backfills add symbols rarely).
+            if (Date.now() - this.symbolListCache.cachedAt > SYMBOL_LIST_CACHE_TTL_MS) this.refreshSymbolList();
+            return this.symbolListCache.payload;
+        }
+        // First request ever with nothing on disk — pay the scan once.
+        const payload = await this.computeSymbolList();
         this.symbolListCache = { payload, cachedAt: Date.now() };
+        try {
+            fs.writeFileSync(SYMBOL_LIST_CACHE_FILE, JSON.stringify(this.symbolListCache));
+        } catch { /* ignore */ }
         return payload;
     }
 
@@ -240,6 +285,10 @@ class OptionChainService {
                 iv: ceIv && peIv ? Number((((ceIv + peIv) / 2) * 100).toFixed(1)) : null,
                 ce: {
                     ltp: ceLtp,
+                    // Per-contract last-tick time (ms epoch) so a fresh REST
+                    // load already knows which strikes are behind the feed —
+                    // the frontend renders an amber ⚠ on stale contracts.
+                    ts: r.ce ? r.ce.timestamp ?? null : null,
                     changePercent: this.pctChange(ceLtp, prev?.ceLtp),
                     oi: r.ce ? r.ce.oi : null,
                     oiChange: ceOiChange,
@@ -255,6 +304,7 @@ class OptionChainService {
                 },
                 pe: {
                     ltp: peLtp,
+                    ts: r.pe ? r.pe.timestamp ?? null : null,
                     changePercent: this.pctChange(peLtp, prev?.peLtp),
                     oi: r.pe ? r.pe.oi : null,
                     oiChange: peOiChange,
@@ -443,8 +493,7 @@ class OptionChainService {
         }
 
         const strikes = rows.map((r) => r.strike).filter((s) => s != null);
-        const spotPrice = spotOverride || Number(rows[0]?.spotPrice) || 0;
-        const atmStrike = strikes.length > 0 ? this.computeAtmStrike(strikes, spotPrice) : 0;
+        const storedSpot = spotOverride || Number(rows[0]?.spotPrice) || 0;
 
         const mappedRows = rows.map((r) => {
             const prev = prevClose[r.strike];
@@ -486,6 +535,17 @@ class OptionChainService {
             };
         });
 
+        // option_chain_history.underlying_price / the EOD ohlcv close are
+        // static per day and (put-call parity gives the FORWARD, not the spot)
+        // sit tens of points above the real spot. Recover the spot from parity
+        // discounted by the cost of carry (see utils/syntheticSpot.js). Only
+        // one expiry's chain is in scope here, so this uses the default-carry
+        // path — the Simulator, which fits the whole term structure, is more
+        // exact. Falls back to the stored value when the chain is too thin.
+        const t = yearsBetween(rows[0]?.trade_date, selectedExpiry, rows[0]?.trade_time);
+        const spotPrice = syntheticSpot(mappedRows, storedSpot, t) || storedSpot;
+        const atmStrike = strikes.length > 0 ? this.computeAtmStrike(strikes, spotPrice) : 0;
+
         const maxPainStrike = this.computeMaxPain(
             mappedRows.map((r) => ({ strike: r.strike, ceOi: r.ce.oi, peOi: r.pe.oi }))
         );
@@ -494,6 +554,8 @@ class OptionChainService {
         return {
             symbol: displaySymbol,
             spotPrice,
+            spotStored: storedSpot || null,
+            spotSource: spotPrice && spotPrice !== storedSpot ? "parity" : "stored",
             atmStrike,
             maxPainStrike,
             pcr,

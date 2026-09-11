@@ -135,9 +135,16 @@ function getBroadcastPayload(underlying) {
             ceLtp: r.ce ? r.ce.ltp : null,
             ceOi: r.ce ? r.ce.oi : null,
             ceVolume: r.ce ? r.ce.volume : null,
+            // Per-contract last-tick time (ms epoch) — the frontend flags a
+            // contract as "stale" (amber ⚠, carried-forward value) when its
+            // own timestamp falls far behind while the feed is otherwise
+            // live, e.g. an illiquid strike or one that drifted outside the
+            // worker's ±15-strike subscription window.
+            ceTs: r.ce ? r.ce.timestamp ?? null : null,
             peLtp: r.pe ? r.pe.ltp : null,
             peOi: r.pe ? r.pe.oi : null,
             peVolume: r.pe ? r.pe.volume : null,
+            peTs: r.pe ? r.pe.timestamp ?? null : null,
         })),
         timestamp: lastUpdateAt,
     };

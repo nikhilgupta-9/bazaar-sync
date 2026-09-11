@@ -22,10 +22,15 @@ function ThemeToggle() {
 
 const links = [
     { to: "/strategy-builder", label: "Strategy Builder" },
-    { to: "/simulator", label: "Simulator" },
+    { dropdown: "simulator", label: "Simulator" },
     { to: "/option-chain", label: "Option Chain" },
     { to: "/paper-trade", label: "Paper Trade" },
     { to: "/historical-chart", label: "Historical Chart" },
+];
+
+const SIMULATOR_LINKS = [
+    { to: "/simulator", label: "Indian Stock", end: true },
+    { to: "/simulator/bitcoin", label: "Bitcoin" },
 ];
 
 const EQUITY_DATA_LINKS = [
@@ -37,10 +42,13 @@ const EQUITY_DATA_LINKS = [
     { to: "/equity-data/most-active", label: "Most Active" },
 ];
 
-function EquityDataMenu() {
+// Shared dropdown for a nav item that fans out to sub-pages (Simulator,
+// Equity Data). `basePath` drives the parent's active-highlight; `items` are
+// the sub-links (pass `end` on one whose path is a prefix of the others).
+function NavDropdown({ label, basePath, items }) {
     const [open, setOpen] = useState(false);
     const location = useLocation();
-    const isActive = location.pathname.startsWith("/equity-data");
+    const isActive = location.pathname.startsWith(basePath);
 
     return (
         <div className="relative">
@@ -49,7 +57,7 @@ function EquityDataMenu() {
                 onClick={() => setOpen((v) => !v)}
                 className={`flex items-center gap-1 ${isActive ? "text-blue-600" : "hover:text-gray-900"}`}
             >
-                Equity Data
+                {label}
                 <svg viewBox="0 0 20 20" fill="currentColor" className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`}>
                     <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
                 </svg>
@@ -58,10 +66,11 @@ function EquityDataMenu() {
                 <>
                     <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
                     <div className="absolute left-0 top-full z-20 mt-2 w-56 rounded-lg border border-gray-200 bg-white py-1.5 shadow-xl">
-                        {EQUITY_DATA_LINKS.map((link) => (
+                        {items.map((link) => (
                             <NavLink
                                 key={link.to}
                                 to={link.to}
+                                end={link.end}
                                 onClick={() => setOpen(false)}
                                 className={({ isActive: linkActive }) =>
                                     `block px-4 py-2 text-sm ${linkActive ? "bg-blue-50 text-blue-600" : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"}`
@@ -75,6 +84,14 @@ function EquityDataMenu() {
             )}
         </div>
     );
+}
+
+function SimulatorMenu() {
+    return <NavDropdown label="Simulator" basePath="/simulator" items={SIMULATOR_LINKS} />;
+}
+
+function EquityDataMenu() {
+    return <NavDropdown label="Equity Data" basePath="/equity-data" items={EQUITY_DATA_LINKS} />;
 }
 
 export default function TopNav() {
@@ -92,17 +109,21 @@ export default function TopNav() {
                 {/* Full nav — hidden below md, where it would overflow the viewport
                     (see mobile <nav> panel below for the collapsed equivalent). */}
                 <nav className="hidden items-center gap-6 text-sm font-medium text-gray-600 md:flex">
-                    {links.map((link) => (
-                        <NavLink
-                            key={link.to}
-                            to={link.to}
-                            className={({ isActive }) =>
-                                isActive ? "text-blue-600" : "hover:text-gray-900"
-                            }
-                        >
-                            {link.label}
-                        </NavLink>
-                    ))}
+                    {links.map((link) =>
+                        link.dropdown === "simulator" ? (
+                            <SimulatorMenu key="simulator" />
+                        ) : (
+                            <NavLink
+                                key={link.to}
+                                to={link.to}
+                                className={({ isActive }) =>
+                                    isActive ? "text-blue-600" : "hover:text-gray-900"
+                                }
+                            >
+                                {link.label}
+                            </NavLink>
+                        )
+                    )}
                     <EquityDataMenu />
                 </nav>
 
@@ -141,18 +162,37 @@ export default function TopNav() {
 
             {mobileOpen && (
                 <nav className="flex flex-col border-t border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 md:hidden">
-                    {links.map((link) => (
-                        <NavLink
-                            key={link.to}
-                            to={link.to}
-                            onClick={() => setMobileOpen(false)}
-                            className={({ isActive }) =>
-                                `rounded-md px-2 py-2 ${isActive ? "text-blue-600" : "hover:bg-gray-50 hover:text-gray-900"}`
-                            }
-                        >
-                            {link.label}
-                        </NavLink>
-                    ))}
+                    {links.map((link) =>
+                        link.dropdown === "simulator" ? (
+                            <div key="simulator" className="border-t border-gray-100 py-1">
+                                <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gray-400">Simulator</div>
+                                {SIMULATOR_LINKS.map((sub) => (
+                                    <NavLink
+                                        key={sub.to}
+                                        to={sub.to}
+                                        end={sub.end}
+                                        onClick={() => setMobileOpen(false)}
+                                        className={({ isActive }) =>
+                                            `block rounded-md px-2 py-2 ${isActive ? "text-blue-600" : "hover:bg-gray-50 hover:text-gray-900"}`
+                                        }
+                                    >
+                                        {sub.label}
+                                    </NavLink>
+                                ))}
+                            </div>
+                        ) : (
+                            <NavLink
+                                key={link.to}
+                                to={link.to}
+                                onClick={() => setMobileOpen(false)}
+                                className={({ isActive }) =>
+                                    `rounded-md px-2 py-2 ${isActive ? "text-blue-600" : "hover:bg-gray-50 hover:text-gray-900"}`
+                                }
+                            >
+                                {link.label}
+                            </NavLink>
+                        )
+                    )}
                     <div className="mt-1 border-t border-gray-100 pt-1">
                         <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gray-400">Equity Data</div>
                         {EQUITY_DATA_LINKS.map((link) => (

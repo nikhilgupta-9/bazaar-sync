@@ -10,7 +10,7 @@ import { saveStrategy } from "../services/strategiesApi";
 import SaveButton from "../components/SaveButton";
 import SavedStrategiesModal from "../components/SavedStrategiesModal";
 import ContractChartModal from "../components/ContractChartModal";
-import { formatPrice } from "../utils/format";
+import { formatPrice, formatPercent } from "../utils/format";
 import {
   computePayoffCurve,
   computeBreakevens,
@@ -26,12 +26,16 @@ import {
 } from "../utils/payoff";
 import { yearsToExpiry } from "../utils/blackScholes";
 import OiBar from "../components/OiBar";
+import StaleBadge from "../components/strategy/StaleBadge";
+import SlTgModal from "../components/strategy/SlTgModal";
+import SquareOffAlertBanner from "../components/strategy/SquareOffAlertBanner";
+import PortfolioGreeksTable from "../components/strategy/PortfolioGreeksTable";
 import PayoffChart from "../components/PayoffChart";
 import PresetStrategies from "../components/PresetStrategies";
 import CandlestickChart from "../components/CandlestickChart";
 import StrategyChart from "../components/StrategyChart";
 import { SlCalender } from "react-icons/sl";
-import { FiSettings } from "react-icons/fi";
+import { FiSettings, FiTrash2, FiRefreshCw } from "react-icons/fi";
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -198,6 +202,69 @@ function formatDelta(value) {
   return value == null || Number.isNaN(value) ? "-" : Number(value).toFixed(2);
 }
 
+// --- Historical carry-forward -------------------------------------------
+// option_chain_history stores one row per (strike, minute) only when that
+// contract actually printed that minute. Scrubbing to a minute where a
+// strike (or one of its fields) has no stored row previously showed a blank
+// "-" gap. Instead we now carry the last value seen earlier in this
+// session forward and flag it with an amber ⚠ (StaleBadge) — "this contract
+// stopped printing, here's its last known price", the same cue the live
+// Strategy Builder uses for a strike that stopped ticking.
+const CARRY_FIELDS = ["ltp", "oi", "oiChange", "iv", "volume", "delta", "gamma", "theta", "vega"];
+
+// Fold a fresh snapshot's real (non-null) values into the running
+// last-good map (strike -> { ce:{field:value}, pe:{...} }). Mutates `lastGood`.
+function absorbLastGood(lastGood, rows) {
+  for (const r of rows || []) {
+    let entry = lastGood.get(r.strike);
+    if (!entry) {
+      entry = { ce: {}, pe: {} };
+      lastGood.set(r.strike, entry);
+    }
+    for (const side of ["ce", "pe"]) {
+      const s = r[side];
+      if (!s) continue;
+      for (const f of CARRY_FIELDS) {
+        if (s[f] != null) entry[side][f] = s[f];
+      }
+    }
+  }
+}
+
+// Build display rows for the scrubbed minute: real value where the snapshot
+// has one, else the last-good value marked stale (`ce._<field>Stale` +
+// `ce._stale`), else null. Strikes only present in history (not this
+// snapshot) are still shown, fully carried-forward.
+function carryForwardRows(newRows, lastGood) {
+  const byStrike = new Map((newRows || []).map((r) => [r.strike, r]));
+  const strikes = [...new Set([...byStrike.keys(), ...lastGood.keys()])].sort((a, b) => a - b);
+  return strikes.map((strike) => {
+    const fresh = byStrike.get(strike);
+    const prev = lastGood.get(strike);
+    const out = { strike, ce: {}, pe: {}, _anyStale: false };
+    for (const side of ["ce", "pe"]) {
+      const f = fresh?.[side] || {};
+      const p = prev?.[side] || {};
+      const o = out[side];
+      let staleAny = false;
+      for (const field of CARRY_FIELDS) {
+        if (f[field] != null) {
+          o[field] = f[field];
+        } else if (p[field] != null) {
+          o[field] = p[field];
+          o[`_${field}Stale`] = true;
+          staleAny = true;
+        } else {
+          o[field] = null;
+        }
+      }
+      o._stale = staleAny;
+      if (staleAny) out._anyStale = true;
+    }
+    return out;
+  });
+}
+
 // All date math below follows CLAUDE.md Gotcha #12: plain 'YYYY-MM-DD'
 // string parsing via explicit Date.UTC, never `new Date(nonISOString)` or
 // local-timezone Date methods.
@@ -275,7 +342,7 @@ function istWallClockToUtcMs(dateStr, timeStr) {
   return Date.UTC(y, m - 1, d, hh, mm, ss || 0) - 5.5 * 60 * 60 * 1000;
 }
 
-function legFromRow(row, right, action, expiry, lotSize) {
+function legFromRow(row, right, action, expiry, lotSize, time) {
   const side = right === "CE" ? row.ce : row.pe;
   return {
     id: ++legIdCounter,
@@ -291,6 +358,7 @@ function legFromRow(row, right, action, expiry, lotSize) {
     theta: side.theta,
     vega: side.vega,
     expiry, // which expiry this leg's premium/greeks came from — see payoff.js
+    time, // the historical trade_time this leg's LTP/Greeks snapshot came from — shown in Upcoming Positions
     active: true, // unchecked in the Positions table = kept but excluded from payoff/metrics
   };
 }
@@ -313,17 +381,31 @@ function Stat({ label, value, tone, hint }) {
   );
 }
 
-export default function Simulator() {
+// `embeddedSymbol` / `hideChrome` are set only when Simulator is rendered
+// *inside* Strategy Builder's "Historical" mode (see StrategyBuilder.jsx) —
+// the symbol then follows Strategy Builder's picker and Simulator's own
+// symbol pill + page chrome are hidden. With no props it's the standalone
+// /simulator page, unchanged.
+export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   // Deep-linked from Option Chain's "Historical"/"Previous day" controls:
   // ?symbol=BANKNIFTY opens on that symbol instead of always NIFTY, and
   // ?jump=prev selects the previous trading day (dates[1]) instead of the
   // latest one on first load. Consumed once — a later manual symbol switch
   // via the picker shouldn't keep re-applying "prev".
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialJumpRef = useRef(searchParams.get("jump"));
+  const initialJumpRef = useRef(embeddedSymbol ? null : searchParams.get("jump"));
   const atmRowRef = useRef(null);
   const chainScrollRef = useRef(null);
-  const [symbol, setSymbol] = useState(() => searchParams.get("symbol")?.toUpperCase() || "NIFTY");
+  // Running last-good value per (strike, side, field) for the currently
+  // viewed symbol/date/expiry — powers historical carry-forward while
+  // scrubbing (see carryForwardRows). Reset whenever the underlying series
+  // changes (loadChain).
+  const lastGoodChainRef = useRef(new Map());
+  // When embedded, the symbol is Strategy Builder's — it passes a matching
+  // `key` so this component remounts (and re-initialises here) on a symbol
+  // change, rather than needing a sync effect.
+  const initialSymbol = embeddedSymbol || searchParams.get("symbol")?.toUpperCase() || "NIFTY";
+  const [symbol, setSymbol] = useState(initialSymbol);
   const [dates, setDates] = useState([]); // DESC (most recent first), per /dates
   const [datesLoaded, setDatesLoaded] = useState(false); // distinguishes "still fetching" from "fetched, genuinely empty"
   const [sparseDates, setSparseDates] = useState([]); // dates with only 1 stored snapshot (EOD-only, no scrubbing)
@@ -332,12 +414,12 @@ export default function Simulator() {
   const [liveChain, setLiveChain] = useState(null); // chain rows at whichever instant is being viewed
   const [chainError, setChainError] = useState(null);
   const [scrubError, setScrubError] = useState(null); // -1m/+5m/etc failures — previously swallowed silently
-  const [legs, setLegs] = useState(() => loadSavedLegs(searchParams.get("symbol")?.toUpperCase() || "NIFTY"));
+  const [legs, setLegs] = useState(() => loadSavedLegs(initialSymbol));
   useEffect(() => {
     saveLegs(symbol, legs);
   }, [symbol, legs]);
   const [upcomingPositions, setUpcomingPositions] = useState(() =>
-    loadUpcomingPositions(searchParams.get("symbol")?.toUpperCase() || "NIFTY")
+    loadUpcomingPositions(initialSymbol)
   );
   useEffect(() => {
     saveUpcomingPositions(symbol, upcomingPositions);
@@ -371,6 +453,16 @@ export default function Simulator() {
 
   const [replayData, setReplayData] = useState(null);
   const [replayError, setReplayError] = useState(null);
+  // Auto-preview of the strategy's real per-minute P&L for the selected day,
+  // shown on the "Strategy Chart" / combined tabs the moment legs exist —
+  // so the chart always reflects the strategy you've built WITHOUT first
+  // clicking "Run Simulation" (that button still gates scrub/autoplay and
+  // locking the legs). Same replay endpoint, just fetched automatically and
+  // never used as the "legs are locked" signal — that stays `replayData`.
+  const [previewReplay, setPreviewReplay] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [squareOffAlert, setSquareOffAlert] = useState(null); // { reason, leg, time } | null — SL/TG hit during playback
+  const alertedExitsRef = useRef(new Set()); // leg keys already alerted this replay run, so scrubbing back/forth doesn't re-fire
 
   // Syncs crosshair + visible time range between StrategyChart and
   // CandlestickChart's underlying lightweight-charts instances when the
@@ -440,7 +532,7 @@ export default function Simulator() {
       if (retryTimer) clearTimeout(retryTimer);
       unsubscribers.forEach((unsub) => unsub());
     };
-  }, [chartTab, replayData, selectedDate]);
+  }, [chartTab, replayData, previewReplay, selectedDate]);
 
   const [running, setRunning] = useState(false);
   const [cursor, setCursor] = useState(0);
@@ -528,6 +620,7 @@ export default function Simulator() {
     setChartTab("payoff");
     setCalendarYm(null);
     setChartModal(null);
+    lastGoodChainRef.current = new Map();
     fetchSimulatorDates(symbol)
       .then((res) => {
         setDates(res.dates);
@@ -690,8 +783,11 @@ export default function Simulator() {
   function loadChain(date, expiry, time) {
     setChainError(null);
     setScrubError(null); // a fresh full chain load supersedes any earlier scrub failure
+    // New series (different day/expiry) — start carry-forward from scratch.
+    lastGoodChainRef.current = new Map();
     fetchSimulatorChain(symbol, { date, expiry, time })
       .then((res) => {
+        absorbLastGood(lastGoodChainRef.current, res.rows);
         setChainData(res);
         setLiveChain(res);
       })
@@ -766,7 +862,10 @@ export default function Simulator() {
       expiry: chainData.selectedExpiry,
       time,
     })
-      .then((res) => setLiveChain(res))
+      .then((res) => {
+        absorbLastGood(lastGoodChainRef.current, res.rows);
+        setLiveChain({ ...res, rows: carryForwardRows(res.rows, lastGoodChainRef.current) });
+      })
       .catch((err) => {
         // Previously swallowed silently — a scrub click that failed (bad
         // symbol, network hiccup, backend error) looked identical to one
@@ -806,7 +905,9 @@ export default function Simulator() {
     if (replayData) return; // legs lock once a replay has been run
     const lotSize = chainData?.lotSize ?? liveChain?.lotSize;
     setLegs((prev) =>
-      prev.length >= 6 ? prev : [...prev, legFromRow(row, right, action, chainData?.selectedExpiry, lotSize)],
+      prev.length >= 6
+        ? prev
+        : [...prev, legFromRow(row, right, action, chainData?.selectedExpiry, lotSize, currentTime)],
     );
   }
 
@@ -991,8 +1092,25 @@ export default function Simulator() {
     setUpcomingPositions([]);
   }
 
+  // Removes ONE archived Upcoming Positions entry — previously the only way
+  // to clear anything here was resetWorkspace() (everything, all at once);
+  // this lets a specific old entry be discarded without touching the rest.
+  function removeUpcomingPosition(id) {
+    setUpcomingPositions((prev) => prev.filter((e) => e.id !== id));
+  }
+
+  // Drops ONE leg from an archived entry — if that was its last leg, the
+  // now-empty entry is dropped too rather than leaving a blank journal row.
+  function removeUpcomingLeg(entryId, legId) {
+    setUpcomingPositions((prev) =>
+      prev
+        .map((e) => (e.id === entryId ? { ...e, legs: e.legs.filter((l) => l.id !== legId) } : e))
+        .filter((e) => e.legs.length > 0),
+    );
+  }
+
   function applyPreset(presetLegs) {
-    setLegs(presetLegs.map((l) => ({ active: true, ...l, id: ++legIdCounter })));
+    setLegs(presetLegs.map((l) => ({ active: true, time: currentTime, ...l, id: ++legIdCounter })));
   }
 
   async function runSimulation() {
@@ -1013,9 +1131,20 @@ export default function Simulator() {
           slPercent,
           tgPercent,
         })),
+        // The instant currently on screen is where every leg's `premium`
+        // field actually came from (see addLeg/rollLegStrike) — telling the
+        // backend to price entry at that same instant, instead of always the
+        // day's opening snapshot, is what makes P&L read exactly 0 right at
+        // entry and only fluctuate as playback moves forward from there.
+        entryTime: currentTime,
       });
       setReplayData(res);
-      setCursor(0);
+      alertedExitsRef.current = new Set();
+      setSquareOffAlert(null);
+      // Start the scrubber at the real entry instant (P&L reads 0 there),
+      // not always the day's first snapshot.
+      const entryIdx = res.series.findIndex((p) => p.time === res.entryTime);
+      setCursor(entryIdx >= 0 ? entryIdx : 0);
       setChartTab("strategy");
     } catch (err) {
       setReplayError(err.message);
@@ -1034,7 +1163,8 @@ export default function Simulator() {
     setPlaying((wasPlaying) => {
       const startingPlayback = !wasPlaying;
       if (startingPlayback && cursor >= replayData.series.length - 1) {
-        setCursor(0);
+        const entryIdx = replayData.series.findIndex((p) => p.time === replayData.entryTime);
+        setCursor(entryIdx >= 0 ? entryIdx : 0);
       }
       return startingPlayback;
     });
@@ -1058,6 +1188,49 @@ export default function Simulator() {
     return () => clearInterval(timer);
   }, [playing, moveKey, everyKey, replayData]);
 
+  // Editing legs again (Reset Workspace, "Edit legs", switching symbol/date,
+  // etc. — every one of the several places that clear replayData) also
+  // clears any leftover square-off alert/tracking from the run that just
+  // ended, rather than a stale "SL hit" banner surviving into a fresh edit.
+  // Trips react-hooks/set-state-in-effect (same already-tolerated pattern as
+  // the symbol-change reset effect above and elsewhere in this codebase —
+  // see CLAUDE.md's Phase 8.2 note on this).
+  useEffect(() => {
+    if (!replayData) {
+      setSquareOffAlert(null);
+      alertedExitsRef.current = new Set();
+    }
+  }, [replayData]);
+
+  // Square-off alert — the moment playback (autoplay OR manual scrubbing)
+  // reaches a leg's real SL/TG exit instant (computed server-side, see
+  // simulatorController.js's replay), pause and surface it rather than
+  // letting the leg's frozen P&L just quietly sit there in the table.
+  // alertedExitsRef stops this from re-firing every tick once past the
+  // exit, or again if the user scrubs back and forward across it. Also
+  // trips react-hooks/set-state-in-effect — same tolerated pattern noted above.
+  useEffect(() => {
+    if (!replayData) return;
+    const point = replayData.series[cursor];
+    if (!point?.time) return;
+    for (const leg of replayData.legs) {
+      if (!leg.exitReason || !leg.exitTime) continue;
+      const key = `${leg.strike}-${leg.type}-${leg.action}`;
+      if (alertedExitsRef.current.has(key)) continue;
+      if (point.time >= leg.exitTime) {
+        alertedExitsRef.current.add(key);
+        setPlaying(false);
+        setSquareOffAlert({
+          reason: leg.exitReason,
+          strike: leg.strike,
+          type: leg.type,
+          action: leg.action,
+          time: leg.exitTime,
+        });
+      }
+    }
+  }, [cursor, replayData]);
+
   // Keep the option-chain table in sync with the scrubbed replay cursor.
   useEffect(() => {
     if (!replayData) return;
@@ -1070,7 +1243,9 @@ export default function Simulator() {
       time: point.time,
     })
       .then((res) => {
-        if (!cancelled) setLiveChain(res);
+        if (cancelled) return;
+        absorbLastGood(lastGoodChainRef.current, res.rows);
+        setLiveChain({ ...res, rows: carryForwardRows(res.rows, lastGoodChainRef.current) });
       })
       .catch(() => {
         /* non-fatal — the chart is the primary view */
@@ -1085,6 +1260,8 @@ export default function Simulator() {
     [liveChain, chainData],
   );
   const displaySpot = liveChain?.spotPrice ?? chainData?.spotPrice;
+  const displaySpotSource = liveChain?.spotSource ?? chainData?.spotSource;
+  const displaySpotStored = liveChain?.spotStored ?? chainData?.spotStored;
 
   // Scrolls only the chain table's own container, never the page — native
   // scrollIntoView({block:"center"}) walks up every scrollable ancestor
@@ -1141,13 +1318,18 @@ export default function Simulator() {
   // legMultiplier (qty * lotSize) is the same multiplier the theoretical
   // payoff curve and computeEstMargin already use — this brings Live P&L
   // in line with those instead of silently disagreeing with them.
+  // leg.ltpOverride (manually typed into the Positions table's LTP input)
+  // takes priority over the chain-derived value, same convention as
+  // StrategyBuilder.jsx's legLivePnl — every P&L number re-derives from
+  // whatever's actually shown in the LTP column.
   function legLivePnl(leg) {
     const row = displayRows.find((r) => r.strike === leg.strike);
-    const currentLtp = row
+    const liveLtp = row
       ? leg.type === "CE"
         ? row.ce?.ltp
         : row.pe?.ltp
       : null;
+    const currentLtp = leg.ltpOverride ?? liveLtp;
     if (currentLtp == null) return null;
     const diff =
       leg.action === "buy"
@@ -1161,6 +1343,63 @@ export default function Simulator() {
   // so unchecking a leg removes it from every metric without deleting the
   // row (see toggleLegActive).
   const activeLegs = useMemo(() => legs.filter((l) => l.active !== false), [legs]);
+
+  // The exact leg shape the replay endpoint wants (same mapping runSimulation
+  // does), memoised so the auto-preview effect below only re-fires when the
+  // strategy actually changes — not on every unrelated render.
+  const previewLegPayload = useMemo(
+    () =>
+      activeLegs.map(({ strike, type, action, qty, slPercent, tgPercent }) => ({
+        strike,
+        type,
+        action,
+        qty,
+        slPercent: slPercent ?? null,
+        tgPercent: tgPercent ?? null,
+      })),
+    [activeLegs],
+  );
+  const previewLegKey = JSON.stringify(previewLegPayload);
+
+  // Auto-build the Strategy Chart from the real stored per-minute prices as
+  // soon as a strategy exists and one of the strategy-chart tabs is open —
+  // no "Run Simulation" click needed just to SEE the chart. Debounced so
+  // rapid leg edits / scrubbing don't spam the endpoint. Skipped entirely
+  // once a real replay has been run (replayData drives the chart then).
+  useEffect(() => {
+    const wantsChart = chartTab === "strategy" || chartTab === "combined";
+    const expiry = chainData?.selectedExpiry;
+    if (replayData || !wantsChart || !previewLegPayload.length || !selectedDate || !expiry) {
+      setPreviewReplay(null);
+      setPreviewLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setPreviewLoading(true);
+    const timer = setTimeout(() => {
+      runSimulatorReplay(symbol, {
+        date: selectedDate,
+        expiry,
+        legs: previewLegPayload,
+        entryTime: currentTime,
+      })
+        .then((res) => {
+          if (!cancelled) setPreviewReplay(res);
+        })
+        .catch(() => {
+          if (!cancelled) setPreviewReplay(null);
+        })
+        .finally(() => {
+          if (!cancelled) setPreviewLoading(false);
+        });
+    }, 450);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // previewLegKey stands in for previewLegPayload (new array each render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replayData, chartTab, previewLegKey, selectedDate, chainData?.selectedExpiry, symbol, currentTime]);
 
   // Positions toolbar — same pattern as StrategyBuilder.jsx: reorder toggle,
   // a lots stepper that scales every leg at once, and a combined live P&L
@@ -1187,7 +1426,6 @@ export default function Simulator() {
     maxProfit,
     maxLoss,
     netGreeks,
-    currentPnl,
     pop,
     expectedMove,
     estMargin,
@@ -1200,7 +1438,6 @@ export default function Simulator() {
       maxProfit: null,
       maxLoss: null,
       netGreeks: null,
-      currentPnl: null,
       pop: null,
       expectedMove: null,
       estMargin: null,
@@ -1245,21 +1482,12 @@ export default function Simulator() {
         : null;
       const marginVal = computeEstMargin(activeLegs, displaySpot);
 
-      const closest = curveData.length
-        ? curveData.reduce((a, b) =>
-            Math.abs(b.price - displaySpot) < Math.abs(a.price - displaySpot)
-              ? b
-              : a,
-          )
-        : { pnl: 0 };
-
       return {
         curve: curveData,
         breakevens: breakEvs,
         maxProfit: mxProf,
         maxLoss: mxLoss,
         netGreeks: netGrks,
-        currentPnl: closest.pnl,
         pop: popVal,
         expectedMove: expMv,
         estMargin: marginVal,
@@ -1280,6 +1508,17 @@ export default function Simulator() {
     liveChain,
   ]);
 
+  // "Strategy P&L" must always track the position's real P&L — never the
+  // Black-Scholes mark-to-market curve estimate. Once a replay has been run,
+  // the backend's replay series already carries the exact real total P&L
+  // (SL/TG-aware, from actual stored option prices) for the scrubbed minute.
+  // Before any replay exists (still editing legs), fall back to totalLivePnl
+  // — the same real LTP-diff-based P&L the Positions table's "Total P&L"
+  // shows — not the theoretical curve.
+  const strategyPnl = replayData
+    ? (replayData.series[cursor]?.pnl ?? null)
+    : totalLivePnl;
+
   // Shared between the standalone "Strategy Chart" tab and the top half of
   // "Strategy Chart + NIFTY Chart" — gates on "no positions yet" here (a
   // page-level concept); StrategyChart itself handles "not replayed yet" /
@@ -1293,26 +1532,45 @@ export default function Simulator() {
         </div>
       );
     }
+    // Once a real replay has run it drives the chart (scrubbable); until then
+    // the auto-preview does, so the chart reflects the strategy immediately.
+    const chartData = replayData || previewReplay;
+    if (!chartData) {
+      return (
+        <div className="py-16 text-center text-xs text-gray-400">
+          <div className="mb-2 text-3xl">📈</div>
+          {previewLoading
+            ? "Building the strategy chart from real prices…"
+            : "Preparing the strategy chart…"}
+        </div>
+      );
+    }
     return (
       <StrategyChart
         ref={strategyChartRef}
-        replayData={replayData}
-        date={replayData?.date || selectedDate}
+        replayData={chartData}
+        date={chartData.date || selectedDate}
         currentTime={currentTime}
         height={height}
+        preview={!replayData}
       />
     );
   }
 
   return (
     <div
-      className="bg-gray-50/40 w-full min-h-screen"
+      className={hideChrome ? "bg-gray-50/40 w-full" : "bg-gray-50/40 w-full min-h-screen"}
       style={{ fontFamily: "'Poppins', sans-serif" }}
     >
-      <div className="w-full px-5 pt-2">
+      <div className={hideChrome ? "w-full" : "w-full px-5 pt-2"}>
         <div className="w-full shrink-0 flex flex-col">
           <div className="rounded-xl border border-gray-300 bg-white p-2 shadow-sm">
             <div className="flex items-center justify-between gap-2">
+              {hideChrome ? (
+                <div className="px-1 text-xs font-semibold text-gray-500">
+                  Historical replay · <span className="font-bold text-gray-800">{symbol}</span>
+                </div>
+              ) : (
               <div className="flex items-center gap-1.5 relative">
                 <button
                   onClick={() => cycleSymbol(-1)}
@@ -1373,6 +1631,7 @@ export default function Simulator() {
                   </>
                 )}
               </div>
+              )}
 
               <div className="flex items-center gap-2">
                 <button
@@ -1676,17 +1935,29 @@ export default function Simulator() {
       <div className="w-full flex gap-3 px-5 pt-2 min-h-screen">
         {/* Left Column: Option Chain Window */}
         {!hideChain && (
-        <div className="w-[650px] shrink-0 flex flex-col">
+        <div className="w-[600px] shrink-0 flex flex-col">
           {chainData && (
             <div className="mb-3 rounded-xl border border-gray-300 bg-white px-4 py-1 shadow-sm transition-all hover:shadow-md">
   
               {/* Row 1 */}
               <div className="flex items-center justify-between">
-                <div className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-gray-50">
+                <div
+                  className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-gray-50"
+                  title={
+                    displaySpotSource === "parity"
+                      ? `Spot derived from put-call parity at this minute (option_chain_history has no real intraday spot). Stored day value: ${formatPrice(displaySpotStored)}`
+                      : displaySpotSource === "ohlcv"
+                        ? "Spot from the stored 1-minute index candle"
+                        : "Stored end-of-day underlying price (no intraday data for this day)"
+                  }
+                >
                   <span className="text-xs font-medium text-gray-400">SPOT:</span>
                   <span className="font-bold tabular-nums text-xs text-gray-900 transition-colors group-hover:text-blue-600">
                     {formatPrice(displaySpot)}
                   </span>
+                  {displaySpotSource === "parity" && (
+                    <span className="text-[9px] font-semibold text-gray-400" title="">≈</span>
+                  )}
                 </div>
 
                 <div className="h-5 w-px bg-gray-200" />
@@ -1956,15 +2227,16 @@ export default function Simulator() {
                       <tr
                         key={row.strike}
                         ref={isAtm ? atmRowRef : null}
-                        className={`border-b border-gray-200/70 ${isAtm ? "bg-blue-50/70 font-semibold border-l-4 border-l-blue-500 ring-1 ring-inset ring-blue-200" : "hover:bg-gray-50/80"}`}
+                        className={`border-b border-gray-200/70 ${isAtm ? "bg-blue-50/70 font-semibold border-l-4 border-l-blue-500 ring-1 ring-inset ring-blue-200" : row._anyStale ? "bg-amber-50/40 hover:bg-amber-50/70" : "hover:bg-gray-50/80"}`}
                       >
-                        {columns.gamma && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.gamma)}</td>}
-                        {columns.vega && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.vega)}</td>}
-                        {columns.theta && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.theta)}</td>}
-                        {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.iv != null ? `${row.ce.iv.toFixed(1)}%` : "-"}</td>}
+                        {columns.gamma && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.gamma)}<StaleBadge stale={row.ce?._gammaStale} /></td>}
+                        {columns.vega && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.vega)}<StaleBadge stale={row.ce?._vegaStale} /></td>}
+                        {columns.theta && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.theta)}<StaleBadge stale={row.ce?._thetaStale} /></td>}
+                        {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.iv != null ? `${row.ce.iv.toFixed(1)}%` : "-"}<StaleBadge stale={row.ce?._ivStale} /></td>}
                         {columns.callDelta && (
                           <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-amber-50" : ""}`}>
                             {formatDelta(row.ce?.delta)}
+                            <StaleBadge stale={row.ce?._deltaStale} />
                           </td>
                         )}
                         <td className={`group px-1.5 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-amber-50" : ""}`}>
@@ -1981,6 +2253,7 @@ export default function Simulator() {
                             }`}
                           >
                             {formatPrice(row.ce?.ltp)}
+                            <StaleBadge stale={row.ce?._ltpStale} label="no stored price at this minute — showing the last recorded value" />
                             {isAtm && <span className="text-[8px] font-bold tracking-wide">ATM</span>}
                           </span>
                           <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white">
@@ -2010,8 +2283,9 @@ export default function Simulator() {
                           </div>
                         </td>
                         {columns.oi && (
-                          <td className={`p-0 tabular-nums ${ceItm ? "bg-amber-50" : ""}`}>
+                          <td className={`relative p-0 tabular-nums ${ceItm ? "bg-amber-50" : ""}`}>
                             <OiBar value={row.ce?.oi} max={maxCeOi} side="ce" />
+                            {row.ce?._oiStale && <span className="absolute right-0.5 top-0.5"><StaleBadge stale label="no stored OI at this minute — last recorded value" /></span>}
                           </td>
                         )}
                         <td className="py-1.5 text-center bg-gray-50/40 border-x border-gray-200">
@@ -2031,8 +2305,9 @@ export default function Simulator() {
                           </span>
                         </td>
                         {columns.oi && (
-                          <td className={`p-0 tabular-nums ${peItm ? "bg-amber-50" : ""}`}>
+                          <td className={`relative p-0 tabular-nums ${peItm ? "bg-amber-50" : ""}`}>
                             <OiBar value={row.pe?.oi} max={maxPeOi} side="pe" />
+                            {row.pe?._oiStale && <span className="absolute left-0.5 top-0.5"><StaleBadge stale label="no stored OI at this minute — last recorded value" /></span>}
                           </td>
                         )}
                         <td className={`group px-1.5 py-1.5 text-left tabular-nums relative ${peItm ? "bg-amber-50" : ""}`}>
@@ -2049,6 +2324,7 @@ export default function Simulator() {
                             }`}
                           >
                             {formatPrice(row.pe?.ltp)}
+                            <StaleBadge stale={row.pe?._ltpStale} label="no stored price at this minute — showing the last recorded value" />
                             {isAtm && <span className="text-[8px] font-bold tracking-wide">ATM</span>}
                           </span>
                           <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white">
@@ -2080,12 +2356,13 @@ export default function Simulator() {
                         {columns.callDelta && (
                           <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-amber-50" : ""}`}>
                             {formatDelta(row.pe?.delta)}
+                            <StaleBadge stale={row.pe?._deltaStale} />
                           </td>
                         )}
-                        {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.pe?.iv != null ? `${row.pe.iv.toFixed(1)}%` : "-"}</td>}
-                        {columns.theta && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.pe?.theta)}</td>}
-                        {columns.vega && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.pe?.vega)}</td>}
-                        {columns.gamma && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.pe?.gamma)}</td>}
+                        {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.pe?.iv != null ? `${row.pe.iv.toFixed(1)}%` : "-"}<StaleBadge stale={row.pe?._ivStale} /></td>}
+                        {columns.theta && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.pe?.theta)}<StaleBadge stale={row.pe?._thetaStale} /></td>}
+                        {columns.vega && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.pe?.vega)}<StaleBadge stale={row.pe?._vegaStale} /></td>}
+                        {columns.gamma && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.pe?.gamma)}<StaleBadge stale={row.pe?._gammaStale} /></td>}
                       </tr>
                     );
                   })}
@@ -2176,13 +2453,24 @@ export default function Simulator() {
             </div>
           )}
 
+          <SquareOffAlertBanner
+            alert={squareOffAlert}
+            onDismiss={() => setSquareOffAlert(null)}
+            context="replay"
+          />
+
           <div className="mb-4 flex gap-4 items-stretch">
             {legs.length > 0 && (
               <div className="w-48 shrink-0 flex flex-col justify-between rounded-xl border border-gray-300 bg-white p-4 shadow-sm space-y-3">
                 <Stat
                   label="Strategy P&L"
-                  value={formatPrice(currentPnl)}
-                  tone={currentPnl >= 0 ? "positive" : "negative"}
+                  value={formatPrice(strategyPnl)}
+                  tone={strategyPnl >= 0 ? "positive" : "negative"}
+                  hint={
+                    replayData
+                      ? "Real total position P&L at this instant, from actual stored option prices (accounts for any SL/TG leg exits)"
+                      : "Estimated mark-to-market P&L — run the simulation for the real total position P&L"
+                  }
                 />
                 <Stat
                   label="Est. Margin"
@@ -2221,9 +2509,22 @@ export default function Simulator() {
                 <Stat
                   label="Breakeven Thresholds"
                   value={
-                    breakevens && breakevens.length
-                      ? breakevens.join(", ")
-                      : "None"
+                    breakevens && breakevens.length ? (
+                      <div className="space-y-0.5">
+                        {breakevens.map((be, i) => (
+                          <div key={i}>
+                            {formatPrice(be)}
+                            {displaySpot ? (
+                              <span className="ml-1 font-normal text-gray-400">
+                                ({formatPercent(((be - displaySpot) / displaySpot) * 100)})
+                              </span>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      "None"
+                    )
                   }
                 />
                 <Stat
@@ -2409,8 +2710,8 @@ export default function Simulator() {
                         <th className="px-4 py-2.5 text-right font-medium">
                           Live P&L
                         </th>
-                        <th className="px-4 py-2.5 text-right font-medium">
-                          Lots
+                        <th className="px-4 py-2.5 text-right font-medium" title="Real per-lot share count for this symbol — use the Lots stepper above to change position size">
+                          Lot Size
                         </th>
                         <th className="px-4 py-2.5 text-right font-medium" title="Approximation: 15% of notional (spot × lot size × lots) on short legs only — same formula Paper Trade uses for real margin, not real SPAN margin">
                           Margin
@@ -2426,11 +2727,12 @@ export default function Simulator() {
                         const row = displayRows.find(
                           (r) => r.strike === leg.strike,
                         );
-                        const currentLtp = row
+                        const liveLtp = row
                           ? leg.type === "CE"
                             ? row.ce?.ltp
                             : row.pe?.ltp
                           : null;
+                        const currentLtp = leg.ltpOverride ?? liveLtp;
                         const livePnl = legLivePnl(leg);
                         const included = leg.active !== false;
                         const canPickStrike = leg.expiry === chainData?.selectedExpiry;
@@ -2511,13 +2813,27 @@ export default function Simulator() {
                                 </span>
                               )}
                             </td>
-                            <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">
-                              {formatPrice(leg.premium)}
+                            <td className="px-4 py-2.5 text-right">
+                              <input
+                                type="number"
+                                step="0.05"
+                                value={leg.premium}
+                                disabled={!!replayData}
+                                onChange={(e) => updateLeg(leg.id, { premium: Number(e.target.value) })}
+                                title="Entry price — editable, overrides what was captured when the leg was added"
+                                className="w-20 rounded-lg border border-gray-200 px-2 py-1 text-right tabular-nums text-gray-800 focus:border-blue-500 outline-none disabled:opacity-50"
+                              />
                             </td>
-                            <td className="px-4 py-2.5 text-right tabular-nums text-gray-900">
-                              {currentLtp != null
-                                ? formatPrice(currentLtp)
-                                : "-"}
+                            <td className="px-4 py-2.5 text-right">
+                              <input
+                                type="number"
+                                step="0.05"
+                                value={currentLtp ?? ""}
+                                disabled={!!replayData}
+                                onChange={(e) => updateLeg(leg.id, { ltpOverride: e.target.value === "" ? null : Number(e.target.value) })}
+                                title="LTP — editable, overrides the chain price for this leg's P&L/margin. Clear to resume following the chain."
+                                className={`w-20 rounded-lg border px-2 py-1 text-right tabular-nums outline-none focus:border-blue-500 disabled:opacity-50 ${leg.ltpOverride != null ? "border-amber-300 bg-amber-50 text-gray-900" : "border-gray-200 text-gray-900"}`}
+                              />
                             </td>
                             <td
                               className={`px-4 py-2.5 text-right font-bold tabular-nums ${livePnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}
@@ -2525,28 +2841,12 @@ export default function Simulator() {
                               {livePnl != null ? formatPrice(livePnl) : "-"}
                             </td>
                             <td className="px-4 py-2.5 text-right">
-                              <div className="inline-flex items-center gap-1.5">
-                                <button
-                                  onClick={() => updateQty(leg.id, leg.qty - 1)}
-                                  disabled={!!replayData || leg.qty <= 1}
-                                  className="rounded border border-gray-300 px-1.5 py-0.5 text-[11px] font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-30"
-                                >
-                                  −
-                                </button>
-                                <span className="w-5 text-center tabular-nums font-semibold text-gray-800">
-                                  {leg.qty}
-                                </span>
-                                <button
-                                  onClick={() => updateQty(leg.id, leg.qty + 1)}
-                                  disabled={!!replayData}
-                                  className="rounded border border-gray-300 px-1.5 py-0.5 text-[11px] font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-30"
-                                >
-                                  +
-                                </button>
-                              </div>
-                              <div className="mt-0.5 text-[9px] text-gray-400" title="Real per-lot share count for this symbol, as of this trade date — used for every P&L/margin number on this leg">
-                                Lot: {leg.lotSize ?? "1 (unknown)"}
-                              </div>
+                              <span
+                                className="font-bold tabular-nums text-gray-800"
+                                title="Real per-lot share count for this symbol, from lot_size_history, as of this trade date — used for every P&L/margin number on this leg. Change position size via the Lots stepper above."
+                              >
+                                {leg.lotSize ?? "1 (unknown)"}
+                              </span>
                             </td>
                             <td className="px-4 py-2.5 text-right tabular-nums text-gray-700">
                               {leg.action === "sell" && displaySpot
@@ -2560,7 +2860,7 @@ export default function Simulator() {
                                 className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
                                 title={leg.slPercent != null || leg.tgPercent != null ? `SL ${leg.slPercent ?? "—"}% / TG ${leg.tgPercent ?? "—"}%` : "Set SL/TG"}
                               >
-                                ⚙
+                                <FiSettings size={13} />
                               </button>
                               {(leg.slPercent != null || leg.tgPercent != null) && (
                                 <div className="text-[9px] text-gray-400">SL {leg.slPercent ?? "—"}% / TG {leg.tgPercent ?? "—"}%</div>
@@ -2579,15 +2879,15 @@ export default function Simulator() {
                                   className="text-gray-400 hover:text-blue-600 transition disabled:opacity-30"
                                   title="Reset entry to current LTP"
                                 >
-                                  ⟳
+                                  <FiRefreshCw size={12} />
                                 </button>
                                 <button
                                   onClick={() => removeLeg(leg.id)}
                                   disabled={!!replayData}
-                                  className="text-gray-400 hover:text-rose-600 font-bold transition disabled:opacity-30"
+                                  className="text-gray-400 hover:text-rose-600 transition disabled:opacity-30"
                                   title="Remove leg"
                                 >
-                                  ✕
+                                  <FiTrash2 size={13} />
                                 </button>
                               </div>
                             </td>
@@ -2598,44 +2898,25 @@ export default function Simulator() {
                   </table>
                 </>
                 ) : tab === "greeks" ? (
-                  <table className="w-full border-collapse text-xs">
-                    <thead>
-                      <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-200">
-                        <th className="px-4 py-2.5 text-left font-medium">Leg Matrix</th>
-                        <th className="px-4 py-2.5 text-right font-medium">IV %</th>
-                        <th className="px-4 py-2.5 text-right font-medium">Delta</th>
-                        <th className="px-4 py-2.5 text-right font-medium">Gamma</th>
-                        <th className="px-4 py-2.5 text-right font-medium">Theta</th>
-                        <th className="px-4 py-2.5 text-right font-medium">Vega</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {legs.map((leg) => (
-                        <tr key={leg.id} className="hover:bg-gray-50/40 transition-colors">
-                          <td className="px-4 py-2.5 font-medium text-gray-700">
-                            {leg.action === "buy" ? "B" : "S"} {leg.strike} {leg.type}
-                          </td>
-                          <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.iv ?? "-"}</td>
-                          <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.delta ?? "-"}</td>
-                          <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.gamma ?? "-"}</td>
-                          <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.theta ?? "-"}</td>
-                          <td className="px-4 py-2.5 text-right tabular-nums text-gray-600">{leg.vega ?? "-"}</td>
-                        </tr>
-                      ))}
-                      {netGreeks && (
-                        <tr className="font-bold bg-blue-50/30 border-t-2 border-gray-200 text-gray-900">
-                          <td className="px-4 py-3">Net Risk Aggregates</td>
-                          <td className="px-4 py-3"></td>
-                          <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.delta || 0).toFixed(3)}</td>
-                          <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.gamma || 0).toFixed(6)}</td>
-                          <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.theta || 0).toFixed(3)}</td>
-                          <td className="px-4 py-3 text-right tabular-nums text-blue-600">{(netGreeks.vega || 0).toFixed(3)}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
+                  <PortfolioGreeksTable legs={legs} netGreeks={netGreeks} />
                 ) : (
-                  <div className="divide-y divide-gray-200">
+                  <div>
+                    {/* Reset Workspace previously only ever appeared in the "Positions"
+                        tab's own toolbar — a user who archived their last open leg
+                        (auto-switches here, see selectDate) and stayed on this tab had
+                        no way to see the button at all. Same resetWorkspace() function,
+                        same confirm() guard covering both legs and this journal. */}
+                    {upcomingPositions.length > 0 && (
+                      <div className="flex items-center justify-end border-b border-gray-200 bg-gray-50/40 px-4 py-2 text-[11px]">
+                        <button
+                          onClick={resetWorkspace}
+                          className="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-600 hover:bg-gray-100"
+                        >
+                          Reset Workspace
+                        </button>
+                      </div>
+                    )}
+                    <div className="divide-y divide-gray-200">
                     {upcomingPositions.length === 0 ? (
                       <div className="px-4 py-10 text-center text-xs text-gray-400">
                         Positions you build get archived here the moment you move to a different date — nothing archived yet.
@@ -2646,70 +2927,79 @@ export default function Simulator() {
                           (sum, leg) => sum + (leg.action === "buy" ? -1 : 1) * leg.premium * legMultiplier(leg),
                           0
                         );
+                        // Buy legs first, then sell legs, each on its own
+                        // proper row (not comma-joined) — a multi-leg
+                        // spread's long vs. short side needs to be readable
+                        // leg-by-leg, not squeezed into a paragraph.
+                        const orderedEntryLegs = [
+                          ...entry.legs.filter((leg) => leg.action === "buy"),
+                          ...entry.legs.filter((leg) => leg.action === "sell"),
+                        ];
                         return (
                           <div key={entry.id}>
-                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-gray-50/60 px-4 py-2 text-[11px]">
+                            <div className="flex flex-wrap items-center justify-between gap-2 bg-gray-50/60 px-4 py-2 text-[11px]">
                               <div className="font-semibold text-gray-700">
                                 {entry.date}
                                 <span className="ml-2 font-normal text-gray-400">
                                   {entry.legs.length} leg{entry.legs.length > 1 ? "s" : ""}
                                 </span>
                               </div>
-                              <div>
-                                <span className="text-gray-400">Net {netCost >= 0 ? "Credit" : "Debit"}: </span>
-                                <span className={`font-bold tabular-nums ${netCost >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                                  {formatPrice(Math.abs(netCost))}
-                                </span>
+                              <div className="flex items-center gap-3">
+                                <div>
+                                  <span className="text-gray-400">Net {netCost >= 0 ? "Credit" : "Debit"}: </span>
+                                  <span className={`font-bold tabular-nums ${netCost >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                                    {formatPrice(Math.abs(netCost))}
+                                  </span>
+                                </div>
+                                <button
+                                  onClick={() => removeUpcomingPosition(entry.id)}
+                                  title="Remove this entry"
+                                  className="rounded p-1 text-gray-400 hover:bg-rose-50 hover:text-rose-600 transition"
+                                >
+                                  <FiTrash2 size={13} />
+                                </button>
                               </div>
                             </div>
-                            <table className="w-full border-collapse text-xs">
-                              <thead>
-                                <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-200">
-                                  <th className="px-4 py-2 text-left font-medium">Action</th>
-                                  <th className="px-4 py-2 text-left font-medium">Type</th>
-                                  <th className="px-4 py-2 text-right font-medium">Strike</th>
-                                  <th className="px-4 py-2 text-right font-medium">Lots</th>
-                                  <th className="px-4 py-2 text-right font-medium">Entry Price</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-gray-200">
-                                {entry.legs.map((leg) => (
-                                  <tr key={leg.id}>
-                                    <td className="px-4 py-2">
-                                      <span
-                                        className={`rounded-md px-2 py-0.5 text-[10px] font-bold text-white shadow-sm ${
-                                          leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"
-                                        }`}
-                                      >
-                                        {leg.action === "buy" ? "BUY" : "SELL"}
-                                      </span>
-                                    </td>
-                                    <td className="px-4 py-2">
-                                      <span
-                                        className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
-                                          leg.type === "CE" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
-                                        }`}
-                                      >
-                                        {leg.type}
-                                      </span>
-                                    </td>
-                                    <td className="px-4 py-2 text-right font-bold tabular-nums text-gray-900">
-                                      {leg.strike}
-                                    </td>
-                                    <td className="px-4 py-2 text-right tabular-nums text-gray-700">
-                                      {leg.qty}
-                                    </td>
-                                    <td className="px-4 py-2 text-right tabular-nums text-gray-700">
-                                      {formatPrice(leg.premium)}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
+                            <div className="divide-y divide-gray-100">
+                              {orderedEntryLegs.map((leg) => (
+                                <div key={leg.id} className="flex items-center gap-3 px-4 py-1.5 text-[11px]">
+                                  <span
+                                    className={`w-11 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-bold text-white shadow-sm ${
+                                      leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"
+                                    }`}
+                                  >
+                                    {leg.action === "buy" ? "BUY" : "SELL"}
+                                  </span>
+                                  <span
+                                    className={`w-8 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-bold ${
+                                      leg.type === "CE" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
+                                    }`}
+                                  >
+                                    {leg.type}
+                                  </span>
+                                  <span className="font-bold tabular-nums text-gray-900">{leg.strike}</span>
+                                  <span className="text-gray-400">×{leg.qty} lot{leg.qty > 1 ? "s" : ""}</span>
+                                  <span className="ml-auto tabular-nums text-gray-600">
+                                    LTP {formatPrice(leg.premium)}
+                                  </span>
+                                  <span className="tabular-nums text-gray-400">
+                                    @ {leg.time ? String(leg.time).slice(0, 5) : "—"}
+                                  </span>
+                                  <button
+                                    onClick={() => removeUpcomingLeg(entry.id, leg.id)}
+                                    title="Remove this leg"
+                                    className="rounded p-1 text-gray-300 hover:bg-rose-50 hover:text-rose-600 transition"
+                                  >
+                                    <FiTrash2 size={12} />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         );
                       })
                     )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -2727,77 +3017,17 @@ export default function Simulator() {
         />
       )}
 
-      {slTgEditId != null && (() => {
-        const editingLeg = legs.find((l) => l.id === slTgEditId);
-        if (!editingLeg) return null;
-        // Same basis the backend replay actually checks against (see
-        // simulatorController.js's replay): % of THIS leg's own entry
-        // notional (entry price × qty × real lot size), not the whole
-        // strategy's combined cost. Shown as a real ₹ figure here so the %
-        // isn't entered blind.
-        const legNotional = editingLeg.premium != null ? Math.abs(editingLeg.premium * legMultiplier(editingLeg)) : null;
-        const slNum = slTgDraft.sl === "" ? null : Number(slTgDraft.sl);
-        const tgNum = slTgDraft.tg === "" ? null : Number(slTgDraft.tg);
-        const slAmount = slNum != null && legNotional != null ? (slNum / 100) * legNotional : null;
-        const tgAmount = tgNum != null && legNotional != null ? (tgNum / 100) * legNotional : null;
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={closeSlTgModal}>
-            <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-              <div className="mb-1 flex items-center justify-between">
-                <h3 className="text-sm font-bold text-gray-900">Stop Loss / Target</h3>
-                <button onClick={closeSlTgModal} className="text-gray-400 hover:text-gray-700" aria-label="Close">
-                  ✕
-                </button>
-              </div>
-              <div className="mb-4 text-xs text-gray-500">
-                <span className={`mr-1.5 rounded px-1.5 py-0.5 text-[10px] font-bold text-white ${editingLeg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"}`}>
-                  {editingLeg.action === "buy" ? "BUY" : "SELL"}
-                </span>
-                {symbol} {editingLeg.strike} {editingLeg.type} · Entry {formatPrice(editingLeg.premium)} · Lot {editingLeg.lotSize ?? "1 (unknown)"} × {editingLeg.qty}
-              </div>
-
-              <label className="mb-1 block text-xs font-medium text-gray-600">Stop Loss %</label>
-              <input
-                type="number"
-                min="0"
-                value={slTgDraft.sl}
-                onChange={(e) => setSlTgDraft((d) => ({ ...d, sl: e.target.value }))}
-                placeholder="e.g. 30"
-                className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-rose-500"
-              />
-              <div className="mb-3 text-[11px] text-gray-400">
-                {slAmount != null ? `≈ ${formatPrice(slAmount)} loss on this leg triggers it` : "% of this leg's own entry notional"}
-              </div>
-
-              <label className="mb-1 block text-xs font-medium text-gray-600">Target %</label>
-              <input
-                type="number"
-                min="0"
-                value={slTgDraft.tg}
-                onChange={(e) => setSlTgDraft((d) => ({ ...d, tg: e.target.value }))}
-                placeholder="e.g. 50"
-                className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-emerald-500"
-              />
-              <div className="mb-4 text-[11px] text-gray-400">
-                {tgAmount != null ? `≈ ${formatPrice(tgAmount)} profit on this leg triggers it` : "% of this leg's own entry notional"}
-              </div>
-
-              <div className="mb-4 rounded-lg bg-blue-50 p-2.5 text-[11px] text-blue-700">
-                Applied automatically when you Run Simulation — once this leg's own running P&L crosses either threshold, its P&L freezes at that minute while other legs keep going.
-              </div>
-
-              <div className="flex justify-end gap-2">
-                <button onClick={closeSlTgModal} className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50">
-                  Cancel
-                </button>
-                <button onClick={() => saveSlTgModal(editingLeg.id)} className="rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-700">
-                  Save
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {slTgEditId != null && (
+        <SlTgModal
+          leg={legs.find((l) => l.id === slTgEditId)}
+          symbol={symbol}
+          draft={slTgDraft}
+          onDraftChange={setSlTgDraft}
+          onClose={closeSlTgModal}
+          onSave={() => saveSlTgModal(slTgEditId)}
+          footer="replay"
+        />
+      )}
     </div>
   );
 }

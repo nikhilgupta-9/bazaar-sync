@@ -1,28 +1,52 @@
-/* Landing page theme tokens — scoped to `.landing-page` (Home.jsx's root),
-   deliberately NOT touching the app-wide `.dark` toggle theme in index.css
-   (ThemeContext.jsx). Same self-contained-palette precedent PaperTrade.jsx
-   already set: this page is always dark regardless of the site's light/dark
-   toggle, since a premium fintech landing page reads as one fixed look, not
-   a themeable one. Values follow the fxreplay.com-style spec given: near-
-   black background (not gray-black), white/muted-gray text, blue accent
-   reserved for primary CTAs and active states only. */
+/* Landing page theme tokens — scoped to `.landing-page` (Home.jsx's root).
+   The page's STRUCTURE (Hero, PinnedWalkthrough, FeatureCarousel, About) is
+   unchanged; only these color tokens now follow the site-wide light/dark
+   toggle (ThemeContext.jsx puts `.dark` on <html>), instead of being locked
+   to a single dark palette.
+
+   Light values are the defaults below (site light theme: near-white ground,
+   #111827 text, blue-600 accent). The `.dark .landing-page` block swaps in
+   the site's dark brand palette (index.css's `.dark` block: #030108 ground,
+   #f5f7fa text, green accent, #18202c borders) so the landing page matches
+   the rest of the app in both modes. The blue accent maps to green in dark
+   for the same reason every other `blue-600` in the app does. */
 .landing-page {
-    --landing-bg: #050505;
-    --landing-bg-alt: #0a0a0a;
-    --landing-text: #ffffff;
-    --landing-text-muted: #8a8f98;
-    --landing-accent: #2f6fed;
-    --landing-accent-hover: #4a80f5;
-    --landing-card-bg: rgba(255, 255, 255, 0.03);
-    --landing-card-bg-hover: rgba(255, 255, 255, 0.05);
-    --landing-card-border: rgba(255, 255, 255, 0.08);
+    --landing-bg: #f8f9fb;
+    --landing-bg-alt: #ffffff;
+    --landing-text: #111827;
+    --landing-text-muted: #5b6472;
+    --landing-accent: #2563eb;
+    --landing-accent-hover: #1d4ed8;
+    --landing-accent-text: #ffffff;
+    --landing-card-bg: #ffffff;
+    --landing-card-bg-hover: #f9fafb;
+    --landing-card-border: #e5e7eb;
+    --landing-card-border-hover: #d1d5db;
+    --landing-track: rgba(0, 0, 0, 0.06);
     --landing-card-radius: 18px;
+    --landing-cta-shadow: rgba(37, 99, 235, 0.28);
     --font-headline: "Lato", system-ui, "Segoe UI", sans-serif;
     --font-body: "Nunito Sans", system-ui, "Segoe UI", sans-serif;
 
     background: var(--landing-bg);
     color: var(--landing-text);
     font-family: var(--font-body);
+}
+
+.dark .landing-page {
+    --landing-bg: #030108;
+    --landing-bg-alt: #010814;
+    --landing-text: #f5f7fa;
+    --landing-text-muted: #8b93a7;
+    --landing-accent: #02ca3a;
+    --landing-accent-hover: #0be55c;
+    --landing-accent-text: #010814;
+    --landing-card-bg: rgba(255, 255, 255, 0.03);
+    --landing-card-bg-hover: rgba(255, 255, 255, 0.05);
+    --landing-card-border: rgba(255, 255, 255, 0.08);
+    --landing-card-border-hover: rgba(255, 255, 255, 0.14);
+    --landing-track: rgba(255, 255, 255, 0.06);
+    --landing-cta-shadow: rgba(2, 202, 58, 0.35);
 }
 
 .landing-page .eyebrow {
@@ -55,12 +79,12 @@
 
 .landing-page .landing-card:hover {
     background: var(--landing-card-bg-hover);
-    border-color: rgba(255, 255, 255, 0.14);
+    border-color: var(--landing-card-border-hover);
 }
 
 .landing-page .landing-cta {
     background: var(--landing-accent);
-    color: #ffffff;
+    color: var(--landing-accent-text);
     font-family: var(--font-body);
     transition: background 180ms ease, transform 180ms ease, box-shadow 180ms ease;
 }
@@ -68,7 +92,7 @@
 .landing-page .landing-cta:hover {
     background: var(--landing-accent-hover);
     transform: scale(1.03);
-    box-shadow: 0 8px 30px rgba(47, 111, 237, 0.35);
+    box-shadow: 0 8px 30px var(--landing-cta-shadow);
 }
 
 /* Floating micro-interaction badges (Hero/PinnedWalkthrough mockups) —
@@ -85,7 +109,8 @@
 }
 
 /* PinnedWalkthrough's bottom tab bar — active tab (driven by GSAP
-   ScrollTrigger progress) gets the white-pill/dark-text treatment. */
+   ScrollTrigger progress) gets the accent-pill treatment (reads in both
+   themes, unlike the old hardcoded white pill). */
 .landing-page .walkthrough-tab {
     color: var(--landing-text-muted);
     background: transparent;
@@ -93,8 +118,8 @@
     cursor: pointer;
 }
 .landing-page .walkthrough-tab.active-tab {
-    background: #ffffff;
-    color: #050505;
+    background: var(--landing-accent);
+    color: var(--landing-accent-text);
 }
 
 /* prefers-reduced-motion fallback for PinnedWalkthrough — stacked steps
