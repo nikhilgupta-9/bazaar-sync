@@ -16,8 +16,17 @@ machine, a long-running box — without dragging the whole server in.
 | Pipeline | Command | Source | Granularity | Depth |
 | --- | --- | --- | --- | --- |
 | Option chain (7 indices + ~210 F&O stocks) | `npm run option-chain -- <YEAR>` | NSE+BSE bhavcopy (contract discovery) + ICICI Breeze (minute data) | 1-minute CE/PE + Greeks | Breeze ≈ 3 years back |
+| Option chain, recent window | `npm run option-chain:upstox -- <YEAR>` | Upstox Expired Instruments (self-discovering, no bhavcopy needed) | 1-minute CE/PE + Greeks | Upstox ≈ last 6-11 months only |
 | Futures / "future chain" (index + stock futures) | `npm run futures -- <YEAR>` | NSE+BSE bhavcopy + ICICI Breeze | 1-minute OHLC + OI | Breeze ≈ 3 years back |
 | India VIX | `npm run vix -- <YEAR>` | ICICI Breeze | 1-minute OHLC | Breeze ≈ 3 years back |
+
+Both option-chain pipelines write to the **same** `option_chain_history` table
+(`ON DUPLICATE KEY UPDATE` — never a conflict, a later/more-granular source
+legitimately upgrades an earlier row for the same contract/minute). Use
+Upstox for the recent window it actually covers (no daily login needed,
+faster) and Breeze for everything older — see
+[COMMANDS.md](COMMANDS.md#typical-full-history-bootstrap-one-time) for the
+recommended order.
 
 All write year-by-year, month-by-month, with a verification pass after every
 month. All are resumable.
@@ -79,6 +88,30 @@ NIFTYNXT50 use **unverified** Breeze stock codes (`breeze/symbolMap.js`
 `INDEX_OVERRIDES`, all env-overridable) — if a run stores 0 minute rows for
 one of them while discovery found its contracts, that stock code is the
 first thing to fix.
+
+## Option chain — Upstox (recent window, no daily login)
+
+```bash
+node test/testUpstox.js NIFTY               # sanity check — confirms the token works + prints Upstox's real oldest-available expiry
+npm run option-chain:upstox -- 2025          # whole year (months outside Upstox's window just skip, logged)
+npm run option-chain:upstox -- 2025 --symbols=NIFTY,RELIANCE
+npm run option-chain:upstox -- 2025 --strikes-per-side=15
+```
+
+`UPSTOX_ACCESS_TOKEN` is long-lived (~1yr "extended" token, not a daily
+session) — this can run start to finish in one sitting, no re-login. Upstox
+discovers its own contracts (no bhavcopy discovery phase needed), but for
+**every liquid strike** (not just an ATM ± N window) it needs bhavcopy OI
+data already in `option_chain_history` for that month — run (or have
+already run) `npm run option-chain -- <YEAR> --skip-enrich` for the same
+range first. Without it, `upstox/enrich.js` falls back to a fixed
+`--strikes-per-side` window (default 10) and says so loudly.
+
+**Upstox's real retention is short** — confirmed both from Upstox's own docs
+("up to six months of historical expiries") and a live check (oldest
+available NIFTY expiry was 2024-10-03 as of 2026-09-11, ~11 months back).
+Months older than that report "0 expiries in range" and skip — expected, not
+a bug. For 2022 onward, use the Breeze pipeline above instead.
 
 ## Futures pipeline
 

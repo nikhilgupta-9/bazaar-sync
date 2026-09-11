@@ -4,9 +4,9 @@ Two homes for historical-data fetching:
 
 | | `data-downloader/` (this folder) | `server/` |
 | --- | --- | --- |
-| Source | ICICI Breeze (1-minute) + NSE/BSE bhavcopy (discovery) | Angel One SmartAPI |
-| Reaches back | ~3 years (Breeze's claimed limit) | weeks (current contracts' lifetime only) |
-| Auth | `BREEZE_API_SESSION` pasted daily by hand | automatic (TOTP) |
+| Source | ICICI Breeze (1-minute) + NSE/BSE bhavcopy (discovery), or Upstox for the recent window | Angel One SmartAPI |
+| Reaches back | Breeze ≈ 3 years; Upstox ≈ last 6-11 months only (confirmed live) | weeks (current contracts' lifetime only) |
+| Auth | Breeze: `BREEZE_API_SESSION` pasted daily by hand. Upstox: long-lived (~1yr) token, no daily login | automatic (TOTP) |
 | Run | by hand, occasionally | nightly cron + on-demand scripts |
 | Use it for | the deep 2023→now backfill | keeping data current going forward |
 
@@ -39,6 +39,22 @@ Per month: **discovery** (NSE+BSE bhavcopy → every contract that traded) →
 coverage report → `data/breeze-pipeline-reports/<ym>.json`).
 Enrich burns Breeze's 5,000-calls/day budget fast — it stops mid-month and
 tells you to re-run tomorrow. Repeat daily until the year is done.
+
+### Option chain, recent window (Upstox, no daily login) → `option_chain_history`
+
+```bash
+node test/testUpstox.js NIFTY                    # sanity check — do this first
+npm run option-chain:upstox -- 2025              # whole year (Upstox's own window applies)
+npm run option-chain:upstox -- 2025 --symbols=NIFTY
+```
+
+Writes the same table as the Breeze pipeline above — no conflict, ever
+(`ON DUPLICATE KEY UPDATE`). No daily session paste (`UPSTOX_ACCESS_TOKEN` is
+long-lived). Upstox's real depth is only ~6-11 months back (confirmed live,
+2026-09-11) — use this for the recent window, Breeze/bhavcopy for anything
+older. For full-chain (every liquid strike, not just ATM±10) coverage, run
+`npm run option-chain -- <YEAR> --skip-enrich` for the same months first so
+bhavcopy's OI data is there to select strikes from.
 
 ### Futures / "future chain" (index + stock futures) → `futures_history`
 
@@ -125,10 +141,16 @@ futures history use `data-downloader/`'s `npm run futures`.
 
 ```bash
 # in data-downloader/ — repeat for each year 2023, 2024, 2025, 2026:
-npm run option-chain -- 2023      # re-run daily until it stops saying "budget exhausted"
-npm run futures     -- 2023       # then this
-npm run vix         -- 2023       # then this (fast)
+npm run option-chain -- 2023              # re-run daily until it stops saying "budget exhausted"
+npm run futures      -- 2023              # then this
+npm run vix          -- 2023              # then this (fast)
 # ...next year
+
+# once you're within Upstox's real window (~last 6-11 months), this is
+# faster and needs no daily login — either use it instead of the Breeze
+# option-chain command above for those months, or run it after as a
+# quick top-up:
+npm run option-chain:upstox -- 2025
 
 # in server/ — from then on, the nightly cron keeps everything current.
 # after any gap, catch up with:
