@@ -1,210 +1,171 @@
-# Bazaar Sync — Data Downloader
+# data-downloader/ — standalone historical-data downloader
 
-A **standalone**, self-contained package that does one job: pull NSE options
-market data into MySQL. No Express, no frontend, no auth, no Razorpay — just
-the data pipeline. Meant to run on its own machine (a cheap always-on box, a
-VPS, a spare laptop) so the main app's server doesn't have to carry the live
-WebSocket feed or long-running historical backfills.
+A separate Node app (own `package.json`, own `node_modules`, own `.env`)
+that pulls historical NSE F&O data into the same MySQL database the main
+Bazaar Sync app reads from. **Nothing here is imported by the Express
+server, the market worker, or anything on the live path** — it's run by
+hand, occasionally, from the command line. If this whole folder were
+deleted, the running app would not break.
 
-It writes to the **same MySQL tables** the main app reads
-(`option_chain_history`, `ohlcv_data`, and the `live_*` tiers) — point it at
-the main database over the network and the app picks the data up with no
-extra step.
+It was split out of the parent repo's `server/breeze-historical/` (moved
+here 2026-09-10) so the download tooling can run on its own — a different
+machine, a long-running box — without dragging the whole server in.
 
-Everything here is copied from the main repo's `server/` (same code, same
-behaviour) with the Express/API layer stripped out. The only local change is
-a small `utils/dateStrings.js` (an `addDays` helper lifted out of the main
-app's backtest engine so the scripts don't need to import it).
+## What it downloads
 
----
+| Pipeline | Command | Source | Granularity | Depth |
+| --- | --- | --- | --- | --- |
+| Option chain (7 indices + ~210 F&O stocks) | `npm run option-chain -- <YEAR>` | NSE+BSE bhavcopy (contract discovery) + ICICI Breeze (minute data) | 1-minute CE/PE + Greeks | Breeze ≈ 3 years back |
+| Option chain, recent window | `npm run option-chain:upstox -- <YEAR>` | Upstox Expired Instruments (self-discovering, no bhavcopy needed) | 1-minute CE/PE + Greeks | Upstox ≈ last 6-11 months only |
+| Futures / "future chain" (index + stock futures) | `npm run futures -- <YEAR>` | NSE+BSE bhavcopy + ICICI Breeze | 1-minute OHLC + OI | Breeze ≈ 3 years back |
+| India VIX | `npm run vix -- <YEAR>` | ICICI Breeze | 1-minute OHLC | Breeze ≈ 3 years back |
 
-## What's included
+Both option-chain pipelines write to the **same** `option_chain_history` table
+(`ON DUPLICATE KEY UPDATE` — never a conflict, a later/more-granular source
+legitimately upgrades an earlier row for the same contract/minute). Use
+Upstox for the recent window it actually covers (no daily login needed,
+faster) and Breeze for everything older — see
+[COMMANDS.md](COMMANDS.md#typical-full-history-bootstrap-one-time) for the
+recommended order.
 
-| Capability | Entry point | Source | Depth / granularity |
-| --- | --- | --- | --- |
-| **Live tick feed** (Angel One SmartAPI WebSocket) | `npm run worker` | Angel One | today, ~minute-resolution rows + 5s greeks |
-| **Historical backfill — Upstox** | `npm run backfill:upstox` | Upstox Expired Instruments (Plus plan) | last ~6 months, 1-minute |
-| **Historical backfill — ICICI Breeze** | `npm run backfill:breeze` | ICICI Breeze | ~6mo–3yr back, 1-minute |
-| **Historical backfill — NSE + BSE Bhavcopy** | `npm run backfill:bhavcopy-all` | NSE / BSE free EOD archives | unlimited years, **daily/EOD only** |
+All write year-by-year, month-by-month, with a verification pass after every
+month. All are resumable.
 
-### Why Bhavcopy is bundled even though it wasn't asked for
-
-`backfillBreeze.js` **does not discover its own contracts** — it reads the
-`(expiry, strike)` rows already in `option_chain_history` (put there by the
-Bhavcopy backfill) and asks Breeze for 1-minute detail on exactly those. Run
-Breeze without Bhavcopy first and it stores nothing, silently. `backfillUpstox.js`
-also uses Bhavcopy's stored open-interest to pick which strikes are worth
-pulling (it falls back to a fixed ±N window if none is found). So NSE + BSE
-Bhavcopy come along as a hard prerequisite, not a bonus. They're free and
-need no credentials.
-
----
+**See [COMMANDS.md](COMMANDS.md) for the full command reference** — every
+command, what it fetches, which table it lands in, and the typical
+full-history bootstrap order (including the `server/` Angel One scripts that
+keep data current going forward).
 
 ## Setup
 
 ```bash
 cd data-downloader
 npm install
-
-cp .env.example .env
-#   -> fill in DB_* (required for everything)
-#   -> fill in ANGEL_* if you want the live worker
-#   -> fill in UPSTOX_* / BREEZE_* if you want those backfills
-
-# Only if this machine has its OWN dedicated database.
-# If DB_* points at the main app's DB, its schema already has these tables —
-# skip this.
-mysql -u root bazaar_sync < config/schema.sql
+cp .env.example .env          # then fill in DB + Breeze creds by hand
 ```
 
-Node 18+ (uses the built-in global `fetch`). `unzip` must be on `PATH` for
-the NSE Bhavcopy path (default on macOS/Linux).
+`BREEZE_API_SESSION` expires **daily** — Breeze has no automatic login. Get a
+fresh value each day via the login URL in `.env.example` before running
+anything that hits Breeze.
 
----
-
-## Live tick feed
+## Option-chain pipeline
 
 ```bash
-npm run worker
+npm run option-chain -- 2024                        # whole year, every completed month
+npm run option-chain -- 2024 --symbols=NIFTY,BANKNIFTY   # testing subset
+npm run option-chain -- 2024 --skip-enrich          # discovery + verify only (no Breeze calls)
+npm run option-chain -- 2024 --from-month=3         # start at March
 ```
 
-Logs in to Angel One (automatic TOTP), connects the WebSocket 2.0 feed,
-subscribes the three indices + India VIX + nearest futures + ~15 strikes
-either side of ATM per symbol for the nearest expiry, and bulk-inserts:
+Per month, in order:
 
-- `live_index_ticks` — one row/minute per index
-- `live_option_ticks` — one row/minute per option contract
-- `live_greeks_snapshots` — every 5s (IV + delta/gamma/theta/vega computed locally via Black-Scholes)
-- `pcr_snapshots` — every 60s per symbol
-- `oi_summary_snapshots` — every 60s per symbol+strike
+1. **discovery** (`optionchain/monthDiscovery.js`) — walks every trading day,
+   pulls NSE + BSE bhavcopy, upserts one EOD row per `(symbol, expiry,
+   strike)` that traded into `option_chain_history`. Breeze can't list
+   historical contracts, so this establishes "what existed". Free, no call
+   budget, reaches years back.
+2. **enrich** (`breeze/enrich.js`) — for every symbol found, asks Breeze for
+   1-minute CE/PE candles on each discovered contract + computes Greeks,
+   upserting minute rows over the EOD ones.
+3. **verify** (`optionchain/verifyMonth.js`) — per-symbol report: discovered
+   vs minute-enriched contract counts, weekend-expiry check, rows-past-expiry
+   check. Written to `data/breeze-pipeline-reports/<year>-<month>.json` with a
+   printed summary.
 
-It only produces data during NSE market hours (~09:15–15:30 IST). Outside
-that window it stays connected but idle. Run it under a process manager
-(pm2, systemd, `nohup`) and start it before the open — there is **no built-in
-scheduler here** (that lived in the main app's cron). A simple cron line:
+**Resumable.** Progress persists to `data/breeze-pipeline-progress.json`.
+Breeze's 5,000-calls/day cap is far below one month of the full ~215-symbol /
+every-strike / 1-minute universe, so the enrich phase routinely spends the
+day's budget mid-month, saves progress, and exits 0 telling you to re-run
+tomorrow — where it picks up exactly where it stopped. A full year is many
+real days of daily re-runs. That's ICICI's rate limit, not a bug.
 
-```
-45 8 * * 1-5   cd /path/to/data-downloader && npm run worker
-35 15 * * 1-5  pkill -f workers/marketWorker.js
-```
+Flags: `--from-month=N` `--to-month=N` `--symbols=A,B` `--skip-discovery`
+`--skip-enrich` `--skip-verify` `--stop-on-verify-fail` `--reset`.
 
-Graceful shutdown (SIGTERM/SIGINT) flushes the buffer and closes the pool
-before exiting.
+The 7 indices: NIFTY / BANKNIFTY / FINNIFTY / MIDCPNIFTY / NIFTYNXT50 (NSE,
+`NFO`) + SENSEX / BANKEX (BSE, `BFO`). The BSE two and MIDCPNIFTY /
+NIFTYNXT50 use **unverified** Breeze stock codes (`breeze/symbolMap.js`
+`INDEX_OVERRIDES`, all env-overridable) — if a run stores 0 minute rows for
+one of them while discovery found its contracts, that stock code is the
+first thing to fix.
 
-> **Only the nearest expiry per symbol is truly live** — Angel One's
-> ~1000-token-per-connection budget doesn't stretch further. Older expiries
-> are covered by the historical backfills below.
-
----
-
-## Historical backfills
-
-All backfills are **resumable** — every write is `ON DUPLICATE KEY UPDATE`,
-so re-running after an interruption just re-upserts. Run them in this order:
-
-### 1. Bhavcopy first (free, discovers which contracts existed)
+## Option chain — Upstox (recent window, no daily login)
 
 ```bash
-npm run backfill:bhavcopy-all -- 2            # NSE, ~2 years back, all symbols
-npm run backfill:bse-bhavcopy-all -- 2        # BSE (SENSEX/BANKEX), same
-# or one symbol / short range:
-npm run backfill:bhavcopy -- NIFTY 1
-node scripts/testBhavcopy.js                  # sanity-check one day first
+node test/testUpstox.js NIFTY               # sanity check — confirms the token works + prints Upstox's real oldest-available expiry
+npm run option-chain:upstox -- 2025          # whole year (months outside Upstox's window just skip, logged)
+npm run option-chain:upstox -- 2025 --symbols=NIFTY,RELIANCE
+npm run option-chain:upstox -- 2025 --strikes-per-side=15
 ```
 
-### 2. Upstox (last ~6 months, minute-level, needs Plus)
+`UPSTOX_ACCESS_TOKEN` is long-lived (~1yr "extended" token, not a daily
+session) — this can run start to finish in one sitting, no re-login. Upstox
+discovers its own contracts (no bhavcopy discovery phase needed), but for
+**every liquid strike** (not just an ATM ± N window) it needs bhavcopy OI
+data already in `option_chain_history` for that month — run (or have
+already run) `npm run option-chain -- <YEAR> --skip-enrich` for the same
+range first. Without it, `upstox/enrich.js` falls back to a fixed
+`--strikes-per-side` window (default 10) and says so loudly.
+
+**Upstox's real retention is short** — confirmed both from Upstox's own docs
+("up to six months of historical expiries") and a live check (oldest
+available NIFTY expiry was 2024-10-03 as of 2026-09-11, ~11 months back).
+Months older than that report "0 expiries in range" and skip — expected, not
+a bug. For 2022 onward, use the Breeze pipeline above instead.
+
+## Futures pipeline
 
 ```bash
-node scripts/testUpstoxInstrumentMaster.js    # confirm symbol->key mapping
-npm run backfill:upstox -- NIFTY 10                     # one symbol, ±10 strikes
-npm run backfill:upstox -- ALL 10 2026-03-01 2026-09-01 # all symbols, expiry window
+node test/testFutures.js NIFTY     # sanity check (bhavcopy futures rows + one Breeze contract)
+npm run futures -- 2024
+npm run futures -- 2024 --symbols=NIFTY,RELIANCE
 ```
 
-#### Year orchestrator — `backfill:year`
+Per month: **discovery** (`futures/monthDiscovery.js` — NSE+BSE bhavcopy
+IDF/STF rows → one EOD row per `(underlying, expiry)` in `futures_history`)
+→ **enrich** (`futures/enrich.js` — Breeze 1-minute futures candles per
+contract, `productType: "futures"`, no strike/right/Greeks) → **verify**
+(`futures/verifyMonth.js` → `data/futures-pipeline-reports/<ym>.json`). Same
+flags and resumability as the option-chain pipeline. Far fewer contracts than
+options (one series per `(underlying, expiry)`), so a year finishes in fewer
+daily runs.
 
-The self-driving version of the Upstox backfill: **you give it a year**, it
-walks the whole universe (7 indices, then ~210 F&O stocks) **month by month**,
-and after each month it queries `option_chain_history` to check the data
-actually landed — re-fetching any month that came back short before moving on.
-Fully resumable via `data/upstox-year-progress.json` (completed months are
-skipped on a re-run).
+## India VIX pipeline
 
 ```bash
-# see the plan without touching the API/DB
-npm run backfill:year -- 2026 --dry-run
-
-# the real run — one year, whole universe
-npm run backfill:year -- 2026
-
-# narrower slices
-npm run backfill:year -- 2026 --indices-only
-npm run backfill:year -- 2026 --only=NIFTY,BANKNIFTY --from-month=3
-npm run backfill:year -- 2026 --start-symbol=RELIANCE     # resume mid-universe
-
-# coverage report (read-only, queries the DB)
-npm run verify:year -- 2026
+node test/testVix.js                # sanity check — confirm Breeze returns real VIX candles
+npm run vix -- 2024                 # whole year
+npm run vix -- 2024 --from-month=6
 ```
 
-Per-month status is one of: `complete` (minute data verified), `partial`
-(some data, re-run to fill the rest), `no-data` (Upstox has no expiries for
-that month — **expected for anything older than ~6 months**), `error`
-(transient — retried next run).
+Per month: **download** (`vix/vixHistorical.js` — Breeze 1-minute India VIX
+candles → `ohlcv_data` with `symbol = 'INDIAVIX'`) → **verify**
+(`vix/run.js`'s `verifyVixMonth` — every expected trading day present? ~375
+candles per day? no multi-day gaps? → `data/vix-pipeline-reports/<ym>.json`).
+The verify step's trading calendar comes from `option_chain_history` NIFTY
+days if the option-chain pipeline has run for that month, else "every
+weekday".
 
-> **The ~6-month wall applies here too.** Upstox's expired-instruments API
-> does not serve data older than roughly 6 months. `backfill:year -- 2023`
-> will run, but every month Upstox can't serve is marked `no-data` and
-> skipped — it is not an error, and re-running won't change it. For 2023
-> minute data use Breeze (step 3); for 2023 EOD data use Bhavcopy (step 1).
-> If your Upstox account has a special extended-history arrangement, the
-> orchestrator picks it up automatically — it just asks `getExpiries` and
-> backfills whatever comes back.
+VIX is cheap on Breeze's budget (~15 calls/month) so a full year runs in one
+sitting. Still resumable via `data/vix-pipeline-progress.json`.
 
-Options: `--from-month=N` `--to-month=N` `--only=SYM,SYM` `--start-symbol=SYM`
-`--indices-only` `--stocks-only` `--strikes=N` `--attempts=N`
-`--min-minute-rows=N` `--force` `--dry-run`. The 7-index list and the
-`UNIVERSE_FILE` override are documented in `.env.example`.
+The Breeze stock code for India VIX (`INDIAVIX` / `NSE` / `cash`) is **not
+independently confirmed** — override via `BREEZE_VIX_STOCKCODE` /
+`BREEZE_VIX_EXCHANGE` / `BREEZE_VIX_PRODUCT` in `.env` if `testVix.js`
+returns 0 candles.
 
-### 3. Breeze (~6mo–3yr back, minute-level)
+## Vendored code
 
-**Breeze needs a fresh session token pasted into `.env` every day** — see
-[`breeze-historical/README.md`](breeze-historical/README.md) for the exact
-login-URL steps. Then:
+`lib/nseBhavcopy.js`, `lib/bseBhavcopy.js`, `lib/blackScholes.js`,
+`lib/logger.js` are **copies** of the parent repo's `server/services/…` /
+`server/utils/…` / `server/config/…` files (as of the 2026-09-10 split).
+Deliberate — this folder is standalone. If a bug is fixed in one of the
+parent's originals, port it here by hand (and vice versa).
 
-```bash
-node breeze-historical/testBreeze.js NIFTY    # one contract, verify auth + shape
-npm run backfill:breeze -- NIFTY              # one symbol
-npm run backfill:breeze-all                   # every symbol Bhavcopy found
-```
+## Where the data lands
 
-Breeze's hard limit is 5,000 API calls/day. `backfill:breeze-all` stops
-cleanly when the daily budget is spent and tells you to re-run tomorrow;
-across ~200 symbols a full multi-year enrichment takes many days of daily
-runs. This is ICICI's limit, not a bug.
-
----
-
-## Relationship to the main app
-
-- **Same DB, same tables.** Nothing here defines a table the main app doesn't
-  already have. `config/schema.sql` is a copy of the relevant slice of
-  `server/config/schema.sql`.
-- **No shared runtime.** This package never imports from `../server`. If the
-  main app changes one of these table shapes, update `config/schema.sql` here
-  and the corresponding `INSERT` in the copied script by hand.
-- **Safe to run alongside the main app's own worker — but don't.** Two live
-  workers on the same DB means double WebSocket subscriptions and double
-  writes. Pick one: either the main app runs its worker, or this machine
-  does, not both.
-
----
-
-## Verification status
-
-Every file here is a copy of code the main repo already exercises. In *this*
-package specifically, verified: `node --check` passes on all files, and the
-require graph resolves with `npm install`. **Not verified here:** a real
-Angel One WebSocket run, a real Upstox/Breeze backfill against live
-credentials, or writes against a real MySQL — do a one-symbol test run
-(`testBhavcopy.js`, `testBreeze.js`, `testUpstoxInstrumentMaster.js`) on the
-target machine before trusting a full backfill, exactly as the main repo's
-CLAUDE.md advises.
+- Option chain → `option_chain_history` (same table the backtest engine
+  reads; `ON DUPLICATE KEY UPDATE` on `(symbol, expiry, strike, trade_date,
+  trade_time)` — re-runs never duplicate).
+- India VIX → `ohlcv_data` (`symbol = 'INDIAVIX'`; unique on `(symbol,
+  trade_date, trade_time)`).

@@ -1,0 +1,200 @@
+// breeze/historicalService.js — wraps breezeconnect's
+// getHistoricalDatav2 for options, chunked to respect the 1,000-candle/call
+// cap and paced via rateLimiter.js.
+//
+// Response shape CONFIRMED (2026-07-20): testBreeze.js NIFTY returned 375
+// real 1-minute candles for a real contract — session/auth/response-shape
+// all verified against a live account, so backfillBreeze.js/
+// backfillBreezeAll.js are safe to run for real (see CLAUDE.md's Phase 7
+// "Verification status"). Originally written from the npm package's
+// documented method signature only (Breeze's domain wasn't reachable from
+// the sandbox this was first built in); parsing is still kept defensive
+// (matches known field-name variants, throws with the actual response keys
+// on a miss) as a safety net, not because the shape is still in doubt.
+//
+// Date/time convention: the documented Node.js example sends fromDate/
+// toDate/expiryDate as "YYYY-MM-DDTHH:mm:ss.000Z" strings that appear to
+// carry literal IST wall-clock digits with a "Z" suffix (not a real UTC
+// conversion — matches how other Indian broker SDKs do it). Built here via
+// plain template strings, never `new Date(...).toISOString()` (CLAUDE.md
+// Gotcha #12 — that would actually shift the clock).
+
+const { getBreeze } = require("./auth");
+const rateLimiter = require("./rateLimiter");
+const symbolMap = require("./symbolMap");
+const { addDays } = require("../lib/dates");
+
+const CHUNK_DAYS = Number(process.env.BREEZE_CHUNK_DAYS || 2); // 2 days * 375 1-min candles ≈ 750, safely under 1000
+
+const RIGHT_MAP = { CE: "call", PE: "put" };
+
+// Confirmed 2026-08-06: a real run hit "read ECONNRESET" straight from
+// breezeconnect's getHistoricalDatav2 (a pure network hiccup, unrelated to
+// the request's validity) with ZERO retry — every one of these permanently
+// failed that contract's chunk AND still burned one call against Breeze's
+// precious 4,800/day budget for nothing. Retry a few times, but ONLY for
+// error text that actually looks like a transport-level problem — anything
+// else (bad stock code, expired session, "daily budget spent" from
+// rateLimiter.throttle() before this even runs) should keep failing fast,
+// since retrying those just wastes more budget on a call that will never
+// succeed differently.
+const TRANSIENT_ERROR_PATTERN = /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|socket hang up|network|fetch failed/i;
+const CHUNK_RETRY_ATTEMPTS = Number(process.env.BREEZE_CHUNK_RETRY_ATTEMPTS || 3);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function callWithTransientRetry(fn, label) {
+    let lastErr;
+    for (let attempt = 1; attempt <= CHUNK_RETRY_ATTEMPTS; attempt++) {
+        try {
+            return await fn();
+        } catch (err) {
+            // breezeconnect's own errorException() throws a plain string on
+            // internal failures, not an Error — extract defensively (same
+            // quirk as backfillBreeze.js's catch blocks).
+            const msg = err instanceof Error ? err.message || "" : String(err);
+            lastErr = err;
+            if (!TRANSIENT_ERROR_PATTERN.test(msg) || attempt === CHUNK_RETRY_ATTEMPTS) throw err;
+            const delay = 1000 * attempt;
+            console.warn(`[breeze] ${label}: transient error (attempt ${attempt}/${CHUNK_RETRY_ATTEMPTS}) — retrying in ${delay}ms: ${msg.split("\n")[0]}`);
+            await sleep(delay);
+        }
+    }
+    throw lastErr;
+}
+
+function isoIst(dateStr, timeStr) {
+    return `${dateStr}T${timeStr}.000Z`;
+}
+
+/** Split [fromDateStr, toDateStr] into <=CHUNK_DAYS windows (inclusive), plain string date math. */
+function chunkDateRange(fromDateStr, toDateStr) {
+    const chunks = [];
+    let start = fromDateStr;
+    while (start <= toDateStr) {
+        let end = addDays(start, CHUNK_DAYS - 1);
+        if (end > toDateStr) end = toDateStr;
+        chunks.push([start, end]);
+        start = addDays(end, 1);
+    }
+    return chunks;
+}
+
+function pickField(row, candidates) {
+    const keys = Object.keys(row);
+    for (const c of candidates) {
+        const hit = keys.find((k) => k.toLowerCase() === c.toLowerCase());
+        if (hit !== undefined) return row[hit];
+    }
+    return undefined;
+}
+
+/** Handles both "2025-02-03T09:20:00.000Z" and "2025-02-03 09:20:00" shaped datetime fields. */
+function splitDateTime(raw) {
+    const s = String(raw);
+    const sep = s.includes("T") ? "T" : " ";
+    const [date, timePart] = s.split(sep);
+    return { date, time: (timePart || "00:00:00").slice(0, 8) };
+}
+
+function parseRows(rawRows) {
+    if (!rawRows.length) return [];
+    const sample = rawRows[0];
+    const dtField = ["datetime", "date_time", "date"].find((c) => Object.keys(sample).some((k) => k.toLowerCase() === c));
+    if (!dtField) {
+        throw new Error(`Breeze historical row has no recognizable datetime field. Actual keys: ${Object.keys(sample).join(", ")}`);
+    }
+
+    return rawRows.map((row) => {
+        const dtRaw = pickField(row, ["datetime", "date_time", "date"]);
+        const { date, time } = splitDateTime(dtRaw);
+        return {
+            date,
+            time,
+            open: Number(pickField(row, ["open"])) || null,
+            high: Number(pickField(row, ["high"])) || null,
+            low: Number(pickField(row, ["low"])) || null,
+            close: Number(pickField(row, ["close"])) || null,
+            volume: Number(pickField(row, ["volume"])) || 0,
+            oi: Number(pickField(row, ["open_interest", "openinterest", "oi"])) || 0,
+        };
+    });
+}
+
+/**
+ * 1-minute CE/PE candles for one option contract over an arbitrary date
+ * range, chunked internally to respect the 1,000-candle cap, paced via
+ * rateLimiter.throttle() to respect the 100/min + 5,000/day caps.
+ */
+async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fromDateStr, toDateStr, exchangeCode = "NFO" }) {
+    const breeze = await getBreeze();
+    const breezeRight = RIGHT_MAP[right];
+    if (!breezeRight) throw new Error(`Unknown right "${right}", expected CE or PE`);
+
+    // stockCode here is our NSE-style symbol (matches option_chain_history) —
+    // Breeze itself wants ICICI's own isec_stock_code, which differs from the
+    // NSE symbol for most stocks (see symbolMap.js header for why).
+    const isecStockCode = await symbolMap.resolveStockCode(stockCode);
+
+    const chunks = chunkDateRange(fromDateStr, toDateStr);
+    const all = [];
+    for (const [chunkFrom, chunkTo] of chunks) {
+        await rateLimiter.throttle();
+        const resp = await callWithTransientRetry(
+            () =>
+                breeze.getHistoricalDatav2({
+                    interval: "1minute",
+                    fromDate: isoIst(chunkFrom, "09:15:00"),
+                    toDate: isoIst(chunkTo, "15:30:00"),
+                    stockCode: isecStockCode,
+                    exchangeCode, // "NFO" (NSE F&O) by default; "BFO" for BSE index options (SENSEX/BANKEX)
+                    productType: "options",
+                    expiryDate: isoIst(expirySql, "07:00:00"), // per documented example's convention, unverified
+                    right: breezeRight,
+                    strikePrice: String(strike),
+                }),
+            `${stockCode} ${expirySql} ${strike}`
+        );
+
+        if (resp?.Error) throw new Error(`Breeze getHistoricalDatav2 error: ${resp.Error}`);
+        const rows = Array.isArray(resp?.Success) ? resp.Success : [];
+        all.push(...parseRows(rows));
+    }
+    return all.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+}
+
+/**
+ * 1-minute candles for ONE futures contract (index or stock future) over an
+ * arbitrary date range. Same chunking/pacing as getOptionMinuteCandles, but
+ * productType "futures" and no strike / no right. Breeze returns OHLC +
+ * volume + open_interest here (parseRows already handles the OI field).
+ */
+async function getFutureMinuteCandles({ stockCode, expirySql, fromDateStr, toDateStr, exchangeCode = "NFO" }) {
+    const breeze = await getBreeze();
+    const isecStockCode = await symbolMap.resolveStockCode(stockCode);
+
+    const chunks = chunkDateRange(fromDateStr, toDateStr);
+    const all = [];
+    for (const [chunkFrom, chunkTo] of chunks) {
+        await rateLimiter.throttle();
+        const resp = await callWithTransientRetry(
+            () =>
+                breeze.getHistoricalDatav2({
+                    interval: "1minute",
+                    fromDate: isoIst(chunkFrom, "09:15:00"),
+                    toDate: isoIst(chunkTo, "15:30:00"),
+                    stockCode: isecStockCode,
+                    exchangeCode, // "NFO" (NSE) / "BFO" (BSE: SENSEX, BANKEX)
+                    productType: "futures",
+                    expiryDate: isoIst(expirySql, "07:00:00"), // same convention as options, unverified
+                }),
+            `${stockCode} FUT ${expirySql}`
+        );
+
+        if (resp?.Error) throw new Error(`Breeze getHistoricalDatav2 error (futures): ${resp.Error}`);
+        const rows = Array.isArray(resp?.Success) ? resp.Success : [];
+        all.push(...parseRows(rows));
+    }
+    return all.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+}
+
+module.exports = { getOptionMinuteCandles, getFutureMinuteCandles, chunkDateRange, isoIst, parseRows, callWithTransientRetry, TRANSIENT_ERROR_PATTERN };

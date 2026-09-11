@@ -1,17 +1,12 @@
-node_modules/
-
-# Environment — real secrets, never commit
+# Real secrets — never commit. Template is .env.example.
 .env
 .env.local
-.env.production
 
-# Winston log files
-logs/
+# Installed deps
+node_modules/
 
-# On-disk caches (all re-downloadable): Angel One scrip master (~40-80 MB),
-# Upstox instrument master, Breeze NSE scrip master + daily call counter,
-# Bhavcopy zip/csv archive
+# Runtime output — scrip-master caches, bhavcopy zips, progress files,
+# per-month verification reports, logs. All regenerable.
 data/
-
-# Mac
-.DS_Store
+logs/
+*.log
