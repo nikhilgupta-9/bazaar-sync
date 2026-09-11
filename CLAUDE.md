@@ -338,6 +338,16 @@ resumable:
   MIDCPNIFTY, NIFTYNXT50 on NSE (`NFO`); SENSEX, BANKEX on BSE (`BFO`). All
   except NIFTY/BANKNIFTY/FINNIFTY use **unverified** env-overridable Breeze
   stock codes (`breeze/symbolMap.js` `INDEX_OVERRIDES`).
+- **Futures / "future chain"** (added 2026-09-10) — `npm run futures -- <YEAR>`
+  (`futures/run.js`). The FUTIDX/FUTSTK counterpart to the option chain: per
+  month **discovery** (`futures/monthDiscovery.js` — NSE+BSE bhavcopy IDF/STF
+  rows → one EOD row per `(underlying, expiry)` in the new `futures_history`
+  table) → **enrich** (`futures/enrich.js` — Breeze `getFutureMinuteCandles`,
+  `productType: "futures"`, no strike/right/Greeks) → **verify**
+  (`futures/verifyMonth.js`). One OHLC+OI series per contract, far fewer
+  Breeze calls than options. `lib/nseBhavcopy.js` + `lib/bseBhavcopy.js`
+  gained `getDayFuturesRows`/`getDayFuturesBySymbol` (the vendored copies
+  only — the `server/services/` originals are untouched).
 - **India VIX** — `npm run vix -- <YEAR>` (`vix/run.js`). Per month:
   **download** (`vix/vixHistorical.js` — Breeze 1-minute India VIX candles →
   `ohlcv_data` with `symbol = 'INDIAVIX'`) → **verify** (every expected
@@ -348,13 +358,28 @@ resumable:
   `node test/testVix.js` first; override via `BREEZE_VIX_STOCKCODE` /
   `_EXCHANGE` / `_PRODUCT`.
 
+**Server side (Angel One) for futures — forward-fill only:** new
+`futures_history` table in `schema.sql`; `services/cron.js` nightly pull now
+also stores the nearest **index** future per symbol (`pullFuturesForDate`,
+try/caught so it never breaks the option pull); `scripts/backfillFutures.js`
+is a standalone on-demand recent backfill covering FUTIDX **and** FUTSTK
+(reads the Angel scrip master directly, reaches back weeks not years —
+`node scripts/backfillFutures.js ALL 30`). Deep futures history is
+`data-downloader/`'s job.
+
+**`data-downloader/COMMANDS.md`** is the full command→data→table reference
+(both apps) — start there.
+
 `historicalService.js` + `enrich.js` carry an `exchangeCode` param (NFO
 default / BFO for SENSEX/BANKEX). Verified so far: syntax, module wiring, DB
-connectivity from the new app, and the option-chain verify phase against the
-real dev DB (Aug 2026: 218 symbols EOD-only, NIFTY 48% minute coverage, 0
-rows past expiry). **Discovery + enrich + all VIX steps against live NSE/BSE/
-Breeze NOT yet run** — and `data-downloader/.env` still needs its Breeze
-credentials pasted in (DB creds are already there).
+connectivity, the option-chain verify phase against the real dev DB, and the
+futures discovery path end-to-end against a real cached bhavcopy file (2022
+old-format: 602 futures rows / 199 symbols parsed + stored + read back
+correctly). **Breeze enrich (options, futures, VIX) against a live session
+NOT yet run** — `data-downloader/.env` has DB creds but its
+`BREEZE_API_SESSION` was stale on 2026-09-11 (needs the daily browser paste).
+Server-side `backfillFutures.js` / the cron futures hook not yet run against
+live Angel One.
 
 **Verification status, honestly:** Angel One's pieces here were already
 verified (see Phase 6 above, plus the 2026-07-19 token fix — see Gotcha #13).

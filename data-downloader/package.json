@@ -5,9 +5,12 @@
   "description": "Standalone historical-data downloader for Bazaar Sync — pulls NSE F&O option-chain (via ICICI Breeze, 1-minute) and India VIX into the shared MySQL database, year by year. Not part of the Express server or the live path.",
   "scripts": {
     "option-chain": "node optionchain/run.js",
+    "futures": "node futures/run.js",
     "vix": "node vix/run.js",
     "enrich": "node breeze/enrich.js",
+    "enrich:futures": "node futures/enrich.js",
     "test:breeze": "node test/testBreeze.js",
+    "test:futures": "node test/testFutures.js",
     "test:vix": "node test/testVix.js",
     "test:symbolmap": "node test/testSymbolMap.js"
   },

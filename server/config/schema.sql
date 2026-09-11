@@ -34,7 +34,22 @@ CREATE TABLE IF NOT EXISTS option_chain_history (
   -- `ALTER TABLE option_chain_history ADD INDEX idx_symbol_date_time
   -- (symbol, trade_date, trade_time);` run by hand — schema.sql's
   -- CREATE TABLE IF NOT EXISTS does not retrofit already-created tables.
-  KEY idx_symbol_date_time (symbol, trade_date, trade_time)
+  KEY idx_symbol_date_time (symbol, trade_date, trade_time),
+  -- Added 2026-09-06: getChainAtTime's expiry-discovery query
+  -- (SELECT DISTINCT expiry WHERE symbol=? AND trade_date=?) runs on every
+  -- Simulator page load AND every date/expiry navigation. Despite the
+  -- earlier note above, the optimizer had since stopped picking
+  -- idx_symbol_date_time for it and fell back to scanning every row for the
+  -- symbol via uniq_snapshot (~2.4s measured on the real dev DB, NIFTY).
+  -- This 3-column covering index is exactly ordered for that WHERE + DISTINCT
+  -- and takes it to ~40ms. (The middle note's "(symbol, trade_date, expiry,
+  -- trade_time) was tried and was slower" was a DIFFERENT, 4-column index —
+  -- the trailing trade_time forced a filesort for listDates' GROUP BY; this
+  -- 3-column variant carries no trade_time and is only used for expiry
+  -- discovery, not the GROUP BY.) Existing DBs need it by hand:
+  -- `ALTER TABLE option_chain_history ADD INDEX idx_sym_date_expiry
+  -- (symbol, trade_date, expiry);`
+  KEY idx_sym_date_expiry (symbol, trade_date, expiry)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS ohlcv_data (
@@ -47,6 +62,37 @@ CREATE TABLE IF NOT EXISTS ohlcv_data (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_candle (symbol, trade_date, trade_time),
   KEY idx_symbol_date (symbol, trade_date)
+) ENGINE=InnoDB;
+
+-- Futures ("future chain") — the FUTIDX/FUTSTK counterpart to
+-- option_chain_history. One row per (underlying, expiry) per minute:
+-- OHLC + volume + OI + OI-change, no strike / no CE-PE / no Greeks.
+-- Filled two ways, exactly mirroring the options tables:
+--   * historical (2023+): data-downloader/futures/run.js — NSE/BSE bhavcopy
+--     for contract+expiry discovery, then ICICI Breeze for 1-minute candles
+--   * forward (recent): server/services/cron.js nightly + scripts/backfillFutures.js,
+--     both via Angel One (getCandleData / getOIData on the FUTIDX/FUTSTK token)
+-- `symbol` is the underlying (NIFTY, RELIANCE, SENSEX, ...), NOT the
+-- contract name. underlying_price is the cash/spot price where a source
+-- provides it (bhavcopy's UndrlygPric), else NULL. Same
+-- ON DUPLICATE KEY UPDATE / no-duplicate-rows guarantee as
+-- option_chain_history (uniq below). Existing DBs just need this
+-- CREATE TABLE run once (it's IF NOT EXISTS-safe).
+CREATE TABLE IF NOT EXISTS futures_history (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  symbol VARCHAR(20) NOT NULL,
+  expiry DATE NOT NULL,
+  trade_date DATE NOT NULL,
+  trade_time TIME NOT NULL,
+  open DECIMAL(12,2), high DECIMAL(12,2), low DECIMAL(12,2), close DECIMAL(12,2),
+  volume BIGINT,
+  oi BIGINT,
+  oi_change BIGINT,
+  underlying_price DECIMAL(12,2),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_fut_snapshot (symbol, expiry, trade_date, trade_time),
+  KEY idx_fut_backtest_range (symbol, expiry, trade_date, trade_time),
+  KEY idx_fut_symbol_date_time (symbol, trade_date, trade_time)
 ) ENGINE=InnoDB;
 
 -- role powers the admin panel (Phase 9): 'admin' unlocks GET /api/admin/*

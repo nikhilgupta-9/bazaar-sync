@@ -162,4 +162,39 @@ async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fro
     return all.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
 }
 
-module.exports = { getOptionMinuteCandles, chunkDateRange, isoIst, parseRows, callWithTransientRetry, TRANSIENT_ERROR_PATTERN };
+/**
+ * 1-minute candles for ONE futures contract (index or stock future) over an
+ * arbitrary date range. Same chunking/pacing as getOptionMinuteCandles, but
+ * productType "futures" and no strike / no right. Breeze returns OHLC +
+ * volume + open_interest here (parseRows already handles the OI field).
+ */
+async function getFutureMinuteCandles({ stockCode, expirySql, fromDateStr, toDateStr, exchangeCode = "NFO" }) {
+    const breeze = await getBreeze();
+    const isecStockCode = await symbolMap.resolveStockCode(stockCode);
+
+    const chunks = chunkDateRange(fromDateStr, toDateStr);
+    const all = [];
+    for (const [chunkFrom, chunkTo] of chunks) {
+        await rateLimiter.throttle();
+        const resp = await callWithTransientRetry(
+            () =>
+                breeze.getHistoricalDatav2({
+                    interval: "1minute",
+                    fromDate: isoIst(chunkFrom, "09:15:00"),
+                    toDate: isoIst(chunkTo, "15:30:00"),
+                    stockCode: isecStockCode,
+                    exchangeCode, // "NFO" (NSE) / "BFO" (BSE: SENSEX, BANKEX)
+                    productType: "futures",
+                    expiryDate: isoIst(expirySql, "07:00:00"), // same convention as options, unverified
+                }),
+            `${stockCode} FUT ${expirySql}`
+        );
+
+        if (resp?.Error) throw new Error(`Breeze getHistoricalDatav2 error (futures): ${resp.Error}`);
+        const rows = Array.isArray(resp?.Success) ? resp.Success : [];
+        all.push(...parseRows(rows));
+    }
+    return all.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+}
+
+module.exports = { getOptionMinuteCandles, getFutureMinuteCandles, chunkDateRange, isoIst, parseRows, callWithTransientRetry, TRANSIENT_ERROR_PATTERN };

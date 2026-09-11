@@ -90,18 +90,24 @@ const FIELD_CANDIDATES = {
     expiry: ["XpryDt", "EXPIRY_DT"],
     strike: ["StrkPric", "STRIKE_PR"],
     optionType: ["OptnTp", "OPTION_TYP"],
+    open: ["OpnPric", "OPEN"],
+    high: ["HghPric", "HIGH"],
+    low: ["LwPric", "LOW"],
     close: ["ClsPric", "CLOSE"],
     openInterest: ["OpnIntrst", "OPEN_INT"],
+    oiChange: ["ChngInOpnIntrst", "CHG_IN_OI"],
     volume: ["TtlTradgVol", "NO_OF_CONTRACTS", "CONTRACTS"],
     underlyingPrice: ["UndrlygPric", "UNDRLYG_PRIC"],
 };
+
+const FUTURES_INSTRUMENT_TYPES = new Set(["IDF", "STF", "FUTIDX", "FUTSTK", "FUTIVX"]);
 
 function buildColumnMap(headerLine) {
     const headers = headerLine.split(",").map((h) => h.trim().replace(/^"(.*)"$/, "$1"));
     const lower = headers.map((h) => h.toLowerCase());
     const map = {};
     const missing = [];
-    const OPTIONAL_FIELDS = new Set(["instrumentType", "underlyingPrice"]);
+    const OPTIONAL_FIELDS = new Set(["instrumentType", "underlyingPrice", "open", "high", "low", "oiChange"]);
     for (const [field, candidates] of Object.entries(FIELD_CANDIDATES)) {
         const idx = candidates.map((c) => lower.indexOf(c.toLowerCase())).find((i) => i >= 0);
         if (idx === undefined) {
@@ -180,6 +186,57 @@ async function getDayRowsBySymbol(dateStr) {
     return bySymbol;
 }
 
+function isFuturesRow(cells, col) {
+    const optType = cells[col.optionType];
+    if (optType === "CE" || optType === "PE") return false;
+    if (col.instrumentType !== undefined) {
+        return FUTURES_INSTRUMENT_TYPES.has((cells[col.instrumentType] || "").toUpperCase());
+    }
+    const strike = Number(cells[col.strike]);
+    return !strike || strike === 0;
+}
+
+/** Every FUTURES row (SENSEX/BANKEX + any BSE F&O stock futures) for one day. */
+async function getDayFuturesRows(dateStr) {
+    const csv = await downloadCsv(dateStr);
+    const lines = csv.split(/\r?\n/).filter(Boolean);
+    if (!lines.length) return [];
+
+    const col = buildColumnMap(lines[0]);
+    const num = (v) => (Number(v) || Number(v) === 0 ? Number(v) : null);
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+        const cells = splitCsvLine(lines[i]);
+        if (cells.length < 5) continue;
+        if (!isFuturesRow(cells, col)) continue;
+        const expiry = normalizeExpiry(cells[col.expiry]);
+        if (!expiry) continue;
+        rows.push({
+            symbol: cells[col.symbol],
+            expiry,
+            open: col.open !== undefined ? num(cells[col.open]) : null,
+            high: col.high !== undefined ? num(cells[col.high]) : null,
+            low: col.low !== undefined ? num(cells[col.low]) : null,
+            close: num(cells[col.close]),
+            volume: Number(cells[col.volume]) || 0,
+            oi: Number(cells[col.openInterest]) || 0,
+            oiChange: col.oiChange !== undefined ? (Number(cells[col.oiChange]) || 0) : null,
+            underlyingPrice: col.underlyingPrice !== undefined ? (Number(cells[col.underlyingPrice]) || null) : null,
+        });
+    }
+    return rows;
+}
+
+async function getDayFuturesBySymbol(dateStr) {
+    const all = await getDayFuturesRows(dateStr);
+    const bySymbol = new Map();
+    for (const r of all) {
+        if (!bySymbol.has(r.symbol)) bySymbol.set(r.symbol, []);
+        bySymbol.get(r.symbol).push(r);
+    }
+    return bySymbol;
+}
+
 // The actual reason this file exists — everything else (any BSE-listed F&O
 // stocks in the same file) is a bonus, stored too, but not the goal.
 const BSE_INDEX_SYMBOLS = new Set(["SENSEX", "BANKEX"]);
@@ -188,6 +245,8 @@ module.exports = {
     downloadCsv,
     getDayAllRows,
     getDayRowsBySymbol,
+    getDayFuturesRows,
+    getDayFuturesBySymbol,
     toCompactDate,
     normalizeExpiry,
     buildBseBhavcopyUrl,

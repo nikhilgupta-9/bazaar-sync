@@ -16,10 +16,16 @@ machine, a long-running box — without dragging the whole server in.
 | Pipeline | Command | Source | Granularity | Depth |
 | --- | --- | --- | --- | --- |
 | Option chain (7 indices + ~210 F&O stocks) | `npm run option-chain -- <YEAR>` | NSE+BSE bhavcopy (contract discovery) + ICICI Breeze (minute data) | 1-minute CE/PE + Greeks | Breeze ≈ 3 years back |
+| Futures / "future chain" (index + stock futures) | `npm run futures -- <YEAR>` | NSE+BSE bhavcopy + ICICI Breeze | 1-minute OHLC + OI | Breeze ≈ 3 years back |
 | India VIX | `npm run vix -- <YEAR>` | ICICI Breeze | 1-minute OHLC | Breeze ≈ 3 years back |
 
-Both write year-by-year, month-by-month, with a verification pass after
-every month. Both are resumable.
+All write year-by-year, month-by-month, with a verification pass after every
+month. All are resumable.
+
+**See [COMMANDS.md](COMMANDS.md) for the full command reference** — every
+command, what it fetches, which table it lands in, and the typical
+full-history bootstrap order (including the `server/` Angel One scripts that
+keep data current going forward).
 
 ## Setup
 
@@ -73,6 +79,23 @@ NIFTYNXT50 use **unverified** Breeze stock codes (`breeze/symbolMap.js`
 `INDEX_OVERRIDES`, all env-overridable) — if a run stores 0 minute rows for
 one of them while discovery found its contracts, that stock code is the
 first thing to fix.
+
+## Futures pipeline
+
+```bash
+node test/testFutures.js NIFTY     # sanity check (bhavcopy futures rows + one Breeze contract)
+npm run futures -- 2024
+npm run futures -- 2024 --symbols=NIFTY,RELIANCE
+```
+
+Per month: **discovery** (`futures/monthDiscovery.js` — NSE+BSE bhavcopy
+IDF/STF rows → one EOD row per `(underlying, expiry)` in `futures_history`)
+→ **enrich** (`futures/enrich.js` — Breeze 1-minute futures candles per
+contract, `productType: "futures"`, no strike/right/Greeks) → **verify**
+(`futures/verifyMonth.js` → `data/futures-pipeline-reports/<ym>.json`). Same
+flags and resumability as the option-chain pipeline. Far fewer contracts than
+options (one series per `(underlying, expiry)`), so a year finishes in fewer
+daily runs.
 
 ## India VIX pipeline
 

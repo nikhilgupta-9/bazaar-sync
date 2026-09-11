@@ -179,11 +179,20 @@ const FIELD_CANDIDATES = {
     expiry: ["XpryDt", "EXPIRY_DT"],
     strike: ["StrkPric", "STRIKE_PR"],
     optionType: ["OptnTp", "OPTION_TYP"],
+    open: ["OpnPric", "OPEN"],
+    high: ["HghPric", "HIGH"],
+    low: ["LwPric", "LOW"],
     close: ["ClsPric", "CLOSE"],
     openInterest: ["OpnIntrst", "OPEN_INT"],
+    oiChange: ["ChngInOpnIntrst", "CHG_IN_OI"],
     volume: ["TtlTradgVol", "CONTRACTS"],
     underlyingPrice: ["UndrlygPric", "UNDRLYG_PRIC"],
 };
+
+// FinInstrmTp values that mark a FUTURES row in the UDiFF F&O bhavcopy:
+// IDF = index future, STF = stock future. (Options are IDO / STO.) The
+// pre-2024-07-08 archive uses INSTRUMENT = FUTIDX / FUTSTK instead.
+const FUTURES_INSTRUMENT_TYPES = new Set(["IDF", "STF", "FUTIDX", "FUTSTK", "FUTIVX"]);
 
 function buildColumnMap(headerLine) {
     const headers = headerLine.split(",").map((h) => h.trim());
@@ -193,7 +202,7 @@ function buildColumnMap(headerLine) {
     // instrumentType/underlyingPrice aren't strictly required — filtering only
     // needs symbol+optionType (CE/PE presence is itself the futures-vs-option
     // filter), and underlyingPrice just disables Greeks if truly absent.
-    const OPTIONAL_FIELDS = new Set(["instrumentType", "underlyingPrice"]);
+    const OPTIONAL_FIELDS = new Set(["instrumentType", "underlyingPrice", "open", "high", "low", "oiChange"]);
     for (const [field, candidates] of Object.entries(FIELD_CANDIDATES)) {
         const idx = candidates.map((c) => lower.indexOf(c.toLowerCase())).find((i) => i >= 0);
         if (idx === undefined) {
@@ -273,6 +282,67 @@ async function getDayOptionRows(dateStr, symbol) {
     return all.filter((r) => r.symbol === symbol);
 }
 
+function isFuturesRow(cells, col) {
+    const optType = cells[col.optionType];
+    if (optType === "CE" || optType === "PE") return false;
+    if (col.instrumentType !== undefined) {
+        return FUTURES_INSTRUMENT_TYPES.has((cells[col.instrumentType] || "").toUpperCase());
+    }
+    // No instrument-type column — a non-option row with no real strike is a future.
+    const strike = Number(cells[col.strike]);
+    return !strike || strike === 0;
+}
+
+/**
+ * Every FUTURES row (IDF/STF, i.e. index & stock futures) for EVERY symbol
+ * in one day's bhavcopy. Same one-download-per-day efficiency as
+ * getDayAllRows. Returns
+ * [{ symbol, expiry, open, high, low, close, volume, oi, oiChange, underlyingPrice }].
+ */
+async function getDayFuturesRows(dateStr) {
+    const zipPath = await downloadZip(dateStr);
+    const csv = await extractCsv(zipPath);
+    const lines = csv.split(/\r?\n/).filter(Boolean);
+    if (!lines.length) return [];
+
+    const col = buildColumnMap(lines[0]);
+    const num = (v) => (Number(v) || Number(v) === 0 ? Number(v) : null);
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+        const cells = splitCsvLine(lines[i]);
+        if (cells.length < 5) continue;
+        if (!isFuturesRow(cells, col)) continue;
+
+        const expiry = normalizeExpiry(cells[col.expiry]);
+        if (!expiry) continue;
+
+        rows.push({
+            symbol: cells[col.symbol],
+            expiry,
+            open: col.open !== undefined ? num(cells[col.open]) : null,
+            high: col.high !== undefined ? num(cells[col.high]) : null,
+            low: col.low !== undefined ? num(cells[col.low]) : null,
+            close: num(cells[col.close]),
+            volume: Number(cells[col.volume]) || 0,
+            oi: Number(cells[col.openInterest]) || 0,
+            oiChange: col.oiChange !== undefined ? (Number(cells[col.oiChange]) || 0) : null,
+            underlyingPrice: col.underlyingPrice !== undefined ? (Number(cells[col.underlyingPrice]) || null) : null,
+        });
+    }
+    return rows;
+}
+
+/** getDayFuturesRows pre-grouped: Map<symbol, rows[]>. */
+async function getDayFuturesBySymbol(dateStr) {
+    const all = await getDayFuturesRows(dateStr);
+    const bySymbol = new Map();
+    for (const r of all) {
+        if (!bySymbol.has(r.symbol)) bySymbol.set(r.symbol, []);
+        bySymbol.get(r.symbol).push(r);
+    }
+    return bySymbol;
+}
+
 // NSE-listed (NSE_FO segment) index names as of 2026-07-19 — the other 2 of
 // the commonly-cited "7 indices" (SENSEX, BANKEX) trade on BSE, NOT NSE, and
 // so never appear in this file at all — a separate BSE bhavcopy source would
@@ -300,6 +370,8 @@ module.exports = {
     getDayOptionRows,
     getDayAllRows,
     getDayRowsBySymbol,
+    getDayFuturesRows,
+    getDayFuturesBySymbol,
     toCompactDate,
     normalizeExpiry,
     NSE_INDEX_SYMBOLS,

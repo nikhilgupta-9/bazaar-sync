@@ -215,6 +215,40 @@ async function backfillUnderlyingPrice(symbol, dateStr) {
     );
 }
 
+// Nearest index-future contract for the day: 1-minute candles + per-minute
+// OI -> futures_history. FUTIDX only (the scrip master's stock futures aren't
+// parsed by instrumentMaster) — deep/stock-futures history is
+// data-downloader/futures/'s job (ICICI Breeze). Best-effort: a failure here
+// is logged but never aborts the option-chain pull.
+async function pullFuturesForDate(symbol, dateStr) {
+    const fut = await instrumentMaster.getNearestFuture(symbol);
+    if (!fut || !fut.token) {
+        dbLogger.warn(`[cron] ${symbol} ${dateStr}: no nearest future in scrip master — skipping futures`);
+        return;
+    }
+    const candles = await angelHist.getDayCandles({ exchange: "NFO", symboltoken: fut.token, dateStr });
+    if (!candles.length) return;
+    const oiByTime = await angelHist.getDayOpenInterest({ exchange: "NFO", symboltoken: fut.token, dateStr }).catch(() => new Map());
+
+    let prevOi = null;
+    const values = candles.map((c) => {
+        const oi = oiByTime.get(c.time) ?? null;
+        const oiChange = prevOi != null && oi != null ? oi - prevOi : null;
+        prevOi = oi ?? prevOi;
+        return [symbol, fut.expiry, c.date, c.time, c.open, c.high, c.low, c.close, c.volume, oi, oiChange, null];
+    });
+    await pool.query(
+        `INSERT INTO futures_history
+           (symbol, expiry, trade_date, trade_time, open, high, low, close, volume, oi, oi_change, underlying_price)
+         VALUES ?
+         ON DUPLICATE KEY UPDATE
+           open=VALUES(open), high=VALUES(high), low=VALUES(low), close=VALUES(close),
+           volume=VALUES(volume), oi=VALUES(oi), oi_change=VALUES(oi_change)`,
+        [values]
+    );
+    dbLogger.info(`[cron] ${symbol} ${dateStr}: ${values.length} future candles stored (expiry ${fut.expiry})`);
+}
+
 async function pullSymbolForDate(symbol, dateStr, expiries = null) {
     await pullOHLCVForDate(symbol, dateStr);
     const expiryList = expiries && expiries.length ? expiries : (await instrumentMaster.getExpiries(symbol)).slice(0, 1);
@@ -222,6 +256,11 @@ async function pullSymbolForDate(symbol, dateStr, expiries = null) {
         await pullOptionChainForExpiry(symbol, expirySql, dateStr);
     }
     await backfillUnderlyingPrice(symbol, dateStr);
+    try {
+        await pullFuturesForDate(symbol, dateStr);
+    } catch (err) {
+        dbLogger.error(`[cron] ${symbol} ${dateStr}: futures pull failed (non-fatal): ${err.message}`);
+    }
 }
 
 async function runNightlyPull() {
@@ -261,5 +300,6 @@ module.exports = {
     pullSymbolForDate,
     pullOHLCVForDate,
     pullOptionChainForExpiry,
+    pullFuturesForDate,
     backfillUnderlyingPrice,
 };
