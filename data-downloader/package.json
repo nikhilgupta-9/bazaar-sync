@@ -7,14 +7,17 @@
     "option-chain": "node optionchain/run.js",
     "option-chain:upstox": "node upstox/run.js",
     "futures": "node futures/run.js",
+    "futures:upstox": "node upstox/runFutures.js",
     "vix": "node vix/run.js",
     "enrich": "node breeze/enrich.js",
     "enrich:futures": "node futures/enrich.js",
     "enrich:upstox": "node upstox/enrich.js",
+    "enrich:futures:upstox": "node upstox/enrichFutures.js",
     "test:breeze": "node test/testBreeze.js",
     "test:futures": "node test/testFutures.js",
     "test:vix": "node test/testVix.js",
     "test:upstox": "node test/testUpstox.js",
+    "test:upstox-futures": "node test/testUpstoxFutures.js",
     "test:symbolmap": "node test/testSymbolMap.js"
   },
   "dependencies": {

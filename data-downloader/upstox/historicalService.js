@@ -146,6 +146,36 @@ async function getExpiredOptionContracts(instrumentKey, expiryDate) {
     return Array.isArray(body.data) ? body.data : [];
 }
 
+/**
+ * The expired FUTURES contract for one underlying+expiry (one series, unlike
+ * options' many strikes). Endpoint confirmed live 2026-09-12 (NIFTY):
+ * GET /expired-instruments/future/contract?instrument_key=&expiry_date=.
+ * Response field carrying the tradeable key is `instrument_key` (e.g.
+ * "NSE_FO|66691|28-04-2026") — same field name options contracts use, NOT
+ * `expired_instrument_key` as Upstox's prose docs implied; confirmed via a
+ * live call, not just docs. `resolveExpiredFutureKey` below still checks
+ * both names defensively in case a different underlying/segment ever
+ * responds differently. Also confirmed: a contract only exists for the
+ * MONTHLY expiry — calling this for a weekly options-only expiry correctly
+ * returns an empty array, not an error.
+ */
+async function getExpiredFutureContracts(instrumentKey, expiryDate) {
+    const body = await withRetry(
+        () =>
+            secureGet(
+                `/expired-instruments/future/contract?instrument_key=${encodeURIComponent(instrumentKey)}&expiry_date=${expiryDate}`,
+                "getExpiredFutureContracts"
+            ),
+        `getExpiredFutureContracts ${instrumentKey} ${expiryDate}`
+    );
+    return Array.isArray(body.data) ? body.data : [];
+}
+
+/** See getExpiredFutureContracts's header comment — field name unverified. */
+function resolveExpiredFutureKey(contract) {
+    return contract?.expired_instrument_key || contract?.instrument_key || null;
+}
+
 /** "2023-10-01T00:00:00+05:30" -> { date: "2023-10-01", time: "00:00:00" } — string slicing, no Date(). */
 function splitCandleTimestamp(ts) {
     return { date: ts.slice(0, 10), time: ts.slice(11, 19) };
@@ -209,6 +239,8 @@ const UNDERLYING_KEYS = {
 module.exports = {
     getExpiries,
     getExpiredOptionContracts,
+    getExpiredFutureContracts,
+    resolveExpiredFutureKey,
     getExpiredCandles,
     getCandles,
     splitCandleTimestamp,
