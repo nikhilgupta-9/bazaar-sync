@@ -94,6 +94,41 @@ downloaded Upstox instrument master, same as the options Upstox pipeline) —
 already have a symbol list from a prior Breeze discovery run. Reports →
 `data/upstox-futures-pipeline-reports/<ym>.json`.
 
+### Futures, ENTIRE universe, ONE SYMBOL AT A TIME (Upstox) → `futures_history`
+
+```bash
+npm run futures:upstox:universe -- 2025 2026
+npm run futures:upstox:universe -- 2025 2026 --symbols=NIFTY,RELIANCE   # testing subset
+npm run futures:upstox:universe -- 2025 2026 --reset                   # start over, ignore saved progress
+```
+
+Different loop order than `futures:upstox` above (which processes all
+symbols together, month by month, so every symbol gets partial coverage at
+once) — this does the OPPOSITE, on request: **one symbol's entire
+[FROM_YEAR..TO_YEAR] range, month by month in chronological order, fully
+done before moving to the next symbol.** Universe = the 7 indices + every
+stock symbol already discovered in `option_chain_history` (this dev DB has
+290 symbols there as of 2026-09-12, from the option-chain bhavcopy discovery
+phase — see `optionchain/monthDiscovery.js`). If that table is empty, only
+the 7 indices get covered; run `npm run option-chain -- <YEAR> --skip-enrich`
+first (free, bhavcopy-only, no Upstox/Breeze calls) to populate the stock
+list.
+
+Resumable at the symbol level (`data/upstox-futures-universe-progress.json`)
+— an interrupted run picks the next symbol back up, not the whole universe
+from scratch (and within a symbol, already-enriched expiries are skipped
+too, so even a `--reset` restart fast-forwards through finished work rather
+than re-downloading it).
+
+**This covers 200+ symbols across 2 years — expect it to run for HOURS.**
+Run it in the background rather than keeping a terminal open:
+```bash
+# Mac/Linux
+nohup npm run futures:upstox:universe -- 2025 2026 > upstox-universe.log 2>&1 &
+# Windows (PowerShell) — starts a background job, check progress with Receive-Job
+Start-Job { npm.cmd run futures:upstox:universe -- 2025 2026 }
+```
+
 ### India VIX (1-minute OHLC) → `ohlcv_data` (symbol `INDIAVIX`)
 
 ```bash

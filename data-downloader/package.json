@@ -8,6 +8,7 @@
     "option-chain:upstox": "node upstox/run.js",
     "futures": "node futures/run.js",
     "futures:upstox": "node upstox/runFutures.js",
+    "futures:upstox:universe": "node upstox/runFuturesUniverse.js",
     "vix": "node vix/run.js",
     "enrich": "node breeze/enrich.js",
     "enrich:futures": "node futures/enrich.js",

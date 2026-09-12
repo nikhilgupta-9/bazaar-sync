@@ -132,27 +132,6 @@ flags and resumability as the option-chain pipeline. Far fewer contracts than
 options (one series per `(underlying, expiry)`), so a year finishes in fewer
 daily runs.
 
-## Futures pipeline — Upstox (recent window, no daily login)
-
-```bash
-node test/testUpstoxFutures.js NIFTY               # sanity check — do this first
-npm run futures:upstox -- 2025                     # whole year
-npm run futures:upstox -- 2025 --symbols=NIFTY,BANKNIFTY,FINNIFTY,MIDCPNIFTY,NIFTYNXT50,SENSEX,BANKEX
-npm run futures:upstox -- 2026
-```
-
-Futures counterpart of the option-chain Upstox pipeline. No discovery phase
-needed — `upstox/enrichFutures.js` uses `upstox.getExpiries()` +
-`getExpiredFutureContracts()` to find the one MONTHLY futures series per
-expiry itself (a weekly options-only expiry correctly returns 0 contracts
-and is skipped — confirmed live 2026-09-12, not an error). Writes the same
-`futures_history` table the Breeze pipeline above uses (`ON DUPLICATE KEY
-UPDATE`). **Upstox's real retention for futures is deeper than for options**
-— confirmed live 2026-09-12: `getExpiries()` reaches back to 2024-10 for all
-7 indices, so this alone covers all of 2025 and 2026 with no Breeze needed.
-Works for individual stock futures too via `--symbols=`, resolved through
-the same downloaded Upstox instrument master as the options pipeline.
-
 ## India VIX pipeline
 
 ```bash
