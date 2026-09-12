@@ -17,8 +17,7 @@ const { addDays, todayIst } = require("../lib/dates");
 const historicalService = require("../breeze/historicalService");
 const rateLimiter = require("../breeze/rateLimiter");
 const symbolMap = require("../breeze/symbolMap");
-
-const INSERT_BATCH_SIZE = 500;
+const { storeRows, withOiChange } = require("../lib/futuresStorage");
 
 async function loadContractStatuses(symbol, fromDate, toDate) {
     const [rows] = await pool.query(
@@ -47,39 +46,6 @@ async function loadSpotByDate(symbol, fromDate, toDate) {
         [symbol, fromDate, toDate]
     );
     return new Map(rows.map((r) => [r.trade_date, Number(r.price)]));
-}
-
-function withOiChange(candles) {
-    let prevOi = null;
-    return candles.map((c) => {
-        const oiChange = prevOi != null ? c.oi - prevOi : null;
-        prevOi = c.oi;
-        return { ...c, oiChange };
-    });
-}
-
-async function storeRows(symbol, expirySql, candles, spotByDate) {
-    if (!candles.length) return 0;
-    const values = candles.map((c) => [
-        symbol, expirySql, c.date, c.time,
-        c.open ?? null, c.high ?? null, c.low ?? null, c.close ?? null,
-        c.volume ?? 0, c.oi ?? 0, c.oiChange ?? null,
-        spotByDate.get(c.date) ?? null,
-    ]);
-    for (let i = 0; i < values.length; i += INSERT_BATCH_SIZE) {
-        const batch = values.slice(i, i + INSERT_BATCH_SIZE);
-        await pool.query(
-            `INSERT INTO futures_history
-               (symbol, expiry, trade_date, trade_time, open, high, low, close, volume, oi, oi_change, underlying_price)
-             VALUES ?
-             ON DUPLICATE KEY UPDATE
-               open=VALUES(open), high=VALUES(high), low=VALUES(low), close=VALUES(close),
-               volume=VALUES(volume), oi=VALUES(oi), oi_change=VALUES(oi_change),
-               underlying_price=COALESCE(VALUES(underlying_price), underlying_price)`,
-            [batch]
-        );
-    }
-    return values.length;
 }
 
 async function backfillSymbol(symbol, fromDate, toDate, opts = {}) {

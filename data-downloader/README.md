@@ -18,9 +18,11 @@ machine, a long-running box — without dragging the whole server in.
 | Option chain (7 indices + ~210 F&O stocks) | `npm run option-chain -- <YEAR>` | NSE+BSE bhavcopy (contract discovery) + ICICI Breeze (minute data) | 1-minute CE/PE + Greeks | Breeze ≈ 3 years back |
 | Option chain, recent window | `npm run option-chain:upstox -- <YEAR>` | Upstox Expired Instruments (self-discovering, no bhavcopy needed) | 1-minute CE/PE + Greeks | Upstox ≈ last 6-11 months only |
 | Futures / "future chain" (index + stock futures) | `npm run futures -- <YEAR>` | NSE+BSE bhavcopy + ICICI Breeze | 1-minute OHLC + OI | Breeze ≈ 3 years back |
+| Futures, recent window | `npm run futures:upstox -- <YEAR>` | Upstox Expired Instruments (self-discovering, no bhavcopy needed) | 1-minute OHLC + OI | Upstox back to 2024-10 (confirmed live 2026-09-12 — covers all of 2025+2026) |
 | India VIX | `npm run vix -- <YEAR>` | ICICI Breeze | 1-minute OHLC | Breeze ≈ 3 years back |
 
-Both option-chain pipelines write to the **same** `option_chain_history` table
+Both option-chain pipelines write to the **same** `option_chain_history` table,
+and both futures pipelines write to the **same** `futures_history` table
 (`ON DUPLICATE KEY UPDATE` — never a conflict, a later/more-granular source
 legitimately upgrades an earlier row for the same contract/minute). Use
 Upstox for the recent window it actually covers (no daily login needed,

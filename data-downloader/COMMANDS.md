@@ -5,7 +5,7 @@ Two homes for historical-data fetching:
 | | `data-downloader/` (this folder) | `server/` |
 | --- | --- | --- |
 | Source | ICICI Breeze (1-minute) + NSE/BSE bhavcopy (discovery), or Upstox for the recent window | Angel One SmartAPI |
-| Reaches back | Breeze ≈ 3 years; Upstox ≈ last 6-11 months only (confirmed live) | weeks (current contracts' lifetime only) |
+| Reaches back | Breeze ≈ 3 years; Upstox options ≈ last 6-11 months, Upstox **futures** back to 2024-10 (confirmed live 2026-09-12 — covers all of 2025+2026) | weeks (current contracts' lifetime only) |
 | Auth | Breeze: `BREEZE_API_SESSION` pasted daily by hand. Upstox: long-lived (~1yr) token, no daily login | automatic (TOTP) |
 | Run | by hand, occasionally | nightly cron + on-demand scripts |
 | Use it for | the deep 2023→now backfill | keeping data current going forward |
@@ -70,6 +70,64 @@ Same discovery→enrich→verify structure as the option chain, but one OHLC+OI
 series per `(underlying, expiry)` — no strikes, no Greeks. Far fewer Breeze
 calls than options, so a full year usually finishes in far fewer daily runs.
 Reports → `data/futures-pipeline-reports/<ym>.json`.
+
+### Futures, recent window (Upstox, no daily login) → `futures_history`
+
+```bash
+node test/testUpstoxFutures.js NIFTY             # sanity check — do this first
+npm run futures:upstox -- 2025                   # whole year (Upstox's own window applies)
+npm run futures:upstox -- 2025 --symbols=NIFTY,BANKNIFTY,FINNIFTY,MIDCPNIFTY,NIFTYNXT50,SENSEX,BANKEX
+npm run futures:upstox -- 2026
+```
+
+Same Upstox trade-off as the option-chain Upstox pipeline (no daily session,
+but a real retention limit) — verified live 2026-09-12: `getExpiries()`
+reaches back to **2024-10** for all 7 indices, i.e. it covers all of 2025 and
+2026 in one shot, no Breeze needed for that range. No discovery phase either
+— `getExpiredFutureContracts` self-discovers the one monthly futures series
+per expiry (weekly options-only expiries correctly return 0 contracts and
+are skipped, not an error). Writes the SAME `futures_history` table the
+Breeze pipeline above uses (`ON DUPLICATE KEY UPDATE`, never a conflict).
+Works for individual stocks too (`--symbols=RELIANCE`, resolved via the
+downloaded Upstox instrument master, same as the options Upstox pipeline) —
+`ALL` mode falls back to just the 7 indices if `futures_history` doesn't
+already have a symbol list from a prior Breeze discovery run. Reports →
+`data/upstox-futures-pipeline-reports/<ym>.json`.
+
+### Futures, ENTIRE universe, ONE SYMBOL AT A TIME (Upstox) → `futures_history`
+
+```bash
+npm run futures:upstox:universe -- 2025 2026
+npm run futures:upstox:universe -- 2025 2026 --symbols=NIFTY,RELIANCE   # testing subset
+npm run futures:upstox:universe -- 2025 2026 --reset                   # start over, ignore saved progress
+```
+
+Different loop order than `futures:upstox` above (which processes all
+symbols together, month by month, so every symbol gets partial coverage at
+once) — this does the OPPOSITE, on request: **one symbol's entire
+[FROM_YEAR..TO_YEAR] range, month by month in chronological order, fully
+done before moving to the next symbol.** Universe = the 7 indices + every
+stock symbol already discovered in `option_chain_history` (this dev DB has
+290 symbols there as of 2026-09-12, from the option-chain bhavcopy discovery
+phase — see `optionchain/monthDiscovery.js`). If that table is empty, only
+the 7 indices get covered; run `npm run option-chain -- <YEAR> --skip-enrich`
+first (free, bhavcopy-only, no Upstox/Breeze calls) to populate the stock
+list.
+
+Resumable at the symbol level (`data/upstox-futures-universe-progress.json`)
+— an interrupted run picks the next symbol back up, not the whole universe
+from scratch (and within a symbol, already-enriched expiries are skipped
+too, so even a `--reset` restart fast-forwards through finished work rather
+than re-downloading it).
+
+**This covers 200+ symbols across 2 years — expect it to run for HOURS.**
+Run it in the background rather than keeping a terminal open:
+```bash
+# Mac/Linux
+nohup npm run futures:upstox:universe -- 2025 2026 > upstox-universe.log 2>&1 &
+# Windows (PowerShell) — starts a background job, check progress with Receive-Job
+Start-Job { npm.cmd run futures:upstox:universe -- 2025 2026 }
+```
 
 ### India VIX (1-minute OHLC) → `ohlcv_data` (symbol `INDIAVIX`)
 
