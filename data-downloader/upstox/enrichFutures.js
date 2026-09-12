@@ -52,24 +52,69 @@ async function storeUnderlyingDaily(symbol, candles) {
     return new Map(candles.map((c) => [c.date, c.close]));
 }
 
-/** A (symbol, expiry) already has minute data if ANY row isn't the 15:30 EOD placeholder time. */
-async function alreadyEnriched(symbol, expirySql) {
-    const [rows] = await pool.query(
-        `SELECT MAX(trade_time <> '15:30:00') AS hasMinute FROM futures_history WHERE symbol = ? AND expiry = ?`,
-        [symbol, expirySql]
+// Real bug found 2026-09-12: the original check here was "does ANY row for
+// this (symbol, expiry) have a non-EOD trade_time" — if a run got
+// interrupted (rate limit, network blip, etc.) after storing just ONE day's
+// worth of candles, that single day made the WHOLE contract look "already
+// enriched" forever, so the other ~60 real trading days were never fetched
+// on any later re-run. Same bug class already fixed in upstox/enrich.js's
+// (options) loadFullyEnrichedStrikes — compare against the REAL trading-day
+// count instead of "does any row exist at all".
+//
+// Second attempt (also wrong, caught before shipping): baseline the
+// expected-day count from the EARLIEST day we already have minute data for,
+// instead of the fixed window start. Broke on a second synthetic test: if
+// the leftover partial data happens to be a narrow slice that does NOT
+// start from the contract's true earliest day (e.g. just the expiry day
+// itself), the check trivially compares that slice against itself and
+// always "passes" — self-referential, not a real completeness check.
+//
+// Fixed: compare against the FULL fixed [windowStart, expirySql] window
+// (contract-independent, so it can't be gamed by wherever the existing data
+// happens to sit), but as a COVERAGE RATIO rather than a near-exact count —
+// a real futures contract is usually only actually LISTED for PART of that
+// window (e.g. ~57 real trading days out of a 95-calendar-day lookback,
+// confirmed live 2026-09-12 on FINNIFTY), while the underlying INDEX has
+// traded every single day of it, so ohlcv_data's full-window count is
+// always bigger than any real contract's true depth — an exact-match
+// requirement would re-fetch every genuinely-complete contract forever.
+// MIN_COVERAGE_RATIO=0.6 comfortably passes a real ~57/65-day contract
+// (~88%) while still failing a broken 1-day fetch (~1.5%) or a fetch that
+// stopped partway through (e.g. 47/65 ≈ 72% — no, catches down to 60%; a
+// worse partial like 20/65 ≈ 31% definitely fails and correctly retries).
+async function isFullyEnriched(symbol, expirySql, windowStart) {
+    const [dayRows] = await pool.query(
+        `SELECT COUNT(DISTINCT trade_date) AS cnt FROM ohlcv_data WHERE symbol = ? AND trade_date BETWEEN ? AND ?`,
+        [symbol, windowStart, expirySql]
     );
-    return Number(rows[0]?.hasMinute) === 1;
+    const expectedDays = Number(dayRows[0]?.cnt || 0);
+    if (!expectedDays) return false; // no real trading-day baseline yet — don't trust the skip
+
+    const [rows] = await pool.query(
+        `SELECT COUNT(DISTINCT trade_date) AS cnt FROM futures_history
+         WHERE symbol = ? AND expiry = ? AND trade_time <> '15:30:00' AND trade_date BETWEEN ? AND ?`,
+        [symbol, expirySql, windowStart, expirySql]
+    );
+    const actualDays = Number(rows[0]?.cnt || 0);
+
+    const MIN_COVERAGE_RATIO = 0.6;
+    return actualDays >= expectedDays * MIN_COVERAGE_RATIO;
 }
 
 async function backfillExpiry(symbol, underlyingKey, expirySql) {
-    if (await alreadyEnriched(symbol, expirySql)) {
-        console.log(`[upstox-fut] ${symbol} ${expirySql}: already has minute data, skipped`);
-        return 0;
-    }
     const windowStart = addDays(expirySql, -LOOKBACK_DAYS);
 
+    // Always fetch+store the daily underlying candles first (cheap, one
+    // call) — this both gives storeRows its spot-price map AND gives
+    // isFullyEnriched a reliable real-trading-day baseline to check against,
+    // even for a contract we're about to skip.
     const dailyCandles = await upstox.getCandles(underlyingKey, { interval: "day", fromDate: windowStart, toDate: expirySql });
     const spotByDate = await storeUnderlyingDaily(symbol, dailyCandles);
+
+    if (await isFullyEnriched(symbol, expirySql, windowStart)) {
+        console.log(`[upstox-fut] ${symbol} ${expirySql}: already fully enriched (every real trading day has minute data), skipped`);
+        return 0;
+    }
 
     // Confirmed live 2026-09-12 (NIFTY): futures only exist on the MONTHLY
     // expiry, not every weekly options expiry getExpiries() also returns —
