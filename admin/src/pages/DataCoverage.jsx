@@ -40,6 +40,10 @@ export default function DataCoverage() {
 
     const rows = useMemo(() => {
         if (!summary) return [];
+        // VIX is a single series (INDIAVIX), not "7 indices + stocks" — the
+        // pinning below doesn't apply, just show whatever summary.symbols
+        // has (0 or 1 row).
+        if (dataType === "vix") return summary.symbols;
         const bySymbol = new Map(summary.symbols.map((s) => [s.symbol, s]));
         // 7 indices pinned first (even if missing entirely — shows as a blank row), then the rest matching the search.
         const indices = SEVEN_INDICES.map((sym) => bySymbol.get(sym) || { symbol: sym, firstDate: null, lastDate: null, totalRows: 0, totalDays: 0, monthsWithData: 0 });
@@ -47,7 +51,7 @@ export default function DataCoverage() {
             .filter((s) => !SEVEN_INDICES.includes(s.symbol))
             .filter((s) => !search || s.symbol.includes(search.toUpperCase()));
         return [...indices, ...stocks];
-    }, [summary, search]);
+    }, [summary, search, dataType]);
 
     function selectSymbol(symbol) {
         setSelected(symbol);
@@ -68,7 +72,7 @@ export default function DataCoverage() {
 
     return (
         <div>
-            <TopBar title="Data Coverage" subtitle={`How much ${dataType === "futures" ? "futures" : "option-chain"} data exists per symbol per month, ${summary?.coverageStart || "2023-01-01"} onward. "Expected" is the best-covered symbol that month, not a hardcoded holiday list.`} />
+            <TopBar title="Data Coverage" subtitle={`How much ${dataType === "futures" ? "futures" : dataType === "vix" ? "India VIX" : "option-chain"} data exists${dataType === "vix" ? "" : " per symbol"} per month, ${summary?.coverageStart || "2023-01-01"} onward. "Expected" is the best-covered symbol that month, not a hardcoded holiday list.`} />
             <div className="p-6">
                 {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
 
@@ -76,6 +80,7 @@ export default function DataCoverage() {
                     <select value={dataType} onChange={(e) => { setDataType(e.target.value); setSelected(null); setDetail(null); setSummary(null); }} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500">
                         <option value="option_chain">Option Chain</option>
                         <option value="futures">Futures</option>
+                        <option value="vix">India VIX</option>
                     </select>
                     <div className="relative flex-1 min-w-[180px] max-w-xs">
                         <FiSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />

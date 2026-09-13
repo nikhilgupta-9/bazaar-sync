@@ -1315,7 +1315,6 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     [liveChain, chainData],
   );
   const displaySpot = liveChain?.spotPrice ?? chainData?.spotPrice;
-  const displaySpotSource = liveChain?.spotSource ?? chainData?.spotSource;
   const displaySpotStored = liveChain?.spotStored ?? chainData?.spotStored;
   // Real historical front-month future price/expiry, from futures_history
   // (see simulatorController.js's getFuturesAt) — updates on every
@@ -1323,6 +1322,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   // same /api/simulator/chain response.
   const displayFutPrice = liveChain?.futPrice ?? chainData?.futPrice;
   const displayFutExpiry = liveChain?.futExpiry ?? chainData?.futExpiry;
+  // Real historical India VIX close, from ohlcv_data (symbol='INDIAVIX') —
+  // see simulatorController.js's getVixAt. Same one-series-for-everyone
+  // shape as the header's other day-level stats; null (shown as "—") until
+  // the admin Data Extraction page's icici_breeze/vix pipeline has been run
+  // for a given date.
+  const displayVix = liveChain?.vix ?? chainData?.vix;
 
   // Scrolls only the chain table's own container, never the page — native
   // scrollIntoView({block:"center"}) walks up every scrollable ancestor
@@ -2013,28 +2018,24 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
               <div className="flex flex-wrap items-center justify-between gap-y-1">
                 <div
                   className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-gray-50"
-                  title={
-                    displaySpotSource === "parity"
-                      ? `Spot derived from put-call parity at this minute (option_chain_history has no real intraday spot). Stored day value: ${formatPrice(displaySpotStored)}`
-                      : displaySpotSource === "ohlcv"
-                        ? "Spot from the stored 1-minute index candle"
-                        : "Stored end-of-day underlying price (no intraday data for this day)"
-                  }
+                  title="Stored closing/reference underlying price for this day (option_chain_history.underlying_price) — constant through the day, not a per-minute estimate."
                 >
-                  <span className="text-xs font-medium text-gray-400">SPOT:</span>
+                  <span className="text-xs font-medium text-gray-400">CLOSE:</span>
                   <span className="font-bold tabular-nums text-xs text-gray-900 transition-colors group-hover:text-blue-600">
-                    {formatPrice(displaySpot)}
+                    {formatPrice(displaySpotStored)}
                   </span>
-                  {displaySpotSource === "parity" && (
-                    <span className="text-[9px] font-semibold text-gray-400" title="">≈</span>
-                  )}
                 </div>
 
                 <div className="h-5 w-px bg-gray-200" />
 
-                <div className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-gray-50">
+                <div
+                  className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-gray-50"
+                  title={displayVix != null ? "India VIX close — real historical price from ohlcv_data (symbol=INDIAVIX)" : "No stored India VIX data for this day — run the icici_breeze/vix job from the admin Data Extraction page"}
+                >
                   <span className="text-xs font-medium text-gray-400">VIX:</span>
-                  <span className="font-bold tabular-nums text-gray-400">—</span>
+                  <span className={`font-bold tabular-nums ${displayVix != null ? "text-gray-900 group-hover:text-blue-600" : "text-gray-400"}`}>
+                    {displayVix != null ? formatPrice(displayVix) : "—"}
+                  </span>
                 </div>
 
                 <div className="h-5 w-px bg-gray-200" />

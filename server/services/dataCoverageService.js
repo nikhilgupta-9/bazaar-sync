@@ -18,7 +18,13 @@ const { pool } = require("../config/db");
 const optionChainService = require("./optionChainService");
 
 const COVERAGE_START = "2023-01-01"; // Next Steps target window
-const TABLES = { option_chain: "option_chain_history", futures: "futures_history" };
+// vix -> ohlcv_data is a multi-symbol table (also holds NIFTY/BANKNIFTY/etc
+// daily candles from the Angel One cron) filtered down to symbol='INDIAVIX'
+// wherever a query needs just VIX rows — see getCoverageSummary's vix branch
+// and the VIX_SYMBOL constant below. getCoverageDetail/getMonthlyReference
+// don't need special-casing: they're already generic over (table, symbol).
+const TABLES = { option_chain: "option_chain_history", futures: "futures_history", vix: "ohlcv_data" };
+const VIX_SYMBOL = "INDIAVIX";
 // Pre-aggregated (symbol, expiry, trade_date) row counts, kept in sync
 // incrementally by services/coverageSummaryService.js right after every
 // ingestion write into option_chain_history (see schema.sql's comment on
@@ -31,7 +37,7 @@ const SUMMARY_TABLE = "option_chain_coverage_summary";
 // per table (see schema.sql) — used to force the right index for the
 // GROUP BY trade_date queries below; see getCoverageDetail's comment for why
 // leaving it to the optimizer isn't safe here.
-const SYMBOL_DATE_TIME_INDEX = { option_chain_history: "idx_symbol_date_time", futures_history: "idx_fut_symbol_date_time" };
+const SYMBOL_DATE_TIME_INDEX = { option_chain_history: "idx_symbol_date_time", futures_history: "idx_fut_symbol_date_time", ohlcv_data: "idx_symbol_date" };
 
 // The 7 indices always shown first/pinned on the coverage & expiry pages,
 // regardless of whether they currently have rows — a missing index should
@@ -81,7 +87,7 @@ function withStatementTimeout(sql, seconds) {
 
 function tableFor(dataType) {
     const table = TABLES[dataType];
-    if (!table) throw Object.assign(new Error(`unknown dataType "${dataType}" (expected option_chain or futures)`), { status: 400 });
+    if (!table) throw Object.assign(new Error(`unknown dataType "${dataType}" (expected option_chain, futures, or vix)`), { status: 400 });
     return table;
 }
 
@@ -213,6 +219,37 @@ function invalidate(prefix) {
  *      smaller result set.
  */
 async function getCoverageSummary(dataType) {
+    // VIX is a single symbol inside the shared multi-symbol ohlcv_data table
+    // (not "many symbols in one table" like option_chain/futures) — a plain
+    // GROUP BY symbol over the whole table would also return every index/
+    // stock's daily candles that happen to live there too. Filter straight
+    // to INDIAVIX and return the same one-symbol-per-array-entry shape the
+    // frontend already expects (just an array of length 0 or 1 here).
+    if (dataType === "vix") {
+        return cached(`summary:vix`, async () => {
+            const [rows] = await pool.query(
+                `SELECT MIN(trade_date) AS firstDate, MAX(trade_date) AS lastDate,
+                        COUNT(*) AS totalRows, SUM(trade_time <> '15:30:00') AS minuteRows,
+                        COUNT(DISTINCT trade_date) AS totalDays,
+                        COUNT(DISTINCT DATE_FORMAT(trade_date, '%Y-%m')) AS monthsWithData
+                 FROM ohlcv_data USE INDEX (idx_symbol_date)
+                 WHERE symbol = ? AND trade_date BETWEEN ? AND ?`,
+                [VIX_SYMBOL, COVERAGE_START, todaySql()]
+            );
+            const r = rows[0];
+            if (!r || !r.firstDate) return [];
+            return [{
+                symbol: VIX_SYMBOL,
+                firstDate: r.firstDate,
+                lastDate: r.lastDate,
+                totalRows: Number(r.totalRows),
+                minuteRows: Number(r.minuteRows || 0),
+                totalDays: Number(r.totalDays),
+                monthsWithData: Number(r.monthsWithData),
+            }];
+        });
+    }
+
     const table = tableFor(dataType);
     return cached(`summary:${dataType}`, async () => {
         const today = todaySql();

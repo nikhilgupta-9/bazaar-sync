@@ -271,6 +271,28 @@ async function getFuturesAt(symbol, date, time) {
     return { futPrice: null, futExpiry: null };
 }
 
+// India VIX — same exact-then-nearest-snapshot pattern as getFuturesAt above,
+// against ohlcv_data's symbol='INDIAVIX' rows instead of futures_history (one
+// series, not per-underlying, so no `symbol` param here — every Simulator
+// symbol/expiry shares the same VIX value for a given date/time). Historical
+// VIX coverage depends on the data-downloader vix/ pipeline having been run
+// (admin Data Extraction page, source=icici_breeze, type=vix) — returns null
+// gracefully (frontend shows "—") until that's been backfilled for a date.
+async function getVixAt(date, time) {
+    const [exact] = await pool.query(
+        `SELECT close FROM ohlcv_data WHERE symbol = 'INDIAVIX' AND trade_date = ? AND trade_time = ? LIMIT 1`,
+        [date, time]
+    );
+    if (exact.length) return exact[0].close != null ? Number(exact[0].close) : null;
+
+    const [nearest] = await pool.query(
+        `SELECT close FROM ohlcv_data WHERE symbol = 'INDIAVIX' AND trade_date = ? AND trade_time <= ?
+         ORDER BY trade_time DESC LIMIT 1`,
+        [date, time]
+    );
+    return nearest.length && nearest[0].close != null ? Number(nearest[0].close) : null;
+}
+
 /**
  * GET /api/simulator/chain/:symbol?date=YYYY-MM-DD&expiry=YYYY-MM-DD&time=HH:MM:SS
  * A real historical option-chain snapshot — same shape the frontend already
@@ -390,6 +412,13 @@ async function getChainAtTime(req, res) {
             console.error("[simulator/chain] futures lookup failed:", err.message);
         }
 
+        let vix = null;
+        try {
+            vix = await getVixAt(date, selectedTime);
+        } catch (err) {
+            console.error("[simulator/chain] vix lookup failed:", err.message);
+        }
+
         res.json({
             symbol,
             date,
@@ -402,6 +431,7 @@ async function getChainAtTime(req, res) {
             spotSource,
             futPrice,
             futExpiry,
+            vix,
             lotSize,
             atmStrike: computeAtmStrike(rows.map((r) => r.strike), spotPrice),
             maxPainStrike: computeMaxPain(rows.map((r) => ({ strike: r.strike, ceOi: r.ce.oi, peOi: r.pe.oi }))),
