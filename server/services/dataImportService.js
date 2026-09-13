@@ -49,11 +49,23 @@ const TABLE_SCHEMAS = {
         insertColumns: ["symbol", "expiry", "trade_date", "trade_time", "open", "high", "low", "close", "volume", "oi", "oi_change", "underlying_price"],
         updateColumns: ["open", "high", "low", "close", "volume", "oi", "oi_change", "underlying_price"],
     },
+    // Primarily for India VIX (symbol=INDIAVIX, see dataCoverageService.js's
+    // VIX branch and simulatorController.js's getVixAt) — but ohlcv_data
+    // also holds index/stock daily candles, so this is left generic over
+    // `symbol` like the other two schemas rather than hardcoding INDIAVIX,
+    // same "never silently override what the CSV says" instinct validateRow
+    // already applies everywhere else in this file.
+    ohlcv_data: {
+        header: ["symbol", "trade_date", "trade_time", "open", "high", "low", "close", "volume"],
+        required: ["symbol", "trade_date", "trade_time"],
+        insertColumns: ["symbol", "trade_date", "trade_time", "open", "high", "low", "close", "volume"],
+        updateColumns: ["open", "high", "low", "close", "volume"],
+    },
 };
 
 function getSchema(table) {
     const schema = TABLE_SCHEMAS[table];
-    if (!schema) throw badRequest(`"${table}" is not importable — expected option_chain_history or futures_history`);
+    if (!schema) throw badRequest(`"${table}" is not importable — expected option_chain_history, futures_history, or ohlcv_data`);
     return schema;
 }
 

@@ -29,6 +29,11 @@ const SCHEMAS = {
         header: ["symbol", "expiry", "trade_date", "trade_time", "open", "high", "low", "close", "volume", "oi", "oi_change", "underlying_price"],
         sample: "NIFTY,2024-01-25,2024-01-15,09:15:00,21500,21520,21480,21495,120000,8500000,,21490.5",
     },
+    ohlcv_data: {
+        label: "India VIX / OHLCV",
+        header: ["symbol", "trade_date", "trade_time", "open", "high", "low", "close", "volume"],
+        sample: "INDIAVIX,2024-01-15,09:15:00,14.2,14.35,14.1,14.28,",
+    },
 };
 
 // Same RFC-4180-ish splitter as LotSizeHistory.jsx (quoted fields, escaped "").
@@ -142,7 +147,8 @@ export default function DataImport() {
                     <p className="mb-3 text-xs text-gray-400">
                         Header must be exactly: <code className="rounded bg-white/10 px-1 py-0.5 text-gray-200">{schema.header.join(",")}</code>.
                         Non-required numeric fields may be left blank (stored as NULL, never guessed). Rows are upserted — a row for a
-                        symbol/date/time/strike (or symbol/expiry/date/time for futures) that already exists gets its values refreshed, never duplicated.
+                        symbol/date/time/strike (option chain), symbol/expiry/date/time (futures), or symbol/date/time (India VIX / OHLCV)
+                        that already exists gets its values refreshed, never duplicated.
                     </p>
 
                     <div className="flex flex-wrap items-center gap-3">
