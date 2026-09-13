@@ -507,6 +507,106 @@ async function getCoverageDetail(dataType, symbol) {
     });
 }
 
+function monthBoundsSql(ym) {
+    const [y, m] = String(ym).split("-").map(Number);
+    if (!y || !m || m < 1 || m > 12) throw Object.assign(new Error(`invalid month "${ym}" (expected YYYY-MM)`), { status: 400 });
+    const start = `${y}-${pad2(m)}-01`;
+    const lastDay = new Date(Date.UTC(y, m, 0)); // Gotcha #12: Date.UTC only, never local-timezone Date methods
+    const end = `${lastDay.getUTCFullYear()}-${pad2(lastDay.getUTCMonth() + 1)}-${pad2(lastDay.getUTCDate())}`;
+    return { start, end };
+}
+function pad2(n) {
+    return String(n).padStart(2, "0");
+}
+
+/**
+ * Day-by-day breakdown for ONE symbol, ONE month — "which days actually
+ * have data" (the Data Coverage page's month tiles only show a day COUNT
+ * like "13/19"; this is what backs the drill-down into which 13 specific
+ * days, and which of the 19 expected ones are the missing 6). `expectedDays`
+ * is the real trading-calendar date list for that month (same "best-covered
+ * of the 7 indices" derivation as getMonthlyReference's day COUNT, just
+ * returning the actual dates here instead of only a number).
+ */
+async function getCoverageDays(dataType, symbol, month) {
+    const table = tableFor(dataType);
+    const displaySymbol = String(symbol || "").toUpperCase();
+    if (!displaySymbol) throw Object.assign(new Error("symbol is required"), { status: 400 });
+    const { start, end } = monthBoundsSql(month);
+
+    return cached(`days:${dataType}:${displaySymbol}:${month}`, async () => {
+        let dayRows;
+        if (table === "option_chain_history") {
+            [dayRows] = await pool.query(
+                `SELECT trade_date, SUM(row_count) AS rows_, SUM(minute_rows) AS minuteRows
+                 FROM ${SUMMARY_TABLE} WHERE symbol = ? AND trade_date BETWEEN ? AND ? GROUP BY trade_date ORDER BY trade_date`,
+                [displaySymbol, start, end]
+            );
+        } else {
+            [dayRows] = await queryPreferIndex(
+                `SELECT trade_date, COUNT(*) AS rows_, SUM(trade_time <> '15:30:00') AS minuteRows
+                 FROM ${table} USE INDEX (${SYMBOL_DATE_TIME_INDEX[table]}) WHERE symbol = ? AND trade_date BETWEEN ? AND ? GROUP BY trade_date ORDER BY trade_date`,
+                `SELECT trade_date, COUNT(*) AS rows_, SUM(trade_time <> '15:30:00') AS minuteRows
+                 FROM ${table} WHERE symbol = ? AND trade_date BETWEEN ? AND ? GROUP BY trade_date ORDER BY trade_date`,
+                [displaySymbol, start, end]
+            );
+        }
+        const gotDays = new Map(dayRows.map((r) => [r.trade_date, r]));
+
+        // Reference trading calendar for this one month: whichever of the 7
+        // indices has the most distinct trade_dates in this range — same
+        // symbol table each dataType already reads from, just this month only
+        // (cheap: bounded to ~31 rows/index instead of getMonthlyReference's
+        // whole-window scan).
+        let refRows;
+        if (table === "option_chain_history") {
+            [refRows] = await pool.query(
+                `SELECT symbol, trade_date FROM ${SUMMARY_TABLE} WHERE symbol IN (?) AND trade_date BETWEEN ? AND ? GROUP BY symbol, trade_date`,
+                [SEVEN_INDICES, start, end]
+            );
+        } else {
+            [refRows] = await queryPreferIndex(
+                `SELECT symbol, trade_date FROM ${table} USE INDEX (${SYMBOL_DATE_TIME_INDEX[table]}) WHERE symbol IN (?) AND trade_date BETWEEN ? AND ? GROUP BY symbol, trade_date`,
+                `SELECT symbol, trade_date FROM ${table} WHERE symbol IN (?) AND trade_date BETWEEN ? AND ? GROUP BY symbol, trade_date`,
+                [SEVEN_INDICES, start, end]
+            );
+        }
+        const bySymbol = new Map();
+        for (const r of refRows) {
+            if (!bySymbol.has(r.symbol)) bySymbol.set(r.symbol, []);
+            bySymbol.get(r.symbol).push(r.trade_date);
+        }
+        let expectedDays = [];
+        for (const dates of bySymbol.values()) {
+            if (dates.length > expectedDays.length) expectedDays = dates;
+        }
+        expectedDays.sort();
+
+        const days = expectedDays.length
+            ? expectedDays.map((date) => {
+                const r = gotDays.get(date);
+                return { date, hasData: Boolean(r), rows: r ? Number(r.rows_) : 0, minuteRows: r ? Number(r.minuteRows || 0) : 0 };
+            })
+            : [...gotDays.keys()].sort().map((date) => {
+                const r = gotDays.get(date);
+                return { date, hasData: true, rows: Number(r.rows_), minuteRows: Number(r.minuteRows || 0) };
+            });
+        // Any day the symbol has data for that ISN'T in the reference
+        // calendar (e.g. the symbol traded before any of the 7 indices'
+        // known range, or the reference itself is thin that month) — append
+        // rather than silently drop, still marked hasData.
+        for (const date of gotDays.keys()) {
+            if (!expectedDays.includes(date)) {
+                const r = gotDays.get(date);
+                days.push({ date, hasData: true, rows: Number(r.rows_), minuteRows: Number(r.minuteRows || 0) });
+            }
+        }
+        days.sort((a, b) => a.date.localeCompare(b.date));
+
+        return { symbol: displaySymbol, month, start, end, days };
+    });
+}
+
 /**
  * Per symbol: does it have data for its nearest current/upcoming expiry, and
  * how stale is its most recent data? redFlag = true when either is missing/
@@ -657,6 +757,7 @@ module.exports = {
     SEVEN_INDICES,
     getCoverageSummary,
     getCoverageDetail,
+    getCoverageDays,
     getExpiryStatus,
     getGreeksCoverage,
     invalidateCoverageCache: invalidate,

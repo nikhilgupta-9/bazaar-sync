@@ -118,6 +118,19 @@ async function getCoverageDetail(req, res) {
     }
 }
 
+async function getCoverageDays(req, res) {
+    try {
+        const dataType = req.query.dataType || "option_chain";
+        const { symbol, month } = req.query;
+        if (!symbol) return res.status(400).json({ error: "symbol query param is required" });
+        if (!month) return res.status(400).json({ error: "month query param is required (YYYY-MM)" });
+        const result = await coverage.getCoverageDays(dataType, symbol, month);
+        res.json({ dataType, ...result });
+    } catch (err) {
+        sendError(res, err, "failed to load day-level coverage");
+    }
+}
+
 async function getExpiryStatus(req, res) {
     try {
         const dataType = req.query.dataType || "option_chain";
@@ -157,6 +170,6 @@ async function importData(req, res) {
 module.exports = {
     getEnvStatus, updateEnvValue,
     startExtractionJob, listExtractionJobs, getExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob,
-    getCoverageSummary, getCoverageDetail, getExpiryStatus, getGreeksCoverage, refreshCoverageCache,
+    getCoverageSummary, getCoverageDetail, getCoverageDays, getExpiryStatus, getGreeksCoverage, refreshCoverageCache,
     importData,
 };

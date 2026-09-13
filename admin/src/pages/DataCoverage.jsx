@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FiRefreshCw, FiSearch } from "react-icons/fi";
 import { useAdminAuth } from "../context/AdminAuthContext";
-import { fetchCoverageSummary, fetchCoverageDetail, refreshCoverageCache } from "../services/adminApi";
+import { fetchCoverageSummary, fetchCoverageDetail, fetchCoverageDays, refreshCoverageCache } from "../services/adminApi";
 import TopBar from "../components/TopBar";
 import Card from "../components/Card";
 
@@ -31,6 +31,8 @@ export default function DataCoverage() {
     const [selected, setSelected] = useState(null);
     const [detail, setDetail] = useState(null);
     const [refreshing, setRefreshing] = useState(false);
+    const [selectedMonth, setSelectedMonth] = useState(null);
+    const [days, setDays] = useState(null);
 
     const load = useCallback(() => {
         fetchCoverageSummary(token, dataType).then((r) => setSummary(r)).catch((err) => setError(err.message));
@@ -56,7 +58,16 @@ export default function DataCoverage() {
     function selectSymbol(symbol) {
         setSelected(symbol);
         setDetail(null);
+        setSelectedMonth(null);
+        setDays(null);
         fetchCoverageDetail(token, dataType, symbol).then((r) => setDetail(r.months)).catch((err) => setError(err.message));
+    }
+
+    function selectMonth(month) {
+        if (selectedMonth === month) { setSelectedMonth(null); setDays(null); return; } // click again to collapse
+        setSelectedMonth(month);
+        setDays(null);
+        fetchCoverageDays(token, dataType, selected, month).then((r) => setDays(r.days)).catch((err) => setError(err.message));
     }
 
     async function handleRefresh() {
@@ -77,7 +88,7 @@ export default function DataCoverage() {
                 {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
 
                 <div className="mb-4 flex flex-wrap items-center gap-3">
-                    <select value={dataType} onChange={(e) => { setDataType(e.target.value); setSelected(null); setDetail(null); setSummary(null); }} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500">
+                    <select value={dataType} onChange={(e) => { setDataType(e.target.value); setSelected(null); setDetail(null); setSummary(null); setSelectedMonth(null); setDays(null); }} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500">
                         <option value="option_chain">Option Chain</option>
                         <option value="futures">Futures</option>
                         <option value="vix">India VIX</option>
@@ -129,15 +140,46 @@ export default function DataCoverage() {
                         ) : !detail ? (
                             <div className="py-10 text-center text-xs text-gray-500">Loading…</div>
                         ) : (
-                            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
-                                {detail.map((m) => (
-                                    <div key={m.month} className={`rounded-lg px-2 py-2 text-center ${pctColor(m.coveragePct)}`} title={`${m.days} of ${m.expectedDays ?? "?"} expected days, ${m.rows.toLocaleString()} rows`}>
-                                        <div className="text-[10px] font-medium opacity-80">{m.month}</div>
-                                        <div className="text-sm font-bold">{m.days}{m.expectedDays != null ? `/${m.expectedDays}` : ""}</div>
-                                        {m.missingDays > 0 && <div className="text-[10px] opacity-80">−{m.missingDays}</div>}
+                            <>
+                                <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
+                                    {detail.map((m) => (
+                                        <button
+                                            type="button"
+                                            key={m.month}
+                                            onClick={() => selectMonth(m.month)}
+                                            className={`rounded-lg px-2 py-2 text-center outline-none ${pctColor(m.coveragePct)} ${selectedMonth === m.month ? "ring-2 ring-violet-400" : ""}`}
+                                            title={`${m.days} of ${m.expectedDays ?? "?"} expected days, ${m.rows.toLocaleString()} rows — click to see exactly which days`}
+                                        >
+                                            <div className="text-[10px] font-medium opacity-80">{m.month}</div>
+                                            <div className="text-sm font-bold">{m.days}{m.expectedDays != null ? `/${m.expectedDays}` : ""}</div>
+                                            {m.missingDays > 0 && <div className="text-[10px] opacity-80">−{m.missingDays}</div>}
+                                        </button>
+                                    ))}
+                                </div>
+
+                                {selectedMonth && (
+                                    <div className="mt-4 border-t border-white/5 pt-3">
+                                        <div className="mb-2 text-xs font-semibold text-gray-300">{selected} · {selectedMonth} — day by day</div>
+                                        {!days ? (
+                                            <div className="py-6 text-center text-xs text-gray-500">Loading…</div>
+                                        ) : (
+                                            <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-6 md:grid-cols-8">
+                                                {days.map((d) => (
+                                                    <div
+                                                        key={d.date}
+                                                        className={`rounded-md px-1.5 py-1.5 text-center text-[10px] ${d.hasData ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300"}`}
+                                                        title={d.hasData ? `${d.date}: ${d.rows.toLocaleString()} rows (${d.minuteRows.toLocaleString()} minute rows)` : `${d.date}: no data — a genuine gap for this symbol`}
+                                                    >
+                                                        <div className="font-semibold">{d.date.slice(8)}</div>
+                                                        <div className="opacity-80">{d.hasData ? d.rows.toLocaleString() : "—"}</div>
+                                                    </div>
+                                                ))}
+                                                {!days.length && <div className="col-span-full py-4 text-center text-xs text-gray-500">No trading-day reference for this month.</div>}
+                                            </div>
+                                        )}
                                     </div>
-                                ))}
-                            </div>
+                                )}
+                            </>
                         )}
                     </Card>
                 </div>

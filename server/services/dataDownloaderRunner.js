@@ -20,7 +20,10 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { pool } = require("../config/db");
-const { cleanBeforeFetch } = require("./extractionCleanupService");
+const { cleanBeforeFetch, monthRange } = require("./extractionCleanupService");
+const { resyncRange } = require("./coverageSummaryService");
+
+const YEAR_MODE_SOURCES = new Set(["icici_breeze", "bhavcopy", "upstox"]);
 
 const SERVER_DIR = path.join(__dirname, "..");
 const DATA_DOWNLOADER_DIR = process.env.DATA_DOWNLOADER_DIR || path.join(SERVER_DIR, "..", "data-downloader");
@@ -150,8 +153,8 @@ async function startJob(params) {
     // no-op. Runs BEFORE the fetch script spawns so its own skip-if-exists
     // check correctly sees a clean slate. A cleanup failure fails the job
     // outright rather than risking a fetch running on top of half-cleaned data.
+    const symbolList = validateSymbols(params.symbols);
     try {
-        const symbolList = validateSymbols(params.symbols);
         const cleanupSummary = await cleanBeforeFetch({ source: params.source, dataType: params.dataType, symbolList, year: params.year, fromMonth: params.fromMonth, toMonth: params.toMonth });
         if (cleanupSummary) logStream.write(`${cleanupSummary}\n\n`);
     } catch (err) {
@@ -173,8 +176,33 @@ async function startJob(params) {
     await pool.query(`UPDATE data_extraction_jobs SET status='running', pid=?, log_path=?, started_at=NOW() WHERE id=?`, [child.pid, logPath, jobId]);
 
     child.on("close", async (code) => {
-        logStream.end();
         const status = code === 0 ? "completed" : "failed";
+
+        // data-downloader/ writes option_chain_history with its OWN db pool —
+        // it has no dependency on this server/ app, so it can never call
+        // coverageSummaryService.recordIngested() the way cron.js/kotak/
+        // dataImportService.js do. Left alone, option_chain_coverage_summary
+        // (what the admin Data Coverage page actually reads — see
+        // dataCoverageService.js) silently stays stale for whatever this job
+        // just fetched. Confirmed for real (2026-09-13): a job fetched 13 real
+        // NIFTY days into option_chain_history, but the summary table kept
+        // showing 0 for that month until resynced. Scoped to exactly this
+        // job's (symbol, month range) — cheap, not a full-symbol rescan.
+        if (status === "completed" && params.dataType === "option_chain" && YEAR_MODE_SOURCES.has(params.source) && symbolList.length && params.year) {
+            try {
+                const { start, end } = monthRange(Number(params.year), params.fromMonth ? Number(params.fromMonth) : null, params.toMonth ? Number(params.toMonth) : null);
+                const lines = [];
+                for (const symbol of symbolList) {
+                    const keys = await resyncRange(symbol, start, end);
+                    lines.push(`${symbol}: resynced ${keys} (symbol, expiry, day) coverage-summary key(s)`);
+                }
+                logStream.write(`\n[runner] coverage-summary resync (${start}..${end}):\n${lines.map((l) => `  - ${l}`).join("\n")}\n`);
+            } catch (err) {
+                logStream.write(`\n[runner] coverage-summary resync failed (job data itself is fine, only the admin coverage-page cache may lag): ${err.message}\n`);
+            }
+        }
+
+        logStream.end();
         try {
             await pool.query(
                 `UPDATE data_extraction_jobs SET status=?, exit_code=?, summary=?, finished_at=NOW() WHERE id=?`,

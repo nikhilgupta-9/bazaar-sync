@@ -90,4 +90,4 @@ async function cleanBeforeFetch({ source, dataType, symbolList, year, fromMonth,
     return `[cleanup] ${start}..${end} — checked for existing data first, cleaned before re-fetch:\n${lines.map((l) => `  - ${l}`).join("\n")}`;
 }
 
-module.exports = { cleanBeforeFetch };
+module.exports = { cleanBeforeFetch, monthRange };

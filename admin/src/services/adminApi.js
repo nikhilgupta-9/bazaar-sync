@@ -269,6 +269,10 @@ export async function fetchCoverageDetail(token, dataType, symbol) {
     return handle(await fetch(`${API_URL}/api/admin/data/coverage/detail?dataType=${dataType}&symbol=${encodeURIComponent(symbol)}`, authed(token)));
 }
 
+export async function fetchCoverageDays(token, dataType, symbol, month) {
+    return handle(await fetch(`${API_URL}/api/admin/data/coverage/days?dataType=${dataType}&symbol=${encodeURIComponent(symbol)}&month=${month}`, authed(token)));
+}
+
 export async function refreshCoverageCache(token) {
     return handle(await fetch(`${API_URL}/api/admin/data/coverage/refresh`, { method: "POST", ...authed(token) }));
 }

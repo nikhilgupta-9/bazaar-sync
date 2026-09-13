@@ -9,7 +9,7 @@ const {
 const {
     getEnvStatus, updateEnvValue,
     startExtractionJob, listExtractionJobs, getExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob,
-    getCoverageSummary, getCoverageDetail, getExpiryStatus, getGreeksCoverage, refreshCoverageCache,
+    getCoverageSummary, getCoverageDetail, getCoverageDays, getExpiryStatus, getGreeksCoverage, refreshCoverageCache,
     importData,
 } = require("../controllers/dataOpsController");
 const { requireAuth } = require("../middleware/auth");
@@ -59,6 +59,7 @@ router.delete("/data/jobs/:id", deleteExtractionJob);
 
 router.get("/data/coverage/summary", getCoverageSummary);
 router.get("/data/coverage/detail", getCoverageDetail);
+router.get("/data/coverage/days", getCoverageDays);
 router.post("/data/coverage/refresh", refreshCoverageCache);
 router.get("/data/expiry-status", getExpiryStatus);
 router.get("/data/greeks-coverage", getGreeksCoverage);

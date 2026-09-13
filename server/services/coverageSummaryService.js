@@ -77,4 +77,49 @@ async function recordIngestedFromInsertValues(values) {
     return recordIngested(keysFromInsertValues(values));
 }
 
-module.exports = { recordIngested, recordIngestedFromInsertValues, keysFromInsertValues };
+/**
+ * Re-aggregates option_chain_coverage_summary for ONE symbol over a bounded
+ * date range straight from option_chain_history — the same GROUP BY
+ * scripts/backfillCoverageSummary.js uses, just scoped to a range instead of
+ * a symbol's whole history (cheap: bounded to that range's rows via
+ * idx_backtest_range, not a full-symbol scan).
+ *
+ * Needed because data-downloader/ (the standalone app behind the admin Data
+ * Extraction "ICICI Breeze/Bhavcopy/Upstox" jobs) writes option_chain_history
+ * directly with its own DB pool — it has no dependency on this server/ app,
+ * so it can never call recordIngested() above. Without this, the summary
+ * table silently drifts stale (still showing 0/old counts) for any month an
+ * extraction job just fetched, even though the real data landed correctly —
+ * confirmed for real (2026-09-13): a job fetched 13 real days of NIFTY
+ * Jan-2024 into option_chain_history, but option_chain_coverage_summary kept
+ * showing 0 days for that month until this ran. Called from
+ * dataDownloaderRunner.js right after a job's process exits successfully.
+ */
+async function resyncRange(symbol, dateStart, dateEnd) {
+    const [rows] = await pool.query(
+        `SELECT expiry, trade_date, COUNT(*) AS row_count, SUM(trade_time <> '15:30:00') AS minute_rows
+         FROM option_chain_history USE INDEX (idx_backtest_range)
+         WHERE symbol = ? AND trade_date BETWEEN ? AND ?
+         GROUP BY expiry, trade_date`,
+        [symbol, dateStart, dateEnd]
+    );
+    if (rows.length) {
+        const values = rows.map((r) => [symbol, r.expiry, r.trade_date, Number(r.row_count), Number(r.minute_rows || 0)]);
+        for (let i = 0; i < values.length; i += 500) {
+            const batch = values.slice(i, i + 500);
+            await pool.query(
+                `INSERT INTO option_chain_coverage_summary (symbol, expiry_date, trade_date, row_count, minute_rows)
+                 VALUES ? ON DUPLICATE KEY UPDATE row_count = VALUES(row_count), minute_rows = VALUES(minute_rows)`,
+                [batch]
+            );
+        }
+    }
+    try {
+        require("./dataCoverageService").invalidateCoverageCache();
+    } catch (err) {
+        console.error("[coverageSummaryService] cache invalidation failed:", err.message);
+    }
+    return rows.length;
+}
+
+module.exports = { recordIngested, recordIngestedFromInsertValues, keysFromInsertValues, resyncRange };
