@@ -20,6 +20,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { pool } = require("../config/db");
+const { cleanBeforeFetch } = require("./extractionCleanupService");
 
 const SERVER_DIR = path.join(__dirname, "..");
 const DATA_DOWNLOADER_DIR = process.env.DATA_DOWNLOADER_DIR || path.join(SERVER_DIR, "..", "data-downloader");
@@ -141,6 +142,24 @@ async function startJob(params) {
     const logStream = fs.createWriteStream(logPath, { flags: "a" });
     if (notes) logStream.write(`[note] ${notes}\n`);
     logStream.write(`[runner] cwd=${cwd}\n[runner] command=${commandText}\n\n`);
+
+    // "Check first, clean if present, then fetch" — see
+    // extractionCleanupService.js for the full rationale. Only fires for an
+    // explicit symbol list (option_chain/futures) or vix (always the single
+    // INDIAVIX series) on the three year/month sources; everything else is a
+    // no-op. Runs BEFORE the fetch script spawns so its own skip-if-exists
+    // check correctly sees a clean slate. A cleanup failure fails the job
+    // outright rather than risking a fetch running on top of half-cleaned data.
+    try {
+        const symbolList = validateSymbols(params.symbols);
+        const cleanupSummary = await cleanBeforeFetch({ source: params.source, dataType: params.dataType, symbolList, year: params.year, fromMonth: params.fromMonth, toMonth: params.toMonth });
+        if (cleanupSummary) logStream.write(`${cleanupSummary}\n\n`);
+    } catch (err) {
+        logStream.write(`\n[runner] cleanup step failed, job aborted: ${err.message}\n`);
+        logStream.end();
+        await pool.query(`UPDATE data_extraction_jobs SET status='failed', summary=?, finished_at=NOW() WHERE id=?`, [`cleanup step failed: ${err.message}`, jobId]);
+        return { id: jobId, command: commandText, logPath, notes: notes || null };
+    }
 
     const child = spawn(cmd, args, { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
 
