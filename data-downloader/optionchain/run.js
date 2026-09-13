@@ -244,7 +244,11 @@ async function main() {
     await pool.end();
 }
 
-main().catch((err) => {
-    console.error("[pipeline] fatal:", err && err.stack ? err.stack : err);
-    process.exit(1);
-});
+module.exports = { runMonth, symbolsForMonth };
+
+if (require.main === module) {
+    main().catch((err) => {
+        console.error("[pipeline] fatal:", err && err.stack ? err.stack : err);
+        process.exit(1);
+    });
+}
