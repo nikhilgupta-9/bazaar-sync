@@ -170,6 +170,12 @@ server.listen(PORT, () => {
         console.error("[server] failed to reconcile orphaned extraction jobs:", err.message);
     });
 
+    // Pre-warm the admin Data-section's coverage/expiry/Greeks caches (each
+    // one a multi-second-or-more full-table scan) so the first admin to open
+    // one of those pages doesn't eat that cost live — see
+    // dataCoverageService.js's warmCoverageCache() header comment.
+    require("./services/dataCoverageService").warmCoverageCache();
+
     // Market worker lifecycle crons (08:45 fork / 15:35 graceful stop, IST)
     marketStart.schedule();
     marketStop.schedule();

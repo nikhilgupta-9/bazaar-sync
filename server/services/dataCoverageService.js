@@ -16,6 +16,19 @@ const { pool } = require("../config/db");
 
 const COVERAGE_START = "2023-01-01"; // Next Steps target window
 const TABLES = { option_chain: "option_chain_history", futures: "futures_history" };
+// Each table's (symbol, trade_date, trade_time) index — named differently
+// per table (see schema.sql) — used to force the right index for the
+// GROUP BY trade_date queries below; see getCoverageDetail's comment for why
+// leaving it to the optimizer isn't safe here.
+const SYMBOL_DATE_TIME_INDEX = { option_chain_history: "idx_symbol_date_time", futures_history: "idx_fut_symbol_date_time" };
+
+// The 7 indices always shown first/pinned on the coverage & expiry pages,
+// regardless of whether they currently have rows — a missing index should
+// be loudly visible, not silently absent from a "symbols we found" list.
+// Also used (see getMonthlyReference below) to keep the "expected trading
+// days" reference query FAST — filtering to these 7 lets it use the
+// existing (symbol, trade_date, ...) indexes instead of a full-table scan.
+const SEVEN_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"];
 
 function tableFor(dataType) {
     const table = TABLES[dataType];
@@ -90,43 +103,86 @@ function monthList() {
     return months;
 }
 
-/** The "reference" trading-day count per month, derived as the max across every symbol that month. */
+// Was previously `GROUP BY DATE_FORMAT(trade_date, '%Y-%m'), symbol` with no
+// symbol filter — on option_chain_history's tens of millions of rows that's
+// a GROUP BY on a computed expression (can't use any index for grouping) PLUS
+// a COUNT(DISTINCT trade_date) inside it, which MySQL can only resolve with a
+// big on-disk temp table. Measured taking 30s+, and a real run of the "7
+// indices only" attempt at fixing this (below) actually EXHAUSTED THE DISK
+// with that temp file ("No space left on device", confirmed 2026-09-13) even
+// with the smaller symbol set — proof the query shape itself, not just the
+// row count, was the problem. Fixed properly this time: group by the RAW
+// indexed columns only (symbol, trade_date — exactly idx_symbol_date_time's
+// leading columns), which MySQL can stream straight off the index with NO
+// filesort/temp table, then bucket the (small: ~7 symbols x ~700 trading
+// days) result into months in JS.
 async function getMonthlyReference(dataType) {
     const table = tableFor(dataType);
     return cached(`reference:${dataType}`, async () => {
         const [rows] = await pool.query(
-            `SELECT DATE_FORMAT(trade_date, '%Y-%m') AS ym, symbol, COUNT(DISTINCT trade_date) AS days
-             FROM ${table}
-             WHERE trade_date BETWEEN ? AND ?
-             GROUP BY ym, symbol`,
-            [COVERAGE_START, todaySql()]
+            `SELECT symbol, trade_date
+             FROM ${table} USE INDEX (${SYMBOL_DATE_TIME_INDEX[table]})
+             WHERE symbol IN (?) AND trade_date BETWEEN ? AND ?
+             GROUP BY symbol, trade_date`,
+            [SEVEN_INDICES, COVERAGE_START, todaySql()]
         );
-        const best = new Map(); // ym -> max days
+        const perSymbolMonth = new Map(); // "symbol|ym" -> day count
         for (const r of rows) {
-            const cur = best.get(r.ym) || 0;
-            if (Number(r.days) > cur) best.set(r.ym, Number(r.days));
+            const key = `${r.symbol}|${r.trade_date.slice(0, 7)}`;
+            perSymbolMonth.set(key, (perSymbolMonth.get(key) || 0) + 1);
+        }
+        const best = new Map(); // ym -> max days across the 7 indices
+        for (const [key, days] of perSymbolMonth) {
+            const ym = key.split("|")[1];
+            if (days > (best.get(ym) || 0)) best.set(ym, days);
         }
         return best;
     });
 }
 
-/** Month-by-month grid for ONE symbol, 2023-01 -> current month. */
+/**
+ * Month-by-month grid for ONE symbol, 2023-01 -> current month. Same fix as
+ * getMonthlyReference above: group by the raw `trade_date` column (index-
+ * ordered once `symbol` is filtered, so no filesort) instead of a computed
+ * month expression, and bucket into months in JS — this is the query a
+ * symbol click on the Data Coverage page actually triggers, so this one
+ * being slow was reported directly as "select a symbol, wait 30s, nothing
+ * happens".
+ */
 async function getCoverageDetail(dataType, symbol) {
     const table = tableFor(dataType);
     const displaySymbol = String(symbol || "").toUpperCase();
     if (!displaySymbol) throw Object.assign(new Error("symbol is required"), { status: 400 });
 
-    const [rows] = await pool.query(
-        `SELECT DATE_FORMAT(trade_date, '%Y-%m') AS ym,
-                COUNT(*) AS rows_,
-                SUM(trade_time <> '15:30:00') AS minuteRows,
-                COUNT(DISTINCT trade_date) AS days
-         FROM ${table}
-         WHERE symbol = ? AND trade_date BETWEEN ? AND ?
-         GROUP BY ym`,
-        [displaySymbol, COVERAGE_START, todaySql()]
-    );
-    const bySymbolMonth = new Map(rows.map((r) => [r.ym, r]));
+    // Still a ~9-10s query even index-only, on a table this size (real
+    // measurement, 2026-09-13) — cached per symbol so re-clicking the same
+    // symbol (very likely — an admin checking back on one gap) is instant.
+    const bySymbolMonth = await cached(`detail:${dataType}:${displaySymbol}`, async () => {
+        // USE INDEX forces idx_symbol_date_time — left to its own devices the
+        // optimizer picked uniq_snapshot instead (probably favored for being
+        // UNIQUE), which sorts by (symbol, expiry, strike, trade_date, ...) and
+        // so does NOT keep trade_date contiguous for a fixed symbol, forcing a
+        // "Using temporary; Using filesort" even on this single-symbol query
+        // (confirmed via EXPLAIN, 2026-09-13). idx_symbol_date_time's (symbol,
+        // trade_date, trade_time) order makes this a pure index scan instead.
+        const [dayRows] = await pool.query(
+            `SELECT trade_date, COUNT(*) AS rows_, SUM(trade_time <> '15:30:00') AS minuteRows
+             FROM ${table} USE INDEX (${SYMBOL_DATE_TIME_INDEX[table]})
+             WHERE symbol = ? AND trade_date BETWEEN ? AND ?
+             GROUP BY trade_date`,
+            [displaySymbol, COVERAGE_START, todaySql()]
+        );
+        const byMonth = new Map();
+        for (const r of dayRows) {
+            const ym = r.trade_date.slice(0, 7);
+            const agg = byMonth.get(ym) || { rows_: 0, minuteRows: 0, days: 0 };
+            agg.rows_ += Number(r.rows_);
+            agg.minuteRows += Number(r.minuteRows || 0);
+            agg.days += 1; // one input row per distinct trade_date, by construction
+            byMonth.set(ym, agg);
+        }
+        return byMonth;
+    });
     const reference = await getMonthlyReference(dataType);
 
     return monthList().map((ym) => {
@@ -144,11 +200,6 @@ async function getCoverageDetail(dataType, symbol) {
         };
     });
 }
-
-// The 7 indices always shown first/pinned on the coverage & expiry pages,
-// regardless of whether they currently have rows — a missing index should
-// be loudly visible, not silently absent from a "symbols we found" list.
-const SEVEN_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"];
 
 /**
  * Per symbol: does it have data for its nearest current/upcoming expiry, and
@@ -227,6 +278,32 @@ async function getGreeksCoverage() {
     });
 }
 
+// Pre-computes every cache this file serves, sequentially (not in parallel —
+// these are all expensive full/near-full-table scans; running them at once
+// would just contend for the same DB connections/IO and take just as long
+// while looking busier). Call once at server boot (see server.js) so the
+// FIRST admin to open a Data-section page never eats a cold-cache scan —
+// exactly the "30s, nothing happened" complaint this file's getMonthlyReference
+// comment above describes. Errors are logged, never thrown — a slow/failed
+// warm-up must not block server startup; the page just falls back to its
+// normal lazy on-demand load.
+async function warmCoverageCache() {
+    for (const dataType of Object.keys(TABLES)) {
+        try {
+            await getCoverageSummary(dataType);
+            await getMonthlyReference(dataType);
+            await getExpiryStatus(dataType);
+        } catch (err) {
+            console.error(`[dataCoverageService] warm-up failed for ${dataType}:`, err.message);
+        }
+    }
+    try {
+        await getGreeksCoverage();
+    } catch (err) {
+        console.error("[dataCoverageService] Greeks coverage warm-up failed:", err.message);
+    }
+}
+
 module.exports = {
     COVERAGE_START,
     SEVEN_INDICES,
@@ -235,4 +312,5 @@ module.exports = {
     getExpiryStatus,
     getGreeksCoverage,
     invalidateCoverageCache: invalidate,
+    warmCoverageCache,
 };
