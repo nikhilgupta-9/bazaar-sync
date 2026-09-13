@@ -6,6 +6,7 @@
   "scripts": {
     "option-chain": "node optionchain/run.js",
     "option-chain:years": "node optionchain/runYears.js",
+    "option-chain:universe": "node optionchain/runUniverse.js",
     "option-chain:upstox": "node upstox/run.js",
     "futures": "node futures/run.js",
     "futures:upstox": "node upstox/runFutures.js",

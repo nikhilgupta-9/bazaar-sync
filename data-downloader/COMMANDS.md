@@ -38,6 +38,12 @@ npm run option-chain -- 2025                     # next year (run each year sepa
 # every month:
 npm run option-chain:years -- 2024 2025                     # both years, all F&O symbols
 npm run option-chain:years -- 2024 2025 --symbols=NIFTY      # one symbol
+
+# Full universe (7 indices + ~210+ F&O stocks), ONE SYMBOL FULLY AT A TIME
+# (finishes NIFTY's whole 2024..2025 range before starting BANKNIFTY, etc.)
+# instead of every symbol advancing together month by month:
+npm run option-chain:universe -- 2024 2025
+npm run option-chain:universe -- 2024 2025 --symbols=NIFTY,BANKNIFTY   # testing subset
 ```
 
 Per month: **discovery** (NSE+BSE bhavcopy → every contract that traded) →
