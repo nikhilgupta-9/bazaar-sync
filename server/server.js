@@ -162,6 +162,14 @@ server.listen(PORT, () => {
     // Same idea for the Strategy Builder / Option Chain "Select Asset" list.
     require("./services/optionChainService").refreshSymbolList();
 
+    // Admin Data Extraction jobs still "running" from a previous process
+    // life (restart/crash mid-job) can never self-update — mark them so the
+    // admin UI doesn't show a stale job as live forever. See
+    // dataDownloaderRunner.js's reconcileOrphanedJobs() header comment.
+    require("./services/dataDownloaderRunner").reconcileOrphanedJobs().catch((err) => {
+        console.error("[server] failed to reconcile orphaned extraction jobs:", err.message);
+    });
+
     // Market worker lifecycle crons (08:45 fork / 15:35 graceful stop, IST)
     marketStart.schedule();
     marketStop.schedule();

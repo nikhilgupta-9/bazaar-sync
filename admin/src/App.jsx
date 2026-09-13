@@ -13,6 +13,12 @@ import Terms from "./pages/Terms";
 import Seo from "./pages/Seo";
 import HomePage from "./pages/HomePage";
 import LotSizeHistory from "./pages/LotSizeHistory";
+import DataExtraction from "./pages/DataExtraction";
+import DataCoverage from "./pages/DataCoverage";
+import ExpiryStatus from "./pages/ExpiryStatus";
+import GreeksCoverage from "./pages/GreeksCoverage";
+import DataImport from "./pages/DataImport";
+import DataSettings from "./pages/DataSettings";
 
 export default function App() {
     return (
@@ -31,6 +37,12 @@ export default function App() {
                 <Route path="/terms" element={<Terms />} />
                 <Route path="/seo" element={<Seo />} />
                 <Route path="/lot-size-history" element={<LotSizeHistory />} />
+                <Route path="/data-extraction" element={<DataExtraction />} />
+                <Route path="/data-coverage" element={<DataCoverage />} />
+                <Route path="/expiry-status" element={<ExpiryStatus />} />
+                <Route path="/greeks-coverage" element={<GreeksCoverage />} />
+                <Route path="/data-import" element={<DataImport />} />
+                <Route path="/data-settings" element={<DataSettings />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

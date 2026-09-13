@@ -2,7 +2,11 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5001";
 
 async function handle(res) {
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`);
+    if (!res.ok) {
+        const err = new Error(body.error || `Request failed (${res.status})`);
+        if (body.rowErrors) err.rowErrors = body.rowErrors;
+        throw err;
+    }
     return body;
 }
 
@@ -53,6 +57,38 @@ export async function removeInstituteIp(token, id) {
 }
 
 // --- Plans & Coupons ---
+
+export async function fetchPlansAdmin(token) {
+    return handle(await fetch(`${API_URL}/api/admin/plans`, authed(token)));
+}
+
+export async function createPlan(token, payload) {
+    return handle(await fetch(`${API_URL}/api/admin/plans`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    }));
+}
+
+export async function updatePlan(token, id, payload) {
+    return handle(await fetch(`${API_URL}/api/admin/plans/${id}`, {
+        method: "PUT",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    }));
+}
+
+export async function setPlanActive(token, id, active) {
+    return handle(await fetch(`${API_URL}/api/admin/plans/${id}`, {
+        method: "PATCH",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ active }),
+    }));
+}
+
+export async function deletePlan(token, id) {
+    return handle(await fetch(`${API_URL}/api/admin/plans/${id}`, { method: "DELETE", ...authed(token) }));
+}
 
 export async function fetchCoupons(token) {
     return handle(await fetch(`${API_URL}/api/admin/coupons`, authed(token)));
@@ -166,4 +202,74 @@ export async function addLotSizeHistoryEntry(token, { symbol, lotSize, effective
 
 export async function removeLotSizeHistoryEntry(token, id) {
     return handle(await fetch(`${API_URL}/api/admin/lot-size-history/${id}`, { method: "DELETE", ...authed(token) }));
+}
+
+export async function bulkImportLotSizeHistory(token, rows) {
+    return handle(await fetch(`${API_URL}/api/admin/lot-size-history/bulk`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ rows }),
+    }));
+}
+
+// --- Data section: credentials, extraction jobs, coverage/expiry/Greeks, CSV import ---
+
+export async function fetchEnvStatus(token) {
+    return handle(await fetch(`${API_URL}/api/admin/data/env`, authed(token)));
+}
+
+export async function updateEnvValue(token, key, value) {
+    return handle(await fetch(`${API_URL}/api/admin/data/env`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value }),
+    }));
+}
+
+export async function startExtractionJob(token, payload) {
+    return handle(await fetch(`${API_URL}/api/admin/data/jobs`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    }));
+}
+
+export async function fetchExtractionJobs(token) {
+    return handle(await fetch(`${API_URL}/api/admin/data/jobs`, authed(token)));
+}
+
+export async function fetchExtractionJob(token, id) {
+    return handle(await fetch(`${API_URL}/api/admin/data/jobs/${id}`, authed(token)));
+}
+
+export async function cancelExtractionJob(token, id) {
+    return handle(await fetch(`${API_URL}/api/admin/data/jobs/${id}/cancel`, { method: "POST", ...authed(token) }));
+}
+
+export async function fetchCoverageSummary(token, dataType) {
+    return handle(await fetch(`${API_URL}/api/admin/data/coverage/summary?dataType=${dataType}`, authed(token)));
+}
+
+export async function fetchCoverageDetail(token, dataType, symbol) {
+    return handle(await fetch(`${API_URL}/api/admin/data/coverage/detail?dataType=${dataType}&symbol=${encodeURIComponent(symbol)}`, authed(token)));
+}
+
+export async function refreshCoverageCache(token) {
+    return handle(await fetch(`${API_URL}/api/admin/data/coverage/refresh`, { method: "POST", ...authed(token) }));
+}
+
+export async function fetchExpiryStatus(token, dataType) {
+    return handle(await fetch(`${API_URL}/api/admin/data/expiry-status?dataType=${dataType}`, authed(token)));
+}
+
+export async function fetchGreeksCoverage(token) {
+    return handle(await fetch(`${API_URL}/api/admin/data/greeks-coverage`, authed(token)));
+}
+
+export async function importData(token, table, rows) {
+    return handle(await fetch(`${API_URL}/api/admin/data/import`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ table, rows }),
+    }));
 }

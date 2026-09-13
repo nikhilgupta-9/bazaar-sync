@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 import {
     FiGrid, FiUsers, FiCreditCard, FiTrendingUp, FiFileText,
     FiMapPin, FiTag, FiCalendar, FiBook, FiSearch, FiX, FiLayout, FiLayers,
+    FiDownloadCloud, FiPieChart, FiClock, FiActivity, FiUploadCloud, FiKey,
 } from "react-icons/fi";
 
 const LIVE_LINKS = [
@@ -23,7 +24,23 @@ const MANAGEMENT_LINKS = [
     { to: "/events", label: "Events", icon: FiCalendar },
     { to: "/terms", label: "T&C", icon: FiBook },
     { to: "/seo", label: "SEO Tool", icon: FiSearch },
+];
+
+// Data section (2026-09-13): historical-data operations — requesting
+// extraction from the standalone data-downloader/ app (or server/ scripts
+// for the Angel One/Kotak forward-fill case), and reporting on what's
+// actually in option_chain_history/futures_history for the 2023-onward
+// target window. Lot Size History moved here from Management — it's the
+// same "data completeness" concern as the rest of this section, not a
+// site-config tool like Plans/Events/SEO.
+const DATA_LINKS = [
+    { to: "/data-extraction", label: "Data Extraction", icon: FiDownloadCloud },
+    { to: "/data-coverage", label: "Data Coverage", icon: FiPieChart },
+    { to: "/expiry-status", label: "Expiry Status", icon: FiClock },
+    { to: "/greeks-coverage", label: "Greeks Coverage", icon: FiActivity },
     { to: "/lot-size-history", label: "Lot Size History", icon: FiLayers },
+    { to: "/data-import", label: "Data Import (CSV)", icon: FiUploadCloud },
+    { to: "/data-settings", label: "Credentials", icon: FiKey },
 ];
 
 function NavItem({ to, label, icon: Icon, end, onNavigate }) {
@@ -94,6 +111,11 @@ export default function Sidebar({ open = false, onClose }) {
                 <div className="mb-2 px-3 text-[10px] font-bold uppercase tracking-wider text-gray-600">Menu</div>
                 <nav className="flex flex-col gap-1">
                     {LIVE_LINKS.map((l) => <NavItem key={l.to} {...l} onNavigate={onClose} />)}
+                </nav>
+
+                <div className="mb-2 mt-6 px-3 text-[10px] font-bold uppercase tracking-wider text-gray-600">Data</div>
+                <nav className="flex flex-col gap-1">
+                    {DATA_LINKS.map((l) => <NavItem key={l.to} {...l} onNavigate={onClose} />)}
                 </nav>
 
                 <div className="mb-2 mt-6 px-3 text-[10px] font-bold uppercase tracking-wider text-gray-600">Management</div>

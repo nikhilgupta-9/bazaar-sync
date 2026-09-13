@@ -339,10 +339,41 @@ CREATE TABLE IF NOT EXISTS institute_ip_allowlist (
   FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
--- Coupon codes against the existing PRO_PLANS catalog (paperTradeConfig.js)
--- — NOT a second pricing-plan system, per the user's explicit scope choice
--- (2026-08-20): plans stay exactly as they are, coupons just discount the
--- Razorpay order amount at checkout. See services/couponService.js.
+-- The Pricing page's plan catalog (added 2026-09-13, replacing the fixed
+-- PRO_PLANS constant in paperTradeConfig.js — see services/proPlanService.js).
+-- `id` is a short admin-chosen slug ('1m', '6m', '12m', or anything new) —
+-- it's what gets stashed in a Razorpay order's notes.planId and read back at
+-- verify time (subscriptionController.js), so it must stay stable once a
+-- plan has live orders against it; delete only a plan with no pending
+-- checkouts in flight. `days` drives how long a purchase extends
+-- pro_expires_at (subscriptionService.js) — independent of duration_label,
+-- which is display text only. Seeded below with the original 3 plans so an
+-- existing DB's Pricing page looks identical until an admin changes
+-- something. Existing DBs: run this CREATE TABLE + the INSERT block that
+-- follows it by hand.
+CREATE TABLE IF NOT EXISTS pro_plans (
+  id VARCHAR(20) PRIMARY KEY,
+  name VARCHAR(50) NOT NULL,
+  duration_label VARCHAR(30) NOT NULL,   -- display text, e.g. "1 Month"
+  days INT UNSIGNED NOT NULL,            -- actual pro_expires_at extension
+  price_in_paise INT UNSIGNED NOT NULL,
+  badge VARCHAR(30),                     -- e.g. "Trending"; NULL = no badge
+  sort_order INT NOT NULL DEFAULT 0,
+  active BOOLEAN NOT NULL DEFAULT TRUE,  -- inactive plans are hidden from /api/subscription/plans but keep working for existing orders/history
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+INSERT IGNORE INTO pro_plans (id, name, duration_label, days, price_in_paise, badge, sort_order) VALUES
+  ('1m', 'Starter', '1 Month', 30, 49900, NULL, 1),
+  ('6m', 'Pro Trader', '6 Months', 180, 289900, 'Trending', 2),
+  ('12m', 'Elite', '1 Year', 365, 549900, NULL, 3);
+
+-- Coupon codes against the pro_plans catalog below. Originally (2026-08-20)
+-- plans were a fixed in-code constant and this table only discounted them at
+-- checkout; superseded 2026-09-13 when the user asked for the Pricing page's
+-- plans themselves to be admin-controlled too — see pro_plans below and
+-- services/couponService.js.
 CREATE TABLE IF NOT EXISTS coupons (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   code VARCHAR(30) NOT NULL UNIQUE,
@@ -460,4 +491,37 @@ CREATE TABLE IF NOT EXISTS paper_positions (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   KEY idx_user_status (user_id, status)
+) ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------------------
+-- Admin "Data" section (2026-09-13): request/track historical-data
+-- extraction jobs from the admin panel. The jobs themselves run as spawned
+-- node processes inside the standalone data-downloader/ app (or server/
+-- scripts for the Angel One forward-fill case) — this table is just the
+-- job queue/history record; see server/services/dataDownloaderRunner.js.
+-- Nothing here stores credentials — those stay in .env files, managed via
+-- server/services/envSettingsService.js.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS data_extraction_jobs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  source ENUM('angelone','upstox','icici_breeze','kotak','bhavcopy') NOT NULL,
+  data_type ENUM('option_chain','futures','vix') NOT NULL,
+  year INT,
+  from_month TINYINT,
+  to_month TINYINT,
+  symbols VARCHAR(1000),          -- comma-separated, NULL = every symbol known so far
+  extra_args VARCHAR(255),        -- e.g. strikes-per-side, days-back for Angel One
+  command TEXT,                   -- the actual argv run, for audit/debugging
+  status ENUM('queued','running','completed','failed','cancelled') NOT NULL DEFAULT 'queued',
+  pid INT,
+  exit_code INT,
+  log_path VARCHAR(500),
+  summary TEXT,                   -- last few lines of output, shown in the job list without opening the full log
+  requested_by BIGINT UNSIGNED,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  started_at DATETIME,
+  finished_at DATETIME,
+  FOREIGN KEY (requested_by) REFERENCES users(id) ON DELETE SET NULL,
+  KEY idx_status (status),
+  KEY idx_created (created_at)
 ) ENGINE=InnoDB;
