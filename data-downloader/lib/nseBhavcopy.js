@@ -31,15 +31,20 @@
 // (Unified Distilled File Format) — if this project is picked up much later
 // than 2026 and the format changed again, that's the first thing to check.
 //
-// Requires the `unzip` command on PATH (present by default on macOS and
-// most Linux distros) — used via child_process instead of adding a zip
-// library as an npm dependency (CLAUDE.md already explains why adm-zip was
-// deliberately dropped in Phase 6; no reason to reintroduce a zip dep for
-// this one occasional script).
-
+// Unzips via the `adm-zip` package (pure JS, no external binary). This used
+// to shell out to the system `unzip` command instead, reasoning that
+// CLAUDE.md's Phase 6 note against reintroducing adm-zip as a dependency
+// still applied — but that note was about the LIVE path (breezeconnect's own
+// adm-zip requirement, removed when Breeze left the live path). This script
+// is a completely separate, occasional, non-live tool, and `unzip` is a
+// macOS/Linux-only assumption: confirmed for real (2026-09-13) that running
+// this on a Windows machine has no `unzip` on PATH, so bhavcopy discovery —
+// and everything downstream of it (enrich, verify, the whole pipeline) —
+// silently/loudly failed there while working fine on macOS/Linux dev boxes.
+// adm-zip works identically on every OS, closing that gap for good.
 const fs = require("fs");
 const path = require("path");
-const { execFile } = require("child_process");
+const AdmZip = require("adm-zip");
 const { dbLogger } = require("./logger");
 
 const BASE_URL = process.env.NSE_BHAVCOPY_BASE_URL || "https://nsearchives.nseindia.com/content/fo";
@@ -111,12 +116,6 @@ async function nseFetch(url, { retryOn403or503 = true } = {}) {
     return res;
 }
 
-function execFileP(cmd, args) {
-    return new Promise((resolve, reject) => {
-        execFile(cmd, args, (err, stdout, stderr) => (err ? reject(new Error(stderr || err.message)) : resolve(stdout)));
-    });
-}
-
 /** 'YYYY-MM-DD' -> 'YYYYMMDD' (plain string manipulation, no Date parsing). */
 function toCompactDate(dateStr) {
     return dateStr.replace(/-/g, "");
@@ -159,11 +158,11 @@ async function downloadZip(dateStr) {
     return zipPath;
 }
 
-/** Unzip via the system `unzip` binary and return the raw CSV text. */
+/** Unzip via adm-zip (in-process, cross-platform) and return the raw CSV text. */
 async function extractCsv(zipPath) {
     const extractDir = zipPath.replace(/\.zip$/, "");
     if (!fs.existsSync(extractDir)) fs.mkdirSync(extractDir, { recursive: true });
-    await execFileP("unzip", ["-o", zipPath, "-d", extractDir]);
+    new AdmZip(zipPath).extractAllTo(extractDir, true);
     const files = fs.readdirSync(extractDir).filter((f) => f.toLowerCase().endsWith(".csv"));
     if (!files.length) throw new Error(`No CSV found after unzipping ${zipPath} — NSE may have changed the archive contents`);
     return fs.readFileSync(path.join(extractDir, files[0]), "utf8");
