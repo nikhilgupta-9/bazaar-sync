@@ -195,9 +195,10 @@ export function computeDensityCurve(curve, spot, atmIvPercent, yearsRemaining) {
 }
 
 // Estimated margin — a spread-AWARE approximation of what a broker would
-// block. Real margin is SPAN + Exposure (scenario-based, needs SPAN files
-// this app has no access to), so this is deliberately an estimate, labelled
-// as such in the UI. The model:
+// block. Real margin is SPAN + Exposure (a scenario-based system run on
+// NSE Clearing's own daily risk-array files, which this app has no access
+// to), so this is deliberately an estimate, labelled as such in the UI. The
+// model:
 //
 //   • Long legs need no margin — their worst case is the premium already
 //     paid, already in the P&L / max-loss numbers.
@@ -205,13 +206,26 @@ export function computeDensityCurve(curve, spot, atmIvPercent, yearsRemaining) {
 //     vertical spread: it blocks only that spread's own max loss (computed
 //     numerically at the kink points), NOT a full naked requirement. This is
 //     why an Iron Condor / credit spread / bull-call spread needs a fraction
-//     of a naked short's margin — the earlier flat "15% per short leg"
-//     ignored the hedge entirely and massively over-stated every defined-
-//     risk strategy (the user's "margin abhi tak thik nahi hua" complaint).
-//   • A still-unhedged (naked) short leg blocks NAKED_SHORT_MARGIN_PCT of
-//     its contract notional (spot × lot size × lots) — ~10%, in the ballpark
-//     of a real NSE index short-option SPAN+Exposure requirement (~7% in
-//     normal vol, higher on stressed days).
+//     of a naked short's margin.
+//   • A still-unhedged (naked) short leg blocks SPAN + Exposure margin on its
+//     contract notional (spot × lot size × lots), computed per NSE's own
+//     PUBLISHED formulas (not a flat guess) — see spanExposurePct() below.
+//     Confirmed against NSE Clearing / Zerodha Varsity's public
+//     documentation, 2026-09-13:
+//       - Exposure margin: 2% of notional for INDEX options, 3.5% for STOCK
+//         options (stock exposure is actually max(3.5%, 1.5σ of the stock's
+//         6-month log returns) — we don't have 6-month return history handy
+//         here, so 3.5% alone, which is the more common real-world outcome
+//         for the liquid F&O stocks this app targets).
+//       - SPAN's own "price scan range" (the dominant piece of SPAN margin
+//         for a single-leg short) is exchange-defined as
+//         max(9.3% of spot, 6σ√2) for index options with ≤9 months to
+//         expiry, where σ is the ONE-DAY volatility implied by the option's
+//         own IV (σ_daily = IV_annual / √252). This app never estimated
+//         margin for anything anywhere near 9 months out, so the >9-month
+//         17.7% floor isn't implemented. Applied to stocks too (no
+//         index-specific floor — a stock's own IV, which runs higher than
+//         index IV for most names, ends up driving the number instead).
 //
 // Hedging is matched lot-by-lot: a short 3-lot CE covered by a long 1-lot CE
 // counts as 1 spread lot + 2 naked lots. A balanced condor reserves both
@@ -219,7 +233,21 @@ export function computeDensityCurve(curve, spot, atmIvPercent, yearsRemaining) {
 // wing — acceptable for a paper tool, and safer than under-reserving).
 //
 // Returns null when spot isn't known yet, 0 for an all-long strategy.
-const NAKED_SHORT_MARGIN_PCT = 0.1;
+const INDEX_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"]);
+const INDEX_SCAN_RANGE_FLOOR = 0.093; // NSE's own published floor, ≤9-month index options
+const TRADING_DAYS_PER_YEAR = 252;
+const DEFAULT_IV_PERCENT_FALLBACK = 20; // used only when a leg's own IV is missing/zero — a mid-range NSE index IV, not a guess at THIS leg's real vol
+
+/** SPAN (price-scan-range approx.) + Exposure margin, as a fraction of contract notional, for one naked short leg. */
+function spanExposurePct(leg, symbol) {
+    const isIndex = symbol ? INDEX_SYMBOLS.has(String(symbol).toUpperCase()) : true; // unknown symbol: assume index (the lower, more common case) rather than over-charge
+    const ivPercent = leg.iv > 0 ? leg.iv : DEFAULT_IV_PERCENT_FALLBACK;
+    const dailySigma = ivPercent / 100 / Math.sqrt(TRADING_DAYS_PER_YEAR);
+    const priceScanRangePct = 6 * dailySigma * Math.SQRT2;
+    const spanPct = isIndex ? Math.max(priceScanRangePct, INDEX_SCAN_RANGE_FLOOR) : priceScanRangePct;
+    const exposurePct = isIndex ? 0.02 : 0.035;
+    return spanPct + exposurePct;
+}
 
 // Max loss per unit of a two-leg vertical (one short, one long, same type),
 // evaluated at every price where the combined payoff can kink plus both
@@ -237,7 +265,7 @@ function verticalMaxLossPerUnit(shortLeg, longLeg) {
     return Math.max(0, -worst);
 }
 
-export function computeEstMargin(legs, spot) {
+export function computeEstMargin(legs, spot, symbol) {
     if (!spot) return null;
 
     // Pools of long lots still available to hedge a short, per option type.
@@ -269,7 +297,7 @@ export function computeEstMargin(legs, spot) {
         }
 
         if (lotsLeft > 0) {
-            margin += spot * lotSize * lotsLeft * NAKED_SHORT_MARGIN_PCT;
+            margin += spot * lotSize * lotsLeft * spanExposurePct(leg, symbol);
         }
     }
     return margin;

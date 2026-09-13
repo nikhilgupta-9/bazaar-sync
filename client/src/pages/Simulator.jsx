@@ -35,7 +35,7 @@ import PresetStrategies from "../components/PresetStrategies";
 import CandlestickChart from "../components/CandlestickChart";
 import StrategyChart from "../components/StrategyChart";
 import { SlCalender } from "react-icons/sl";
-import { FiSettings, FiTrash2, FiRefreshCw } from "react-icons/fi";
+import { FiSettings, FiTrash2, FiRefreshCw, FiArchive } from "react-icons/fi";
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -96,15 +96,17 @@ function loadFavorites() {
   }
 }
 
-// Positions the user has placed (buy/sell legs) survive expiry/time
+// Positions the user has placed (buy/sell legs) survive expiry/time/DATE
 // navigation within Simulator AND leaving the page entirely (switching to
 // another route, or reloading) — persisted per symbol so switching symbols
 // still starts fresh for that symbol, matching favoriteSymbols' localStorage
-// convention above. Switching to a different DATE is a separate case (see
-// upcomingPositions below): whatever's in `legs` at that point is archived
-// as a dated entry rather than just carried over, and `legs` starts empty
-// again for the newly-viewed date. Only "Reset Workspace" (an explicit user
-// action) discards a position outright without archiving it first.
+// convention above. A position stays OPEN as you move between dates (same
+// model Strategy Builder uses for symbol/expiry navigation — reprice
+// against whatever's loaded, never auto-clear); see selectDate's 2026-09-13
+// comment for why this replaced an earlier "archive + clear on date change"
+// design. "Reset Workspace" (explicit) discards outright; "Archive" (also
+// explicit, see archiveCurrentPosition) snapshots into Upcoming Positions
+// and clears — nothing happens to `legs` on navigation by itself anymore.
 const SIM_LEGS_KEY_PREFIX = "bazaarSync.simulator.legs.";
 
 function loadSavedLegs(sym) {
@@ -134,14 +136,16 @@ function saveLegs(sym, legsToSave) {
   }
 }
 
-// "Upcoming Positions" — a read-only journal of legs that were being built
-// for a given date, archived the moment the user navigates to a different
-// date (see selectDate) rather than silently carried over or discarded.
-// Each entry is a snapshot, not a live position: nothing here is re-priced
-// or editable, it's just a record of "this is what was built, for this
-// date" — same "gap, not a guess" honesty convention the rest of this app
-// uses, rather than pretending a snapshot from one day is still tradeable
-// state on another. Persisted per symbol, same pattern as legs above.
+// "Upcoming Positions" — a read-only journal of legs the user explicitly
+// archived (via archiveCurrentPosition, the "Archive" button) rather than a
+// live position. Was previously populated automatically on every date
+// change (see selectDate's 2026-09-13 comment for why that changed — a
+// position now stays open across date navigation instead). Each entry is a
+// snapshot, not a live position: nothing here is re-priced or editable,
+// it's just a record of "this is what was built, for this date" — same
+// "gap, not a guess" honesty convention the rest of this app uses, rather
+// than pretending a snapshot from one day is still tradeable state on
+// another. Persisted per symbol, same pattern as legs above.
 const SIM_UPCOMING_KEY_PREFIX = "bazaarSync.simulator.upcoming.";
 let upcomingIdCounter = 0;
 
@@ -799,21 +803,20 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   }
 
   function selectDate(date, time) {
-    // Whatever was being built for the date we're LEAVING gets archived as
-    // a dated "Upcoming Positions" journal entry rather than carried into
-    // the new date or silently dropped — see upcomingPositions above. Guard
-    // on `selectedDate` being non-empty so the very first auto-select on
-    // page load (selectedDate === "") doesn't archive legs that were just
-    // restored from a previous session with no date attached yet.
-    if (selectedDate && date !== selectedDate && legs.length > 0) {
-      const archived = ++upcomingIdCounter;
-      setUpcomingPositions((prev) => [
-        { id: archived, date: selectedDate, legs, archivedAt: Date.now() },
-        ...prev,
-      ]);
-      setLegs([]);
-      setTab("upcoming");
-    }
+    // Changed 2026-09-13, per explicit user decision: a position built for
+    // one date now stays OPEN across date navigation (same "just keep the
+    // legs, reprice against whatever's loaded" model Strategy Builder uses
+    // for symbol/expiry navigation — no per-date archiving). Previously this
+    // auto-archived whatever was in `legs` into the read-only "Upcoming
+    // Positions" journal and cleared it the moment the date changed, which
+    // made a placed position vanish the instant you moved forward/back a
+    // day instead of showing that day's P&L — the actual behavior wanted.
+    // `legs` is intentionally left untouched here; loadChain() below re-seeds
+    // chainData for the new date, and the existing live-lookup-by-strike
+    // logic (displayRows/legLivePnl) reprices each leg against it exactly
+    // the way it already does for expiry navigation (see selectExpiry).
+    // archiveCurrentPosition() below is now the only way anything reaches
+    // the Upcoming Positions journal — explicit, not automatic.
     setSelectedDate(date);
     setReplayData(null);
     setChartTab("payoff");
@@ -1090,6 +1093,22 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     setReplayData(null);
     setChartTab("payoff");
     setUpcomingPositions([]);
+  }
+
+  // The only way anything reaches the Upcoming Positions journal now (see
+  // selectDate's 2026-09-13 comment) — snapshots the currently-open legs as
+  // a dated read-only entry and clears them, same shape the old automatic
+  // per-date-change archiving used, just explicit instead of automatic.
+  function archiveCurrentPosition() {
+    if (!legs.length) return;
+    const archived = ++upcomingIdCounter;
+    setUpcomingPositions((prev) => [
+      { id: archived, date: selectedDate, legs, archivedAt: Date.now() },
+      ...prev,
+    ]);
+    setLegs([]);
+    setReplayData(null);
+    setTab("upcoming");
   }
 
   // Removes ONE archived Upcoming Positions entry — previously the only way
@@ -1480,7 +1499,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
       const popVal = atmIv
         ? computePOP(curveData, displaySpot, atmIv, yearsRemaining)
         : null;
-      const marginVal = computeEstMargin(activeLegs, displaySpot);
+      const marginVal = computeEstMargin(activeLegs, displaySpot, symbol);
 
       return {
         curve: curveData,
@@ -1506,6 +1525,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     selectedDate,
     currentTime,
     liveChain,
+    symbol,
   ]);
 
   // "Strategy P&L" must always track the position's real P&L — never the
@@ -2678,6 +2698,14 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         </span>
                       </div>
                       <button
+                        onClick={archiveCurrentPosition}
+                        disabled={!legs.length}
+                        title="Snapshot the current legs into Upcoming Positions and clear them — positions otherwise stay open across date navigation"
+                        className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-600 hover:bg-gray-100 disabled:opacity-30"
+                      >
+                        <FiArchive className="h-3.5 w-3.5" /> Archive
+                      </button>
+                      <button
                         onClick={resetWorkspace}
                         className="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-600 hover:bg-gray-100"
                       >
@@ -2850,7 +2878,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             </td>
                             <td className="px-4 py-2.5 text-right tabular-nums text-gray-700">
                               {leg.action === "sell" && displaySpot
-                                ? formatPrice(computeEstMargin([leg], displaySpot))
+                                ? formatPrice(computeEstMargin([leg], displaySpot, symbol))
                                 : <span className="text-gray-300">—</span>}
                             </td>
                             <td className="px-4 py-2.5 text-center relative">
@@ -2903,9 +2931,10 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   <div>
                     {/* Reset Workspace previously only ever appeared in the "Positions"
                         tab's own toolbar — a user who archived their last open leg
-                        (auto-switches here, see selectDate) and stayed on this tab had
-                        no way to see the button at all. Same resetWorkspace() function,
-                        same confirm() guard covering both legs and this journal. */}
+                        (via archiveCurrentPosition, which switches here) and stayed on
+                        this tab had no way to see the button at all. Same
+                        resetWorkspace() function, same confirm() guard covering both
+                        legs and this journal. */}
                     {upcomingPositions.length > 0 && (
                       <div className="flex items-center justify-end border-b border-gray-200 bg-gray-50/40 px-4 py-2 text-[11px]">
                         <button

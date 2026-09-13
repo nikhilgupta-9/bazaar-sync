@@ -595,14 +595,14 @@ export default function StrategyBuilder() {
             curveData = (atmIv && typeof addMarkToMarketCurve === "function") ? addMarkToMarketCurve(curveData, activeLegs, yearsRemaining, Date.now()) : curveData;
             const expMv = (atmIv && typeof computeExpectedMove === "function") ? computeExpectedMove(data.spotPrice, atmIv, yearsRemaining) : null;
             const popVal = (atmIv && typeof computePOP === "function") ? computePOP(curveData, data.spotPrice, atmIv, yearsRemaining) : null;
-            const marginVal = computeEstMargin(activeLegs, data.spotPrice);
+            const marginVal = computeEstMargin(activeLegs, data.spotPrice, symbol);
 
             return { curve: curveData, breakevens: breakEvs, maxProfit: mxProf, maxLoss: mxLoss, netGreeks: netGrks, pop: popVal, expectedMove: expMv, estMargin: marginVal };
         } catch (err) {
             console.error(err);
             return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, pop: null, expectedMove: null, estMargin: null };
         }
-    }, [activeLegs, data]);
+    }, [activeLegs, data, symbol]);
 
     // "Payoff setting" what-if readout — reprices every leg via Black-Scholes
     // at the simulated spot/date/IV instead of the real ones, using each
@@ -1390,7 +1390,7 @@ export default function StrategyBuilder() {
                                                         </td>
                                                         <td className="px-4 py-2.5 text-right tabular-nums text-gray-700">
                                                             {leg.action === "sell" && data?.spotPrice
-                                                                ? formatPrice(computeEstMargin([leg], data.spotPrice))
+                                                                ? formatPrice(computeEstMargin([leg], data.spotPrice, symbol))
                                                                 : <span className="text-gray-300">—</span>}
                                                         </td>
                                                         <td className="px-4 py-2.5 text-center">
