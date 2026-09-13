@@ -13,6 +13,7 @@
 // so an import can only ever fill a gap or refresh a row — never duplicate.
 
 const { pool } = require("../config/db");
+const coverageSummary = require("./coverageSummaryService");
 
 function badRequest(message) {
     return Object.assign(new Error(message), { status: 400 });
@@ -140,6 +141,14 @@ async function importRows(table, rows) {
         throw err;
     } finally {
         conn.release();
+    }
+    // Coverage summary only tracks option_chain_history (see schema.sql) —
+    // futures_history's insertColumns order (symbol, expiry, trade_date, ...)
+    // doesn't match the (symbol, trade_date, ..., expiry) layout
+    // keysFromInsertValues expects, so this is intentionally scoped to the
+    // one table it actually applies to.
+    if (table === "option_chain_history") {
+        await coverageSummary.recordIngestedFromInsertValues(values);
     }
     return written;
 }

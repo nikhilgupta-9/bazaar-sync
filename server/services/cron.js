@@ -20,6 +20,7 @@ const instrumentMaster = require("./instrumentMaster");
 const angelHist = require("./angelOneHistorical");
 const bs = require("../utils/blackScholes");
 const { dbLogger } = require("../config/logger");
+const coverageSummary = require("./coverageSummaryService");
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 
@@ -117,6 +118,7 @@ async function storeOptionChainMinutes(symbol, expirySql, strike, ceCandles, ceO
            pe_iv=VALUES(pe_iv), pe_delta=VALUES(pe_delta), pe_gamma=VALUES(pe_gamma), pe_theta=VALUES(pe_theta), pe_vega=VALUES(pe_vega)`,
         [values]
     );
+    await coverageSummary.recordIngestedFromInsertValues(values);
 }
 
 async function pullOHLCVForDate(symbol, dateStr) {

@@ -110,8 +110,32 @@ function authHeaders() {
     };
 }
 
+// Native fetch has NO default timeout — a stalled Upstox connection (dropped
+// connection, silent server-side hang, whatever) hangs the WHOLE job forever
+// with no error, no log line, nothing for withRetry's backoff/rate-limit
+// logic to even see (it only ever runs once fn() actually rejects). Confirmed
+// live (2026-09-13): a real run got stuck immediately after finishing one
+// month with zero progress for 9+ minutes, process still alive, no output —
+// this fetch call, not the retry logic, was the point of no return. Same
+// fix, same failure symptom, as lib/nseBhavcopy.js's fetchWithTimeout
+// (2026-07-20) — mirrored here rather than sharing one module, since these
+// are genuinely separate sources with their own auth/base-URL/retry shape.
+const FETCH_TIMEOUT_MS = Number(process.env.UPSTOX_FETCH_TIMEOUT_MS || 25_000);
+async function fetchWithTimeout(url, options = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } catch (err) {
+        if (err.name === "AbortError") throw new Error(`request timed out after ${FETCH_TIMEOUT_MS}ms: ${url}`);
+        throw err;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 async function secureGet(path, label) {
-    const res = await fetch(`${BASE_URL}${path}`, { headers: authHeaders() });
+    const res = await fetchWithTimeout(`${BASE_URL}${path}`, { headers: authHeaders() });
     const body = await res.json().catch(() => null);
     if (!res.ok || !body || body.status !== "success") {
         const msg = (body && (body.errors?.[0]?.message || body.message)) || `HTTP ${res.status}`;

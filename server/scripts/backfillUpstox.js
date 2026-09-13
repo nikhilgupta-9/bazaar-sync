@@ -39,6 +39,7 @@ const upstox = require("../services/upstoxHistorical");
 const upstoxInstruments = require("../services/upstoxInstrumentMaster");
 const instrumentMaster = require("../services/instrumentMaster");
 const bs = require("../utils/blackScholes");
+const coverageSummary = require("../services/coverageSummaryService");
 
 const LOOKBACK_DAYS = Number(process.env.UPSTOX_BACKFILL_LOOKBACK_DAYS || 35);
 
@@ -133,6 +134,7 @@ async function storeOptionChainRows(symbol, expirySql, strike, ceRows, peRows) {
                pe_delta=VALUES(pe_delta), pe_gamma=VALUES(pe_gamma), pe_theta=VALUES(pe_theta), pe_vega=VALUES(pe_vega)`,
             [batch]
         );
+        await coverageSummary.recordIngestedFromInsertValues(batch);
     }
     return rows.length;
 }

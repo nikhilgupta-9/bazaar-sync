@@ -8,7 +8,7 @@ const {
 } = require("../controllers/adminController");
 const {
     getEnvStatus, updateEnvValue,
-    startExtractionJob, listExtractionJobs, getExtractionJob, cancelExtractionJob,
+    startExtractionJob, listExtractionJobs, getExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob,
     getCoverageSummary, getCoverageDetail, getExpiryStatus, getGreeksCoverage, refreshCoverageCache,
     importData,
 } = require("../controllers/dataOpsController");
@@ -54,6 +54,8 @@ router.post("/data/jobs", startExtractionJob);
 router.get("/data/jobs", listExtractionJobs);
 router.get("/data/jobs/:id", getExtractionJob);
 router.post("/data/jobs/:id/cancel", cancelExtractionJob);
+router.post("/data/jobs/:id/fail", failExtractionJob);
+router.delete("/data/jobs/:id", deleteExtractionJob);
 
 router.get("/data/coverage/summary", getCoverageSummary);
 router.get("/data/coverage/detail", getCoverageDetail);

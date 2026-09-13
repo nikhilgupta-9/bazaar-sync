@@ -76,6 +76,24 @@ async function cancelExtractionJob(req, res) {
     }
 }
 
+async function failExtractionJob(req, res) {
+    try {
+        await runner.failJob(req.params.id);
+        res.status(204).end();
+    } catch (err) {
+        sendError(res, err, "failed to mark job as failed");
+    }
+}
+
+async function deleteExtractionJob(req, res) {
+    try {
+        await runner.deleteJob(req.params.id);
+        res.status(204).end();
+    } catch (err) {
+        sendError(res, err, "failed to delete job");
+    }
+}
+
 // --- Coverage / Expiry / Greeks ---
 
 async function getCoverageSummary(req, res) {
@@ -138,7 +156,7 @@ async function importData(req, res) {
 
 module.exports = {
     getEnvStatus, updateEnvValue,
-    startExtractionJob, listExtractionJobs, getExtractionJob, cancelExtractionJob,
+    startExtractionJob, listExtractionJobs, getExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob,
     getCoverageSummary, getCoverageDetail, getExpiryStatus, getGreeksCoverage, refreshCoverageCache,
     importData,
 };

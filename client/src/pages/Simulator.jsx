@@ -35,7 +35,7 @@ import PresetStrategies from "../components/PresetStrategies";
 import CandlestickChart from "../components/CandlestickChart";
 import StrategyChart from "../components/StrategyChart";
 import { SlCalender } from "react-icons/sl";
-import { FiSettings, FiTrash2, FiRefreshCw, FiArchive } from "react-icons/fi";
+import { FiSettings, FiTrash2, FiRefreshCw, FiArchive, FiChevronLeft, FiChevronRight, FiChevronsLeft, FiChevronsRight } from "react-icons/fi";
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -552,6 +552,18 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   const [pendingHour, setPendingHour] = useState(null); // "HH" the user clicked — purely visual selection
   const [pendingMinute, setPendingMinute] = useState(null); // "MM" the user clicked — purely visual selection
   const [pendingTimes, setPendingTimes] = useState([]); // real stored snapshot times for pendingDate
+  // Hour/minute picker auto-centering — 60 minutes in a small scrollable
+  // column previously always opened scrolled to the top, forcing the user to
+  // hunt down the currently-selected hour/minute by hand every time. These
+  // refs let centerActiveTimeButtons() (below) scroll each column to its own
+  // active item, scoped to the column's own scroll container only (same
+  // "don't use scrollIntoView" reasoning as scrollToAtm elsewhere in this
+  // file — the native version walks up every scrollable ancestor including
+  // the page itself).
+  const hourListRef = useRef(null);
+  const minuteListRef = useRef(null);
+  const activeHourBtnRef = useRef(null);
+  const activeMinuteBtnRef = useRef(null);
 
   // Every symbol with real data (indices + the ~280 F&O stocks Bhavcopy/
   // Breeze backfilled) — same endpoint the live Option Chain's Select Asset
@@ -783,6 +795,30 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     if (pendingDate) selectDate(pendingDate, pendingTime);
     setCalendarOpen(false);
   }
+
+  // Scrolls the hour/minute columns so the currently pending selection sits
+  // centered instead of wherever the browser's default scroll position
+  // happens to land — same "scroll the container, not the page" technique as
+  // scrollToAtm (see its comment above for why not scrollIntoView). Re-runs
+  // whenever the popover is open and the pending hour/minute changes — on
+  // first open (populated once fetchPendingTimes resolves) AND on every
+  // manual hour/minute click, so the active item never drifts out of view.
+  useEffect(() => {
+    if (!calendarOpen) return;
+    const raf = requestAnimationFrame(() => {
+      const hourContainer = hourListRef.current;
+      const hourBtn = activeHourBtnRef.current;
+      if (hourContainer && hourBtn) {
+        hourContainer.scrollTo({ top: Math.max(0, hourBtn.offsetTop - hourContainer.clientHeight / 2 + hourBtn.clientHeight / 2), behavior: "instant" });
+      }
+      const minuteContainer = minuteListRef.current;
+      const minuteBtn = activeMinuteBtnRef.current;
+      if (minuteContainer && minuteBtn) {
+        minuteContainer.scrollTo({ top: Math.max(0, minuteBtn.offsetTop - minuteContainer.clientHeight / 2 + minuteBtn.clientHeight / 2), behavior: "instant" });
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [calendarOpen, pendingHour, pendingMinute]);
 
   function loadChain(date, expiry, time) {
     setChainError(null);
@@ -1281,6 +1317,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   const displaySpot = liveChain?.spotPrice ?? chainData?.spotPrice;
   const displaySpotSource = liveChain?.spotSource ?? chainData?.spotSource;
   const displaySpotStored = liveChain?.spotStored ?? chainData?.spotStored;
+  // Real historical front-month future price/expiry, from futures_history
+  // (see simulatorController.js's getFuturesAt) — updates on every
+  // date/expiry/scrub change exactly like displaySpot, since both ride the
+  // same /api/simulator/chain response.
+  const displayFutPrice = liveChain?.futPrice ?? chainData?.futPrice;
+  const displayFutExpiry = liveChain?.futExpiry ?? chainData?.futExpiry;
 
   // Scrolls only the chain table's own container, never the page — native
   // scrollIntoView({block:"center"}) walks up every scrollable ancestor
@@ -1582,10 +1624,10 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
       className={hideChrome ? "bg-gray-50/40 w-full" : "bg-gray-50/40 w-full min-h-screen"}
       style={{ fontFamily: "'Poppins', sans-serif" }}
     >
-      <div className={hideChrome ? "w-full" : "w-full px-5 pt-2"}>
+      <div className={hideChrome ? "w-full" : "w-full px-2 sm:px-5 pt-2"}>
         <div className="w-full shrink-0 flex flex-col">
           <div className="rounded-xl border border-gray-300 bg-white p-2 shadow-sm">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               {hideChrome ? (
                 <div className="px-1 text-xs font-semibold text-gray-500">
                   Historical replay · <span className="font-bold text-gray-800">{symbol}</span>
@@ -1768,23 +1810,29 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   className="flex w-full items-center justify-center gap-1 rounded-md border border-gray-300 bg-gray-50 px-2 py-1.5 font-bold text-gray-800 hover:bg-gray-100 disabled:opacity-40"
                 >
                   <SlCalender /> {formatDateTimeLabel(selectedDate, currentTime)}
+                  {selectedDate && dayExpirySet.has(selectedDate) && (
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full bg-emerald-500"
+                      title="This is an expiry day"
+                    />
+                  )}
                 </button>
 
                 {calendarOpen && calendarYm && (
                   <>
                     <div className="fixed inset-0 z-10" onClick={() => setCalendarOpen(false)} />
-                    <div className="absolute left-0 z-20 mt-1 flex w-[440px] overflow-hidden rounded-lg border border-gray-300 bg-white shadow-xl">
+                    <div className="absolute left-0 z-20 mt-1 flex w-[calc(100vw-2rem)] max-w-[440px] flex-col overflow-hidden rounded-lg border border-gray-300 bg-white shadow-xl sm:w-[440px] sm:flex-row">
                       {/* Month calendar */}
-                      <div className="flex-1 border-r border-gray-200 p-3">
+                      <div className="flex-1 border-b border-gray-200 p-3 sm:border-b-0 sm:border-r">
                         <div className="mb-2 flex items-center justify-between">
                           <div className="flex items-center gap-0.5">
-                            <button onClick={() => shiftCalendarYear(-1)} className="rounded p-1 text-gray-400 hover:bg-gray-100" aria-label="Previous year">«</button>
-                            <button onClick={() => shiftCalendarMonth(-1)} className="rounded p-1 text-gray-400 hover:bg-gray-100" aria-label="Previous month">‹</button>
+                            <button onClick={() => shiftCalendarYear(-1)} className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700" aria-label="Previous year"><FiChevronsLeft size={14} /></button>
+                            <button onClick={() => shiftCalendarMonth(-1)} className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700" aria-label="Previous month"><FiChevronLeft size={14} /></button>
                           </div>
                           <div className="text-sm font-bold text-gray-800">{MONTHS_SHORT[calendarYm.m - 1]} {calendarYm.y}</div>
                           <div className="flex items-center gap-0.5">
-                            <button onClick={() => shiftCalendarMonth(1)} className="rounded p-1 text-gray-400 hover:bg-gray-100" aria-label="Next month">›</button>
-                            <button onClick={() => shiftCalendarYear(1)} className="rounded p-1 text-gray-400 hover:bg-gray-100" aria-label="Next year">»</button>
+                            <button onClick={() => shiftCalendarMonth(1)} className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700" aria-label="Next month"><FiChevronRight size={14} /></button>
+                            <button onClick={() => shiftCalendarYear(1)} className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700" aria-label="Next year"><FiChevronsRight size={14} /></button>
                           </div>
                         </div>
                         <div className="mb-1 grid grid-cols-7 gap-1 text-center text-[10px] text-gray-400">
@@ -1813,7 +1861,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                   !cell.inMonth
                                     ? "text-gray-300 cursor-default"
                                     : isPending
-                                      ? "bg-blue-600 text-white"
+                                      ? `bg-blue-600 text-white ${isExpiry ? "ring-2 ring-emerald-500 ring-offset-1" : ""}`
                                       : isExpiry
                                         ? "bg-emerald-500 text-white hover:bg-emerald-600"
                                         : available
@@ -1843,12 +1891,13 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                           fixed height + overflow-y-auto so 60 minute options
                           scroll within a compact box instead of stretching
                           the whole popover to cover the page. */}
-                      <div className="flex w-[130px] shrink-0 flex-col">
-                        <div className="flex h-72 divide-x divide-gray-200 overflow-hidden">
-                          <div className="flex-1 overflow-y-auto py-1 text-center">
+                      <div className="flex w-full shrink-0 flex-col sm:w-[130px]">
+                        <div className="flex h-56 divide-x divide-gray-200 overflow-hidden sm:h-72">
+                          <div ref={hourListRef} className="flex-1 overflow-y-auto py-1 text-center">
                             {pendingHours.map((h) => (
                               <button
                                 key={h}
+                                ref={(el) => { if (h === pendingHour) activeHourBtnRef.current = el; }}
                                 onClick={() => pickHour(h)}
                                 className={`w-full py-1.5 text-[12px] font-semibold ${
                                   h === pendingHour ? "bg-blue-600 text-white" : "text-gray-700 hover:bg-gray-100"
@@ -1858,10 +1907,11 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                               </button>
                             ))}
                           </div>
-                          <div className="flex-1 overflow-y-auto py-1 text-center">
+                          <div ref={minuteListRef} className="flex-1 overflow-y-auto py-1 text-center">
                             {ALL_MINUTES.map((min) => (
                               <button
                                 key={min}
+                                ref={(el) => { if (min === pendingMinute) activeMinuteBtnRef.current = el; }}
                                 onClick={() => pickMinute(min)}
                                 className={`w-full py-1.5 text-[12px] font-semibold ${
                                   min === pendingMinute ? "bg-blue-600 text-white" : "text-gray-700 hover:bg-gray-100"
@@ -1952,15 +2002,15 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
         </div>
       </div>
 
-      <div className="w-full flex gap-3 px-5 pt-2 min-h-screen">
+      <div className="w-full flex flex-col gap-3 px-2 sm:px-5 pt-2 min-h-screen lg:flex-row">
         {/* Left Column: Option Chain Window */}
         {!hideChain && (
-        <div className="w-[600px] shrink-0 flex flex-col">
+        <div className="w-full shrink-0 flex flex-col lg:w-[600px]">
           {chainData && (
-            <div className="mb-3 rounded-xl border border-gray-300 bg-white px-4 py-1 shadow-sm transition-all hover:shadow-md">
-  
+            <div className="mb-3 rounded-xl border border-gray-300 bg-white px-2 sm:px-4 py-1 shadow-sm transition-all hover:shadow-md">
+
               {/* Row 1 */}
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-y-1">
                 <div
                   className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-gray-50"
                   title={
@@ -1989,9 +2039,14 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
                 <div className="h-5 w-px bg-gray-200" />
 
-                <div className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-gray-50">
+                <div
+                  className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-gray-50"
+                  title={displayFutExpiry ? `Front-month future, expiry ${formatExpiryShort(displayFutExpiry)} — real historical price from futures_history` : "No stored futures data for this day"}
+                >
                   <span className="text-xs font-medium text-gray-400">FUT:</span>
-                  <span className="font-bold tabular-nums text-gray-400">—</span>
+                  <span className={`font-bold tabular-nums ${displayFutPrice != null ? "text-gray-900 group-hover:text-blue-600" : "text-gray-400"}`}>
+                    {displayFutPrice != null ? formatPrice(displayFutPrice) : "—"}
+                  </span>
                 </div>
                 <div className="group flex items-center gap-1 rounded-lg px-2 py-1 transition-colors hover:bg-blue-50">
                   <button
@@ -2200,8 +2255,8 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
           
 
           {displayRows.length > 0 && (
-            <div ref={chainScrollRef} className="max-h-[82vh] overflow-y-auto rounded-xl border border-gray-300 bg-white shadow-sm custom-scrollbar">
-              <table className="w-full border-collapse text-[12.5px]">
+            <div ref={chainScrollRef} className="max-h-[82vh] overflow-x-auto overflow-y-auto rounded-xl border border-gray-300 bg-white shadow-sm custom-scrollbar">
+              <table className="w-full min-w-[540px] border-collapse text-[11px] sm:text-[12.5px]">
                 <thead className="sticky top-0 bg-gray-50 border-b border-gray-300 z-10">
                   <tr className="text-center font-bold text-xs">
                     <th colSpan={chainCeColCount} className="bg-emerald-50 text-emerald-800 border-b border-gray-300 py-1.5">CALL</th>
@@ -2417,7 +2472,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
             still only make sense once at least one leg exists. */}
         <div className="flex-1 flex flex-col">
           {legs.length > 0 && (
-            <div className="mb-3 flex items-center justify-end gap-2">
+            <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
               {!replayData && (
                 <button
                   onClick={runSimulation}
@@ -2479,9 +2534,9 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
             context="replay"
           />
 
-          <div className="mb-4 flex gap-4 items-stretch">
+          <div className="mb-4 flex flex-col gap-4 items-stretch md:flex-row">
             {legs.length > 0 && (
-              <div className="w-48 shrink-0 flex flex-col justify-between rounded-xl border border-gray-300 bg-white p-4 shadow-sm space-y-3">
+              <div className="w-full shrink-0 flex flex-col justify-between rounded-xl border border-gray-300 bg-white p-4 shadow-sm space-y-3 md:w-48">
                 <Stat
                   label="Strategy P&L"
                   value={formatPrice(strategyPnl)}
@@ -2626,22 +2681,22 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
           {(legs.length > 0 || upcomingPositions.length > 0) && (
             <div className="rounded-xl border border-gray-300 bg-white shadow-sm overflow-hidden">
-              <div className="flex border-b border-gray-200 text-xs font-semibold">
+              <div className="flex overflow-x-auto border-b border-gray-200 text-xs font-semibold">
                 <button
                   onClick={() => setTab("positions")}
-                  className={`px-5 py-3 transition-colors ${tab === "positions" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
+                  className={`shrink-0 px-3 sm:px-5 py-3 transition-colors ${tab === "positions" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
                 >
                   Positions
                 </button>
                 <button
                   onClick={() => setTab("greeks")}
-                  className={`px-5 py-3 transition-colors ${tab === "greeks" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
+                  className={`shrink-0 px-3 sm:px-5 py-3 transition-colors ${tab === "greeks" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
                 >
                   Portfolio Greeks
                 </button>
                 <button
                   onClick={() => setTab("upcoming")}
-                  className={`px-5 py-3 transition-colors ${tab === "upcoming" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
+                  className={`shrink-0 px-3 sm:px-5 py-3 transition-colors ${tab === "upcoming" ? "border-b-2 border-blue-600 text-blue-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
                 >
                   Upcoming Positions{upcomingPositions.length > 0 ? ` (${upcomingPositions.length})` : ""}
                 </button>
@@ -2713,7 +2768,8 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                       </button>
                     </div>
                   </div>
-                  <table className="w-full border-collapse text-xs">
+                  <div className="overflow-x-auto">
+                  <table className="w-full min-w-[820px] border-collapse text-xs">
                     <thead>
                       <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-200">
                         <th className="px-3 py-2.5 w-8" title="Include in payoff calculation"></th>
@@ -2924,6 +2980,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                       })}
                     </tbody>
                   </table>
+                  </div>
                 </>
                 ) : tab === "greeks" ? (
                   <PortfolioGreeksTable legs={legs} netGreeks={netGreeks} />
@@ -2991,7 +3048,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             </div>
                             <div className="divide-y divide-gray-100">
                               {orderedEntryLegs.map((leg) => (
-                                <div key={leg.id} className="flex items-center gap-3 px-4 py-1.5 text-[11px]">
+                                <div key={leg.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1.5 text-[11px]">
                                   <span
                                     className={`w-11 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-bold text-white shadow-sm ${
                                       leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"

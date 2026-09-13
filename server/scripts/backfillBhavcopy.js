@@ -28,6 +28,7 @@ const { addDays } = require("../services/backtestEngine");
 const instrumentMaster = require("../services/instrumentMaster");
 const bhavcopy = require("../services/nseBhavcopy");
 const bs = require("../utils/blackScholes");
+const coverageSummary = require("../services/coverageSummaryService");
 
 const EOD_TIME = "15:30:00";
 const DAY_GAP_MS = Number(process.env.BHAVCOPY_DAY_GAP_MS || 800); // be polite to NSE's server
@@ -97,6 +98,7 @@ async function storeDay(symbol, dateStr, rows) {
            pe_delta=VALUES(pe_delta), pe_gamma=VALUES(pe_gamma), pe_theta=VALUES(pe_theta), pe_vega=VALUES(pe_vega)`,
         [values]
     );
+    await coverageSummary.recordIngestedFromInsertValues(values);
     return values.length;
 }
 

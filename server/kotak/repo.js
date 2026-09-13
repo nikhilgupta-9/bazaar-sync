@@ -15,6 +15,7 @@
 
 const { pool } = require("../config/db");
 const cfg = require("../config/kotak");
+const coverageSummary = require("../services/coverageSummaryService");
 
 // IST wall-clock parts, minute-snapped. Explicit UTC arithmetic — no
 // local-timezone Date methods (CLAUDE.md Gotcha #12).
@@ -63,6 +64,7 @@ async function saveChainSnapshot(chain) {
            pe_iv=VALUES(pe_iv), pe_delta=VALUES(pe_delta), pe_gamma=VALUES(pe_gamma), pe_theta=VALUES(pe_theta), pe_vega=VALUES(pe_vega)`,
         [values]
     );
+    await coverageSummary.recordIngestedFromInsertValues(values);
     return values.length;
 }
 

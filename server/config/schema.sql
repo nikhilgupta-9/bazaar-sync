@@ -525,3 +525,33 @@ CREATE TABLE IF NOT EXISTS data_extraction_jobs (
   KEY idx_status (status),
   KEY idx_created (created_at)
 ) ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------------------
+-- Coverage summary (2026-09-13): pre-aggregated row counts for the admin
+-- Data Coverage page, so it never has to GROUP BY the raw 478M-row
+-- option_chain_history table again (see services/dataCoverageService.js's
+-- header comment for the incident this replaces — the old page ran a live
+-- aggregate over the full table, ~30 min / disk-exhausting on bad shapes).
+-- One row per (symbol, expiry, trade_date) actually present in
+-- option_chain_history — updated incrementally by
+-- services/coverageSummaryService.js right after every ingestion path
+-- (cron.js, backfill*.js, kotak/repo.js, dataImportService.js) writes into
+-- option_chain_history, never by re-scanning the raw table on read.
+-- ~215 symbols x ~700 trading days x ~4-5 live expiries at any time is on
+-- the order of a few hundred thousand rows, not hundreds of millions.
+-- minute_rows mirrors the existing coverage UI's "SUM(trade_time <>
+-- '15:30:00')" stat (rows that are real intraday minutes, not an EOD-only
+-- Bhavcopy snapshot) — kept here so the controller doesn't need a second
+-- source for it.
+CREATE TABLE IF NOT EXISTS option_chain_coverage_summary (
+  symbol VARCHAR(20) NOT NULL,
+  expiry_date DATE NOT NULL,
+  trade_date DATE NOT NULL,
+  row_count INT UNSIGNED NOT NULL DEFAULT 0,
+  minute_rows INT UNSIGNED NOT NULL DEFAULT 0,
+  last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (symbol, expiry_date, trade_date),
+  -- Serves getExpiryStatus's "MAX(trade_date)/MIN(expiry) GROUP BY symbol"
+  -- style reads straight off this table instead of the raw one.
+  KEY idx_symbol_trade_date (symbol, trade_date)
+) ENGINE=InnoDB;

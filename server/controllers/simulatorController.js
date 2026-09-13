@@ -74,12 +74,38 @@ function persistDatesCacheToDisk() {
 async function computeDatesPayload(symbol) {
     // FORCE INDEX: see the note on idx_symbol_date_time in schema.sql — the
     // optimizer otherwise picks uniq_snapshot here and the scan balloons to ~12s.
-    const [rows] = await pool.query(
-        `SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
-         FROM option_chain_history FORCE INDEX (idx_symbol_date_time)
-         WHERE symbol = ? GROUP BY trade_date ORDER BY trade_date DESC`,
-        [symbol]
-    );
+    // A pre-existing DB might not have that index yet (schema.sql's
+    // CREATE TABLE IF NOT EXISTS doesn't retrofit it — see the required
+    // manual ALTER TABLE there), which makes FORCE INDEX a hard SQL error
+    // (1176), not just slow — confirmed for real (2026-09-13, logged as
+    // "[simulator/dates] background refresh failed: Key ... doesn't exist").
+    // Fall back to the plain (bounded ~12s, not disk-exhausting) scan instead
+    // of failing outright; self-heals once the index finishes building.
+    // Statement-level timeout (MariaDB max_statement_time, seconds) so a
+    // stuck/orphaned run of this query (e.g. surviving a dev-server restart
+    // as a server-side zombie — MySQL only notices a vanished client on
+    // write-back, not mid-scan) self-aborts instead of holding a pool
+    // connection and disk I/O for many minutes. See the identical note in
+    // dataCoverageService.js's withStatementTimeout.
+    let rows;
+    try {
+        [rows] = await pool.query(
+            `SET STATEMENT max_statement_time=90 FOR
+             SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
+             FROM option_chain_history FORCE INDEX (idx_symbol_date_time)
+             WHERE symbol = ? GROUP BY trade_date ORDER BY trade_date DESC`,
+            [symbol]
+        );
+    } catch (err) {
+        if (!err || err.errno !== 1176) throw err;
+        [rows] = await pool.query(
+            `SET STATEMENT max_statement_time=90 FOR
+             SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
+             FROM option_chain_history
+             WHERE symbol = ? GROUP BY trade_date ORDER BY trade_date DESC`,
+            [symbol]
+        );
+    }
     const dates = rows.map((r) => r.trade_date);
     const sparseDates = rows.filter((r) => Number(r.snapshotCount) <= 1).map((r) => r.trade_date);
     return { symbol, dates, sparseDates };
@@ -208,6 +234,43 @@ async function getSpotAt(symbol, date, time) {
     return rows[0]?.close != null ? Number(rows[0].close) : null;
 }
 
+// Nearest front-month future's price as of a historical instant, from
+// futures_history (populated by cron.js's Angel One nightly pull + the
+// standalone Upstox/Bhavcopy futures backfills — see scripts/
+// backfillFutures.js). Powers the Simulator header bar's "FUT" figure,
+// previously always hardcoded "—".
+//
+// Tries an EXACT trade_time match first (the common case when futures and
+// options were both sourced from the same day's Angel One cron run, so their
+// minute timestamps line up) — cheap point lookup on uniq_fut_snapshot's
+// leading columns. Bhavcopy-sourced days, or a day where futures only has
+// EOD-only granularity while options has real minute data, won't have an
+// exact match at every minute, so this falls back to the LATEST snapshot at
+// or before the requested time (same "nearest wins" convention the frontend's
+// -1m/+5m/etc scrubber buttons already use) rather than showing a gap for
+// every minute that doesn't happen to line up exactly.
+async function getFuturesAt(symbol, date, time) {
+    const [exact] = await pool.query(
+        `SELECT expiry, close FROM futures_history
+         WHERE symbol = ? AND trade_date = ? AND trade_time = ?
+         ORDER BY expiry ASC LIMIT 1`,
+        [symbol, date, time]
+    );
+    if (exact.length) {
+        return { futPrice: exact[0].close != null ? Number(exact[0].close) : null, futExpiry: exact[0].expiry };
+    }
+    const [nearest] = await pool.query(
+        `SELECT expiry, close FROM futures_history
+         WHERE symbol = ? AND trade_date = ? AND trade_time <= ?
+         ORDER BY trade_time DESC, expiry ASC LIMIT 1`,
+        [symbol, date, time]
+    );
+    if (nearest.length) {
+        return { futPrice: nearest[0].close != null ? Number(nearest[0].close) : null, futExpiry: nearest[0].expiry };
+    }
+    return { futPrice: null, futExpiry: null };
+}
+
 /**
  * GET /api/simulator/chain/:symbol?date=YYYY-MM-DD&expiry=YYYY-MM-DD&time=HH:MM:SS
  * A real historical option-chain snapshot — same shape the frontend already
@@ -319,6 +382,14 @@ async function getChainAtTime(req, res) {
         const spotPrice = (ohlcvIsMinuteBar ? ohlcvSpot : null) ?? paritySpot ?? anchor;
         const spotSource = ohlcvIsMinuteBar ? "ohlcv" : paritySpot != null ? "parity" : "stored";
 
+        let futPrice = null;
+        let futExpiry = null;
+        try {
+            ({ futPrice, futExpiry } = await getFuturesAt(symbol, date, selectedTime));
+        } catch (err) {
+            console.error("[simulator/chain] futures lookup failed:", err.message);
+        }
+
         res.json({
             symbol,
             date,
@@ -329,6 +400,8 @@ async function getChainAtTime(req, res) {
             spotPrice,
             spotStored: storedSpot != null ? Number(storedSpot) : null,
             spotSource,
+            futPrice,
+            futExpiry,
             lotSize,
             atmStrike: computeAtmStrike(rows.map((r) => r.strike), spotPrice),
             maxPainStrike: computeMaxPain(rows.map((r) => ({ strike: r.strike, ceOi: r.ce.oi, peOi: r.pe.oi }))),

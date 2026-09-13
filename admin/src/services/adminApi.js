@@ -234,6 +234,13 @@ export async function startExtractionJob(token, payload) {
     }));
 }
 
+// Every symbol with real data (7 indices + ~200 F&O stocks) — same endpoint
+// client/'s Select Asset dropdown and admin's other symbol-aware pages
+// already use. Public (no admin auth needed), so no `authed(token)` here.
+export async function fetchSymbolList() {
+    return handle(await fetch(`${API_URL}/api/option-chain/symbols/list`));
+}
+
 export async function fetchExtractionJobs(token) {
     return handle(await fetch(`${API_URL}/api/admin/data/jobs`, authed(token)));
 }
@@ -244,6 +251,14 @@ export async function fetchExtractionJob(token, id) {
 
 export async function cancelExtractionJob(token, id) {
     return handle(await fetch(`${API_URL}/api/admin/data/jobs/${id}/cancel`, { method: "POST", ...authed(token) }));
+}
+
+export async function failExtractionJob(token, id) {
+    return handle(await fetch(`${API_URL}/api/admin/data/jobs/${id}/fail`, { method: "POST", ...authed(token) }));
+}
+
+export async function deleteExtractionJob(token, id) {
+    return handle(await fetch(`${API_URL}/api/admin/data/jobs/${id}`, { method: "DELETE", ...authed(token) }));
 }
 
 export async function fetchCoverageSummary(token, dataType) {

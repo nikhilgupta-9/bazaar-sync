@@ -6,7 +6,8 @@
 // rows show every leg regardless of its include-in-payoff checkbox.
 export default function PortfolioGreeksTable({ legs, netGreeks }) {
     return (
-        <table className="w-full border-collapse text-xs">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[480px] border-collapse text-xs">
             <thead>
                 <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-200">
                     <th className="px-4 py-2.5 text-left font-medium">Leg Matrix</th>
@@ -42,5 +43,6 @@ export default function PortfolioGreeksTable({ legs, netGreeks }) {
                 )}
             </tbody>
         </table>
+        </div>
     );
 }

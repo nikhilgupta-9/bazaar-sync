@@ -212,6 +212,53 @@ async function cancelJob(id) {
     await pool.query(`UPDATE data_extraction_jobs SET status='cancelled', finished_at=NOW() WHERE id=?`, [id]);
 }
 
+// Manually mark a job 'failed' — for the cases `cancel` above doesn't cover:
+// a job stuck in 'queued' (never actually spawned, e.g. the row insert
+// succeeded but something threw before `startJob` reached the spawn/UPDATE
+// below it — no pid ever recorded, so cancelJob's "must be running with a
+// pid" check refuses it and the admin is left with a job that will sit at
+// 'queued' forever with no button that applies), or a 'running' job whose
+// process is alive but has visibly hung (no new log lines, no real
+// progress) where "cancel" would work too but "failed" is the more honest
+// status — this was a deliberate stop because the job wasn't succeeding,
+// not a clean cancel. Best-effort kills the pid if one exists; never throws
+// on a missing/dead process (ESRCH) since the whole point is forcing the DB
+// row out of a stuck state regardless of what the OS process is doing.
+async function failJob(id) {
+    const job = await getJob(id);
+    if (!job) throw badRequest("job not found");
+    if (!["queued", "running"].includes(job.status)) throw badRequest("job is not queued or running");
+    if (job.pid) {
+        try {
+            process.kill(job.pid, "SIGTERM");
+        } catch (err) {
+            if (err.code !== "ESRCH") throw err;
+        }
+    }
+    await pool.query(
+        `UPDATE data_extraction_jobs SET status='failed', summary=?, finished_at=NOW() WHERE id=?`,
+        ["manually marked failed by admin", id]
+    );
+}
+
+// Deletes a job's row (and its log file, best-effort) — only for jobs that
+// are done one way or another; a 'queued'/'running' job must be cancelled or
+// failed first so a live process never gets orphaned with nothing left
+// tracking it.
+async function deleteJob(id) {
+    const job = await getJob(id);
+    if (!job) throw badRequest("job not found");
+    if (["queued", "running"].includes(job.status)) {
+        throw badRequest("job is still queued/running — cancel or fail it first");
+    }
+    if (job.log_path) {
+        try {
+            fs.unlinkSync(job.log_path);
+        } catch { /* already gone, or never existed — fine either way */ }
+    }
+    await pool.query(`DELETE FROM data_extraction_jobs WHERE id=?`, [id]);
+}
+
 function isPidAlive(pid) {
     if (!pid) return false;
     try {
@@ -246,4 +293,4 @@ async function reconcileOrphanedJobs() {
     return rows.length;
 }
 
-module.exports = { startJob, listJobs, getJob, cancelJob, buildCommand, reconcileOrphanedJobs, DATA_DOWNLOADER_DIR };
+module.exports = { startJob, listJobs, getJob, cancelJob, failJob, deleteJob, buildCommand, reconcileOrphanedJobs, DATA_DOWNLOADER_DIR };
