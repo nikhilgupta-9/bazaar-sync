@@ -160,8 +160,21 @@ async function backfillSymbol(symbol, fromDate, toDate, opts = {}) {
         return { rowsStored: 0, contractsFailed: 0, contractsSkipped: 0, contractsTotal: 0 };
     }
     const spotByDate = await loadSpotByDate(symbol, fromDate, toDate);
+    const toEnrich = contracts.filter((c) => !c.alreadyEnriched).length;
+    // Two Breeze calls (CE+PE) per not-already-enriched contract, each
+    // individually rate-limited (~90/min, see rateLimiter.js) — this can
+    // legitimately run for many minutes with nothing to show for it, which
+    // previously looked identical to a genuine hang in the admin extraction
+    // job log (confirmed for real, 2026-09-13: a job sat "stuck" at
+    // "[breeze] session established" for 5+ minutes while it was actually
+    // making ~65 real calls/min — proven via rateLimiter's own persisted
+    // call counter, not visible anywhere in the job's own log). Periodic
+    // progress lines below fix that visibility gap; they don't change the
+    // pacing/behavior itself.
+    console.log(`[breeze] ${symbol}: ${contracts.length} contracts found, ${toEnrich} need enriching (~${toEnrich * 2} Breeze calls at up to 90/min ≈ ${Math.ceil((toEnrich * 2) / 90)} min)`);
 
-    let rowsStored = 0, contractsFailed = 0, contractsSkipped = 0;
+    let rowsStored = 0, contractsFailed = 0, contractsSkipped = 0, contractsDone = 0;
+    const PROGRESS_EVERY = 15; // contracts, not calls — frequent enough to prove it's alive without spamming the log
     for (const { expiry, strike, range, alreadyEnriched } of contracts) {
         if (alreadyEnriched) {
             contractsSkipped += 1;
@@ -187,6 +200,10 @@ async function backfillSymbol(symbol, fromDate, toDate, opts = {}) {
             const msg = err instanceof Error ? err.message : String(err);
             console.error(`[breeze] ${symbol} ${expiry} strike ${strike}: ${msg}`);
             if (/daily call budget spent/.test(msg)) throw err; // stop this whole symbol AND propagate to caller
+        }
+        contractsDone += 1;
+        if (contractsDone % PROGRESS_EVERY === 0 || contractsDone === toEnrich) {
+            console.log(`[breeze] ${symbol}: ${contractsDone}/${toEnrich} contracts enriched (${rowsStored} rows so far, ${contractsFailed} failed, budget left ${rateLimiter.remainingToday()})`);
         }
     }
     return { rowsStored, contractsFailed, contractsSkipped, contractsTotal: contracts.length };

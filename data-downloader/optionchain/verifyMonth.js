@@ -32,11 +32,39 @@ function isWeekend(dateStr) {
 async function verifyMonth(year, month, { onlySymbols = null } = {}) {
     const { first, last } = monthBounds(year, month);
 
+    // `onlySymbols` used to only filter the RESULT in JS (see the `continue`
+    // below) — every query still scanned the ENTIRE option_chain_history
+    // table for the whole month across every symbol that ever existed
+    // (478M rows total table-wide), then threw away everything except the
+    // one symbol asked for. On top of that, mixing COUNT(*)/SUM with several
+    // COUNT(DISTINCT ...) — one of them on a computed CONCAT(expiry,':',
+    // strike) expression — in the same GROUP BY is the exact query shape
+    // that forces MySQL to build an on-disk temp/hash structure instead of
+    // streaming off an index (same lesson learned the hard way in
+    // server/services/dataCoverageService.js earlier). Confirmed live
+    // (2026-09-13): a single-symbol Upstox job for ABCAPITAL hung for 9+
+    // minutes with the process alive and zero log output, stuck in this
+    // exact function right after its own enrich step finished successfully.
+    // Pushing the symbol filter into SQL is the fix that actually matters
+    // for the reported bug — a single-symbol run now touches only that
+    // symbol's own rows via the (symbol, ...)-leading indexes instead of
+    // every symbol's rows for the month. A full "verify every symbol this
+    // month" run (onlySymbols=null, used by the general pipeline, not this
+    // per-symbol backfill path) is a materially smaller problem than the
+    // original whole-table disaster (bounded to one month, not 2023-onward)
+    // but still not fully solved here — flagged, not silently left broken:
+    // if that path ever hangs/exhausts disk too, split it the same way
+    // dataCoverageService.getCoverageSummary was split (totals query without
+    // DISTINCT, separate distinct-pairs query, bucket in JS).
+    const symbolFilter = onlySymbols && onlySymbols.size ? [...onlySymbols] : null;
+    const symbolWhere = symbolFilter ? "AND symbol IN (?)" : "";
+    const symbolParams = symbolFilter ? [symbolFilter] : [];
+
     // The month's actual trading calendar, inferred from the data: any date
     // that got ANY option row from discovery.
     const [tdRows] = await pool.query(
-        `SELECT DISTINCT trade_date FROM option_chain_history WHERE trade_date BETWEEN ? AND ? ORDER BY trade_date`,
-        [first, last]
+        `SELECT DISTINCT trade_date FROM option_chain_history WHERE trade_date BETWEEN ? AND ? ${symbolWhere} ORDER BY trade_date`,
+        [first, last, ...symbolParams]
     );
     const tradingDays = tdRows.map((r) => r.trade_date);
 
@@ -54,10 +82,10 @@ async function verifyMonth(year, month, { onlySymbols = null } = {}) {
              MIN(trade_time) AS earliestTime,
              MAX(CASE WHEN trade_time <> ? THEN trade_time END) AS latestMinuteTime
          FROM option_chain_history
-         WHERE trade_date BETWEEN ? AND ?
+         WHERE trade_date BETWEEN ? AND ? ${symbolWhere}
          GROUP BY symbol
          ORDER BY symbol`,
-        [EOD_TIME, EOD_TIME, EOD_TIME, first, last]
+        [EOD_TIME, EOD_TIME, EOD_TIME, first, last, ...symbolParams]
     );
 
     // Distinct expiries per symbol (for the "with their expiry" listing + weekend check).
@@ -65,10 +93,10 @@ async function verifyMonth(year, month, { onlySymbols = null } = {}) {
         `SELECT symbol, expiry, COUNT(DISTINCT strike) AS strikes,
                 COUNT(DISTINCT CASE WHEN trade_time <> ? THEN strike END) AS strikesWithMinute
          FROM option_chain_history
-         WHERE trade_date BETWEEN ? AND ?
+         WHERE trade_date BETWEEN ? AND ? ${symbolWhere}
          GROUP BY symbol, expiry
          ORDER BY symbol, expiry`,
-        [EOD_TIME, first, last]
+        [EOD_TIME, first, last, ...symbolParams]
     );
     const expiriesBySymbol = new Map();
     for (const r of expRows) {
@@ -84,6 +112,8 @@ async function verifyMonth(year, month, { onlySymbols = null } = {}) {
     const symbols = [];
     let symbolsPass = 0, symbolsFail = 0;
     for (const row of agg) {
+        // Now redundant with symbolWhere above (SQL already filtered) — kept
+        // as a cheap defensive no-op rather than trusting the query alone.
         if (onlySymbols && !onlySymbols.has(row.symbol)) continue;
         const contractsDiscovered = Number(row.contractsDiscovered);
         const contractsWithMinute = Number(row.contractsWithMinute);
