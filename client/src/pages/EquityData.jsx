@@ -7,6 +7,7 @@
 // later phase once a data source for it (none come from Angel One) is
 // decided.
 import { useParams } from "react-router-dom";
+import PageShell from "../components/PageShell";
 
 const TOOLS = {
     "market-map": {
@@ -33,20 +34,20 @@ export default function EquityData() {
 
     if (!meta) {
         return (
-            <div className="mx-auto max-w-3xl px-6 py-16 text-center">
+            <PageShell className="text-center">
                 <h1 className="text-xl font-bold text-gray-900">Equity Data</h1>
                 <p className="mt-2 text-sm text-gray-500">Pick a tool from the Equity Data menu above.</p>
-            </div>
+            </PageShell>
         );
     }
 
     return (
-        <div className="mx-auto max-w-3xl px-6 py-16 text-center">
+        <PageShell className="text-center">
             <h1 className="text-xl font-bold text-gray-900">{meta.title}</h1>
             <p className="mt-2 text-sm text-gray-500">{meta.desc}</p>
             <div className="mt-6 inline-block rounded-full bg-amber-100 px-4 py-1.5 text-xs font-semibold text-amber-700">
                 Coming soon
             </div>
-        </div>
+        </PageShell>
     );
 }

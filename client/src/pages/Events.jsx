@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { FiCalendar, FiClock, FiExternalLink } from "react-icons/fi";
 import { fetchEvents } from "../services/eventsApi";
+import PageShell from "../components/PageShell";
 
 function formatDate(dateStr) {
     return new Date(`${dateStr}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
@@ -26,7 +27,7 @@ export default function Events() {
     }, []);
 
     return (
-        <div className="mx-auto max-w-3xl px-6 py-12">
+        <PageShell>
             <h1 className="text-2xl font-bold text-gray-900">Events</h1>
             <p className="mt-1 text-sm text-gray-500">Webinars and announcements from Bazaar Sync.</p>
 
@@ -57,6 +58,6 @@ export default function Events() {
                     ))}
                 </div>
             )}
-        </div>
+        </PageShell>
     );
 }

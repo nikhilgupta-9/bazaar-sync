@@ -1,16 +1,16 @@
-// services/couponService.js — coupon codes against the existing PRO_PLANS
-// catalog (paperTradeConfig.js), not a second pricing-plan system (user's
-// explicit scope choice, 2026-08-20). subscriptionController.js validates a
-// coupon at order-creation time (to compute the discounted Razorpay amount)
-// and redeems it at verify time (after payment is confirmed) — never the
-// other way around, so an abandoned checkout never consumes a redemption.
+// services/couponService.js — coupon codes against the admin-managed plan
+// catalog (proPlanService.js / pro_plans table). subscriptionController.js
+// validates a coupon at order-creation time (to compute the discounted
+// Razorpay amount) and redeems it at verify time (after payment is
+// confirmed) — never the other way around, so an abandoned checkout never
+// consumes a redemption.
 const { pool } = require("../config/db");
 
 // Throws a user-facing error (err.status = 400) for any invalid/expired/
-// exhausted/inactive code — the controller just needs to catch and surface
-// err.message. Returns the discounted amount, never mutates state (that's
-// redeemCoupon's job, only called after payment succeeds).
-async function validateCoupon(code, amountPaise) {
+// exhausted/inactive code — callers just need to catch and surface
+// err.message. Never mutates state (that's redeemCoupon's job, only called
+// after payment succeeds).
+async function getActiveCoupon(code) {
     const [[coupon]] = await pool.query("SELECT * FROM coupons WHERE code = ?", [String(code).trim().toUpperCase()]);
     if (!coupon) {
         const err = new Error("invalid coupon code");
@@ -32,13 +32,22 @@ async function validateCoupon(code, amountPaise) {
         err.status = 400;
         throw err;
     }
+    return coupon;
+}
 
+// Pure — no DB access — so it's safe to call once per plan when previewing a
+// coupon against the whole catalog (see subscriptionController.js's
+// validateCouponForAllPlans, which powers the Pricing page's live "Apply").
+function computeDiscount(coupon, amountPaise) {
     const discountPaise = coupon.discount_type === "percent"
         ? Math.round(amountPaise * (Number(coupon.discount_value) / 100))
         : Math.round(Number(coupon.discount_value) * 100);
-    const finalAmountPaise = Math.max(0, amountPaise - discountPaise);
+    return { discountPaise: Math.min(discountPaise, amountPaise), finalAmountPaise: Math.max(0, amountPaise - discountPaise) };
+}
 
-    return { coupon, discountPaise: Math.min(discountPaise, amountPaise), finalAmountPaise };
+async function validateCoupon(code, amountPaise) {
+    const coupon = await getActiveCoupon(code);
+    return { coupon, ...computeDiscount(coupon, amountPaise) };
 }
 
 // Called only after a payment is verified. Idempotent via the UNIQUE
@@ -72,4 +81,4 @@ async function redeemCouponByCode(code, userId, razorpayPaymentId, discountPaise
     await redeemCoupon(coupon.id, userId, razorpayPaymentId, discountPaise);
 }
 
-module.exports = { validateCoupon, redeemCoupon, redeemCouponByCode };
+module.exports = { validateCoupon, getActiveCoupon, computeDiscount, redeemCoupon, redeemCouponByCode };

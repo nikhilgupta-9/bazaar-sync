@@ -56,22 +56,86 @@ async function listLotSizeHistory(symbol) {
     return rows;
 }
 
-async function addLotSizeEntry({ symbol, lotSize, effectiveFrom, effectiveTo, userId }) {
-    const displaySymbol = String(symbol || "").toUpperCase();
-    if (!displaySymbol) throw badRequest("symbol is required");
-    if (!Number.isInteger(lotSize) || lotSize <= 0) throw badRequest("lotSize must be a positive whole number");
-    if (!effectiveFrom) throw badRequest("effectiveFrom is required (YYYY-MM-DD)");
-    if (effectiveTo && effectiveTo < effectiveFrom) throw badRequest("effectiveTo cannot be before effectiveFrom");
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Shared field validation for both the single-entry form and the CSV bulk import — one
+ * source of truth so the two paths can never drift on what counts as a valid row. */
+function validateEntryFields({ symbol, lotSize, effectiveFrom, effectiveTo }) {
+    const displaySymbol = String(symbol || "").trim().toUpperCase();
+    if (!displaySymbol) throw badRequest("symbol is required");
+
+    const lotSizeNum = Number(lotSize);
+    if (!Number.isInteger(lotSizeNum) || lotSizeNum <= 0) throw badRequest("lot_size must be a positive whole number");
+
+    const from = String(effectiveFrom || "").trim();
+    if (!DATE_RE.test(from)) throw badRequest("effective_from must be a real date in YYYY-MM-DD format");
+
+    const to = String(effectiveTo || "").trim();
+    if (to && !DATE_RE.test(to)) throw badRequest("effective_to must be blank or a real date in YYYY-MM-DD format");
+    if (to && to < from) throw badRequest("effective_to cannot be before effective_from");
+
+    return { symbol: displaySymbol, lotSize: lotSizeNum, effectiveFrom: from, effectiveTo: to || null };
+}
+
+async function addLotSizeEntry({ symbol, lotSize, effectiveFrom, effectiveTo, userId }) {
+    const entry = validateEntryFields({ symbol, lotSize, effectiveFrom, effectiveTo });
     const [result] = await pool.query(
         `INSERT INTO lot_size_history (symbol, lot_size, effective_from, effective_to, created_by) VALUES (?, ?, ?, ?, ?)`,
-        [displaySymbol, lotSize, effectiveFrom, effectiveTo || null, userId || null]
+        [entry.symbol, entry.lotSize, entry.effectiveFrom, entry.effectiveTo, userId || null]
     );
     return result.insertId;
+}
+
+// Bulk import from the admin's CSV upload (admin/src/pages/LotSizeHistory.jsx). All-or-
+// nothing on purpose: if any row doesn't match the expected format, nothing is inserted and
+// every row's problem is reported at once (with its original CSV line number) so the admin
+// can fix the file in Excel and re-upload, rather than ending up with a half-imported sheet
+// and no clear picture of what still needs fixing.
+const MAX_BULK_ROWS = 2000;
+
+async function bulkAddLotSizeEntries(rows, userId) {
+    if (!Array.isArray(rows) || rows.length === 0) throw badRequest("no rows to import");
+    if (rows.length > MAX_BULK_ROWS) throw badRequest(`too many rows in one import (max ${MAX_BULK_ROWS})`);
+
+    const normalized = [];
+    const rowErrors = [];
+    rows.forEach((raw, idx) => {
+        const rowNumber = Number(raw && raw.rowNumber) || idx + 2; // header is line 1
+        try {
+            const entry = validateEntryFields(raw || {});
+            normalized.push(entry);
+        } catch (err) {
+            rowErrors.push({ row: rowNumber, message: err.message });
+        }
+    });
+
+    if (rowErrors.length) {
+        const err = badRequest("some rows do not match the expected format — fix and re-upload");
+        err.rowErrors = rowErrors;
+        throw err;
+    }
+
+    const conn = await pool.getConnection();
+    try {
+        await conn.beginTransaction();
+        for (const entry of normalized) {
+            await conn.query(
+                `INSERT INTO lot_size_history (symbol, lot_size, effective_from, effective_to, created_by) VALUES (?, ?, ?, ?, ?)`,
+                [entry.symbol, entry.lotSize, entry.effectiveFrom, entry.effectiveTo, userId || null]
+            );
+        }
+        await conn.commit();
+    } catch (err) {
+        await conn.rollback();
+        throw err;
+    } finally {
+        conn.release();
+    }
+    return normalized.length;
 }
 
 async function deleteLotSizeEntry(id) {
     await pool.query(`DELETE FROM lot_size_history WHERE id = ?`, [id]);
 }
 
-module.exports = { getLotSizeAsOf, listLotSizeHistory, addLotSizeEntry, deleteLotSizeEntry };
+module.exports = { getLotSizeAsOf, listLotSizeHistory, addLotSizeEntry, bulkAddLotSizeEntries, deleteLotSizeEntry };

@@ -8,6 +8,7 @@ const { getRecentLedger } = require("../services/paperWalletService");
 const { listOpenPositions, listClosedPositions, getLiveContractPrice } = require("../services/paperPositionService");
 const { PRO_PRICE_PAISE, REFILL_PRICE_PAISE } = require("../config/paperTradeConfig");
 const lotSizeHistoryService = require("../services/lotSizeHistoryService");
+const proPlanService = require("../services/proPlanService");
 
 async function listUsers(req, res) {
     try {
@@ -285,7 +286,71 @@ async function removeLotSizeHistoryEntry(req, res) {
     }
 }
 
+async function bulkImportLotSizeHistory(req, res) {
+    try {
+        const { rows } = req.body || {};
+        const inserted = await lotSizeHistoryService.bulkAddLotSizeEntries(rows, req.user.sub);
+        res.status(201).json({ inserted });
+    } catch (err) {
+        if (err.rowErrors) {
+            return res.status(err.status || 400).json({ error: err.message, rowErrors: err.rowErrors });
+        }
+        console.error("[admin:bulkImportLotSizeHistory]", err);
+        res.status(err.status || 500).json({ error: err.message || "failed to import" });
+    }
+}
+
 // --- Plans & Coupons ---
+// Plans (name/duration/price/badge) moved from a fixed in-code constant to
+// this admin-managed catalog on 2026-09-13 — see proPlanService.js and
+// schema.sql's pro_plans table header for the `id`-stability requirement.
+
+async function listPlansAdmin(req, res) {
+    try {
+        const plans = await proPlanService.listAllPlansAdmin();
+        res.json({ plans });
+    } catch (err) {
+        console.error("[admin:listPlans]", err);
+        res.status(500).json({ error: "failed to load plans" });
+    }
+}
+
+async function createPlanAdmin(req, res) {
+    try {
+        const id = await proPlanService.createPlan(req.body || {});
+        res.status(201).json({ id });
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message || "failed to create plan" });
+    }
+}
+
+async function updatePlanAdmin(req, res) {
+    try {
+        await proPlanService.updatePlan(req.params.id, req.body || {});
+        res.status(204).end();
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message || "failed to update plan" });
+    }
+}
+
+async function setPlanActiveAdmin(req, res) {
+    try {
+        await proPlanService.setPlanActive(req.params.id, !!req.body?.active);
+        res.status(204).end();
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message || "failed to update plan" });
+    }
+}
+
+async function deletePlanAdmin(req, res) {
+    try {
+        await proPlanService.deletePlan(req.params.id);
+        res.status(204).end();
+    } catch (err) {
+        console.error("[admin:deletePlan]", err);
+        res.status(500).json({ error: "failed to delete plan" });
+    }
+}
 
 async function listCoupons(req, res) {
     try {
@@ -348,6 +413,7 @@ async function deleteCoupon(req, res) {
 module.exports = {
     listUsers, getUserDetail, getOverview, listPayments, listAllPositions, listAllStrategies,
     listInstituteIps, addInstituteIp, removeInstituteIp,
+    listPlansAdmin, createPlanAdmin, updatePlanAdmin, setPlanActiveAdmin, deletePlanAdmin,
     listCoupons, createCoupon, setCouponActive, deleteCoupon,
-    listLotSizeHistoryAdmin, addLotSizeHistoryEntry, removeLotSizeHistoryEntry,
+    listLotSizeHistoryAdmin, addLotSizeHistoryEntry, bulkImportLotSizeHistory, removeLotSizeHistoryEntry,
 };

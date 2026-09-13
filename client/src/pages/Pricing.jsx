@@ -1,10 +1,14 @@
 // pages/Pricing.jsx — real plan catalog fetched from the server
 // (GET /api/subscription/plans, public/no-auth) rather than hardcoded here,
 // so the price shown always matches what Razorpay will actually charge (see
-// server/config/paperTradeConfig.js's PRO_PLANS — the single source of
-// truth). Checkout reuses the same order->Checkout->verify flow
+// server/services/proPlanService.js / the pro_plans table — the admin-managed
+// single source of truth, editable at admin's Plans & Coupons page since
+// 2026-09-13). Checkout reuses the same order->Checkout->verify flow
 // PaperTrade.jsx's "Get Pro" button already uses, just parameterized by
-// plan id and tracked per-card instead of one global "busy" flag.
+// plan id and tracked per-card instead of one global "busy" flag. Since an
+// admin can add/rename/remove plans freely, nothing here assumes exactly 3
+// plans or the specific ids "1m"/"6m"/"12m" — CTA_LABEL below is a
+// best-effort label for the plans this page shipped with, not a requirement.
 //
 // Neon-green card design matches the reference the user supplied
 // (Starter/Pro Trader/Elite), now following the app-wide light/dark theme
@@ -26,15 +30,16 @@
 // silently added on top.
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { FiCheck, FiTrendingUp } from "react-icons/fi";
+import { FiCheck, FiTrendingUp, FiTag, FiX } from "react-icons/fi";
 import { useAuth } from "../context/AuthContext";
-import { fetchProPlans, createProOrder, verifyProPayment } from "../services/subscriptionApi";
+import { fetchProPlans, validateCoupon, createProOrder, verifyProPayment } from "../services/subscriptionApi";
 import { loadRazorpayCheckout } from "../utils/loadRazorpayCheckout";
 
 // Same across every plan today — the backend doesn't differentiate feature
-// access by plan, only price/duration (see PRO_PLANS) — so every card lists
-// the same real, reachable features. Only the support line differs (matches
-// the reference: Elite gets "24/7 priority support").
+// access by plan, only price/duration — so every card lists the same real,
+// reachable features. Only the support line differs (matches the reference:
+// the longest-duration plan gets "24/7 priority support" — keyed off `days`,
+// not a hardcoded plan id, since an admin can rename/replace "Elite" freely).
 const BASE_FEATURES = [
     "Unlimited access to all tools",
     "Paper Trading — ₹5,00,000 virtual capital",
@@ -81,6 +86,9 @@ export default function Pricing() {
     const [busyPlanId, setBusyPlanId] = useState(null);
     const [checkoutError, setCheckoutError] = useState(null);
     const [couponCode, setCouponCode] = useState("");
+    const [couponPreview, setCouponPreview] = useState(null); // { code, discountType, discountValue, perPlan } | null
+    const [couponError, setCouponError] = useState(null);
+    const [applyingCoupon, setApplyingCoupon] = useState(false);
 
     useEffect(() => {
         fetchProPlans()
@@ -88,13 +96,46 @@ export default function Pricing() {
             .catch((err) => setPlansError(err.message));
     }, []);
 
+    function handleCouponInput(v) {
+        setCouponCode(v.toUpperCase());
+        // Editing the code after a successful Apply invalidates that preview —
+        // don't keep showing a discount for a code that's since changed.
+        setCouponPreview(null);
+        setCouponError(null);
+    }
+
+    async function applyCoupon() {
+        const code = couponCode.trim();
+        if (!code) return;
+        setApplyingCoupon(true);
+        setCouponError(null);
+        setCouponPreview(null);
+        try {
+            const result = await validateCoupon(code);
+            setCouponPreview(result);
+        } catch (err) {
+            setCouponError(err.message);
+        } finally {
+            setApplyingCoupon(false);
+        }
+    }
+
+    function clearCoupon() {
+        setCouponCode("");
+        setCouponPreview(null);
+        setCouponError(null);
+    }
+
     const buyPlan = useCallback(async (planId) => {
         if (!user) { navigate("/login"); return; }
         setCheckoutError(null);
         setBusyPlanId(planId);
         try {
             const Razorpay = await loadRazorpayCheckout();
-            const order = await createProOrder(token, planId, couponCode.trim());
+            // Only actually apply the code at checkout if it passed Apply — an
+            // edited-but-not-reapplied code is not sent, so the amount charged
+            // never disagrees with the discount (if any) shown on the cards.
+            const order = await createProOrder(token, planId, couponPreview ? couponCode.trim() : "");
             const rzp = new Razorpay({
                 key: order.keyId,
                 amount: order.amount,
@@ -128,7 +169,7 @@ export default function Pricing() {
             setCheckoutError(err.message);
             setBusyPlanId(null);
         }
-    }, [user, token, navigate, refreshUser, couponCode]);
+    }, [user, token, navigate, refreshUser, couponCode, couponPreview]);
 
     return (
         <div className="w-full bg-gray-50 px-6 py-12 text-gray-900">
@@ -143,12 +184,32 @@ export default function Pricing() {
 
                 <div className="mx-auto mt-6 max-w-xs">
                     <label className="mb-1 block text-center text-xs text-gray-400">Have a coupon code?</label>
-                    <input
-                        value={couponCode}
-                        onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
-                        placeholder="Enter code"
-                        className="w-full rounded-full border border-gray-200 bg-white px-4 py-2 text-center text-sm text-gray-900 outline-none focus:border-emerald-400"
-                    />
+                    {couponPreview ? (
+                        <div className="flex items-center justify-center gap-2 rounded-full border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">
+                            <FiTag size={14} />
+                            {couponPreview.code} applied — {couponPreview.discountType === "percent" ? `${couponPreview.discountValue}% off` : `₹${couponPreview.discountValue} off`}
+                            <button type="button" onClick={clearCoupon} aria-label="Remove coupon" className="ml-1 text-emerald-700/70 hover:text-emerald-900">
+                                <FiX size={14} />
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="flex gap-2">
+                            <input
+                                value={couponCode}
+                                onChange={(e) => handleCouponInput(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyCoupon(); } }}
+                                placeholder="Enter code"
+                                className="w-full rounded-full border border-gray-200 bg-white px-4 py-2 text-center text-sm text-gray-900 outline-none focus:border-emerald-400"
+                            />
+                            <button
+                                type="button" onClick={applyCoupon} disabled={!couponCode.trim() || applyingCoupon}
+                                className="shrink-0 rounded-full bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-700 disabled:opacity-40"
+                            >
+                                {applyingCoupon ? "Checking…" : "Apply"}
+                            </button>
+                        </div>
+                    )}
+                    {couponError && <p className="mt-1.5 text-center text-xs text-rose-600">{couponError}</p>}
                 </div>
 
                 {isPro && user?.pro_expires_at && (
@@ -172,9 +233,10 @@ export default function Pricing() {
                 )}
 
                 {plans && (
-                    <div className="mt-10 grid grid-cols-1 gap-6 sm:grid-cols-3">
+                    <div className="mt-10 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
                         {plans.map((plan) => {
-                            const features = [...BASE_FEATURES, plan.id === "12m" ? "24/7 priority support" : "Dedicated support"];
+                            const isLongestPlan = plan.days === Math.max(...plans.map((p) => p.days));
+                            const features = [...BASE_FEATURES, isLongestPlan ? "24/7 priority support" : "Dedicated support"];
                             const label = busyPlanId === plan.id
                                 ? "Opening…"
                                 : !user
@@ -198,9 +260,18 @@ export default function Pricing() {
 
                                     <div className="text-lg font-bold text-gray-900">{plan.name} ({plan.duration})</div>
 
-                                    <div className="mt-3 text-4xl font-extrabold text-emerald-600">
-                                        {formatPlanPrice(plan.priceInPaise)}
-                                    </div>
+                                    {couponPreview?.perPlan?.[plan.id] ? (
+                                        <div className="mt-3 flex items-baseline gap-2">
+                                            <span className="text-lg font-medium text-gray-400 line-through">{formatPlanPrice(plan.priceInPaise)}</span>
+                                            <span className="text-4xl font-extrabold text-emerald-600">
+                                                {formatPlanPrice(couponPreview.perPlan[plan.id].finalAmountPaise)}
+                                            </span>
+                                        </div>
+                                    ) : (
+                                        <div className="mt-3 text-4xl font-extrabold text-emerald-600">
+                                            {formatPlanPrice(plan.priceInPaise)}
+                                        </div>
+                                    )}
                                     <div className="text-xs text-gray-400">+18% GST</div>
 
                                     <ul className="mt-5 flex-1 space-y-2.5">

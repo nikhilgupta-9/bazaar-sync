@@ -190,15 +190,20 @@ async function getCandles(instrumentKey, { interval = "day", fromDate, toDate })
     return mapCandles(body.data?.candles || []);
 }
 
-// Best-known Upstox instrument keys for our three underlyings. NIFTY's is
-// confirmed from Upstox's own docs examples; BANKNIFTY/FINNIFTY are the
-// documented naming convention but NOT yet verified against a real response
-// — if either 404s/empties, check the exact string via Upstox's instrument
-// master CSV (assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz).
+// Upstox instrument keys for all 7 "the 7 indices" underlyings (CLAUDE.md
+// line 260). NIFTY/BANKNIFTY/FINNIFTY were already confirmed; the other 4
+// were VERIFIED live against getExpiries() (2026-09-11) — each returned a
+// real, non-empty expiry list (MIDCPNIFTY: 30, NIFTYNXT50: 22, SENSEX: 101,
+// BANKEX: 30) — before being trusted here, same "confirm before trusting"
+// rule this file already applied to NIFTY.
 const UNDERLYING_KEYS = {
     NIFTY: "NSE_INDEX|Nifty 50",
     BANKNIFTY: "NSE_INDEX|Nifty Bank",
     FINNIFTY: "NSE_INDEX|Nifty Fin Service",
+    MIDCPNIFTY: "NSE_INDEX|NIFTY MID SELECT",
+    NIFTYNXT50: "NSE_INDEX|Nifty Next 50",
+    SENSEX: "BSE_INDEX|SENSEX",
+    BANKEX: "BSE_INDEX|BANKEX",
 };
 
 module.exports = {

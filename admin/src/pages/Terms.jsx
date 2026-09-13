@@ -4,6 +4,7 @@ import { fetchContent, saveContent } from "../services/adminApi";
 import { formatDateTime } from "../utils/format";
 import TopBar from "../components/TopBar";
 import Card from "../components/Card";
+import MarkdownEditor from "../components/MarkdownEditor";
 
 export default function Terms() {
     const { token } = useAdminAuth();
@@ -42,7 +43,7 @@ export default function Terms() {
 
     return (
         <div>
-            <TopBar title="T&C" subtitle="Plain-text editor for the Terms & Conditions shown on the public /terms page." />
+            <TopBar title="T&C" subtitle="Markdown editor for the Terms & Conditions shown on the public /terms page." />
             <div className="p-6">
                 {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
                 {saved && <div className="mb-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">Saved.</div>}
@@ -61,11 +62,10 @@ export default function Terms() {
                                 />
                             </div>
                             <div>
-                                <label className="mb-1 block text-xs font-medium text-gray-400">Content (plain text)</label>
-                                <textarea
-                                    rows={18} value={content} onChange={(e) => setContent(e.target.value)}
-                                    placeholder="Paste or write the Terms & Conditions text here…"
-                                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500"
+                                <label className="mb-1 block text-xs font-medium text-gray-400">Content (Markdown)</label>
+                                <MarkdownEditor
+                                    value={content} onChange={setContent} rows={18}
+                                    placeholder="Paste or write the Terms & Conditions text here… supports **bold**, _italic_, ## headings, - lists, [links](url)."
                                 />
                             </div>
                             <button

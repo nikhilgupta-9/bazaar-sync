@@ -11,6 +11,14 @@
 // The BTC price shown is a fixed hand-seeded placeholder that wobbles
 // client-side on a timer — nothing is fetched, so it never reads as a real
 // feed to anyone who screenshots this.
+//
+// Uses text-[#fff]/bg-[#fff]/border-[#fff] instead of Tailwind's white/
+// text-white classes on purpose: index.css's site-wide dark theme redefines
+// --color-white to #010814 (near-black) under .dark so normal pages' white
+// text still reads on dark surfaces. This page is meant to stay dark
+// regardless of that toggle, so relying on the `white` token turned this
+// text invisible (near-black on the #0a0704 background) whenever the site's
+// dark mode was on. Don't "fix" these back to text-white/bg-white.
 
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -66,9 +74,9 @@ function LiveBtcPrice() {
     const up = change >= 0;
 
     return (
-        <div className="inline-flex items-center gap-3 rounded-full border border-white/10 bg-white/5 px-4 py-2 backdrop-blur-sm">
+        <div className="inline-flex items-center gap-3 rounded-full border border-[#fff]/10 bg-[#fff]/5 px-4 py-2 backdrop-blur-sm">
             <span className="text-[11px] font-semibold uppercase tracking-widest text-amber-300/80">BTC / USD</span>
-            <span className="font-mono text-sm font-semibold tabular-nums text-white">
+            <span className="font-mono text-sm font-semibold tabular-nums text-[#fff]">
                 ${price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </span>
             <span className={`font-mono text-xs font-semibold tabular-nums ${up ? "text-emerald-400" : "text-rose-400"}`}>
@@ -83,7 +91,7 @@ export default function BitcoinSimulator() {
     const particles = useMemo(() => buildParticles(16), []);
 
     return (
-        <div className="btc-splash relative isolate flex min-h-[calc(100vh-8rem)] items-center justify-center overflow-hidden bg-[#0a0704] px-4 py-16 text-white">
+        <div className="btc-splash relative isolate flex min-h-[calc(100vh-8rem)] items-center justify-center overflow-hidden bg-[#0a0704] px-4 py-16 text-[#fff]">
             <style>{`
                 @keyframes btcGlowPulse {
                     0%, 100% { opacity: 0.55; transform: scale(1); }
@@ -196,7 +204,7 @@ export default function BitcoinSimulator() {
                     Bitcoin Simulator
                 </h1>
 
-                <p className="btc-fade-up mt-4 max-w-md text-sm leading-relaxed text-white/60 sm:text-base" style={{ animationDelay: "0.12s" }}>
+                <p className="btc-fade-up mt-4 max-w-md text-sm leading-relaxed text-[#fff] sm:text-base" style={{ animationDelay: "0.12s" }}>
                     Replay Bitcoin's price action minute-by-minute — spot and perpetuals, funding, liquidations, the works. We're building it now.
                 </p>
 
@@ -209,12 +217,12 @@ export default function BitcoinSimulator() {
                     {FEATURES.map((f, i) => (
                         <div
                             key={f.title}
-                            className="btc-fade-up group rounded-xl border border-white/10 bg-white/5 p-4 text-left transition duration-300 hover:-translate-y-1 hover:border-amber-400/30 hover:bg-white/10"
+                            className="btc-fade-up group rounded-xl border border-[#fff]/10 bg-[#fff]/5 p-4 text-left transition duration-300 hover:-translate-y-1 hover:border-amber-400/30 hover:bg-[#fff]/10"
                             style={{ animationDelay: `${0.25 + i * 0.08}s` }}
                         >
                             <f.icon className="mb-2 text-amber-400 transition group-hover:scale-110" size={18} />
-                            <div className="text-sm font-semibold text-white">{f.title}</div>
-                            <p className="mt-1 text-xs leading-relaxed text-white/50">{f.body}</p>
+                            <div className="text-sm font-semibold text-[#fff]">{f.title}</div>
+                            <p className="mt-1 text-xs leading-relaxed text-[#fff]/50">{f.body}</p>
                         </div>
                     ))}
                 </div>
