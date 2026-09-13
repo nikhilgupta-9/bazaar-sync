@@ -32,11 +32,28 @@ npm run option-chain -- 2024 --symbols=NIFTY     # just one symbol (testing)
 npm run option-chain -- 2024 --from-month=6      # resume/start at June
 npm run option-chain -- 2024 --skip-enrich       # discovery + verify only, no Breeze calls
 npm run option-chain -- 2025                     # next year (run each year separately)
+
+# Multiple years in ONE command (loops straight from FROM_YEAR into TO_YEAR,
+# no separate command per year), plus an explicit duplicate-row check after
+# every month:
+npm run option-chain:years -- 2024 2025                     # both years, all F&O symbols
+npm run option-chain:years -- 2024 2025 --symbols=NIFTY      # one symbol
 ```
 
 Per month: **discovery** (NSE+BSE bhavcopy → every contract that traded) →
 **enrich** (Breeze 1-minute CE/PE + Greeks) → **verify** (per-symbol
 coverage report → `data/breeze-pipeline-reports/<ym>.json`).
+
+`option-chain:years` runs the exact same 3 phases per month (same script,
+`optionchain/run.js`'s `runMonth()` reused, not duplicated) — it only adds
+looping across years and, after each month, a direct query for duplicate
+`(symbol, expiry, strike, trade_date, trade_time)` rows (prints
+`[verify-dup] 2024-01: no duplicate ... rows — confirmed clean.`, or flags
+them loudly if any ever turn up — shouldn't be possible given
+`option_chain_history`'s UNIQUE KEY, every writer upserts). Same
+resumability: stops cleanly when Breeze's daily budget runs out, re-run the
+SAME command the next day to continue exactly where it stopped, even
+mid-way through the year range.
 Enrich burns Breeze's 5,000-calls/day budget fast — it stops mid-month and
 tells you to re-run tomorrow. Repeat daily until the year is done.
 
