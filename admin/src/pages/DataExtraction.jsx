@@ -18,6 +18,7 @@ const SOURCES = {
     icici_breeze: { label: "ICICI Breeze", dataTypes: ["option_chain", "futures", "vix"], mode: "year", note: "Deep 2023+ history. Needs a fresh daily session — see Credentials." },
     upstox: { label: "Upstox", dataTypes: ["option_chain", "futures"], mode: "year", note: "Recent window only (~6-11 months back, confirmed live) — no daily login needed." },
     bhavcopy: { label: "NSE+BSE Bhavcopy", dataTypes: ["option_chain", "futures"], mode: "year", note: "Free, EOD-only contract/expiry discovery — the fast, no-auth half of the Breeze pipelines." },
+    dhan: { label: "Dhan API v2", dataTypes: ["option_chain"], mode: "year", note: "2023+ minute option chain (ATM±10/±3 rolling strikes) + minute index/VIX/equity spot + daily futures, ALL TOGETHER per symbol/year. Deletes that symbol's year first if any data already exists, then refetches. Leave From/To month blank — full year only." },
     angelone: { label: "Angel One", dataTypes: ["option_chain", "futures"], mode: "recent", note: "Forward/recent catch-up only (current live contracts) — one symbol per request, or ALL for futures." },
     kotak: { label: "Kotak Neo", dataTypes: ["option_chain"], mode: "poll", note: "No historical API — this takes ONE live snapshot to prove the pipeline. Run the standalone poller for ongoing data." },
 };

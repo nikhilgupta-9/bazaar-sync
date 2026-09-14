@@ -49,6 +49,13 @@ const MANAGED_KEYS = {
     BREEZE_API_KEY: { source: "icici_breeze", label: "API Key", files: [SERVER_ENV, DATA_DOWNLOADER_ENV] },
     BREEZE_API_SECRET: { source: "icici_breeze", label: "API Secret", files: [SERVER_ENV, DATA_DOWNLOADER_ENV] },
     BREEZE_API_SESSION: { source: "icici_breeze", label: "Session Token", files: [SERVER_ENV, DATA_DOWNLOADER_ENV], restartNote: "expires DAILY — get a fresh one via the ICICI login URL each day" },
+
+    // Dhan only ever runs from data-downloader/ (never server/'s own live
+    // path) — see data-downloader/dhan/README section — so SERVER_ENV is
+    // deliberately not in `files` here, unlike Upstox/Breeze which the
+    // server also reads directly.
+    DHAN_ACCESS_TOKEN: { source: "dhan", label: "Access Token", files: [DATA_DOWNLOADER_ENV], restartNote: "must be a PERSONAL long-lived token (Dhan app: Profile -> DhanHQ Trading APIs -> Generate Token) — a partner/consent token expires in 24h, confirmed for real" },
+    DHAN_CLIENT_ID: { source: "dhan", label: "Client ID", files: [DATA_DOWNLOADER_ENV] },
 };
 
 function badRequest(message) {

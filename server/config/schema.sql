@@ -502,9 +502,12 @@ CREATE TABLE IF NOT EXISTS paper_positions (
 -- Nothing here stores credentials — those stay in .env files, managed via
 -- server/services/envSettingsService.js.
 -- ---------------------------------------------------------------------------
+-- Existing DBs (created before the 'dhan' source existed, 2026-09-14) need:
+--   ALTER TABLE data_extraction_jobs MODIFY source ENUM('angelone','upstox','icici_breeze','kotak','bhavcopy','dhan') NOT NULL;
+-- CREATE TABLE IF NOT EXISTS does not retrofit an already-created table's ENUM.
 CREATE TABLE IF NOT EXISTS data_extraction_jobs (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  source ENUM('angelone','upstox','icici_breeze','kotak','bhavcopy') NOT NULL,
+  source ENUM('angelone','upstox','icici_breeze','kotak','bhavcopy','dhan') NOT NULL,
   data_type ENUM('option_chain','futures','vix') NOT NULL,
   year INT,
   from_month TINYINT,

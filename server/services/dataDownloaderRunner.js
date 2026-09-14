@@ -23,7 +23,7 @@ const { pool } = require("../config/db");
 const { cleanBeforeFetch, monthRange } = require("./extractionCleanupService");
 const { resyncRange } = require("./coverageSummaryService");
 
-const YEAR_MODE_SOURCES = new Set(["icici_breeze", "bhavcopy", "upstox"]);
+const YEAR_MODE_SOURCES = new Set(["icici_breeze", "bhavcopy", "upstox", "dhan"]);
 
 const SERVER_DIR = path.join(__dirname, "..");
 const DATA_DOWNLOADER_DIR = process.env.DATA_DOWNLOADER_DIR || path.join(SERVER_DIR, "..", "data-downloader");
@@ -105,6 +105,27 @@ function buildCommand({ source, dataType, year, fromMonth, toMonth, symbols, ext
         if (dataType === "option_chain") return { cwd: SERVER_DIR, cmd: "node", args: ["scripts/backfillHistory.js", singleSymbol(), String(days)] };
         if (dataType === "futures") return { cwd: SERVER_DIR, cmd: "node", args: ["scripts/backfillFutures.js", symbolList.length ? singleSymbol() : "ALL", String(days)] };
         throw badRequest("India VIX already flows live via Angel One's own worker/cron — there's no separate backfill script for it");
+    }
+
+    if (source === "dhan") {
+        // Dhan's pipeline (data-downloader/dhan/) fetches discovery + index/
+        // equity minute spot + options + daily futures TOGETHER per
+        // symbol/year — there is no way to request just one slice the way
+        // icici_breeze/upstox/bhavcopy split option_chain vs futures vs vix
+        // into separate scripts, so this only maps dataType="option_chain"
+        // (the closest fit) and errors clearly on the other two rather than
+        // silently running the same thing under a misleading label.
+        if (dataType !== "option_chain") {
+            throw badRequest(
+                `Dhan fetches discovery + index/VIX + options + futures together per symbol/year (dhan/runUniverse.js) — there's no separate futures/vix job from the admin trigger. Use dataType "option_chain", or run dhan/run.js's --skip-* flags directly from a terminal for a partial fetch.`
+            );
+        }
+        const y = requireYear();
+        if (fromMonth || toMonth) {
+            throw badRequest(`Dhan's pipeline always processes the FULL calendar year (its own check-exists / delete / refetch model, see dhan/runUniverse.js) — partial month ranges aren't supported here.`);
+        }
+        const flags = symbolList.length ? [`--symbols=${symbolList.join(",")}`] : [];
+        return { cwd: DATA_DOWNLOADER_DIR, cmd: "node", args: ["dhan/runUniverse.js", String(y), String(y), ...flags], notes: "Dhan: checks each symbol's year for existing data, deletes it if present, then fetches fresh (discovery + minute index/VIX/equity spot + options + daily futures) — not a skip-if-exists resumable fetch like the other sources." };
     }
 
     if (source === "kotak") {

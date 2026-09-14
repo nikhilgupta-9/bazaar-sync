@@ -1,8 +1,8 @@
 // pages/DataSettings.jsx — view/update the broker/data-source credentials
 // that live in .env files, from the admin panel instead of hand-editing
 // files over SSH (Next Steps: "admin se hi .env ke sare access token ...
-// update kr paye"). Scoped to the 4 data sources this whole Data section is
-// about (Angel One / Kotak / Upstox / ICICI Breeze) — see
+// update kr paye"). Scoped to the 5 data sources this whole Data section is
+// about (Angel One / Kotak / Upstox / ICICI Breeze / Dhan) — see
 // server/services/envSettingsService.js's header for why this is
 // deliberately NOT a generic .env editor (DB/JWT/Razorpay/SMTP stay
 // SSH-only).
@@ -18,6 +18,7 @@ const SOURCE_LABELS = {
     kotak: "Kotak Neo (second live source)",
     upstox: "Upstox (recent-window backfill)",
     icici_breeze: "ICICI Breeze (deep historical backfill)",
+    dhan: "Dhan API v2 (2023+ minute option chain + index/VIX + daily futures)",
 };
 
 function EditRow({ item, onSave }) {
@@ -127,7 +128,7 @@ export default function DataSettings() {
         <div>
             <TopBar
                 title="Credentials"
-                subtitle="Broker/data-source access tokens for Angel One, Kotak, Upstox, and ICICI Breeze — written directly to the relevant .env file(s). Values are never shown in full, only a masked preview."
+                subtitle="Broker/data-source access tokens for Angel One, Kotak, Upstox, ICICI Breeze, and Dhan — written directly to the relevant .env file(s). Values are never shown in full, only a masked preview."
             />
             <div className="p-6">
                 {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
