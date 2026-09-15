@@ -21,7 +21,11 @@
     "test:vix": "node test/testVix.js",
     "test:upstox": "node test/testUpstox.js",
     "test:upstox-futures": "node test/testUpstoxFutures.js",
-    "test:symbolmap": "node test/testSymbolMap.js"
+    "test:symbolmap": "node test/testSymbolMap.js",
+    "dhan": "node dhan/run.js",
+    "dhan:universe": "node dhan/runUniverse.js",
+    "test:dhan": "node test/testDhan.js",
+    "test:dhan-pipeline": "node test/testDhanPipeline.js"
   },
   "dependencies": {
     "adm-zip": "^0.6.1",
