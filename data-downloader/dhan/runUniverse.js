@@ -11,8 +11,10 @@
 //   2. if yes, DELETE all of it first (clean slate — this is a deliberate
 //      re-fetch tool, not the skip-if-exists resumability
 //      optionchain/runUniverse.js's Breeze pipeline uses);
-//   3. fetch that whole year fresh (dhan/run.js's full pipeline: bhavcopy
-//      discovery -> minute index/equity spot -> options -> daily futures);
+//   3. fetch that whole year fresh (dhan/run.js's full pipeline: minute
+//      index/equity spot -> options -> daily futures — bhavcopy is only
+//      ever used in-memory, as a real-expiry-calendar lookup, never written
+//      to option_chain_history, see dhan/expiryDiscovery.js);
 //   4. only once the WHOLE YEAR finishes does it move to the next year, and
 //      only once ALL years finish does it move to the next symbol.
 //
@@ -23,11 +25,11 @@
 // delete-then-refetch (never leaves a half-fetched year sitting there).
 //
 // This is a genuinely massive job (7 indices + INDIAVIX + ~200 stocks, each
-// year 2023..present, each with a bhavcopy discovery pass + up to
-// (6 weekly + 3 monthly ranks) x (21 or 7 strike offsets) x 2 rights option
-// calls + a minute-level spot pull + a daily futures pull) — expect this to
-// run for real days, not minutes. Safe to Ctrl+C and re-run the SAME command
-// any time; it never leaves duplicate rows (every write is
+// year 2023..present, each with up to (6 weekly + 3 monthly ranks) x
+// (21 or 7 strike offsets) x 2 rights option calls + a minute-level spot
+// pull + a daily futures pull) — expect this to run for real days, not
+// minutes. Safe to Ctrl+C and re-run the SAME command any time; it never
+// leaves duplicate rows (every write is
 // ON DUPLICATE KEY UPDATE) and always resumes at the right place.
 //
 // Stops cleanly (not spamming failures symbol after symbol) if Dhan's auth

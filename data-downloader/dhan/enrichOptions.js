@@ -7,11 +7,13 @@
 // (ATM-N..ATM+N) for BOTH rights across the whole month, and for each
 // returned row: (1) trust Dhan's own resolved `strike`/`spot` for that
 // timestamp (it already did the ATM math), (2) derive which REAL calendar
-// expiry that rank corresponds to on that date via dhan/expiryResolver.js
-// (reusing this repo's own bhavcopy-discovered expiry list — free, already
-// there), (3) compute IV/Greeks ourselves via lib/blackScholes.js, because
-// Dhan's own `iv` field came back empty in every real test run here (not
-// populated for rollingoption, at least for what was tested).
+// expiry that rank corresponds to on that date via dhan/expiryResolver.js,
+// fed by dhan/expiryDiscovery.js's PURE IN-MEMORY bhavcopy lookup (never
+// written to option_chain_history — the user was explicit that only real
+// Dhan minute data should land in that table, 2026-09-15), (3) compute
+// IV/Greeks ourselves via lib/blackScholes.js, because Dhan's own `iv` field
+// came back empty in every real test run here (not populated for
+// rollingoption, at least for what was tested).
 //
 // Coverage is intentionally bounded, same honesty convention as this
 // project's other "not everything, here's exactly what" notes (e.g.
@@ -20,11 +22,11 @@
 // monthly expiries get pulled, and only ATM±10 (index) / ATM±3 (stock)
 // strikes — deep OTM/ITM strikes and expiries far in the future are simply
 // not obtainable from Dhan's API at all (see file-level notes in
-// historicalService.js). A symbol's very first calendar year processed may
-// also under-cover its earliest weeks, since higher ranks need FUTURE
-// expiries to already be discovered (bhavcopy discovery reaches forward
-// automatically once later months are processed — resolvable by re-running
-// the SAME symbol/year after a later year has been discovered).
+// historicalService.js). The expiry list passed in by the caller already
+// looks forward well past the current month for exactly this reason (see
+// dhan/run.js) — a symbol's very last months of a year can still
+// under-cover far-out ranks if the LOOKAHEAD_DAYS window doesn't reach the
+// next year's expiries yet.
 //
 // KNOWN DATA-QUALITY CAVEAT (found empirically, not a bug here): a stock
 // with a split/bonus in its history (e.g. RELIANCE, 2024) can have
@@ -34,7 +36,6 @@
 // shows up as a visibly low number, not a silent gap.
 
 const { pool } = require("../lib/db");
-const { addDays } = require("../lib/dates");
 const bs = require("../lib/blackScholes");
 const instrumentMaster = require("./instrumentMaster");
 const historicalService = require("./historicalService");
@@ -116,11 +117,12 @@ async function upsertOptionRows(symbol, right, rows) {
 }
 
 /**
- * One calendar month of options for one symbol. Requires bhavcopy discovery
- * (optionchain/monthDiscovery.js) to have ALREADY populated option_chain_history
- * with real expiries for this symbol — that's what expiryResolver reads.
+ * One calendar month of options for one symbol. `expiriesAsc` is the
+ * symbol's full real expiry list (see dhan/expiryDiscovery.js) — fetched
+ * ONCE per year by the caller (dhan/run.js) and passed in here so a
+ * 12-month loop doesn't re-walk the same bhavcopy calendar 12 times.
  */
-async function enrichOptionsMonth(symbol, year, month) {
+async function enrichOptionsMonth(symbol, year, month, expiriesAsc) {
     const mm = String(month).padStart(2, "0");
     const first = `${year}-${mm}-01`;
     const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -134,14 +136,9 @@ async function enrichOptionsMonth(symbol, year, month) {
     const maxOffset = underlying.instrument === "OPTIDX" ? OFFSETS_INDEX : OFFSETS_STOCK;
     const offsets = offsetLabels(maxOffset);
 
-    // Look forward well past `last` so higher ranks can resolve to expiries
-    // that trade later in the year (already discovered if a later month's
-    // bhavcopy pass has run) — see file header's "under-covers earliest
-    // weeks on first pass" note.
-    const allExpiries = await expiryResolver.knownExpiries(symbol, first, addDays(last, 400));
-    const { week, month: monthExp } = expiryResolver.classifyExpiries(allExpiries);
+    const { week, month: monthExp } = expiryResolver.classifyExpiries(expiriesAsc);
     if (!week.length && !monthExp.length) {
-        console.warn(`[dhan-options] ${symbol} ${year}-${mm}: no expiries discovered yet in option_chain_history — run bhavcopy discovery for this range first`);
+        console.warn(`[dhan-options] ${symbol} ${year}-${mm}: no real expiries found in NSE/BSE bhavcopy for this range — nothing to enrich`);
         return { rowsStored: 0 };
     }
 

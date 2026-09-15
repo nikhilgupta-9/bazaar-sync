@@ -4,15 +4,16 @@
 // reaches back to 2023, and it does so as a CONTINUOUS ROLLING series, not
 // any one literal contract's real life; see historicalService.js's header).
 //
-// Real expiry per row is derived the same way as options (dhan/expiryResolver.js),
-// reusing the MONTH-classified expiries already known from bhavcopy's option
-// discovery — index/stock monthly OPTIONS and monthly FUTURES share the same
+// Real expiry per row is derived the same way as options (dhan/expiryResolver.js
+// + dhan/expiryDiscovery.js's pure in-memory bhavcopy lookup, never written to
+// any table) — index/stock monthly OPTIONS and monthly FUTURES share the same
 // NSE expiry day, so no separate futures-specific discovery pass is needed.
 
 const { addDays } = require("../lib/dates");
 const instrumentMaster = require("./instrumentMaster");
 const historicalService = require("./historicalService");
 const expiryResolver = require("./expiryResolver");
+const expiryDiscovery = require("./expiryDiscovery");
 const futuresStorage = require("../lib/futuresStorage");
 
 async function enrichFuturesYear(symbol, year) {
@@ -32,10 +33,10 @@ async function enrichFuturesYear(symbol, year) {
     }
 
     // Monthly futures share the index/stock's own monthly OPTIONS expiry day.
-    const allExpiries = await expiryResolver.knownExpiries(symbol, from, addDays(to, 60));
+    const allExpiries = await expiryDiscovery.discoverExpiries(symbol, from, addDays(to, 60));
     const { month: monthExp } = expiryResolver.classifyExpiries(allExpiries);
     if (!monthExp.length) {
-        console.warn(`[dhan-futures] ${symbol} ${year}: no monthly expiries known yet (run options bhavcopy discovery first) — skipped`);
+        console.warn(`[dhan-futures] ${symbol} ${year}: no real monthly expiries found in NSE/BSE bhavcopy for this range — skipped`);
         return { rowsStored: 0 };
     }
 

@@ -1,11 +1,14 @@
 // test/testDhanPipeline.js — small real end-to-end smoke test of the Dhan
-// pipeline (dhan/*): runs discovery + index-spot + options + futures for
-// ONE symbol and ONE month against the REAL database and REAL Dhan API, with
-// a reduced rank/offset scope (via env overrides below) to keep it fast,
-// then queries the DB back to prove real rows landed with the right shape.
-// Run this before trusting dhan/runUniverse.js on the full universe.
+// pipeline (dhan/*): runs dhan/run.js's real runSymbolYear for ONE symbol
+// and ONE year against the REAL database and REAL Dhan API, with a reduced
+// rank/offset scope (via env overrides below) to keep it fast, then queries
+// the DB back to prove real rows landed with the right shape — and that
+// option_chain_history holds ONLY real Dhan minute-level rows, no bhavcopy
+// EOD placeholder rows (2026-09-15: the user was explicit they don't want
+// bhavcopy data landing in that table at all — bhavcopy is now used purely
+// in-memory as an expiry calendar, see dhan/expiryDiscovery.js).
 //
-// Run: cd data-downloader && node test/testDhanPipeline.js [SYMBOL] [YEAR] [MONTH]
+// Run: cd data-downloader && node test/testDhanPipeline.js [SYMBOL] [YEAR]
 
 process.env.DHAN_WEEKLY_RANKS = process.env.DHAN_WEEKLY_RANKS || "1";
 process.env.DHAN_MONTHLY_RANKS = process.env.DHAN_MONTHLY_RANKS || "1";
@@ -14,77 +17,52 @@ process.env.DHAN_STOCK_STRIKE_OFFSETS = process.env.DHAN_STOCK_STRIKE_OFFSETS ||
 
 require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") });
 const { pool } = require("../lib/db");
-const { discoverMonth } = require("../optionchain/monthDiscovery");
-const enrichOptions = require("../dhan/enrichOptions");
-const enrichFutures = require("../dhan/enrichFutures");
-const historicalService = require("../dhan/historicalService");
-const instrumentMaster = require("../dhan/instrumentMaster");
+const { runSymbolYear } = require("../dhan/run");
 
 (async () => {
     const symbol = (process.argv[2] || "NIFTY").toUpperCase();
     const year = Number(process.argv[3] || 2023);
-    const month = Number(process.argv[4] || 1);
-    const mm = String(month).padStart(2, "0");
-    const first = `${year}-${mm}-01`;
-    const last = `${year}-${mm}-28`;
 
-    console.log(`\n=== 1. discovery (bhavcopy) — ${symbol} ${year}-${mm} ===`);
-    const d = await discoverMonth(year, month, { onlySymbols: new Set([symbol]) });
-    console.log(`discovery: ${d.rowsStored} EOD rows, ${d.daysOk} days ok, ${d.daysFailed} failed`);
+    // Restrict to just January so this stays fast — enrichOptionsMonth loops
+    // all 12 months internally, so we monkey-patch-free this by just eating
+    // the cost; it's still a handful of minutes with the reduced scope above.
+    const summary = await runSymbolYear(symbol, year, {});
+    console.log("\nrunSymbolYear summary:", summary);
 
-    console.log(`\n=== 2. index minute spot — ${symbol} ${first}..${last} ===`);
-    const securityId = instrumentMaster.INDEX_SECURITY_IDS[symbol];
-    if (securityId) {
-        const rows = await historicalService.getIndexIntradayMinutes(securityId, first, last);
-        console.log(`fetched ${rows.length} minute candles, sample:`, rows[0], rows[rows.length - 1]);
-        const { pool: p } = require("../lib/db");
-        const values = rows.map((r) => [symbol, r.date, r.time, r.open, r.high, r.low, r.close, r.volume]);
-        for (let i = 0; i < values.length; i += 500) {
-            await p.query(
-                `INSERT INTO ohlcv_data (symbol, trade_date, trade_time, open, high, low, close, volume) VALUES ?
-                 ON DUPLICATE KEY UPDATE open=VALUES(open), high=VALUES(high), low=VALUES(low), close=VALUES(close), volume=VALUES(volume)`,
-                [values.slice(i, i + 500)]
-            );
-        }
-    } else {
-        console.log(`${symbol} is not an index — skipping this step in the smoke test (equity path not exercised here)`);
-    }
+    console.log(`\n=== VERIFY — query real rows back from the DB ===`);
+    const first = `${year}-01-01`, last = `${year}-01-31`;
 
-    console.log(`\n=== 3. options (rollingoption, reduced scope: 1 rank, ±1 strike) — ${symbol} ${year}-${mm} ===`);
-    const optResult = await enrichOptions.enrichOptionsMonth(symbol, year, month);
-    console.log("options result:", optResult);
-
-    console.log(`\n=== 4. futures (daily continuous) — ${symbol} ${year} ===`);
-    const futResult = await enrichFutures.enrichFuturesYear(symbol, year);
-    console.log("futures result:", futResult);
-
-    console.log(`\n=== 5. VERIFY — query real rows back from the DB ===`);
-    const [ohlcvSample] = await pool.query(
-        `SELECT trade_date, trade_time, open, high, low, close FROM ohlcv_data WHERE symbol=? AND trade_date BETWEEN ? AND ? ORDER BY trade_date, trade_time LIMIT 3`,
+    const [eodCheck] = await pool.query(
+        `SELECT COUNT(*) numRows FROM option_chain_history WHERE symbol=? AND trade_date BETWEEN ? AND ? AND trade_time = '15:30:00'`,
         [symbol, first, last]
     );
-    console.log("ohlcv_data sample rows:", ohlcvSample);
+    console.log(`EOD placeholder rows (trade_time=15:30:00) for ${symbol} Jan ${year} — should be 0, bhavcopy must never write here now:`, eodCheck[0].numRows);
+
+    const [minuteCheck] = await pool.query(
+        `SELECT COUNT(*) numRows FROM option_chain_history WHERE symbol=? AND trade_date BETWEEN ? AND ? AND trade_time <> '15:30:00'`,
+        [symbol, first, last]
+    );
+    console.log(`real Dhan minute-level option rows for ${symbol} Jan ${year}:`, minuteCheck[0].numRows);
 
     const [optSample] = await pool.query(
         `SELECT trade_date, trade_time, expiry, strike, ce_ltp, ce_iv, pe_ltp, pe_iv, underlying_price
          FROM option_chain_history WHERE symbol=? AND trade_date BETWEEN ? AND ? AND (ce_ltp IS NOT NULL OR pe_ltp IS NOT NULL)
-         AND trade_time <> '15:30:00'
          ORDER BY trade_date, trade_time LIMIT 5`,
         [symbol, first, last]
     );
-    console.log("option_chain_history minute-level sample rows (non-EOD, real Dhan-sourced):", optSample);
+    console.log("sample option rows:", optSample);
 
-    const [optCount] = await pool.query(
-        `SELECT COUNT(*) AS c FROM option_chain_history WHERE symbol=? AND trade_date BETWEEN ? AND ? AND trade_time <> '15:30:00'`,
+    const [ohlcv] = await pool.query(
+        `SELECT COUNT(*) numRows, MIN(trade_date) minD, MAX(trade_date) maxD FROM ohlcv_data WHERE symbol=? AND trade_date BETWEEN ? AND ?`,
         [symbol, first, last]
     );
-    console.log(`total minute-level option rows for ${symbol} ${year}-${mm}: ${optCount[0].c}`);
+    console.log("ohlcv_data (minute spot from Dhan):", ohlcv[0]);
 
-    const [futSample] = await pool.query(
+    const [fut] = await pool.query(
         `SELECT expiry, trade_date, close, oi FROM futures_history WHERE symbol=? AND trade_date BETWEEN ? AND ? ORDER BY trade_date LIMIT 5`,
         [symbol, first, last]
     );
-    console.log("futures_history sample rows:", futSample);
+    console.log("futures_history sample rows:", fut);
 
     await pool.end();
 })().catch((err) => {

@@ -4,11 +4,11 @@
 // historicalService.js's header) — only a continuously-rolling relative
 // rank ("nearest", "2nd nearest", ...).
 //
-// The real expiry universe for a symbol comes from THIS repo's own NSE/BSE
-// bhavcopy discovery (optionchain/monthDiscovery.js), which already knows
-// every expiry that genuinely traded — free, no Dhan call needed. Weekly vs
-// monthly classification reuses the same rule CLAUDE.md's Phase 4 already
-// documents for backtestEngine.js: the LAST expiry inside a calendar month is
+// The real expiry universe for a symbol comes from dhan/expiryDiscovery.js
+// (NSE/BSE bhavcopy, read-only in-memory lookup — NEVER written to
+// option_chain_history, see that file's header for why). Weekly vs monthly
+// classification reuses the same rule CLAUDE.md's Phase 4 already documents
+// for backtestEngine.js: the LAST expiry inside a calendar month is
 // "monthly", every other same-month expiry is "weekly".
 //
 // ASSUMPTION, not independently confirmed against Dhan's own internal rank
@@ -19,17 +19,6 @@
 // documented spec (none exists) — the pipeline's own verify step should be
 // the real check, same as every other "confirmed by testing, not by docs"
 // note elsewhere in this codebase.
-
-const { pool } = require("../lib/db");
-
-/** Every real expiry for `symbol` known to option_chain_history within [fromDate, toDate], ascending. */
-async function knownExpiries(symbol, fromDate, toDate) {
-    const [rows] = await pool.query(
-        `SELECT DISTINCT expiry FROM option_chain_history WHERE symbol = ? AND expiry BETWEEN ? AND ? ORDER BY expiry`,
-        [symbol, fromDate, toDate]
-    );
-    return rows.map((r) => r.expiry);
-}
 
 /** Classify each expiry as 'WEEK' or 'MONTH' — the last expiry in its calendar month is monthly, everything else weekly. */
 function classifyExpiries(expiriesAsc) {
@@ -52,4 +41,4 @@ function expiryForRank(dateStr, expiriesOfFlagAsc, rank) {
     return upcoming[rank - 1] || null;
 }
 
-module.exports = { knownExpiries, classifyExpiries, expiryForRank };
+module.exports = { classifyExpiries, expiryForRank };
