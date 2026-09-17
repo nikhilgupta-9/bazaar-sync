@@ -6,7 +6,7 @@
 // month), not a hardcoded holiday calendar; see
 // server/services/dataCoverageService.js's header for why.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { FiRefreshCw, FiSearch } from "react-icons/fi";
+import { FiRefreshCw, FiSearch, FiClock, FiDatabase } from "react-icons/fi";
 import { useAdminAuth } from "../context/AdminAuthContext";
 import { fetchCoverageSummary, fetchCoverageDetail, fetchCoverageDays, refreshCoverageCache } from "../services/adminApi";
 import TopBar from "../components/TopBar";
@@ -20,6 +20,12 @@ function pctColor(pct) {
     if (pct >= 50) return "bg-amber-500/20 text-amber-300";
     if (pct > 0) return "bg-rose-500/20 text-rose-300";
     return "bg-white/5 text-gray-600";
+}
+
+function formatTimestamp(value) {
+    if (!value) return "Not available";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
 export default function DataCoverage() {
@@ -48,12 +54,22 @@ export default function DataCoverage() {
         if (dataType === "vix") return summary.symbols;
         const bySymbol = new Map(summary.symbols.map((s) => [s.symbol, s]));
         // 7 indices pinned first (even if missing entirely — shows as a blank row), then the rest matching the search.
-        const indices = SEVEN_INDICES.map((sym) => bySymbol.get(sym) || { symbol: sym, firstDate: null, lastDate: null, totalRows: 0, totalDays: 0, monthsWithData: 0 });
+        const indices = SEVEN_INDICES.map((sym) => bySymbol.get(sym) || { symbol: sym, firstDate: null, lastDate: null, totalRows: 0, totalDays: 0, monthsWithData: 0, lastUpdatedAt: null });
         const stocks = summary.symbols
             .filter((s) => !SEVEN_INDICES.includes(s.symbol))
             .filter((s) => !search || s.symbol.includes(search.toUpperCase()));
         return [...indices, ...stocks];
     }, [summary, search, dataType]);
+
+    const selectedSummary = summary?.symbols?.find((row) => row.symbol === selected) || null;
+    const freshestRow = summary?.symbols?.reduce((best, row) => {
+        if (!row.lastUpdatedAt) return best;
+        return !best || new Date(row.lastUpdatedAt) > new Date(best.lastUpdatedAt) ? row : best;
+    }, null);
+    const latestDataMonth = detail?.filter((month) => month.days > 0).reduce((best, month) => {
+        if (!best || month.month > best.month) return month;
+        return best;
+    }, null);
 
     function selectSymbol(symbol) {
         setSelected(symbol);
@@ -93,14 +109,33 @@ export default function DataCoverage() {
                         <option value="futures">Futures</option>
                         <option value="vix">India VIX</option>
                     </select>
-                    <div className="relative flex-1 min-w-[180px] max-w-xs">
+                    <div className="relative min-w-45 max-w-xs flex-1">
                         <FiSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
                         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search stock symbol…" className="w-full rounded-lg border border-white/10 bg-white/5 py-2 pl-9 pr-3 text-sm text-white outline-none focus:border-violet-500" />
                     </div>
                     <button onClick={handleRefresh} disabled={refreshing} className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-300 hover:bg-white/10 disabled:opacity-50">
-                        <FiRefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh (cached ~20 min)
+                        <FiRefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh data
                     </button>
                 </div>
+
+                {summary && (
+                    <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                            <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-gray-500"><FiDatabase className="h-3.5 w-3.5" /> Symbols with data</div>
+                            <div className="mt-1 text-lg font-semibold text-white">{summary.symbols.length.toLocaleString()}</div>
+                        </div>
+                        <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                            <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-gray-500"><FiClock className="h-3.5 w-3.5" /> Coverage verified</div>
+                            <div className="mt-1 text-sm font-semibold text-white">{formatTimestamp(freshestRow?.lastUpdatedAt)}</div>
+                            <div className="text-[11px] text-gray-500">{freshestRow?.symbol || "No summary available"}</div>
+                        </div>
+                        <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                            <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-gray-500"><FiClock className="h-3.5 w-3.5" /> Selected data through</div>
+                            <div className="mt-1 text-sm font-semibold text-white">{selectedSummary?.lastDate || "Select a symbol"}</div>
+                            <div className="text-[11px] text-gray-500">{selectedSummary ? `Summary updated ${formatTimestamp(selectedSummary.lastUpdatedAt)}` : "Click a symbol for month details"}</div>
+                        </div>
+                    </div>
+                )}
 
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
                     <Card title={`Symbols${summary ? ` (${rows.length})` : ""}`} className="lg:col-span-2" bodyClassName="max-h-[70vh] overflow-y-auto p-0">
@@ -114,6 +149,7 @@ export default function DataCoverage() {
                                         <th className="px-3 py-2 font-medium">Days</th>
                                         <th className="px-3 py-2 font-medium">Months</th>
                                         <th className="px-3 py-2 font-medium">Last date</th>
+                                        <th className="px-3 py-2 font-medium">Updated</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -127,6 +163,7 @@ export default function DataCoverage() {
                                             <td className="px-3 py-2">{r.totalDays || "—"}</td>
                                             <td className="px-3 py-2">{r.monthsWithData || "—"}</td>
                                             <td className="px-3 py-2 text-gray-500">{r.lastDate || "no data"}</td>
+                                            <td className="px-3 py-2 text-gray-500" title={formatTimestamp(r.lastUpdatedAt)}>{r.lastUpdatedAt ? formatTimestamp(r.lastUpdatedAt) : "—"}</td>
                                         </tr>
                                     ))}
                                 </tbody>
@@ -141,6 +178,10 @@ export default function DataCoverage() {
                             <div className="py-10 text-center text-xs text-gray-500">Loading…</div>
                         ) : (
                             <>
+                                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
+                                    <span>{detail.filter((month) => month.days > 0).length} months with data · {selectedSummary?.totalDays?.toLocaleString() || 0} total days</span>
+                                    <span>Latest market month: <strong className="text-gray-300">{latestDataMonth?.month || "—"}</strong>{latestDataMonth?.lastUpdatedAt ? ` · verified ${formatTimestamp(latestDataMonth.lastUpdatedAt)}` : ""}</span>
+                                </div>
                                 <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
                                     {detail.map((m) => (
                                         <button
@@ -148,11 +189,14 @@ export default function DataCoverage() {
                                             key={m.month}
                                             onClick={() => selectMonth(m.month)}
                                             className={`rounded-lg px-2 py-2 text-center outline-none ${pctColor(m.coveragePct)} ${selectedMonth === m.month ? "ring-2 ring-violet-400" : ""}`}
-                                            title={`${m.days} of ${m.expectedDays ?? "?"} expected days, ${m.rows.toLocaleString()} rows — click to see exactly which days`}
+                                            title={`${m.days} of ${m.expectedDays ?? "?"} expected days, ${m.rows.toLocaleString()} rows, updated ${formatTimestamp(m.lastUpdatedAt)} — click to see exactly which days`}
                                         >
                                             <div className="text-[10px] font-medium opacity-80">{m.month}</div>
                                             <div className="text-sm font-bold">{m.days}{m.expectedDays != null ? `/${m.expectedDays}` : ""}</div>
+                                            {dataType === "option_chain" && m.ohlcvDays > 0 && m.optionDays === 0 && <div className="text-[9px] opacity-80">OHLCV only</div>}
+                                            {dataType === "option_chain" && m.optionDays > 0 && m.ohlcvDays === 0 && <div className="text-[9px] opacity-80">Options only</div>}
                                             {m.missingDays > 0 && <div className="text-[10px] opacity-80">−{m.missingDays}</div>}
+                                            {m.lastUpdatedAt && <div className="mt-0.5 text-[9px] opacity-70">updated</div>}
                                         </button>
                                     ))}
                                 </div>

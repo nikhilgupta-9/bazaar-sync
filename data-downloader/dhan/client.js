@@ -63,6 +63,23 @@ async function throttle() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Validate credentials before runUniverse deletes an existing year. An empty
+// successful candle response is acceptable here: the purpose is auth only,
+// and market closure can legitimately produce no candles.
+async function checkAuth() {
+    const ist = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+    const date = `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, "0")}-${String(ist.getUTCDate()).padStart(2, "0")}`;
+    await post("/charts/intraday", {
+        securityId: "13",
+        exchangeSegment: "IDX_I",
+        instrument: "INDEX",
+        interval: "1",
+        fromDate: `${date} 09:15:00`,
+        toDate: `${date} 09:16:00`,
+    }, { retries: 0 });
+    return true;
+}
+
 /** POST to a Dhan v2 endpoint with retry/backoff on 429 / 5xx / network errors. Throws on 4xx (other than 429) and after exhausting retries. */
 async function post(path, body, { retries = MAX_RETRIES } = {}) {
     let attempt = 0;
@@ -98,4 +115,4 @@ async function post(path, body, { retries = MAX_RETRIES } = {}) {
     }
 }
 
-module.exports = { post, BASE_URL };
+module.exports = { post, checkAuth, BASE_URL };

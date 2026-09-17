@@ -21,7 +21,8 @@ const fs = require("fs");
 const path = require("path");
 const { pool } = require("../config/db");
 const { cleanBeforeFetch, monthRange } = require("./extractionCleanupService");
-const { resyncRange } = require("./coverageSummaryService");
+const { resyncRange, resyncOhlcvRange } = require("./coverageSummaryService");
+const { invalidateDatesCache } = require("../controllers/simulatorController");
 
 const YEAR_MODE_SOURCES = new Set(["icici_breeze", "bhavcopy", "upstox", "dhan"]);
 
@@ -125,7 +126,7 @@ function buildCommand({ source, dataType, year, fromMonth, toMonth, symbols, ext
             throw badRequest(`Dhan's pipeline always processes the FULL calendar year (its own check-exists / delete / refetch model, see dhan/runUniverse.js) — partial month ranges aren't supported here.`);
         }
         const flags = symbolList.length ? [`--symbols=${symbolList.join(",")}`] : [];
-        return { cwd: DATA_DOWNLOADER_DIR, cmd: "node", args: ["dhan/runUniverse.js", String(y), String(y), ...flags], notes: "Dhan: checks each symbol's year for existing data, deletes it if present, then fetches fresh (discovery + minute index/VIX/equity spot + options + daily futures) — not a skip-if-exists resumable fetch like the other sources." };
+        return { cwd: DATA_DOWNLOADER_DIR, cmd: "node", args: ["dhan/runUniverse.js", String(y), String(y), ...flags], notes: "Dhan: append-only resumable fetch. Existing option/OHLCV/futures rows are never deleted; complete minute-data months are skipped and incomplete months are enriched with fresh Dhan data. Bhavcopy is used only in memory for expiry discovery." };
     }
 
     if (source === "kotak") {
@@ -220,6 +221,35 @@ async function startJob(params) {
                 logStream.write(`\n[runner] coverage-summary resync (${start}..${end}):\n${lines.map((l) => `  - ${l}`).join("\n")}\n`);
             } catch (err) {
                 logStream.write(`\n[runner] coverage-summary resync failed (job data itself is fine, only the admin coverage-page cache may lag): ${err.message}\n`);
+            }
+            invalidateDatesCache();
+        }
+
+        if (status === "completed" && params.dataType === "vix" && YEAR_MODE_SOURCES.has(params.source) && params.year) {
+            try {
+                const { start, end } = monthRange(Number(params.year), params.fromMonth ? Number(params.fromMonth) : null, params.toMonth ? Number(params.toMonth) : null);
+                const count = await resyncOhlcvRange("INDIAVIX", start, end);
+                logStream.write(`\n[runner] OHLCV coverage resync (${start}..${end}): INDIAVIX ${count} day(s)\n`);
+            } catch (err) {
+                logStream.write(`\n[runner] OHLCV coverage resync failed (data itself is fine): ${err.message}\n`);
+            }
+        }
+
+        // Dhan's option-chain run also stores the underlying spot, VIX, and
+        // equity candles in ohlcv_data. Keep the OHLCV admin summary aligned
+        // with that combined job instead of waiting for a manual rebuild.
+        if (status === "completed" && params.source === "dhan" && params.dataType === "option_chain" && params.year) {
+            try {
+                const { start, end } = monthRange(Number(params.year), params.fromMonth ? Number(params.fromMonth) : null, params.toMonth ? Number(params.toMonth) : null);
+                const symbols = symbolList.length ? [...new Set([...symbolList, "INDIAVIX"])] : ["INDIAVIX"];
+                const lines = [];
+                for (const symbol of symbols) {
+                    const count = await resyncOhlcvRange(symbol, start, end);
+                    lines.push(`${symbol}: ${count} day(s)`);
+                }
+                logStream.write(`\n[runner] Dhan OHLCV coverage resync (${start}..${end}):\n${lines.map((l) => `  - ${l}`).join("\n")}\n`);
+            } catch (err) {
+                logStream.write(`\n[runner] Dhan OHLCV coverage resync failed (option data itself is fine): ${err.message}\n`);
             }
         }
 

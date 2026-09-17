@@ -413,6 +413,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   const [dates, setDates] = useState([]); // DESC (most recent first), per /dates
   const [datesLoaded, setDatesLoaded] = useState(false); // distinguishes "still fetching" from "fetched, genuinely empty"
   const [sparseDates, setSparseDates] = useState([]); // dates with only 1 stored snapshot (EOD-only, no scrubbing)
+  const [dateStatus, setDateStatus] = useState({}); // minute option/OHLCV availability per date
   const [selectedDate, setSelectedDate] = useState("");
   const [chainData, setChainData] = useState(null); // metadata holder: expiries/times/selectedExpiry
   const [liveChain, setLiveChain] = useState(null); // chain rows at whichever instant is being viewed
@@ -624,6 +625,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     setDates([]);
     setDatesLoaded(false);
     setSparseDates([]);
+    setDateStatus({});
     setSelectedDate("");
     setChainData(null);
     setLiveChain(null);
@@ -641,6 +643,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
       .then((res) => {
         setDates(res.dates);
         setSparseDates(res.sparseDates || []);
+        setDateStatus(res.dateStatus || {});
         if (res.dates.length) {
           // Auto-select the most recent day with stored data so the left
           // chain box isn't blank on first load — previously it stayed
@@ -1847,6 +1850,10 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                           {calendarDays.map((cell, i) => {
                             const dateStr = ymdToStr(cell.y, cell.m, cell.day);
                             const available = cell.inMonth && availableDateSet.has(dateStr);
+                            const status = dateStatus[dateStr];
+                            const optionOnly = status?.hasOptions && !status?.hasOhlcv;
+                            const missingOhlcv = optionOnly;
+                            const ohlcvOnly = !available && status?.hasOhlcv && !status?.hasOptions;
                             const isExpiry = available && dayExpirySet.has(dateStr);
                             const isHoliday =
                               cell.inMonth && !available && dateStr <= TODAY_IST && isWeekdayDate(cell.y, cell.m, cell.day);
@@ -1861,7 +1868,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 key={i}
                                 disabled={!available}
                                 onClick={() => pickCalendarDay(dateStr)}
-                                title={isSparse ? "Only one stored snapshot (EOD-only) — no minute-level scrubbing on this day" : undefined}
+                                title={isSparse ? "Only one stored option snapshot — no minute-level scrubbing on this day" : ohlcvOnly ? "OHLCV minute data exists, but option-chain minute data is missing" : missingOhlcv ? "Option-chain minute data exists, but OHLCV minute data is missing" : undefined}
                                 className={`relative rounded-full py-1.5 text-[12px] font-semibold transition ${
                                   !cell.inMonth
                                     ? "text-gray-300 cursor-default"
@@ -1870,7 +1877,13 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                       : isExpiry
                                         ? "bg-emerald-500 text-white hover:bg-emerald-600"
                                         : available
-                                          ? "text-gray-800 hover:bg-gray-100"
+                                          ? missingOhlcv
+                                            ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
+                                            : "text-gray-800 hover:bg-gray-100"
+                                          : optionOnly
+                                            ? "bg-amber-100 text-amber-800 cursor-not-allowed"
+                                          : ohlcvOnly
+                                            ? "bg-sky-100 text-sky-700 cursor-not-allowed"
                                           : "text-gray-300 cursor-not-allowed"
                                 }`}
                               >
@@ -1878,6 +1891,8 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 {isSparse && !isPending && (
                                   <span className="absolute top-0 right-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />
                                 )}
+                                {missingOhlcv && !isPending && <span className="absolute bottom-0 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-orange-500" />}
+                                {ohlcvOnly && <span className="absolute bottom-0 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-sky-500" />}
                                 {isHoliday && (
                                   <span className="absolute bottom-0.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-gray-400" />
                                 )}

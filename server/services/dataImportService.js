@@ -161,6 +161,8 @@ async function importRows(table, rows) {
     // one table it actually applies to.
     if (table === "option_chain_history") {
         await coverageSummary.recordIngestedFromInsertValues(values);
+    } else if (table === "ohlcv_data") {
+        await coverageSummary.recordOhlcvIngested(values);
     }
     return written;
 }

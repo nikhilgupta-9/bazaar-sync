@@ -18,11 +18,8 @@ const { pool } = require("../config/db");
 const optionChainService = require("./optionChainService");
 
 const COVERAGE_START = "2023-01-01"; // Next Steps target window
-// vix -> ohlcv_data is a multi-symbol table (also holds NIFTY/BANKNIFTY/etc
-// daily candles from the Angel One cron) filtered down to symbol='INDIAVIX'
-// wherever a query needs just VIX rows — see getCoverageSummary's vix branch
-// and the VIX_SYMBOL constant below. getCoverageDetail/getMonthlyReference
-// don't need special-casing: they're already generic over (table, symbol).
+// ohlcv_data is a multi-symbol table (underlyings, VIX, and futures aliases).
+// Its admin coverage reads use the daily summary table below, not raw candles.
 const TABLES = { option_chain: "option_chain_history", futures: "futures_history", vix: "ohlcv_data" };
 const VIX_SYMBOL = "INDIAVIX";
 // Pre-aggregated (symbol, expiry, trade_date) row counts, kept in sync
@@ -33,6 +30,7 @@ const VIX_SYMBOL = "INDIAVIX";
 // futures_history has no such table yet (much smaller, not the scale
 // problem this fixes) and keeps using the raw-table queries below.
 const SUMMARY_TABLE = "option_chain_coverage_summary";
+const OHLCV_SUMMARY_TABLE = "ohlcv_coverage_summary";
 // Each table's (symbol, trade_date, trade_time) index — named differently
 // per table (see schema.sql) — used to force the right index for the
 // GROUP BY trade_date queries below; see getCoverageDetail's comment for why
@@ -124,9 +122,27 @@ function todaySql() {
 // background. Worst case the admin coverage page is a few hours behind on
 // whatever the nightly cron/a backfill script added since the last refresh.
 const CACHE_FILE = path.join(__dirname, "..", "data", "data-coverage-cache.json");
+const INVALIDATION_FILE = path.join(__dirname, "..", "data", "data-coverage-cache.invalidated");
 const cache = new Map(); // key -> { at, data }
 const inFlight = new Map(); // key -> Promise (loader already running for this key)
 const TTL_MS = 6 * 60 * 60 * 1000;
+let lastSeenInvalidation = 0;
+
+function readInvalidationMarker() {
+    try {
+        return fs.statSync(INVALIDATION_FILE).mtimeMs;
+    } catch {
+        return 0;
+    }
+}
+
+function syncExternalInvalidation() {
+    const marker = readInvalidationMarker();
+    if (marker > lastSeenInvalidation) {
+        cache.clear();
+        lastSeenInvalidation = marker;
+    }
+}
 
 (function loadCacheFromDisk() {
     try {
@@ -165,6 +181,7 @@ function refresh(key, loader) {
 }
 
 async function cached(key, loader) {
+    syncExternalInvalidation();
     const hit = cache.get(key);
     if (hit && Date.now() - hit.at < TTL_MS) return hit.data;
     if (hit) {
@@ -188,6 +205,12 @@ function invalidate(prefix) {
         }
     }
     if (changed) persistCacheToDisk();
+    try {
+        fs.writeFileSync(INVALIDATION_FILE, String(Date.now()));
+        lastSeenInvalidation = readInvalidationMarker();
+    } catch (err) {
+        console.error("[dataCoverageService] invalidation marker write failed:", err.message);
+    }
 }
 
 /**
@@ -229,10 +252,11 @@ async function getCoverageSummary(dataType) {
         return cached(`summary:vix`, async () => {
             const [rows] = await pool.query(
                 `SELECT MIN(trade_date) AS firstDate, MAX(trade_date) AS lastDate,
-                        COUNT(*) AS totalRows, SUM(trade_time <> '15:30:00') AS minuteRows,
-                        COUNT(DISTINCT trade_date) AS totalDays,
-                        COUNT(DISTINCT DATE_FORMAT(trade_date, '%Y-%m')) AS monthsWithData
-                 FROM ohlcv_data USE INDEX (idx_symbol_date)
+                        SUM(row_count) AS totalRows, SUM(minute_rows) AS minuteRows,
+                        COUNT(*) AS totalDays,
+                        COUNT(DISTINCT DATE_FORMAT(trade_date, '%Y-%m')) AS monthsWithData,
+                        MAX(last_updated) AS lastUpdatedAt
+                 FROM ${OHLCV_SUMMARY_TABLE}
                  WHERE symbol = ? AND trade_date BETWEEN ? AND ?`,
                 [VIX_SYMBOL, COVERAGE_START, todaySql()]
             );
@@ -246,6 +270,7 @@ async function getCoverageSummary(dataType) {
                 minuteRows: Number(r.minuteRows || 0),
                 totalDays: Number(r.totalDays),
                 monthsWithData: Number(r.monthsWithData),
+                lastUpdatedAt: r.lastUpdatedAt,
             }];
         });
     }
@@ -265,15 +290,16 @@ async function getCoverageSummary(dataType) {
         // straightforward query IS the fast query.
         if (table === "option_chain_history") {
             const [rows] = await pool.query(
-                `SELECT symbol,
-                        MIN(trade_date) AS firstDate, MAX(trade_date) AS lastDate,
-                        SUM(row_count) AS totalRows, SUM(minute_rows) AS minuteRows,
-                        COUNT(DISTINCT trade_date) AS totalDays,
-                        COUNT(DISTINCT DATE_FORMAT(trade_date, '%Y-%m')) AS monthsWithData
-                 FROM ${SUMMARY_TABLE}
-                 WHERE trade_date BETWEEN ? AND ?
-                 GROUP BY symbol
-                 ORDER BY symbol`,
+                    `SELECT symbol,
+                            MIN(trade_date) AS firstDate, MAX(trade_date) AS lastDate,
+                            SUM(minute_rows) AS totalRows, SUM(minute_rows) AS minuteRows,
+                            COUNT(CASE WHEN minute_rows > 0 THEN 1 END) AS totalDays,
+                            COUNT(DISTINCT CASE WHEN minute_rows > 0 THEN DATE_FORMAT(trade_date, '%Y-%m') END) AS monthsWithData,
+                            MAX(last_updated) AS lastUpdatedAt
+                     FROM ${SUMMARY_TABLE}
+                     WHERE trade_date BETWEEN ? AND ? AND minute_rows > 0
+                     GROUP BY symbol
+                     ORDER BY symbol`,
                 [COVERAGE_START, today]
             );
             return rows.map((r) => ({
@@ -284,11 +310,35 @@ async function getCoverageSummary(dataType) {
                 minuteRows: Number(r.minuteRows || 0),
                 totalDays: Number(r.totalDays),
                 monthsWithData: Number(r.monthsWithData),
+                lastUpdatedAt: r.lastUpdatedAt,
             }));
         }
 
         // futures_history has no summary table yet (much smaller, not the
         // scale problem this fixes) — unchanged raw-table path.
+        if (table === "ohlcv_data") {
+            const [rows] = await pool.query(
+                `SELECT symbol, MIN(trade_date) AS firstDate, MAX(trade_date) AS lastDate,
+                        SUM(row_count) AS totalRows, SUM(minute_rows) AS minuteRows,
+                        COUNT(*) AS totalDays,
+                        COUNT(DISTINCT DATE_FORMAT(trade_date, '%Y-%m')) AS monthsWithData,
+                        MAX(last_updated) AS lastUpdatedAt
+                 FROM ${OHLCV_SUMMARY_TABLE}
+                 WHERE trade_date BETWEEN ? AND ?
+                 GROUP BY symbol ORDER BY symbol`,
+                [COVERAGE_START, today]
+            );
+            return rows.map((r) => ({
+                symbol: r.symbol,
+                firstDate: r.firstDate,
+                lastDate: r.lastDate,
+                totalRows: Number(r.totalRows),
+                minuteRows: Number(r.minuteRows || 0),
+                totalDays: Number(r.totalDays),
+                monthsWithData: Number(r.monthsWithData),
+                lastUpdatedAt: r.lastUpdatedAt,
+            }));
+        }
         const indexName = SYMBOL_DATE_TIME_INDEX[table];
         const [totalsRows] = await queryPreferIndex(
             withStatementTimeout(
@@ -380,11 +430,19 @@ async function getMonthlyReference(dataType) {
             ? await pool.query(
                 `SELECT symbol, trade_date
                  FROM ${SUMMARY_TABLE}
-                 WHERE symbol IN (?) AND trade_date BETWEEN ? AND ?
+                 WHERE symbol IN (?) AND trade_date BETWEEN ? AND ? AND minute_rows > 0
                  GROUP BY symbol, trade_date`,
                 [SEVEN_INDICES, COVERAGE_START, todaySql()]
             )
-            : await queryPreferIndex(
+            : table === "ohlcv_data"
+                ? await pool.query(
+                    `SELECT symbol, trade_date
+                     FROM ${OHLCV_SUMMARY_TABLE}
+                     WHERE symbol IN (?) AND trade_date BETWEEN ? AND ?
+                     GROUP BY symbol, trade_date`,
+                    [SEVEN_INDICES, COVERAGE_START, todaySql()]
+                )
+                : await queryPreferIndex(
                 `SELECT symbol, trade_date
                  FROM ${table} USE INDEX (${SYMBOL_DATE_TIME_INDEX[table]})
                  WHERE symbol IN (?) AND trade_date BETWEEN ? AND ?
@@ -436,12 +494,29 @@ async function getCoverageDetail(dataType, symbol) {
     // futures_history keeps the old raw-table path below unchanged.
     const bySymbolMonth = await cached(`detail:${dataType}:${displaySymbol}`, async () => {
         let dayRows;
+        let ohlcvByDate = new Map();
         if (table === "option_chain_history") {
             [dayRows] = await pool.query(
-                `SELECT trade_date, SUM(row_count) AS rows_, SUM(minute_rows) AS minuteRows
+                `SELECT trade_date, SUM(row_count) AS rows_, SUM(minute_rows) AS minuteRows,
+                    MAX(last_updated) AS lastUpdatedAt
                  FROM ${SUMMARY_TABLE}
                  WHERE symbol = ? AND trade_date BETWEEN ? AND ?
                  GROUP BY trade_date`,
+                [displaySymbol, COVERAGE_START, todaySql()]
+            );
+            const [ohlcvRows] = await pool.query(
+                `SELECT trade_date, row_count, minute_rows
+                 FROM ${OHLCV_SUMMARY_TABLE}
+                 WHERE symbol = ? AND trade_date BETWEEN ? AND ?`,
+                [displaySymbol, COVERAGE_START, todaySql()]
+            );
+            ohlcvByDate = new Map(ohlcvRows.map((row) => [row.trade_date, row]));
+        } else if (table === "ohlcv_data") {
+            [dayRows] = await pool.query(
+                `SELECT trade_date, row_count AS rows_, minute_rows AS minuteRows,
+                    last_updated AS lastUpdatedAt
+                 FROM ${OHLCV_SUMMARY_TABLE}
+                 WHERE symbol = ? AND trade_date BETWEEN ? AND ? ORDER BY trade_date`,
                 [displaySymbol, COVERAGE_START, todaySql()]
             );
         } else {
@@ -479,12 +554,30 @@ async function getCoverageDetail(dataType, symbol) {
         // Plain object, not a Map — see the comment in getMonthlyReference
         // above (this value goes through the exact same disk-cache path).
         const byMonth = {};
-        for (const r of dayRows) {
-            const ym = r.trade_date.slice(0, 7);
-            const agg = byMonth[ym] || { rows_: 0, minuteRows: 0, days: 0 };
-            agg.rows_ += Number(r.rows_);
-            agg.minuteRows += Number(r.minuteRows || 0);
+        const detailDates = table === "option_chain_history"
+            ? [...new Set([...dayRows.map((row) => row.trade_date), ...ohlcvByDate.keys()])].sort()
+            : dayRows.map((row) => row.trade_date);
+        for (const date of detailDates) {
+            const r = dayRows.find((row) => row.trade_date === date);
+            const ym = date.slice(0, 7);
+            const ohlcv = ohlcvByDate.get(date);
+            const optionMinute = Number(r?.minuteRows || 0) > 0;
+            const ohlcvMinute = Number(ohlcv?.minute_rows || 0) > 0;
+            const agg = byMonth[ym] || {
+                rows_: 0, minuteRows: 0, days: 0, optionDays: 0, ohlcvDays: 0,
+                combinedDays: 0, ohlcvRows: 0, ohlcvMinuteRows: 0, lastUpdatedAt: null,
+            };
+            agg.rows_ += Number(r?.rows_ || 0);
+            agg.minuteRows += Number(r?.minuteRows || 0);
             agg.days += 1; // one input row per distinct trade_date, by construction
+            if (optionMinute) agg.optionDays += 1;
+            if (ohlcvMinute) agg.ohlcvDays += 1;
+            if (optionMinute && ohlcvMinute) agg.combinedDays += 1;
+            if (ohlcv) {
+                agg.ohlcvRows += Number(ohlcv.row_count || 0);
+                agg.ohlcvMinuteRows += Number(ohlcv.minute_rows || 0);
+            }
+            if (r?.lastUpdatedAt && (!agg.lastUpdatedAt || r.lastUpdatedAt > agg.lastUpdatedAt)) agg.lastUpdatedAt = r.lastUpdatedAt;
             byMonth[ym] = agg;
         }
         return byMonth;
@@ -493,15 +586,25 @@ async function getCoverageDetail(dataType, symbol) {
 
     return monthList().map((ym) => {
         const r = bySymbolMonth[ym];
-        const expectedDays = reference[ym] || null;
-        const days = r ? Number(r.days) : 0;
+        // When options have not arrived yet, use the already-fetched OHLCV
+        // trading-day set as the provisional expectation. This makes an
+        // OHLCV-only month visible as "21 expected, 0 combined" instead of
+        // looking like an unknown/empty month.
+        const expectedDays = reference[ym] || (r && Number(r.ohlcvDays) ? Number(r.ohlcvDays) : null);
+        const days = r ? (dataType === "option_chain" ? Number(r.combinedDays) : Number(r.days)) : 0;
         return {
             month: ym,
             days,
+            optionDays: r ? Number(r.optionDays || 0) : 0,
+            ohlcvDays: r ? Number(r.ohlcvDays || 0) : 0,
+            combinedDays: r ? Number(r.combinedDays || 0) : 0,
             expectedDays,
             missingDays: expectedDays != null ? Math.max(0, expectedDays - days) : null,
             rows: r ? Number(r.rows_) : 0,
             minuteRows: r ? Number(r.minuteRows || 0) : 0,
+            ohlcvRows: r ? Number(r.ohlcvRows || 0) : 0,
+            ohlcvMinuteRows: r ? Number(r.ohlcvMinuteRows || 0) : 0,
+            lastUpdatedAt: r ? r.lastUpdatedAt : null,
             coveragePct: expectedDays ? Math.round((days / expectedDays) * 1000) / 10 : (days ? 100 : 0),
         };
     });
@@ -536,12 +639,22 @@ async function getCoverageDays(dataType, symbol, month) {
 
     return cached(`days:${dataType}:${displaySymbol}:${month}`, async () => {
         let dayRows;
+        let ohlcvByDate = new Map();
         if (table === "option_chain_history") {
             [dayRows] = await pool.query(
-                `SELECT trade_date, SUM(row_count) AS rows_, SUM(minute_rows) AS minuteRows
-                 FROM ${SUMMARY_TABLE} WHERE symbol = ? AND trade_date BETWEEN ? AND ? GROUP BY trade_date ORDER BY trade_date`,
+                `SELECT trade_date, SUM(minute_rows) AS rows_, SUM(minute_rows) AS minuteRows
+                 FROM ${SUMMARY_TABLE}
+                 WHERE symbol = ? AND trade_date BETWEEN ? AND ? AND minute_rows > 0
+                 GROUP BY trade_date ORDER BY trade_date`,
                 [displaySymbol, start, end]
             );
+            const [ohlcvRows] = await pool.query(
+                `SELECT trade_date, row_count, minute_rows
+                 FROM ${OHLCV_SUMMARY_TABLE}
+                 WHERE symbol = ? AND trade_date BETWEEN ? AND ?`,
+                [displaySymbol, start, end]
+            );
+            ohlcvByDate = new Map(ohlcvRows.map((row) => [row.trade_date, row]));
         } else {
             [dayRows] = await queryPreferIndex(
                 `SELECT trade_date, COUNT(*) AS rows_, SUM(trade_time <> '15:30:00') AS minuteRows
@@ -561,7 +674,16 @@ async function getCoverageDays(dataType, symbol, month) {
         let refRows;
         if (table === "option_chain_history") {
             [refRows] = await pool.query(
-                `SELECT symbol, trade_date FROM ${SUMMARY_TABLE} WHERE symbol IN (?) AND trade_date BETWEEN ? AND ? GROUP BY symbol, trade_date`,
+                `SELECT symbol, trade_date FROM ${SUMMARY_TABLE}
+                 WHERE symbol IN (?) AND trade_date BETWEEN ? AND ? AND minute_rows > 0
+                 GROUP BY symbol, trade_date`,
+                [SEVEN_INDICES, start, end]
+            );
+        } else if (table === "ohlcv_data") {
+            [refRows] = await pool.query(
+                `SELECT symbol, trade_date FROM ${OHLCV_SUMMARY_TABLE}
+                 WHERE symbol IN (?) AND trade_date BETWEEN ? AND ?
+                 GROUP BY symbol, trade_date`,
                 [SEVEN_INDICES, start, end]
             );
         } else {
@@ -585,11 +707,17 @@ async function getCoverageDays(dataType, symbol, month) {
         const days = expectedDays.length
             ? expectedDays.map((date) => {
                 const r = gotDays.get(date);
-                return { date, hasData: Boolean(r), rows: r ? Number(r.rows_) : 0, minuteRows: r ? Number(r.minuteRows || 0) : 0 };
+                const o = ohlcvByDate.get(date);
+                const hasOptions = Boolean(r?.minuteRows);
+                const hasOhlcv = Boolean(o?.minute_rows);
+                return { date, hasData: table === "option_chain_history" ? hasOptions && hasOhlcv : Boolean(r), hasOptions, hasOhlcv, rows: r ? Number(r.rows_) : 0, minuteRows: r ? Number(r.minuteRows || 0) : 0, ohlcvRows: o ? Number(o.row_count) : 0, ohlcvMinuteRows: o ? Number(o.minute_rows || 0) : 0 };
             })
             : [...gotDays.keys()].sort().map((date) => {
                 const r = gotDays.get(date);
-                return { date, hasData: true, rows: Number(r.rows_), minuteRows: Number(r.minuteRows || 0) };
+                const o = ohlcvByDate.get(date);
+                const hasOptions = Boolean(r?.minuteRows);
+                const hasOhlcv = Boolean(o?.minute_rows);
+                return { date, hasData: table === "option_chain_history" ? hasOptions && hasOhlcv : true, hasOptions, hasOhlcv, rows: Number(r.rows_), minuteRows: Number(r.minuteRows || 0), ohlcvRows: o ? Number(o.row_count) : 0, ohlcvMinuteRows: o ? Number(o.minute_rows || 0) : 0 };
             });
         // Any day the symbol has data for that ISN'T in the reference
         // calendar (e.g. the symbol traded before any of the 7 indices'
@@ -598,7 +726,10 @@ async function getCoverageDays(dataType, symbol, month) {
         for (const date of gotDays.keys()) {
             if (!expectedDays.includes(date)) {
                 const r = gotDays.get(date);
-                days.push({ date, hasData: true, rows: Number(r.rows_), minuteRows: Number(r.minuteRows || 0) });
+                const o = ohlcvByDate.get(date);
+                const hasOptions = Boolean(r?.minuteRows);
+                const hasOhlcv = Boolean(o?.minute_rows);
+                days.push({ date, hasData: table === "option_chain_history" ? hasOptions && hasOhlcv : true, hasOptions, hasOhlcv, rows: Number(r.rows_), minuteRows: Number(r.minuteRows || 0), ohlcvRows: o ? Number(o.row_count) : 0, ohlcvMinuteRows: o ? Number(o.minute_rows || 0) : 0 });
             }
         }
         days.sort((a, b) => a.date.localeCompare(b.date));
@@ -619,15 +750,22 @@ async function getExpiryStatus(dataType) {
         // These two queries used to be the worst offenders in this file for
         // option_chain: neither has a symbol filter, and idx_symbol_date_time/
         // idx_backtest_range both lead with `symbol`, so MySQL couldn't seek —
-        // confirmed via EXPLAIN (2026-09-13) that this scanned all 478M index
-        // entries with no range shortcut. Now served straight off the tiny
-        // summary table instead.
+        // the summary tables keep this query bounded and exclude EOD-only
+        // option placeholders from the status calculation.
+        const summaryTable = table === "option_chain_history" ? SUMMARY_TABLE : table === "ohlcv_data" ? OHLCV_SUMMARY_TABLE : table;
         const [lastRows] = await pool.query(
-            `SELECT symbol, MAX(trade_date) AS lastDataDate FROM ${table === "option_chain_history" ? SUMMARY_TABLE : table} GROUP BY symbol`
+            `SELECT symbol, MAX(trade_date) AS lastDataDate FROM ${summaryTable} GROUP BY symbol`
         );
         const [upcomingRows] = table === "option_chain_history"
             ? await pool.query(
-                `SELECT symbol, MIN(expiry_date) AS nearestExpiry FROM ${SUMMARY_TABLE} WHERE expiry_date >= ? GROUP BY symbol`,
+                `SELECT symbol, MIN(expiry_date) AS nearestExpiry FROM ${SUMMARY_TABLE}
+                 WHERE expiry_date >= ? AND minute_rows > 0 GROUP BY symbol`,
+                [today]
+            )
+            : table === "ohlcv_data"
+            ? await pool.query(
+                `SELECT symbol, MIN(trade_date) AS nearestExpiry FROM ${OHLCV_SUMMARY_TABLE}
+                 WHERE trade_date >= ? GROUP BY symbol`,
                 [today]
             )
             : await pool.query(

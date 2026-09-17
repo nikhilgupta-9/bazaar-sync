@@ -56,6 +56,7 @@ async function storeOHLCV(symbol, candles) {
            close=VALUES(close), volume=VALUES(volume)`,
         [values]
     );
+    await coverageSummary.recordOhlcvIngested(values);
 }
 
 // Merge same-minute CE/PE candle+OI rows for one strike into

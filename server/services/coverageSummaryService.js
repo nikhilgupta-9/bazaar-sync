@@ -122,4 +122,58 @@ async function resyncRange(symbol, dateStart, dateEnd) {
     return rows.length;
 }
 
-module.exports = { recordIngested, recordIngestedFromInsertValues, keysFromInsertValues, resyncRange };
+async function recordOhlcvIngested(values) {
+    if (!values || !values.length) return;
+    const seen = new Map();
+    for (const row of values) {
+        if (!row || !row[0] || !row[1]) continue;
+        seen.set(`${row[0]}|${row[1]}`, { symbol: row[0], tradeDate: row[1] });
+    }
+    for (const { symbol, tradeDate } of seen.values()) {
+        await pool.query(
+            `INSERT INTO ohlcv_coverage_summary
+               (symbol, trade_date, row_count, minute_rows, first_time, last_time)
+             SELECT ?, ?, COUNT(*), SUM(trade_time <> '15:30:00'), MIN(trade_time), MAX(trade_time)
+             FROM ohlcv_data
+             WHERE symbol = ? AND trade_date = ?
+             ON DUPLICATE KEY UPDATE
+               row_count = VALUES(row_count), minute_rows = VALUES(minute_rows),
+               first_time = VALUES(first_time), last_time = VALUES(last_time)`,
+            [symbol, tradeDate, symbol, tradeDate]
+        );
+    }
+}
+
+async function resyncOhlcvRange(symbol, dateStart, dateEnd) {
+    const [rows] = await pool.query(
+        `SELECT symbol, trade_date, COUNT(*) AS row_count,
+                SUM(trade_time <> '15:30:00') AS minute_rows,
+                MIN(trade_time) AS first_time, MAX(trade_time) AS last_time
+         FROM ohlcv_data USE INDEX (idx_symbol_date)
+         WHERE symbol = ? AND trade_date BETWEEN ? AND ?
+         GROUP BY symbol, trade_date`,
+        [symbol, dateStart, dateEnd]
+    );
+    for (let i = 0; i < rows.length; i += 500) {
+        await pool.query(
+            `INSERT INTO ohlcv_coverage_summary
+               (symbol, trade_date, row_count, minute_rows, first_time, last_time)
+             VALUES ?
+             ON DUPLICATE KEY UPDATE row_count = VALUES(row_count), minute_rows = VALUES(minute_rows),
+               first_time = VALUES(first_time), last_time = VALUES(last_time)`,
+            [rows.slice(i, i + 500).map((r) => [
+                r.symbol, r.trade_date, Number(r.row_count), Number(r.minute_rows || 0), r.first_time, r.last_time,
+            ])]
+        );
+    }
+    return rows.length;
+}
+
+module.exports = {
+    recordIngested,
+    recordIngestedFromInsertValues,
+    keysFromInsertValues,
+    resyncRange,
+    recordOhlcvIngested,
+    resyncOhlcvRange,
+};

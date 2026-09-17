@@ -1,13 +1,13 @@
 // pages/DataExtraction.jsx — request a historical-data extraction run,
-// picking the source (Angel One / Upstox / ICICI Breeze / Kotak / Bhavcopy),
+// picking the source (Dhan / Angel One / Upstox / ICICI Breeze / Kotak / Bhavcopy),
 // and watch/cancel jobs. Each request spawns the real CLI script behind that
 // source (data-downloader/ for the year-pipelines, server/scripts for Angel
 // One/Kotak) — see server/services/dataDownloaderRunner.js for exactly what
 // command each combination runs.
 import { useCallback, useEffect, useState } from "react";
-import { FiPlay, FiXCircle, FiRefreshCw, FiChevronDown, FiChevronUp, FiTrash2, FiAlertOctagon, FiCheck, FiPlus } from "react-icons/fi";
+import { FiPlay, FiXCircle, FiRefreshCw, FiChevronDown, FiChevronUp, FiTrash2, FiAlertOctagon, FiCheck, FiPlus, FiClock, FiDatabase } from "react-icons/fi";
 import { useAdminAuth } from "../context/AdminAuthContext";
-import { startExtractionJob, fetchExtractionJobs, fetchExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob, fetchSymbolList } from "../services/adminApi";
+import { startExtractionJob, fetchExtractionJobs, fetchExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob, fetchSymbolList, fetchCoverageDetail } from "../services/adminApi";
 import TopBar from "../components/TopBar";
 import Card from "../components/Card";
 
@@ -15,10 +15,10 @@ import Card from "../components/Card";
 // what the "symbols" field means (comma-list for the year-pipelines, exactly
 // one symbol for Angel One/Kotak, since those scripts have no ALL mode).
 const SOURCES = {
+    dhan: { label: "Dhan API v2", dataTypes: ["option_chain"], mode: "year", fullYearOnly: true, note: "Primary source: 2023+ minute option chain plus index/equity/VIX spot and daily futures. A full calendar year is deleted and fetched fresh per symbol; From/To month is not supported." },
     icici_breeze: { label: "ICICI Breeze", dataTypes: ["option_chain", "futures", "vix"], mode: "year", note: "Deep 2023+ history. Needs a fresh daily session — see Credentials." },
     upstox: { label: "Upstox", dataTypes: ["option_chain", "futures"], mode: "year", note: "Recent window only (~6-11 months back, confirmed live) — no daily login needed." },
     bhavcopy: { label: "NSE+BSE Bhavcopy", dataTypes: ["option_chain", "futures"], mode: "year", note: "Free, EOD-only contract/expiry discovery — the fast, no-auth half of the Breeze pipelines." },
-    dhan: { label: "Dhan API v2", dataTypes: ["option_chain"], mode: "year", note: "2023+ minute option chain (ATM±10/±3 rolling strikes) + minute index/VIX/equity spot + daily futures, ALL TOGETHER per symbol/year. Deletes that symbol's year first if any data already exists, then refetches. Leave From/To month blank — full year only." },
     angelone: { label: "Angel One", dataTypes: ["option_chain", "futures"], mode: "recent", note: "Forward/recent catch-up only (current live contracts) — one symbol per request, or ALL for futures." },
     kotak: { label: "Kotak Neo", dataTypes: ["option_chain"], mode: "poll", note: "No historical API — this takes ONE live snapshot to prove the pipeline. Run the standalone poller for ongoing data." },
 };
@@ -277,7 +277,7 @@ function JobRow({ job, onCancel, onFail, onDelete }) {
 
 export default function DataExtraction() {
     const { token } = useAdminAuth();
-    const [source, setSource] = useState("icici_breeze");
+    const [source, setSource] = useState("dhan");
     const [dataType, setDataType] = useState("option_chain");
     const [year, setYear] = useState(new Date().getFullYear());
     const [fromMonth, setFromMonth] = useState("");
@@ -288,6 +288,8 @@ export default function DataExtraction() {
     const [error, setError] = useState(null);
     const [jobs, setJobs] = useState(null);
     const [symbolList, setSymbolList] = useState({ indices: [], stocks: [] });
+    const [coverage, setCoverage] = useState(null);
+    const [coverageLoading, setCoverageLoading] = useState(false);
 
     const meta = SOURCES[source];
 
@@ -307,8 +309,36 @@ export default function DataExtraction() {
         return () => clearInterval(id);
     }, [loadJobs]);
 
+    const coverageSymbol = symbols.split(",").map((value) => value.trim().toUpperCase()).filter(Boolean).length === 1
+        ? symbols.trim().toUpperCase()
+        : null;
+    const coverageType = dataType;
+
+    const loadCoverage = useCallback(() => {
+        if (meta.mode !== "year" || !coverageSymbol || coverageSymbol === "ALL") {
+            setCoverage(null);
+            return Promise.resolve();
+        }
+        setCoverageLoading(true);
+        return fetchCoverageDetail(token, coverageType, coverageSymbol)
+            .then((result) => setCoverage(result.months || []))
+            .catch((err) => setError(err.message))
+            .finally(() => setCoverageLoading(false));
+    }, [token, meta.mode, coverageSymbol, coverageType]);
+
+    useEffect(() => {
+        if (meta.mode !== "year" || !coverageSymbol) return undefined;
+        const initial = setTimeout(loadCoverage, 0);
+        const id = setInterval(loadCoverage, 8000);
+        return () => { clearTimeout(initial); clearInterval(id); };
+    }, [loadCoverage, meta.mode, coverageSymbol]);
+
     function handleSourceChange(newSource) {
         setSource(newSource);
+        if (SOURCES[newSource].fullYearOnly) {
+            setFromMonth("");
+            setToMonth("");
+        }
         // Clamp dataType to whatever the newly-picked source actually supports.
         if (!SOURCES[newSource].dataTypes.includes(dataType)) setDataType(SOURCES[newSource].dataTypes[0]);
     }
@@ -369,13 +399,13 @@ export default function DataExtraction() {
 
                 <Card title="New extraction request" className="mb-4">
                     <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-3">
-                        <div className="min-w-[160px]">
+                        <div className="min-w-40">
                             <label className="mb-1 block text-xs font-medium text-gray-400">Source</label>
                             <select value={source} onChange={(e) => handleSourceChange(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500">
                                 {Object.entries(SOURCES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                             </select>
                         </div>
-                        <div className="min-w-[140px]">
+                        <div className="min-w-35">
                             <label className="mb-1 block text-xs font-medium text-gray-400">Data type</label>
                             <select value={dataType} onChange={(e) => setDataType(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500">
                                 {meta.dataTypes.map((dt) => <option key={dt} value={dt}>{DATA_TYPE_LABELS[dt]}</option>)}
@@ -388,20 +418,20 @@ export default function DataExtraction() {
                                     <label className="mb-1 block text-xs font-medium text-gray-400">Year</label>
                                     <input type="number" min="2015" max="2100" value={year} onChange={(e) => setYear(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500" />
                                 </div>
-                                <div className="w-28">
+                                {!meta.fullYearOnly && <div className="w-28">
                                     <label className="mb-1 block text-xs font-medium text-gray-400">From month</label>
                                     <select value={fromMonth} onChange={(e) => setFromMonth(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500">
                                         <option value="">1</option>
                                         {MONTHS.map((m) => <option key={m} value={m}>{m}</option>)}
                                     </select>
-                                </div>
-                                <div className="w-28">
+                                </div>}
+                                {!meta.fullYearOnly && <div className="w-28">
                                     <label className="mb-1 block text-xs font-medium text-gray-400">To month</label>
                                     <select value={toMonth} onChange={(e) => setToMonth(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500">
                                         <option value="">12</option>
                                         {MONTHS.map((m) => <option key={m} value={m}>{m}</option>)}
                                     </select>
-                                </div>
+                                </div>}
                             </>
                         )}
                         {meta.mode === "recent" && (
@@ -411,7 +441,7 @@ export default function DataExtraction() {
                             </div>
                         )}
 
-                        <div className="min-w-[220px] flex-1">
+                        <div className="min-w-55 flex-1">
                             <label className="mb-1 block text-xs font-medium text-gray-400">
                                 Symbols {meta.mode !== "year" ? "(one symbol, or ALL for Angel One futures)" : "(comma list, blank = all known)"}
                             </label>
@@ -429,7 +459,50 @@ export default function DataExtraction() {
                             <FiPlay className="h-4 w-4" /> {submitting ? "Starting…" : "Start"}
                         </button>
                     </form>
-                    <div className="mt-2 text-xs text-gray-500">{meta.note}</div>
+                    <div className={`mt-2 text-xs ${meta.fullYearOnly ? "text-amber-300" : "text-gray-500"}`}>{meta.note}</div>
+                </Card>
+
+                <Card
+                    title={coverageSymbol ? `${coverageSymbol} · ${year} month-wise progress` : "Month-wise extraction progress"}
+                    className="mb-4"
+                    action={coverageSymbol && <span className="inline-flex items-center gap-1 text-[11px] text-gray-500"><FiClock className="h-3.5 w-3.5" /> auto-refresh 8s</span>}
+                >
+                    {!coverageSymbol ? (
+                        <div className="flex items-center gap-2 py-5 text-xs text-gray-500">
+                            <FiDatabase className="h-4 w-4" /> Select exactly one symbol to see its month-wise extraction status.
+                        </div>
+                    ) : coverageLoading && !coverage ? (
+                        <div className="py-5 text-center text-xs text-gray-500">Loading month coverage…</div>
+                    ) : (
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-12">
+                            {Array.from({ length: 12 }, (_, index) => {
+                                const month = `${year}-${String(index + 1).padStart(2, "0")}`;
+                                const item = coverage?.find((entry) => entry.month === month);
+                                const hasMinuteData = Boolean(item?.minuteRows);
+                                const hasOhlcvMinuteData = Boolean(item?.ohlcvMinuteRows);
+                                const hasAnyData = Boolean(item?.optionDays || item?.ohlcvDays);
+                                const complete = item?.expectedDays != null && item.days >= item.expectedDays && hasMinuteData && hasOhlcvMinuteData;
+                                const tone = complete
+                                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                                            : hasMinuteData && hasOhlcvMinuteData
+                                        ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                                        : hasAnyData
+                                            ? "border-rose-500/30 bg-rose-500/10 text-rose-300"
+                                            : "border-white/10 bg-white/5 text-gray-500";
+                                return (
+                                    <div key={month} className={`rounded-lg border px-2 py-2 ${tone}`} title={`${month}: ${item?.days || 0}/${item?.expectedDays ?? "?"} days, ${(item?.minuteRows || 0).toLocaleString()} minute rows`}>
+                                        <div className="text-[10px] font-semibold">{month}</div>
+                                        <div className="mt-1 text-sm font-bold">{item?.days || 0}{item?.expectedDays != null ? `/${item.expectedDays}` : ""}</div>
+                                        <div className="text-[10px] opacity-80">
+                                            {complete ? "Complete" : hasMinuteData && hasOhlcvMinuteData ? "Partial" : hasMinuteData ? "Missing OHLCV" : hasOhlcvMinuteData ? "Missing options" : hasAnyData ? "EOD/partial" : "No data"}
+                                        </div>
+                                        {(item?.minuteRows > 0 || item?.ohlcvMinuteRows > 0) && <div className="mt-1 text-[9px] opacity-70">opt {item.minuteRows.toLocaleString()} · spot {item.ohlcvMinuteRows.toLocaleString()}</div>}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                    {coverageSymbol && coverage && <div className="mt-3 text-[11px] text-gray-500">Green = all expected trading days with minute data · Amber = partial minute data · Red = incomplete · Gray = no data. EOD-only rows are never marked complete.</div>}
                 </Card>
 
                 <Card

@@ -45,8 +45,23 @@ const { parityForward, spotFromForwardCurve, yearsBetween } = require("../utils/
 // pre-pays even that for the common index symbols on server boot.
 const DATES_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const DATES_CACHE_FILE = path.join(__dirname, "..", "data", "simulator-dates-cache.json");
+const DATES_INVALIDATION_FILE = path.join(__dirname, "..", "data", "simulator-dates-cache.invalidated");
 const datesCache = new Map(); // symbol -> { computedAt, payload }
 const datesRefreshing = new Set(); // symbols with an in-flight background refresh
+let lastSeenDatesInvalidation = 0;
+
+function syncExternalDatesInvalidation() {
+    try {
+        const marker = fs.statSync(DATES_INVALIDATION_FILE).mtimeMs;
+        if (marker > lastSeenDatesInvalidation) {
+            datesCache.clear();
+            datesRefreshing.clear();
+            lastSeenDatesInvalidation = marker;
+        }
+    } catch {
+        /* no external invalidation marker yet */
+    }
+}
 
 (function loadDatesCacheFromDisk() {
     try {
@@ -93,7 +108,8 @@ async function computeDatesPayload(symbol) {
             `SET STATEMENT max_statement_time=90 FOR
              SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
              FROM option_chain_history FORCE INDEX (idx_symbol_date_time)
-             WHERE symbol = ? GROUP BY trade_date ORDER BY trade_date DESC`,
+             WHERE symbol = ? AND trade_time <> '15:30:00'
+             GROUP BY trade_date ORDER BY trade_date DESC`,
             [symbol]
         );
     } catch (err) {
@@ -102,13 +118,31 @@ async function computeDatesPayload(symbol) {
             `SET STATEMENT max_statement_time=90 FOR
              SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
              FROM option_chain_history
-             WHERE symbol = ? GROUP BY trade_date ORDER BY trade_date DESC`,
+             WHERE symbol = ? AND trade_time <> '15:30:00'
+             GROUP BY trade_date ORDER BY trade_date DESC`,
             [symbol]
         );
     }
-    const dates = rows.map((r) => r.trade_date);
-    const sparseDates = rows.filter((r) => Number(r.snapshotCount) <= 1).map((r) => r.trade_date);
-    return { symbol, dates, sparseDates };
+    const [ohlcvRows] = await pool.query(
+        `SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
+         FROM ohlcv_data USE INDEX (idx_symbol_date)
+         WHERE symbol = ? AND trade_time <> '15:30:00'
+         GROUP BY trade_date ORDER BY trade_date DESC`,
+        [symbol]
+    );
+    const optionByDate = new Map(rows.map((r) => [r.trade_date, Number(r.snapshotCount)]));
+    const spotByDate = new Map(ohlcvRows.map((r) => [r.trade_date, Number(r.snapshotCount)]));
+    const allDates = [...new Set([...optionByDate.keys(), ...spotByDate.keys()])].sort().reverse();
+    const dateStatus = Object.fromEntries(allDates.map((date) => [date, {
+        optionMinutes: optionByDate.get(date) || 0,
+        ohlcvMinutes: spotByDate.get(date) || 0,
+        hasOptions: optionByDate.has(date),
+        hasOhlcv: spotByDate.has(date),
+        complete: optionByDate.has(date) && spotByDate.has(date),
+    }]));
+    const dates = allDates.filter((date) => optionByDate.has(date) && spotByDate.has(date));
+    const sparseDates = dates.filter((date) => (optionByDate.get(date) || 0) <= 1 || (spotByDate.get(date) || 0) <= 1);
+    return { symbol, dates, sparseDates, allDates, dateStatus };
 }
 
 function refreshDatesCache(symbol) {
@@ -121,6 +155,33 @@ function refreshDatesCache(symbol) {
         })
         .catch((err) => console.error("[simulator/dates] background refresh failed:", err.message))
         .finally(() => datesRefreshing.delete(symbol));
+}
+
+function invalidateDatesCache() {
+    // Guard the disk-persist like dataCoverageService.js's invalidate() does
+    // (`if (changed) persistCacheToDisk()`) — when this runs from a genuinely
+    // separate process (e.g. rebuildCoverageSummaries.js) this process's own
+    // datesCache Map is empty, and persisting it unconditionally would
+    // overwrite the disk cache file with {} and clobber whatever the actual
+    // running Express server has legitimately cached.
+    const hadEntries = datesCache.size > 0;
+    datesCache.clear();
+    datesRefreshing.clear();
+    if (hadEntries) persistDatesCacheToDisk();
+    // Also write the cross-process marker (mirrors dataCoverageService.js's
+    // invalidate()) so a genuinely separate process — a standalone backfill
+    // script, the data-downloader/ app — can signal staleness too. When this
+    // function runs inside the same Express process (dataDownloaderRunner.js's
+    // job-completion callback), the Map.clear() above already did the real
+    // work and this write is a harmless no-op for THIS process; it matters
+    // for whichever OTHER process's syncExternalDatesInvalidation() reads it.
+    try {
+        const now = Date.now();
+        fs.writeFileSync(DATES_INVALIDATION_FILE, String(now));
+        lastSeenDatesInvalidation = now;
+    } catch (err) {
+        console.error("[simulator/dates] invalidation marker write failed:", err.message);
+    }
 }
 
 // Called once on server boot (see server.js) so the first real user never
@@ -202,6 +263,7 @@ function resolveSymbol(req, res) {
  */
 async function listDates(req, res) {
     try {
+        syncExternalDatesInvalidation();
         const symbol = resolveSymbol(req, res);
         if (!symbol) return;
 
@@ -707,4 +769,4 @@ async function getCandles(req, res) {
     }
 }
 
-module.exports = { listDates, getChainAtTime, replay, getCandles, warmDatesCache };
+module.exports = { listDates, getChainAtTime, replay, getCandles, warmDatesCache, invalidateDatesCache };

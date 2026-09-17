@@ -7,11 +7,11 @@
 // Dhan's own scrip master currently lists — real count, not a hardcoded
 // "210"): for EACH year in [FROM_YEAR..TO_YEAR], in order —
 //   1. check whether option_chain_history / ohlcv_data / futures_history
-//      already has ANY row for (symbol, year);
-//   2. if yes, DELETE all of it first (clean slate — this is a deliberate
-//      re-fetch tool, not the skip-if-exists resumability
-//      optionchain/runUniverse.js's Breeze pipeline uses);
-//   3. fetch that whole year fresh (dhan/run.js's full pipeline: minute
+//      already has data for (symbol, year);
+//   2. keep every existing row. Dhan is append-only/resumable: a completed
+//      month/year is skipped, while an incomplete scope is enriched with
+//      ON DUPLICATE KEY UPDATE and never deleted;
+//   3. fetch missing portions (dhan/run.js's full pipeline: minute
 //      index/equity spot -> options -> daily futures — bhavcopy is only
 //      ever used in-memory, as a real-expiry-calendar lookup, never written
 //      to option_chain_history, see dhan/expiryDiscovery.js);
@@ -19,10 +19,8 @@
 //      only once ALL years finish does it move to the next symbol.
 //
 // Resumable across restarts (progress file, same convention as
-// optionchain/runUniverse.js) — a symbol only gets marked done after every
-// requested year finished; an interrupted run resumes at the exact
-// (symbol, year) it stopped at, INCLUDING re-doing that year's
-// delete-then-refetch (never leaves a half-fetched year sitting there).
+// optionchain/runUniverse.js) — existing rows are never removed, and an
+// interrupted run resumes at the exact (symbol, year) it stopped at.
 //
 // This is a genuinely massive job (7 indices + INDIAVIX + ~200 stocks, each
 // year 2023..present, each with up to (6 weekly + 3 monthly ranks) x
@@ -46,6 +44,7 @@ const { todayIst } = require("../lib/dates");
 const instrumentMaster = require("./instrumentMaster");
 const enrichIndex = require("./enrichIndex");
 const { runSymbolYear } = require("./run");
+const dhanClient = require("./client");
 
 const DATA_DIR = path.join(__dirname, "..", "data");
 const PROGRESS_FILE = path.join(DATA_DIR, "dhan-universe-progress.json");
@@ -82,14 +81,6 @@ async function countExistingYear(symbol, year) {
     return { optionRows: Number(a.c), ohlcvRows: Number(b.c), futRows: Number(c.c) };
 }
 
-async function deleteExistingYear(symbol, year) {
-    const start = `${year}-01-01`, end = `${year}-12-31`;
-    const [r1] = await pool.query(`DELETE FROM option_chain_history WHERE symbol=? AND trade_date BETWEEN ? AND ?`, [symbol, start, end]);
-    const [r2] = await pool.query(`DELETE FROM ohlcv_data WHERE symbol=? AND trade_date BETWEEN ? AND ?`, [symbol, start, end]);
-    const [r3] = await pool.query(`DELETE FROM futures_history WHERE symbol=? AND trade_date BETWEEN ? AND ?`, [symbol, start, end]);
-    return { optionRows: r1.affectedRows, ohlcvRows: r2.affectedRows, futRows: r3.affectedRows };
-}
-
 function isAuthError(err) {
     return err && (err.dhanBody?.errorCode === "DH-901" || /Invalid_Authentication|invalid or expired/i.test(err.message || ""));
 }
@@ -98,11 +89,9 @@ async function processSymbolYear(symbol, year) {
     const existing = await countExistingYear(symbol, year);
     const hadAny = existing.optionRows + existing.ohlcvRows + existing.futRows > 0;
     if (hadAny) {
-        const removed = await deleteExistingYear(symbol, year);
         console.log(
-            `[dhan-universe] ${symbol} ${year}: existing data found (options=${existing.optionRows}, ohlcv=${existing.ohlcvRows}, futures=${existing.futRows}) — deleted before refetch`
+            `[dhan-universe] ${symbol} ${year}: existing data found (options=${existing.optionRows}, ohlcv=${existing.ohlcvRows}, futures=${existing.futRows}) — keeping rows and filling missing data`
         );
-        void removed;
     } else {
         console.log(`[dhan-universe] ${symbol} ${year}: no existing data — fetching fresh`);
     }
@@ -123,6 +112,17 @@ async function main() {
     const onlySymbolsOverride = flags.symbols
         ? new Set(String(flags.symbols).toUpperCase().split(",").map((s) => s.trim()).filter(Boolean))
         : null;
+
+    // Validate credentials before doing any work. Even though this runner is
+    // now append-only, a preflight gives a clear failure before a long job
+    // starts and avoids wasting time on every symbol/year.
+    try {
+        await dhanClient.checkAuth();
+    } catch (err) {
+        console.error(`[dhan-universe] auth preflight failed: ${err.message}`);
+        await pool.end();
+        process.exit(3);
+    }
 
     if (flags.reset) clearProgress();
     const universe = await buildUniverse(onlySymbolsOverride);
@@ -153,7 +153,7 @@ async function main() {
                 if (isAuthError(err)) {
                     consecutiveAuthFailures += 1;
                     console.error(`[dhan-universe] ${symbol} ${year}: AUTH FAILURE (${err.message})`);
-                    if (consecutiveAuthFailures >= CONSECUTIVE_AUTH_FAILURES_TO_ABORT) {
+                    if (consecutiveAuthFailures >= 1) {
                         console.error(
                             `\n[dhan-universe] stopping — Dhan access token appears expired/invalid (${consecutiveAuthFailures} consecutive auth failures). ` +
                             `Regenerate DHAN_ACCESS_TOKEN in data-downloader/.env, then re-run this SAME command — it resumes exactly at ${symbol} ${year}.`
@@ -163,6 +163,8 @@ async function main() {
                     }
                 } else {
                     console.error(`[dhan-universe] ${symbol} ${year}: unexpected error, skipping this symbol/year: ${err.message}`);
+                    await pool.end();
+                    process.exit(1);
                 }
             }
         }
@@ -174,7 +176,7 @@ async function main() {
     await pool.end();
 }
 
-module.exports = { buildUniverse, processSymbolYear, countExistingYear, deleteExistingYear };
+module.exports = { buildUniverse, processSymbolYear, countExistingYear };
 
 if (require.main === module) {
     main().catch((err) => {

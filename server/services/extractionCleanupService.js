@@ -62,6 +62,13 @@ async function cleanBeforeFetch({ source, dataType, symbolList, year, fromMonth,
 
     if (dataType === "option_chain") {
         for (const symbol of symbolList) {
+            if (source === "dhan") {
+                // Dhan performs its own full-year delete. Never delete here:
+                // the Dhan runner must authenticate first, before any data is
+                // removed, so an expired token cannot destroy a good year.
+                lines.push(`${symbol}: Dhan will check credentials before its full-year refresh`);
+                continue;
+            }
             const [r1] = await pool.query(`DELETE FROM option_chain_history WHERE symbol = ? AND trade_date BETWEEN ? AND ?`, [symbol, start, end]);
             const [r2] = await pool.query(`DELETE FROM option_chain_coverage_summary WHERE symbol = ? AND trade_date BETWEEN ? AND ?`, [symbol, start, end]);
             lines.push(`${symbol}: removed ${r1.affectedRows} option_chain_history row(s), ${r2.affectedRows} coverage-summary row(s)`);
@@ -73,7 +80,8 @@ async function cleanBeforeFetch({ source, dataType, symbolList, year, fromMonth,
         }
     } else if (dataType === "vix") {
         const [r1] = await pool.query(`DELETE FROM ohlcv_data WHERE symbol = 'INDIAVIX' AND trade_date BETWEEN ? AND ?`, [start, end]);
-        lines.push(`INDIAVIX: removed ${r1.affectedRows} ohlcv_data row(s)`);
+        const [r2] = await pool.query(`DELETE FROM ohlcv_coverage_summary WHERE symbol = 'INDIAVIX' AND trade_date BETWEEN ? AND ?`, [start, end]);
+        lines.push(`INDIAVIX: removed ${r1.affectedRows} ohlcv_data row(s), ${r2.affectedRows} coverage-summary row(s)`);
     } else {
         return null;
     }

@@ -558,3 +558,19 @@ CREATE TABLE IF NOT EXISTS option_chain_coverage_summary (
   -- style reads straight off this table instead of the raw one.
   KEY idx_symbol_trade_date (symbol, trade_date)
 ) ENGINE=InnoDB;
+
+-- Pre-aggregated daily coverage for ohlcv_data. The raw table contains
+-- minute candles for indices, stocks, VIX, and futures aliases; admin
+-- coverage reads this small table instead of grouping the raw candles.
+-- Existing databases need to run this CREATE TABLE statement manually.
+CREATE TABLE IF NOT EXISTS ohlcv_coverage_summary (
+  symbol VARCHAR(20) NOT NULL,
+  trade_date DATE NOT NULL,
+  row_count INT UNSIGNED NOT NULL DEFAULT 0,
+  minute_rows INT UNSIGNED NOT NULL DEFAULT 0,
+  first_time TIME,
+  last_time TIME,
+  last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (symbol, trade_date),
+  KEY idx_trade_date (trade_date)
+) ENGINE=InnoDB;

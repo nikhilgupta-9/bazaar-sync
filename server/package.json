@@ -10,7 +10,8 @@
     "kotak": "node kotak/poller.js",
     "kotak:once": "node scripts/kotakPollOnce.js",
     "kotak:test": "node scripts/kotakSelfTest.js",
-    "backfill": "node scripts/backfillHistory.js"
+    "backfill": "node scripts/backfillHistory.js",
+    "coverage:rebuild": "node scripts/rebuildCoverageSummaries.js"
   },
   "keywords": [],
   "author": "",

@@ -32,8 +32,9 @@ function yearMonthOf(dateStr) {
 
 async function getTradingDays(symbol, startDate, endDate) {
     const [rows] = await pool.query(
-        `SELECT DISTINCT trade_date FROM ohlcv_data
-         WHERE symbol = ? AND trade_date BETWEEN ? AND ? ORDER BY trade_date`,
+                `SELECT DISTINCT trade_date FROM ohlcv_data
+                 WHERE symbol = ? AND trade_date BETWEEN ? AND ?
+                     AND trade_time <> '15:30:00' ORDER BY trade_date`,
         [symbol, startDate, endDate]
     );
     return rows.map((r) => r.trade_date);
@@ -42,7 +43,8 @@ async function getTradingDays(symbol, startDate, endDate) {
 async function getExpiries(symbol, fromDate) {
     const [rows] = await pool.query(
         `SELECT DISTINCT expiry FROM option_chain_history
-         WHERE symbol = ? AND expiry >= ? ORDER BY expiry`,
+         WHERE symbol = ? AND expiry >= ? AND trade_time <> '15:30:00'
+         ORDER BY expiry`,
         [symbol, fromDate]
     );
     return rows.map((r) => r.expiry);
@@ -80,7 +82,8 @@ async function getSpotAt(symbol, date, time) {
 
 async function getStrikeGap(symbol, expiry) {
     const [rows] = await pool.query(
-        `SELECT DISTINCT strike FROM option_chain_history WHERE symbol=? AND expiry=? ORDER BY strike`,
+        `SELECT DISTINCT strike FROM option_chain_history
+         WHERE symbol=? AND expiry=? AND trade_time <> '15:30:00' ORDER BY strike`,
         [symbol, expiry]
     );
     if (rows.length < 2) return 50; // fallback

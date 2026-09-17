@@ -76,24 +76,26 @@ async function saveOhlcvPoint(symbol, quote, at = new Date()) {
     if (!quote || !(quote.ltp > 0)) return;
     const { date, time } = istMinuteParts(at);
     const ltp = quote.ltp;
+    const values = [[
+        symbol, date, time,
+        firstFinite(quote.open, ltp),
+        firstFinite(quote.high, ltp),
+        firstFinite(quote.low, ltp),
+        ltp,
+        firstFinite(quote.volume),
+    ]];
     await pool.query(
         `INSERT INTO ohlcv_data (symbol, trade_date, trade_time, open, high, low, close, volume)
-         VALUES (?,?,?,?,?,?,?,?)
+         VALUES ?
          ON DUPLICATE KEY UPDATE
            open=COALESCE(open, VALUES(open)),
            high=GREATEST(COALESCE(high, VALUES(high)), VALUES(high)),
            low=LEAST(COALESCE(low, VALUES(low)), VALUES(low)),
            close=VALUES(close),
            volume=VALUES(volume)`,
-        [
-            symbol, date, time,
-            firstFinite(quote.open, ltp),
-            firstFinite(quote.high, ltp),
-            firstFinite(quote.low, ltp),
-            ltp,
-            firstFinite(quote.volume),
-        ]
+        [values]
     );
+    await coverageSummary.recordOhlcvIngested(values);
 }
 
 const saveSpot = (underlying, quote, at) => saveOhlcvPoint(underlying.toUpperCase(), quote, at);
