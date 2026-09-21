@@ -31,6 +31,41 @@ const DATA_DOWNLOADER_DIR = process.env.DATA_DOWNLOADER_DIR || path.join(SERVER_
 const LOG_DIR = path.join(SERVER_DIR, "data", "extraction-logs");
 if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
 
+// CONFIRMED FOR REAL (2026-09-19): server/.env and data-downloader/.env both
+// define the same broker-credential variable names (BREEZE_*/UPSTOX_*/
+// DHAN_*/DB_*/...) as two genuinely separate files, per data-downloader's
+// own "separate app, own .env" design (see the file header above). But
+// spawn() below passes the FULL parent process.env to the child, and every
+// data-downloader entry script does `require("dotenv").config(...)` —
+// dotenv's default behavior is to NEVER overwrite a variable that's already
+// set in process.env, so whenever a key exists in BOTH files, the child
+// silently used server/.env's value instead of its own. Caught for real: an
+// admin-triggered Dhan job failed auth (401) on a token that was fine when
+// the exact same command was run standalone from a data-downloader/
+// terminal — server/.env's DHAN_ACCESS_TOKEN had already expired hours
+// earlier while data-downloader/.env's (regenerated separately) had not.
+// Fix: strip every key data-downloader/.env itself defines from the child's
+// inherited env before spawning INTO that directory, so its own dotenv.config()
+// has nothing already-set to skip and always loads its own file's values.
+// Read fresh (not cached) so editing data-downloader/.env takes effect on
+// the very next job without an Express restart. Only applies when spawning
+// INTO data-downloader/ — angelone/kotak jobs run server/'s own scripts in
+// SERVER_DIR and legitimately want server/.env's values (ANGEL_*, DB_*, ...).
+function childEnvFor(cwd) {
+    if (cwd !== DATA_DOWNLOADER_DIR) return process.env;
+    const envFile = path.join(DATA_DOWNLOADER_DIR, ".env");
+    if (!fs.existsSync(envFile)) return process.env;
+    let ownKeys;
+    try {
+        ownKeys = Object.keys(require("dotenv").parse(fs.readFileSync(envFile)));
+    } catch {
+        return process.env; // malformed .env — fall back to inherited env rather than fail the job
+    }
+    const filtered = { ...process.env };
+    for (const key of ownKeys) delete filtered[key];
+    return filtered;
+}
+
 const SYMBOL_RE = /^[A-Z0-9&\-.]{1,20}$/; // NSE-style symbols only (e.g. "BAJAJ-AUTO", "M&M") — never shell-interpreted anyway (spawn, no shell), this is just a sanity gate on job input.
 
 function validateSymbols(symbols) {
@@ -54,7 +89,7 @@ function badRequest(message) {
 // Builds { cwd, cmd, args, notes } for one (source, dataType) combination.
 // Throws a 400 error for combinations that have no real script behind them
 // (e.g. Upstox VIX, Bhavcopy VIX) rather than pretending to support them.
-function buildCommand({ source, dataType, year, fromMonth, toMonth, symbols, extraArgs }) {
+function buildCommand({ source, dataType, year, fromMonth, toMonth, date, symbols, extraArgs }) {
     const symbolList = validateSymbols(symbols);
     const yearPipelineFlags = () => {
         const flags = [];
@@ -121,10 +156,45 @@ function buildCommand({ source, dataType, year, fromMonth, toMonth, symbols, ext
                 `Dhan fetches discovery + index/VIX + options + futures together per symbol/year (dhan/runUniverse.js) — there's no separate futures/vix job from the admin trigger. Use dataType "option_chain", or run dhan/run.js's --skip-* flags directly from a terminal for a partial fetch.`
             );
         }
-        const y = requireYear();
-        if (fromMonth || toMonth) {
-            throw badRequest(`Dhan's pipeline always processes the FULL calendar year (its own check-exists / delete / refetch model, see dhan/runUniverse.js) — partial month ranges aren't supported here.`);
+
+        // A single specific day (2026-09-20: dhan/run.js gained --date=YYYY-MM-DD
+        // for exactly this — force-refetches one date without scanning/
+        // skip-checking its whole month, unlike the year/month paths below).
+        // NOTE: `date` isn't a `data_extraction_jobs` column (no schema
+        // change for this one field) — it only lives in the spawned
+        // command's args/notes, so restartJob (which rebuilds a request from
+        // the job ROW's columns, not its command string) can't recover it.
+        // Restarting a date-scoped job will hit requireYear()'s "a valid
+        // year is required" error below instead of silently doing the wrong
+        // thing — safe, just not restartable; re-submit the form instead.
+        if (date) {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw badRequest(`date must be YYYY-MM-DD, got "${date}"`);
+            const sym = singleSymbol();
+            return {
+                cwd: DATA_DOWNLOADER_DIR, cmd: "node", args: ["dhan/run.js", sym, `--date=${date}`],
+                notes: `Dhan: force-refetching ${sym} on ${date} only (index/equity spot + options + futures). Existing rows for this date are upserted (ON DUPLICATE KEY UPDATE), never deleted.`,
+            };
         }
+
+        const y = requireYear();
+
+        // A specific month range within the year — dhan/run.js SYMBOL YEAR
+        // --from-month/--to-month (2026-09-20). Only single-symbol, unlike
+        // the full-year path below which loops runUniverse.js's whole
+        // universe — a month-scoped request is by nature a targeted ask
+        // about one symbol, and runUniverse.js's existing-data bookkeeping
+        // is per YEAR, not per month, so it doesn't fit here.
+        if (fromMonth || toMonth) {
+            const sym = singleSymbol();
+            const flags = [];
+            if (fromMonth) flags.push(`--from-month=${Number(fromMonth)}`);
+            if (toMonth) flags.push(`--to-month=${Number(toMonth)}`);
+            return {
+                cwd: DATA_DOWNLOADER_DIR, cmd: "node", args: ["dhan/run.js", sym, String(y), ...flags],
+                notes: `Dhan: ${sym} ${y}, months ${fromMonth || 1}-${toMonth || 12} only. Existing rows are kept; missing data in that range is fetched. Index/equity spot and futures phases still cover the whole year (cheap, and missingYearDates already only fetches actual gaps) — only the options loop is restricted to these months.`,
+            };
+        }
+
         const flags = symbolList.length ? [`--symbols=${symbolList.join(",")}`] : [];
         return { cwd: DATA_DOWNLOADER_DIR, cmd: "node", args: ["dhan/runUniverse.js", String(y), String(y), ...flags], notes: "Dhan: append-only resumable fetch. Existing option/OHLCV/futures rows are never deleted; complete minute-data months are skipped and incomplete months are enriched with fresh Dhan data. Bhavcopy is used only in memory for expiry discovery." };
     }
@@ -186,7 +256,7 @@ async function startJob(params) {
         return { id: jobId, command: commandText, logPath, notes: notes || null };
     }
 
-    const child = spawn(cmd, args, { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cmd, args, { cwd, env: childEnvFor(cwd), stdio: ["ignore", "pipe", "pipe"] });
 
     let tailBuffer = "";
     const captureTail = (chunk) => {
@@ -210,9 +280,13 @@ async function startJob(params) {
         // NIFTY days into option_chain_history, but the summary table kept
         // showing 0 for that month until resynced. Scoped to exactly this
         // job's (symbol, month range) — cheap, not a full-symbol rescan.
-        if (status === "completed" && params.dataType === "option_chain" && YEAR_MODE_SOURCES.has(params.source) && symbolList.length && params.year) {
+        if (status === "completed" && params.dataType === "option_chain" && YEAR_MODE_SOURCES.has(params.source) && symbolList.length && (params.year || params.date)) {
             try {
-                const { start, end } = monthRange(Number(params.year), params.fromMonth ? Number(params.fromMonth) : null, params.toMonth ? Number(params.toMonth) : null);
+                // A date-scoped job (Dhan only, see buildCommand's `date` branch)
+                // has no year/fromMonth/toMonth — resync just that one day's month.
+                const { start, end } = params.date
+                    ? { start: params.date, end: params.date }
+                    : monthRange(Number(params.year), params.fromMonth ? Number(params.fromMonth) : null, params.toMonth ? Number(params.toMonth) : null);
                 const lines = [];
                 for (const symbol of symbolList) {
                     const keys = await resyncRange(symbol, start, end);
@@ -238,9 +312,11 @@ async function startJob(params) {
         // Dhan's option-chain run also stores the underlying spot, VIX, and
         // equity candles in ohlcv_data. Keep the OHLCV admin summary aligned
         // with that combined job instead of waiting for a manual rebuild.
-        if (status === "completed" && params.source === "dhan" && params.dataType === "option_chain" && params.year) {
+        if (status === "completed" && params.source === "dhan" && params.dataType === "option_chain" && (params.year || params.date)) {
             try {
-                const { start, end } = monthRange(Number(params.year), params.fromMonth ? Number(params.fromMonth) : null, params.toMonth ? Number(params.toMonth) : null);
+                const { start, end } = params.date
+                    ? { start: params.date, end: params.date }
+                    : monthRange(Number(params.year), params.fromMonth ? Number(params.fromMonth) : null, params.toMonth ? Number(params.toMonth) : null);
                 const symbols = symbolList.length ? [...new Set([...symbolList, "INDIAVIX"])] : ["INDIAVIX"];
                 const lines = [];
                 for (const symbol of symbols) {
@@ -357,6 +433,24 @@ async function deleteJob(id) {
     await pool.query(`DELETE FROM data_extraction_jobs WHERE id=?`, [id]);
 }
 
+// Re-run a terminal job using the exact original request fields. The old row
+// remains as an audit record; startJob creates a fresh row and log.
+async function restartJob(id, requestedBy) {
+    const job = await getJob(id);
+    if (!job) throw badRequest("job not found");
+    if (!['failed', 'cancelled'].includes(job.status)) throw badRequest("only failed or cancelled jobs can be restarted");
+    return startJob({
+        source: job.source,
+        dataType: job.data_type,
+        year: job.year,
+        fromMonth: job.from_month,
+        toMonth: job.to_month,
+        symbols: job.symbols,
+        extraArgs: job.extra_args,
+        requestedBy,
+    });
+}
+
 function isPidAlive(pid) {
     if (!pid) return false;
     try {
@@ -391,4 +485,4 @@ async function reconcileOrphanedJobs() {
     return rows.length;
 }
 
-module.exports = { startJob, listJobs, getJob, cancelJob, failJob, deleteJob, buildCommand, reconcileOrphanedJobs, DATA_DOWNLOADER_DIR };
+module.exports = { startJob, listJobs, getJob, cancelJob, failJob, deleteJob, restartJob, buildCommand, reconcileOrphanedJobs, DATA_DOWNLOADER_DIR };

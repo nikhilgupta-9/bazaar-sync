@@ -8,10 +8,11 @@ const {
 } = require("../controllers/adminController");
 const {
     getEnvStatus, updateEnvValue,
-    startExtractionJob, listExtractionJobs, getExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob,
-    getCoverageSummary, getCoverageDetail, getCoverageDays, getExpiryStatus, getGreeksCoverage, refreshCoverageCache,
+    startExtractionJob, listExtractionJobs, getExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob, restartExtractionJob,
+    getCoverageSummary, getCoverageDetail, getCoverageDays, getCoverageMinutes, getCoverageMinuteRows, getExpiryStatus, getGreeksCoverage, refreshCoverageCache,
     importData,
 } = require("../controllers/dataOpsController");
+const { previewExport, downloadExport, deleteExport } = require("../controllers/dataExportController");
 const { requireAuth } = require("../middleware/auth");
 const { requireAdmin } = require("../middleware/requireAdmin");
 
@@ -56,14 +57,21 @@ router.get("/data/jobs/:id", getExtractionJob);
 router.post("/data/jobs/:id/cancel", cancelExtractionJob);
 router.post("/data/jobs/:id/fail", failExtractionJob);
 router.delete("/data/jobs/:id", deleteExtractionJob);
+router.post("/data/jobs/:id/restart", restartExtractionJob);
 
 router.get("/data/coverage/summary", getCoverageSummary);
 router.get("/data/coverage/detail", getCoverageDetail);
 router.get("/data/coverage/days", getCoverageDays);
+router.get("/data/coverage/minutes", getCoverageMinutes);
+router.get("/data/coverage/minute-rows", getCoverageMinuteRows);
 router.post("/data/coverage/refresh", refreshCoverageCache);
 router.get("/data/expiry-status", getExpiryStatus);
 router.get("/data/greeks-coverage", getGreeksCoverage);
 
 router.post("/data/import", importData);
+
+router.get("/data/export/preview", previewExport);
+router.get("/data/export/download", downloadExport);
+router.post("/data/export/delete", deleteExport);
 
 module.exports = router;

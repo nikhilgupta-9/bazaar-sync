@@ -738,6 +738,82 @@ async function getCoverageDays(dataType, symbol, month) {
     });
 }
 
+/** Minute-by-minute row coverage for one symbol and trading day. */
+async function getCoverageMinutes(dataType, symbol, date) {
+    const table = tableFor(dataType);
+    const displaySymbol = String(symbol || "").toUpperCase();
+    if (!displaySymbol || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+        throw Object.assign(new Error("symbol and date (YYYY-MM-DD) are required"), { status: 400 });
+    }
+    return cached(`minutes:${dataType}:${displaySymbol}:${date}`, async () => {
+        let minuteRows = [];
+        let ohlcvRows = [];
+        if (table === "option_chain_history") {
+            [minuteRows] = await pool.query(
+                `SELECT trade_time AS time, COUNT(*) AS rows_, COUNT(ce_ltp) AS ceRows, COUNT(pe_ltp) AS peRows,
+                        COALESCE(SUM(ce_volume), 0) AS ceVolume, COALESCE(SUM(pe_volume), 0) AS peVolume
+                 FROM ${table} USE INDEX (${SYMBOL_DATE_TIME_INDEX[table]})
+                 WHERE symbol = ? AND trade_date = ? AND trade_time <> '15:30:00'
+                 GROUP BY trade_time ORDER BY trade_time`,
+                [displaySymbol, date]
+            );
+            [ohlcvRows] = await pool.query(
+                `SELECT trade_time AS time, COUNT(*) AS rows_, COUNT(*) AS minuteRows
+                 FROM ohlcv_data USE INDEX (${SYMBOL_DATE_TIME_INDEX.ohlcv_data})
+                 WHERE symbol = ? AND trade_date = ? GROUP BY trade_time ORDER BY trade_time`,
+                [displaySymbol, date]
+            );
+        } else {
+            [minuteRows] = await queryPreferIndex(
+                `SELECT trade_time AS time, COUNT(*) AS rows_, COUNT(*) AS minuteRows, COALESCE(SUM(volume), 0) AS volume
+                 FROM ${table} USE INDEX (${SYMBOL_DATE_TIME_INDEX[table]})
+                 WHERE symbol = ? AND trade_date = ? GROUP BY trade_time ORDER BY trade_time`,
+                `SELECT trade_time AS time, COUNT(*) AS rows_, COUNT(*) AS minuteRows, COALESCE(SUM(volume), 0) AS volume
+                 FROM ${table} WHERE symbol = ? AND trade_date = ? GROUP BY trade_time ORDER BY trade_time`,
+                [displaySymbol, date]
+            );
+        }
+        const spotByTime = new Map(ohlcvRows.map((row) => [String(row.time), row]));
+        const times = new Set([...minuteRows.map((row) => String(row.time)), ...spotByTime.keys()]);
+        return {
+            symbol: displaySymbol,
+            date,
+            minutes: [...times].sort().map((time) => {
+                const row = minuteRows.find((item) => String(item.time) === time);
+                const spot = spotByTime.get(time);
+                return {
+                    time,
+                    rows: Number(row?.rows_ || 0), ceRows: Number(row?.ceRows || 0), peRows: Number(row?.peRows || 0),
+                    ceVolume: Number(row?.ceVolume || 0), peVolume: Number(row?.peVolume || 0),
+                    ohlcvRows: Number(spot?.rows_ || 0), ohlcvMinuteRows: Number(spot?.minuteRows || 0), volume: Number(row?.volume || 0),
+                };
+            }),
+        };
+    });
+}
+
+/** Strike-wise option snapshot for one historical minute, matching the
+ * useful fields shown by Simulator without returning an entire day. */
+async function getCoverageMinuteRows(dataType, symbol, date, time) {
+    if (dataType !== "option_chain") return { symbol: String(symbol || "").toUpperCase(), date, time, rows: [] };
+    const displaySymbol = String(symbol || "").toUpperCase();
+    if (!displaySymbol || !/^\d{4}-\d{2}-\d{2}$/.test(String(date)) || !/^\d{2}:\d{2}(:\d{2})?$/.test(String(time))) {
+        throw Object.assign(new Error("symbol, date (YYYY-MM-DD), and time are required"), { status: 400 });
+    }
+    return cached(`minute-rows:${displaySymbol}:${date}:${time}`, async () => {
+        const [rows] = await pool.query(
+            `SELECT strike, expiry, underlying_price AS spot,
+                    ce_ltp AS ceLtp, ce_oi AS ceOi, ce_volume AS ceVolume, ce_iv AS ceIv, ce_delta AS ceDelta,
+                    pe_ltp AS peLtp, pe_oi AS peOi, pe_volume AS peVolume, pe_iv AS peIv, pe_delta AS peDelta
+             FROM option_chain_history USE INDEX (${SYMBOL_DATE_TIME_INDEX.option_chain_history})
+             WHERE symbol = ? AND trade_date = ? AND trade_time = ?
+             ORDER BY strike`,
+            [displaySymbol, date, time.length === 5 ? `${time}:00` : time]
+        );
+        return { symbol: displaySymbol, date, time, rows: rows.map((row) => ({ ...row, strike: Number(row.strike), spot: row.spot == null ? null : Number(row.spot) })) };
+    });
+}
+
 /**
  * Per symbol: does it have data for its nearest current/upcoming expiry, and
  * how stale is its most recent data? redFlag = true when either is missing/
@@ -896,6 +972,8 @@ module.exports = {
     getCoverageSummary,
     getCoverageDetail,
     getCoverageDays,
+        getCoverageMinutes,
+        getCoverageMinuteRows,
     getExpiryStatus,
     getGreeksCoverage,
     invalidateCoverageCache: invalidate,

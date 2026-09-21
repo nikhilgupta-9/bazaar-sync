@@ -139,6 +139,22 @@ async function main() {
     const [curYearStr] = todayIst().split("-");
     const curYear = Number(curYearStr);
     let consecutiveAuthFailures = 0;
+    // CONFIRMED FOR REAL (2026-09-21): a non-auth error used to exit(1) the
+    // WHOLE run immediately, despite its own log line claiming "skipping
+    // this symbol/year" — a real bug, not a deliberate safety choice. One
+    // stock (360ONE) hit a legitimate "no data present" error on its
+    // futures phase (see run.js's own futures try/catch fix alongside this)
+    // and killed a 218-symbol job 3 minutes after it started; the job then
+    // sat dead for ~10 hours before anyone noticed, since nohup doesn't
+    // restart a crashed process. Across ~210 stocks, some individual
+    // symbol/year combos throwing a real (non-auth) error is EXPECTED, not
+    // exceptional — the run must keep going. Still tracks CONSECUTIVE
+    // non-auth failures separately, and stops for real if many happen in a
+    // row (a systemic problem — e.g. DB connection lost — not one bad
+    // symbol), instead of silently grinding through the rest of a broken
+    // universe.
+    let consecutiveOtherFailures = 0;
+    const CONSECUTIVE_OTHER_FAILURES_TO_ABORT = 10;
 
     for (let i = startIdx; i < universe.length; i++) {
         const symbol = universe[i];
@@ -149,6 +165,7 @@ async function main() {
             try {
                 await processSymbolYear(symbol, year);
                 consecutiveAuthFailures = 0;
+                consecutiveOtherFailures = 0;
             } catch (err) {
                 if (isAuthError(err)) {
                     consecutiveAuthFailures += 1;
@@ -162,9 +179,13 @@ async function main() {
                         process.exit(3);
                     }
                 } else {
-                    console.error(`[dhan-universe] ${symbol} ${year}: unexpected error, skipping this symbol/year: ${err.message}`);
-                    await pool.end();
-                    process.exit(1);
+                    consecutiveOtherFailures += 1;
+                    console.error(`[dhan-universe] ${symbol} ${year}: unexpected error, skipping this symbol/year (${consecutiveOtherFailures}/${CONSECUTIVE_OTHER_FAILURES_TO_ABORT} consecutive): ${err.message}`);
+                    if (consecutiveOtherFailures >= CONSECUTIVE_OTHER_FAILURES_TO_ABORT) {
+                        console.error(`\n[dhan-universe] stopping — ${consecutiveOtherFailures} consecutive non-auth failures, likely a systemic problem (DB down? network?) rather than one bad symbol. Re-run this SAME command once fixed — it resumes at ${symbol} ${year}.`);
+                        await pool.end();
+                        process.exit(1);
+                    }
                 }
             }
         }

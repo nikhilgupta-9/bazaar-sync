@@ -31,6 +31,36 @@ const INDEX_SECURITY_IDS = {
 const OPTION_UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"];
 const ALL_INDEX_SYMBOLS = Object.keys(INDEX_SECURITY_IDS).filter((s) => s !== "INDIAVIX");
 
+// SENSEX/BANKEX derivatives list on BSE, not NSE — CONFIRMED FOR REAL
+// (2026-09-20) that historicalService.js's getRollingOption/getFuturesDaily
+// hardcoding exchangeSegment="NSE_FNO" for these two caused Dhan to reject
+// every call with HTTP 400 "incorrect parameters". Dhan's own docs
+// (dhanhq.co/docs/v2/annexure/) list BSE_FNO as the correct segment for BSE
+// F&O. This does NOT apply to the INDEX/VIX spot endpoint (IDX_I above,
+// which Dhan treats the same regardless of exchange, per the note there).
+const BSE_FNO_SYMBOLS = new Set(["SENSEX", "BANKEX"]);
+function exchangeSegmentForFno(symbol) {
+    return BSE_FNO_SYMBOLS.has(symbol.toUpperCase()) ? "BSE_FNO" : "NSE_FNO";
+}
+
+// CONFIRMED FOR REAL (2026-09-20): lib/bseBhavcopy.js's URL/format
+// (`BhavCopy_BSE_FO_..._F_0000.CSV`) only actually works from 2024-01-05
+// onward — every date tested from SENSEX/BANKEX's real May-2023 relaunch
+// through 2023-12-01 came back as an HTML error page, not real CSV data (a
+// pre-2024 BSE bhavcopy format exists but isn't implemented — see
+// bseBhavcopy.js's own header). Before this constant existed, dhan/run.js
+// would still run full bhavcopy discovery (downloading many months' worth
+// of NSE+BSE files, several seconds/each) for every one of these known-dead
+// months before concluding "no real expiries found" — correct, but slow
+// for no reason, since the outcome was never in doubt. Skip the whole
+// discovery+fetch attempt for these months instead of running it to
+// (guaranteed) failure. Not used for NSE-listed symbols (nseBhavcopy.js has
+// its own real, working format across 2023 — see CLAUDE.md Phase 7).
+const BSE_BHAVCOPY_MIN_DATE = "2024-01-05";
+function isBeforeBseBhavcopyCutover(symbol, dateStr) {
+    return BSE_FNO_SYMBOLS.has(symbol.toUpperCase()) && dateStr < BSE_BHAVCOPY_MIN_DATE;
+}
+
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
@@ -107,27 +137,47 @@ async function listFnoStockSymbols() {
     return [...set].sort();
 }
 
-/** Any ONE currently-listed FUTIDX/FUTSTK securityId for an underlying — confirmed (2026-09-14) that /charts/historical returns the SAME continuous rolling series regardless of which live contract's securityId is passed, so "any" is fine, nearest-expiry preferred for freshness. */
+/**
+ * Any ONE currently-listed FUTIDX/FUTSTK securityId for an underlying —
+ * confirmed (2026-09-14) that /charts/historical returns the SAME
+ * continuous rolling series regardless of which live contract's securityId
+ * is passed, so "any" is fine, nearest-expiry preferred for freshness.
+ *
+ * CONFIRMED FOR REAL (2026-09-20): Dhan's scrip master lists MANY large
+ * stocks' futures under BOTH EXCH_ID=NSE and EXCH_ID=BSE (real BSE
+ * cross-listed equity derivatives, not a data error) — e.g. RELIANCE FUTSTK
+ * had 6 rows, several under BSE. Without filtering by exchange, this
+ * function could return a BSE-listed contract's securityId while
+ * exchangeSegmentForFno(symbol) (below) says "NSE_FNO" for that same
+ * symbol — Dhan then rejects the mismatched pair with HTTP 400 DH-905
+ * "Missing required fields, bad values for parameters" (a real symptom
+ * traced back to exactly this: RELIANCE/TCS/360ONE futures all failed this
+ * way before the EXCH_ID filter below was added). Uses the SAME BSE_FNO_SYMBOLS
+ * membership as exchangeSegmentForFno so the two functions can never disagree.
+ */
 async function resolveAnyFutureSecurityId(symbol) {
     const { col, rows } = await ensureLoaded();
     const target = symbol.toUpperCase();
     const isIndex = Object.prototype.hasOwnProperty.call(INDEX_SECURITY_IDS, target) && target !== "INDIAVIX";
     const instrumentType = isIndex ? "FUTIDX" : "FUTSTK";
-    const matches = rows.filter((r) => r[col.INSTRUMENT] === instrumentType && r[col.UNDERLYING_SYMBOL]?.toUpperCase() === target);
+    const wantExchange = BSE_FNO_SYMBOLS.has(target) ? "BSE" : "NSE";
+    const matches = rows.filter(
+        (r) => r[col.INSTRUMENT] === instrumentType && r[col.UNDERLYING_SYMBOL]?.toUpperCase() === target && r[col.EXCH_ID] === wantExchange
+    );
     if (!matches.length) return null;
     matches.sort((a, b) => (a[col.SM_EXPIRY_DATE] || "").localeCompare(b[col.SM_EXPIRY_DATE] || ""));
     return matches[0][col.SECURITY_ID];
 }
 
-/** { securityId, exchangeSegment, instrument } for the OPTIONS underlying of `symbol` — index or stock. */
+/** { securityId, exchangeSegment, instrument } for the OPTIONS underlying of `symbol` — index or stock. exchangeSegment was previously omitted here and silently ignored by every caller (see BSE_FNO_SYMBOLS above) — now always populated. */
 async function resolveOptionUnderlying(symbol) {
     const target = symbol.toUpperCase();
-    if (Object.prototype.hasOwnProperty.call(INDEX_SECURITY_IDS, target) && target !== "INDIAVIX") {
-        return { securityId: INDEX_SECURITY_IDS[target], instrument: "OPTIDX" };
+    if (OPTION_UNDERLYINGS.includes(target)) {
+        return { securityId: INDEX_SECURITY_IDS[target], instrument: "OPTIDX", exchangeSegment: exchangeSegmentForFno(target) };
     }
     const securityId = await resolveEquitySecurityId(target);
     if (!securityId) return null;
-    return { securityId, instrument: "OPTSTK" };
+    return { securityId, instrument: "OPTSTK", exchangeSegment: exchangeSegmentForFno(target) };
 }
 
 module.exports = {
@@ -141,5 +191,8 @@ module.exports = {
     listFnoStockSymbols,
     resolveAnyFutureSecurityId,
     resolveOptionUnderlying,
+    exchangeSegmentForFno,
+    isBeforeBseBhavcopyCutover,
+    BSE_BHAVCOPY_MIN_DATE,
     CACHE_PATH,
 };

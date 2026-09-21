@@ -14,6 +14,7 @@ import Seo from "./pages/Seo";
 import HomePage from "./pages/HomePage";
 import LotSizeHistory from "./pages/LotSizeHistory";
 import DataExtraction from "./pages/DataExtraction";
+import DataExport from "./pages/DataExport";
 import DataCoverage from "./pages/DataCoverage";
 import ExpiryStatus from "./pages/ExpiryStatus";
 import GreeksCoverage from "./pages/GreeksCoverage";
@@ -38,6 +39,7 @@ export default function App() {
                 <Route path="/seo" element={<Seo />} />
                 <Route path="/lot-size-history" element={<LotSizeHistory />} />
                 <Route path="/data-extraction" element={<DataExtraction />} />
+                <Route path="/data-export" element={<DataExport />} />
                 <Route path="/data-coverage" element={<DataCoverage />} />
                 <Route path="/expiry-status" element={<ExpiryStatus />} />
                 <Route path="/greeks-coverage" element={<GreeksCoverage />} />

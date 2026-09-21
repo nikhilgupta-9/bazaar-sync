@@ -36,6 +36,7 @@ const { post } = require("./client");
 const { addDays } = require("../lib/dates");
 
 const MAX_INTRADAY_SPAN_DAYS = Number(process.env.DHAN_INTRADAY_CHUNK_DAYS || 80); // stay under Dhan's documented 90-day cap
+const MAX_ROLLING_OPTION_SPAN_DAYS = Number(process.env.DHAN_ROLLING_OPTION_CHUNK_DAYS || 30); // Dhan's rolling-option limit is 30 days
 
 function chunkDateRange(fromDate, toDate, maxDays) {
     const chunks = [];
@@ -78,7 +79,7 @@ async function getIndexIntradayMinutes(securityId, fromDate, toDate) {
     for (const [from, to] of chunkDateRange(fromDate, toDate, MAX_INTRADAY_SPAN_DAYS)) {
         const data = await post("/charts/intraday", {
             securityId, exchangeSegment: "IDX_I", instrument: "INDEX", interval: "1",
-            fromDate: `${from} 09:00:00`, toDate: `${to} 15:35:00`,
+            fromDate: `${from} 09:00:00`, toDate: `${addDays(to, 1)} 00:00:00`,
         });
         all.push(...toRows(data));
     }
@@ -91,17 +92,17 @@ async function getEquityIntradayMinutes(securityId, fromDate, toDate) {
     for (const [from, to] of chunkDateRange(fromDate, toDate, MAX_INTRADAY_SPAN_DAYS)) {
         const data = await post("/charts/intraday", {
             securityId, exchangeSegment: "NSE_EQ", instrument: "EQUITY", interval: "1",
-            fromDate: `${from} 09:00:00`, toDate: `${to} 15:35:00`,
+            fromDate: `${from} 09:00:00`, toDate: `${addDays(to, 1)} 00:00:00`,
         });
         all.push(...toRows(data));
     }
     return all;
 }
 
-/** Daily continuous-rolling futures series (any live securityId for the underlying works — see file header). */
-async function getFuturesDaily(securityId, instrument, fromDate, toDate) {
+/** Daily continuous-rolling futures series (any live securityId for the underlying works — see file header). `exchangeSegment` defaults to NSE_FNO but MUST be "BSE_FNO" for SENSEX/BANKEX (see instrumentMaster.js's exchangeSegmentForFno) — confirmed for real (2026-09-20) that passing NSE_FNO for a BSE-listed underlying gets HTTP 400 "incorrect parameters" from Dhan, not a graceful empty result. */
+async function getFuturesDaily(securityId, instrument, fromDate, toDate, exchangeSegment = "NSE_FNO") {
     const data = await post("/charts/historical", {
-        securityId, exchangeSegment: "NSE_FNO", instrument, oi: true, fromDate, toDate,
+        securityId, exchangeSegment, instrument, oi: true, fromDate, toDate: addDays(toDate, 1),
     });
     return toRows(data);
 }
@@ -112,25 +113,27 @@ async function getFuturesDaily(securityId, instrument, fromDate, toDate) {
  * resolved strike/spot per timestamp (needed since the request only names an
  * ATM-relative offset, not an absolute strike).
  */
-async function getRollingOption({ securityId, instrument, expiryFlag, expiryCode, strike, drvOptionType, fromDate, toDate }) {
-    const data = await post("/charts/rollingoption", {
-        exchangeSegment: "NSE_FNO", interval: "1", securityId, instrument,
-        expiryFlag, expiryCode, strike, drvOptionType,
-        requiredData: ["open", "high", "low", "close", "volume", "oi", "iv", "strike", "spot"],
-        fromDate, toDate,
-    });
-    const side = data?.data?.ce && drvOptionType === "CALL" ? data.data.ce : data?.data?.pe;
-    if (!side || !side.timestamp) return [];
-    const n = side.timestamp.length;
+async function getRollingOption({ securityId, instrument, expiryFlag, expiryCode, strike, drvOptionType, fromDate, toDate, exchangeSegment = "NSE_FNO" }) {
     const rows = [];
-    for (let i = 0; i < n; i++) {
-        const { date, time } = istPartsFromEpoch(side.timestamp[i]);
-        rows.push({
-            date, time,
-            open: side.open?.[i] ?? null, high: side.high?.[i] ?? null, low: side.low?.[i] ?? null, close: side.close?.[i] ?? null,
-            volume: side.volume?.[i] ?? 0, oi: side.oi?.[i] ?? null, iv: side.iv?.[i] ?? null,
-            strike: side.strike?.[i] ?? null, spot: side.spot?.[i] ?? null,
+    for (const [from, to] of chunkDateRange(fromDate, toDate, MAX_ROLLING_OPTION_SPAN_DAYS)) {
+        const data = await post("/charts/rollingoption", {
+            exchangeSegment, interval: "1", securityId, instrument,
+            expiryFlag, expiryCode, strike, drvOptionType,
+            requiredData: ["open", "high", "low", "close", "volume", "oi", "iv", "strike", "spot"],
+            fromDate: from, toDate: addDays(to, 1),
         });
+        const side = data?.data?.ce && drvOptionType === "CALL" ? data.data.ce : data?.data?.pe;
+        if (!side || !side.timestamp) continue;
+        const n = side.timestamp.length;
+        for (let i = 0; i < n; i++) {
+            const { date, time } = istPartsFromEpoch(side.timestamp[i]);
+            rows.push({
+                date, time,
+                open: side.open?.[i] ?? null, high: side.high?.[i] ?? null, low: side.low?.[i] ?? null, close: side.close?.[i] ?? null,
+                volume: side.volume?.[i] ?? 0, oi: side.oi?.[i] ?? null, iv: side.iv?.[i] ?? null,
+                strike: side.strike?.[i] ?? null, spot: side.spot?.[i] ?? null,
+            });
+        }
     }
     return rows;
 }

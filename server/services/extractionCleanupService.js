@@ -63,10 +63,10 @@ async function cleanBeforeFetch({ source, dataType, symbolList, year, fromMonth,
     if (dataType === "option_chain") {
         for (const symbol of symbolList) {
             if (source === "dhan") {
-                // Dhan performs its own full-year delete. Never delete here:
-                // the Dhan runner must authenticate first, before any data is
-                // removed, so an expired token cannot destroy a good year.
-                lines.push(`${symbol}: Dhan will check credentials before its full-year refresh`);
+                // Dhan is append-only and performs its own existing-date
+                // checks. Never delete here: an expired token must not affect
+                // already stored data.
+                lines.push(`${symbol}: Dhan will check credentials and fetch only missing dates`);
                 continue;
             }
             const [r1] = await pool.query(`DELETE FROM option_chain_history WHERE symbol = ? AND trade_date BETWEEN ? AND ?`, [symbol, start, end]);

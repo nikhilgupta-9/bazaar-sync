@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { FiPlay, FiXCircle, FiRefreshCw, FiChevronDown, FiChevronUp, FiTrash2, FiAlertOctagon, FiCheck, FiPlus, FiClock, FiDatabase } from "react-icons/fi";
 import { useAdminAuth } from "../context/AdminAuthContext";
-import { startExtractionJob, fetchExtractionJobs, fetchExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob, fetchSymbolList, fetchCoverageDetail } from "../services/adminApi";
+import { startExtractionJob, fetchExtractionJobs, fetchExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob, restartExtractionJob, fetchSymbolList, fetchCoverageDetail } from "../services/adminApi";
 import TopBar from "../components/TopBar";
 import Card from "../components/Card";
 
@@ -15,7 +15,7 @@ import Card from "../components/Card";
 // what the "symbols" field means (comma-list for the year-pipelines, exactly
 // one symbol for Angel One/Kotak, since those scripts have no ALL mode).
 const SOURCES = {
-    dhan: { label: "Dhan API v2", dataTypes: ["option_chain"], mode: "year", fullYearOnly: true, note: "Primary source: 2023+ minute option chain plus index/equity/VIX spot and daily futures. A full calendar year is deleted and fetched fresh per symbol; From/To month is not supported." },
+    dhan: { label: "Dhan API v2", dataTypes: ["option_chain"], mode: "year", supportsDay: true, note: "Primary source: 2023+ minute option chain with OHLCV/volume, plus index/equity/VIX spot and daily continuous futures. Existing rows are kept and missing data is enriched. From/To month restricts the options loop to that range (2026-09-20); or pick a single date below to force-refetch just that one day." },
     icici_breeze: { label: "ICICI Breeze", dataTypes: ["option_chain", "futures", "vix"], mode: "year", note: "Deep 2023+ history. Needs a fresh daily session — see Credentials." },
     upstox: { label: "Upstox", dataTypes: ["option_chain", "futures"], mode: "year", note: "Recent window only (~6-11 months back, confirmed live) — no daily login needed." },
     bhavcopy: { label: "NSE+BSE Bhavcopy", dataTypes: ["option_chain", "futures"], mode: "year", note: "Free, EOD-only contract/expiry discovery — the fast, no-auth half of the Breeze pipelines." },
@@ -205,7 +205,7 @@ function SymbolPicker({ symbolList, mode, value, onChange, allowAll, placeholder
     );
 }
 
-function JobRow({ job, onCancel, onFail, onDelete }) {
+function JobRow({ job, onCancel, onFail, onRestart, onDelete }) {
     const [open, setOpen] = useState(false);
     const [detail, setDetail] = useState(null);
     const { token } = useAdminAuth();
@@ -252,13 +252,24 @@ function JobRow({ job, onCancel, onFail, onDelete }) {
                         </button>
                     )}
                     {TERMINAL_STATUSES.includes(job.status) && (
-                        <button
-                            onClick={(e) => { e.stopPropagation(); onDelete(job.id); }}
-                            title="Remove this job's record and log permanently"
-                            className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-medium text-gray-400 hover:bg-white/10 hover:text-gray-200"
-                        >
-                            <FiTrash2 className="h-3.5 w-3.5" /> Delete
-                        </button>
+                        <>
+                            {job.status !== "completed" && (
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); onRestart(job.id); }}
+                                    title="Start a new job with the same settings"
+                                    className="inline-flex items-center gap-1 rounded-lg border border-violet-500/30 bg-violet-500/10 px-2 py-1 text-[11px] font-medium text-violet-300 hover:bg-violet-500/20"
+                                >
+                                    <FiRefreshCw className="h-3.5 w-3.5" /> Restart
+                                </button>
+                            )}
+                            <button
+                                onClick={(e) => { e.stopPropagation(); onDelete(job.id); }}
+                                title="Remove this job's record and log permanently"
+                                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-medium text-gray-400 hover:bg-white/10 hover:text-gray-200"
+                            >
+                                <FiTrash2 className="h-3.5 w-3.5" /> Delete
+                            </button>
+                        </>
                     )}
                     {open ? <FiChevronUp className="h-4 w-4 text-gray-500" /> : <FiChevronDown className="h-4 w-4 text-gray-500" />}
                 </div>
@@ -282,6 +293,7 @@ export default function DataExtraction() {
     const [year, setYear] = useState(new Date().getFullYear());
     const [fromMonth, setFromMonth] = useState("");
     const [toMonth, setToMonth] = useState("");
+    const [singleDate, setSingleDate] = useState(""); // Dhan only (SOURCES.dhan.supportsDay) — YYYY-MM-DD, overrides year/from-month/to-month when set
     const [symbols, setSymbols] = useState("");
     const [extraArgs, setExtraArgs] = useState("");
     const [submitting, setSubmitting] = useState(false);
@@ -335,13 +347,16 @@ export default function DataExtraction() {
 
     function handleSourceChange(newSource) {
         setSource(newSource);
-        if (SOURCES[newSource].fullYearOnly) {
-            setFromMonth("");
-            setToMonth("");
-        }
+        if (!SOURCES[newSource].supportsDay) setSingleDate("");
         // Clamp dataType to whatever the newly-picked source actually supports.
         if (!SOURCES[newSource].dataTypes.includes(dataType)) setDataType(SOURCES[newSource].dataTypes[0]);
     }
+
+    const dayMode = meta.supportsDay && Boolean(singleDate);
+    // dhan/run.js (both --date and --from-month/--to-month) only takes ONE
+    // symbol — unlike the plain full-year path, which loops runUniverse.js's
+    // whole universe. See dataDownloaderRunner.js's buildCommand.
+    const dhanScoped = source === "dhan" && (dayMode || Boolean(fromMonth) || Boolean(toMonth));
 
     async function handleSubmit(e) {
         e.preventDefault();
@@ -350,9 +365,13 @@ export default function DataExtraction() {
         try {
             await startExtractionJob(token, {
                 source, dataType, symbols: symbols.trim() || undefined,
-                year: meta.mode === "year" ? Number(year) : undefined,
-                fromMonth: meta.mode === "year" && fromMonth ? Number(fromMonth) : undefined,
-                toMonth: meta.mode === "year" && toMonth ? Number(toMonth) : undefined,
+                // A single date (Dhan only) replaces year/from-month/to-month
+                // entirely — dataDownloaderRunner.js's dhan branch treats
+                // `date` as its own request shape, not a combination of these.
+                date: dayMode ? singleDate : undefined,
+                year: meta.mode === "year" && !dayMode ? Number(year) : undefined,
+                fromMonth: meta.mode === "year" && !dayMode && fromMonth ? Number(fromMonth) : undefined,
+                toMonth: meta.mode === "year" && !dayMode && toMonth ? Number(toMonth) : undefined,
                 extraArgs: extraArgs.trim() || undefined,
             });
             loadJobs();
@@ -391,6 +410,15 @@ export default function DataExtraction() {
         }
     }
 
+    async function handleRestart(id) {
+        try {
+            await restartExtractionJob(token, id);
+            loadJobs();
+        } catch (err) {
+            setError(err.message);
+        }
+    }
+
     return (
         <div>
             <TopBar title="Data Extraction" subtitle="Request a historical-data pull from a specific source. Each request spawns the real backfill script for that source and streams its log below." />
@@ -416,22 +444,33 @@ export default function DataExtraction() {
                             <>
                                 <div className="w-24">
                                     <label className="mb-1 block text-xs font-medium text-gray-400">Year</label>
-                                    <input type="number" min="2015" max="2100" value={year} onChange={(e) => setYear(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500" />
+                                    <input type="number" min="2015" max="2100" value={year} onChange={(e) => setYear(e.target.value)} disabled={dayMode} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500 disabled:opacity-40" />
                                 </div>
-                                {!meta.fullYearOnly && <div className="w-28">
+                                <div className="w-28">
                                     <label className="mb-1 block text-xs font-medium text-gray-400">From month</label>
-                                    <select value={fromMonth} onChange={(e) => setFromMonth(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500">
+                                    <select value={fromMonth} onChange={(e) => setFromMonth(e.target.value)} disabled={dayMode} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500 disabled:opacity-40">
                                         <option value="">1</option>
                                         {MONTHS.map((m) => <option key={m} value={m}>{m}</option>)}
                                     </select>
-                                </div>}
-                                {!meta.fullYearOnly && <div className="w-28">
+                                </div>
+                                <div className="w-28">
                                     <label className="mb-1 block text-xs font-medium text-gray-400">To month</label>
-                                    <select value={toMonth} onChange={(e) => setToMonth(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500">
+                                    <select value={toMonth} onChange={(e) => setToMonth(e.target.value)} disabled={dayMode} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500 disabled:opacity-40">
                                         <option value="">12</option>
                                         {MONTHS.map((m) => <option key={m} value={m}>{m}</option>)}
                                     </select>
-                                </div>}
+                                </div>
+                                {meta.supportsDay && (
+                                    <div className="w-40">
+                                        <label className="mb-1 block text-xs font-medium text-gray-400">Or exact date</label>
+                                        <input
+                                            type="date"
+                                            value={singleDate}
+                                            onChange={(e) => setSingleDate(e.target.value)}
+                                            className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500"
+                                        />
+                                    </div>
+                                )}
                             </>
                         )}
                         {meta.mode === "recent" && (
@@ -443,15 +482,15 @@ export default function DataExtraction() {
 
                         <div className="min-w-55 flex-1">
                             <label className="mb-1 block text-xs font-medium text-gray-400">
-                                Symbols {meta.mode !== "year" ? "(one symbol, or ALL for Angel One futures)" : "(comma list, blank = all known)"}
+                                Symbols {dhanScoped ? "(exactly one — required for a date/month-range request)" : meta.mode !== "year" ? "(one symbol, or ALL for Angel One futures)" : "(comma list, blank = all known)"}
                             </label>
                             <SymbolPicker
                                 symbolList={symbolList}
-                                mode={meta.mode === "year" ? "multi" : "single"}
+                                mode={meta.mode === "year" && !dhanScoped ? "multi" : "single"}
                                 value={symbols}
                                 onChange={setSymbols}
                                 allowAll={source === "angelone" && dataType === "futures"}
-                                placeholder={meta.mode === "year" ? "All known symbols" : "Select a symbol…"}
+                                placeholder={meta.mode === "year" && !dhanScoped ? "All known symbols" : "Select a symbol…"}
                             />
                         </div>
 
@@ -459,7 +498,12 @@ export default function DataExtraction() {
                             <FiPlay className="h-4 w-4" /> {submitting ? "Starting…" : "Start"}
                         </button>
                     </form>
-                    <div className={`mt-2 text-xs ${meta.fullYearOnly ? "text-amber-300" : "text-gray-500"}`}>{meta.note}</div>
+                    <div className="mt-2 text-xs text-gray-500">{meta.note}</div>
+                    {dayMode && (
+                        <div className="mt-1 text-xs text-amber-300">
+                            Fetching exactly {singleDate} for {symbols.trim() || "(pick a symbol above)"} only — this ignores Year/From month/To month above.
+                        </div>
+                    )}
                 </Card>
 
                 <Card
@@ -519,7 +563,7 @@ export default function DataExtraction() {
                         <div className="py-10 text-center text-xs text-gray-500">No extraction jobs requested yet.</div>
                     ) : (
                         <div className="space-y-2">
-                            {jobs.map((job) => <JobRow key={job.id} job={job} onCancel={handleCancel} onFail={handleFail} onDelete={handleDelete} />)}
+                            {jobs.map((job) => <JobRow key={job.id} job={job} onCancel={handleCancel} onFail={handleFail} onRestart={handleRestart} onDelete={handleDelete} />)}
                         </div>
                     )}
                 </Card>

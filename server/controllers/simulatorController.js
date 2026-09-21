@@ -102,32 +102,21 @@ async function computeDatesPayload(symbol) {
     // write-back, not mid-scan) self-aborts instead of holding a pool
     // connection and disk I/O for many minutes. See the identical note in
     // dataCoverageService.js's withStatementTimeout.
-    let rows;
-    try {
-        [rows] = await pool.query(
-            `SET STATEMENT max_statement_time=90 FOR
-             SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
-             FROM option_chain_history FORCE INDEX (idx_symbol_date_time)
-             WHERE symbol = ? AND trade_time <> '15:30:00'
-             GROUP BY trade_date ORDER BY trade_date DESC`,
-            [symbol]
-        );
-    } catch (err) {
-        if (!err || err.errno !== 1176) throw err;
-        [rows] = await pool.query(
-            `SET STATEMENT max_statement_time=90 FOR
-             SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
-             FROM option_chain_history
-             WHERE symbol = ? AND trade_time <> '15:30:00'
-             GROUP BY trade_date ORDER BY trade_date DESC`,
-            [symbol]
-        );
-    }
-    const [ohlcvRows] = await pool.query(
-        `SELECT trade_date, COUNT(DISTINCT trade_time) AS snapshotCount
-         FROM ohlcv_data USE INDEX (idx_symbol_date)
-         WHERE symbol = ? AND trade_time <> '15:30:00'
+    // Both coverage tables are maintained during ingestion and contain one
+    // small row per symbol/day (or symbol/expiry/day). Reading them avoids a
+    // multi-million-row GROUP BY over option_chain_history on every cold page
+    // load, which previously hit MariaDB's 90-second statement timeout.
+    const [rows] = await pool.query(
+        `SELECT trade_date, SUM(minute_rows) AS snapshotCount
+         FROM option_chain_coverage_summary
+         WHERE symbol = ? AND minute_rows > 0
          GROUP BY trade_date ORDER BY trade_date DESC`,
+        [symbol]
+    );
+    const [ohlcvRows] = await pool.query(
+        `SELECT trade_date, minute_rows AS snapshotCount
+         FROM ohlcv_coverage_summary
+         WHERE symbol = ? AND minute_rows > 0 ORDER BY trade_date DESC`,
         [symbol]
     );
     const optionByDate = new Map(rows.map((r) => [r.trade_date, Number(r.snapshotCount)]));
@@ -289,7 +278,7 @@ async function listDates(req, res) {
 
 async function getSpotAt(symbol, date, time) {
     const [rows] = await pool.query(
-        `SELECT close FROM ohlcv_data WHERE symbol = ? AND trade_date = ? AND trade_time >= ?
+        `SELECT close FROM ohlcv_data USE INDEX (idx_symbol_date) WHERE symbol = ? AND trade_date = ? AND trade_time >= ?
          ORDER BY trade_time ASC LIMIT 1`,
         [symbol, date, time]
     );
@@ -371,7 +360,7 @@ async function getChainAtTime(req, res) {
         if (!date) return res.status(400).json({ error: "date is required (see /api/simulator/dates/:symbol)" });
 
         const [expiryRows] = await pool.query(
-            `SELECT DISTINCT expiry FROM option_chain_history WHERE symbol = ? AND trade_date = ? ORDER BY expiry ASC`,
+            `SELECT DISTINCT expiry FROM option_chain_history USE INDEX (idx_sym_date_expiry) WHERE symbol = ? AND trade_date = ? ORDER BY expiry ASC`,
             [symbol, date]
         );
         const expiries = expiryRows.map((r) => r.expiry);
@@ -381,7 +370,7 @@ async function getChainAtTime(req, res) {
         const selectedExpiry = expiry && expiries.includes(expiry) ? expiry : expiries[0];
 
         const [timeRows] = await pool.query(
-            `SELECT DISTINCT trade_time FROM option_chain_history
+            `SELECT DISTINCT trade_time FROM option_chain_history USE INDEX (idx_backtest_range)
              WHERE symbol = ? AND trade_date = ? AND expiry = ? ORDER BY trade_time ASC`,
             [symbol, date, selectedExpiry]
         );
@@ -392,7 +381,7 @@ async function getChainAtTime(req, res) {
             `SELECT strike, underlying_price,
                     ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume, ce_delta, ce_gamma, ce_theta, ce_vega,
                     pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume, pe_delta, pe_gamma, pe_theta, pe_vega
-             FROM option_chain_history
+             FROM option_chain_history USE INDEX (idx_backtest_range)
              WHERE symbol = ? AND trade_date = ? AND expiry = ? AND trade_time = ?
              ORDER BY strike ASC`,
             [symbol, date, selectedExpiry, selectedTime]
@@ -444,7 +433,7 @@ async function getChainAtTime(req, res) {
         let paritySpot = null;
         if (anchor != null) {
             const [fwdRows] = await pool.query(
-                `SELECT expiry, strike, ce_ltp, pe_ltp FROM option_chain_history
+                `SELECT expiry, strike, ce_ltp, pe_ltp FROM option_chain_history USE INDEX (idx_symbol_date_time)
                  WHERE symbol = ? AND trade_date = ? AND trade_time = ?
                    AND strike BETWEEN ? AND ? AND ce_ltp > 0 AND pe_ltp > 0`,
                 [symbol, date, selectedTime, anchor - 600, anchor + 600]

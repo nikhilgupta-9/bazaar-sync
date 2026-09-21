@@ -8,8 +8,20 @@
 const { pool } = require("../lib/db");
 const instrumentMaster = require("./instrumentMaster");
 const historicalService = require("./historicalService");
+const { addDays } = require("../lib/dates");
 
 const INSERT_BATCH_SIZE = 500;
+
+function toRanges(dates) {
+    const sorted = [...new Set(dates)].sort();
+    const ranges = [];
+    for (const date of sorted) {
+        const previous = ranges[ranges.length - 1];
+        if (!previous || addDays(previous[1], 1) !== date) ranges.push([date, date]);
+        else previous[1] = date;
+    }
+    return ranges;
+}
 
 async function storeOhlcvRows(symbol, rows) {
     if (!rows.length) return 0;
@@ -27,26 +39,30 @@ async function storeOhlcvRows(symbol, rows) {
 }
 
 /** One index (or INDIAVIX) for a full year, minute-level. */
-async function enrichIndexYear(symbol, year) {
+async function enrichIndexYear(symbol, year, missingDates = null) {
     const securityId = instrumentMaster.INDEX_SECURITY_IDS[symbol.toUpperCase()];
     if (!securityId) {
         console.warn(`[dhan-index] ${symbol}: not one of the 7 indices / INDIAVIX — skipped`);
         return { rowsStored: 0 };
     }
-    const rows = await historicalService.getIndexIntradayMinutes(securityId, `${year}-01-01`, `${year}-12-31`);
+    const ranges = missingDates ? toRanges(missingDates) : [[`${year}-01-01`, `${year}-12-31`]];
+    const rows = [];
+    for (const [from, to] of ranges) rows.push(...await historicalService.getIndexIntradayMinutes(securityId, from, to));
     const stored = await storeOhlcvRows(symbol.toUpperCase(), rows);
     console.log(`[dhan-index] ${symbol} ${year}: ${stored} minute rows stored`);
     return { rowsStored: stored };
 }
 
 /** One F&O stock's own spot price for a full year, minute-level. */
-async function enrichEquityYear(symbol, year) {
+async function enrichEquityYear(symbol, year, missingDates = null) {
     const securityId = await instrumentMaster.resolveEquitySecurityId(symbol);
     if (!securityId) {
         console.warn(`[dhan-index] ${symbol}: no Dhan EQUITY securityId found — skipped`);
         return { rowsStored: 0 };
     }
-    const rows = await historicalService.getEquityIntradayMinutes(securityId, `${year}-01-01`, `${year}-12-31`);
+    const ranges = missingDates ? toRanges(missingDates) : [[`${year}-01-01`, `${year}-12-31`]];
+    const rows = [];
+    for (const [from, to] of ranges) rows.push(...await historicalService.getEquityIntradayMinutes(securityId, from, to));
     const stored = await storeOhlcvRows(symbol.toUpperCase(), rows);
     console.log(`[dhan-index] ${symbol} ${year}: ${stored} minute rows stored (equity spot)`);
     return { rowsStored: stored };

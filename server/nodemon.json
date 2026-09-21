@@ -1,6 +1,9 @@
 {
   "ignore": [
     "data/**",
+    "data/extraction-logs/**",
+    "data/*.json",
+    "data/*.invalidated",
     "logs/**"
   ]
 }

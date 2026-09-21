@@ -2,7 +2,7 @@ import { NavLink } from "react-router-dom";
 import {
     FiGrid, FiUsers, FiCreditCard, FiTrendingUp, FiFileText,
     FiMapPin, FiTag, FiCalendar, FiBook, FiSearch, FiX, FiLayout, FiLayers,
-    FiDownloadCloud, FiPieChart, FiClock, FiActivity, FiUploadCloud, FiKey,
+    FiDownloadCloud, FiPieChart, FiClock, FiActivity, FiUploadCloud, FiKey, FiHardDrive,
 } from "react-icons/fi";
 
 const LIVE_LINKS = [
@@ -35,6 +35,7 @@ const MANAGEMENT_LINKS = [
 // site-config tool like Plans/Events/SEO.
 const DATA_LINKS = [
     { to: "/data-extraction", label: "Data Extraction", icon: FiDownloadCloud },
+    { to: "/data-export", label: "Data Export", icon: FiHardDrive },
     { to: "/data-coverage", label: "Data Coverage", icon: FiPieChart },
     { to: "/expiry-status", label: "Expiry Status", icon: FiClock },
     { to: "/greeks-coverage", label: "Greeks Coverage", icon: FiActivity },

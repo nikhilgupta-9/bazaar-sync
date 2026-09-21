@@ -40,8 +40,8 @@ async function updateEnvValue(req, res) {
 
 async function startExtractionJob(req, res) {
     try {
-        const { source, dataType, year, fromMonth, toMonth, symbols, extraArgs } = req.body || {};
-        const result = await runner.startJob({ source, dataType, year, fromMonth, toMonth, symbols, extraArgs, requestedBy: req.user.sub });
+        const { source, dataType, year, fromMonth, toMonth, date, symbols, extraArgs } = req.body || {};
+        const result = await runner.startJob({ source, dataType, year, fromMonth, toMonth, date, symbols, extraArgs, requestedBy: req.user.sub });
         res.status(201).json(result);
     } catch (err) {
         sendError(res, err, "failed to start extraction job");
@@ -94,6 +94,15 @@ async function deleteExtractionJob(req, res) {
     }
 }
 
+async function restartExtractionJob(req, res) {
+    try {
+        const result = await runner.restartJob(req.params.id, req.user.sub);
+        res.status(201).json(result);
+    } catch (err) {
+        sendError(res, err, "failed to restart job");
+    }
+}
+
 // --- Coverage / Expiry / Greeks ---
 
 async function getCoverageSummary(req, res) {
@@ -128,6 +137,30 @@ async function getCoverageDays(req, res) {
         res.json({ dataType, ...result });
     } catch (err) {
         sendError(res, err, "failed to load day-level coverage");
+    }
+}
+
+async function getCoverageMinutes(req, res) {
+    try {
+        const dataType = req.query.dataType || "option_chain";
+        const { symbol, date } = req.query;
+        if (!symbol || !date) return res.status(400).json({ error: "symbol and date are required" });
+        const result = await coverage.getCoverageMinutes(dataType, symbol, date);
+        res.json({ dataType, ...result });
+    } catch (err) {
+        sendError(res, err, "failed to load minute-level coverage");
+    }
+}
+
+async function getCoverageMinuteRows(req, res) {
+    try {
+        const dataType = req.query.dataType || "option_chain";
+        const { symbol, date, time } = req.query;
+        if (!symbol || !date || !time) return res.status(400).json({ error: "symbol, date, and time are required" });
+        const result = await coverage.getCoverageMinuteRows(dataType, symbol, date, time);
+        res.json({ dataType, ...result });
+    } catch (err) {
+        sendError(res, err, "failed to load minute option-chain rows");
     }
 }
 
@@ -169,7 +202,7 @@ async function importData(req, res) {
 
 module.exports = {
     getEnvStatus, updateEnvValue,
-    startExtractionJob, listExtractionJobs, getExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob,
-    getCoverageSummary, getCoverageDetail, getCoverageDays, getExpiryStatus, getGreeksCoverage, refreshCoverageCache,
+    startExtractionJob, listExtractionJobs, getExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob, restartExtractionJob,
+    getCoverageSummary, getCoverageDetail, getCoverageDays, getCoverageMinutes, getCoverageMinuteRows, getExpiryStatus, getGreeksCoverage, refreshCoverageCache,
     importData,
 };

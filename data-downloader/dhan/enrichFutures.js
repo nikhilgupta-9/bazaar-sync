@@ -10,13 +10,24 @@
 // NSE expiry day, so no separate futures-specific discovery pass is needed.
 
 const { addDays } = require("../lib/dates");
+
+function toRanges(dates) {
+    const sorted = [...new Set(dates)].sort();
+    const ranges = [];
+    for (const date of sorted) {
+        const previous = ranges[ranges.length - 1];
+        if (!previous || addDays(previous[1], 1) !== date) ranges.push([date, date]);
+        else previous[1] = date;
+    }
+    return ranges;
+}
 const instrumentMaster = require("./instrumentMaster");
 const historicalService = require("./historicalService");
 const expiryResolver = require("./expiryResolver");
 const expiryDiscovery = require("./expiryDiscovery");
 const futuresStorage = require("../lib/futuresStorage");
 
-async function enrichFuturesYear(symbol, year) {
+async function enrichFuturesYear(symbol, year, missingDates = null) {
     const securityId = await instrumentMaster.resolveAnyFutureSecurityId(symbol);
     if (!securityId) {
         console.warn(`[dhan-futures] ${symbol}: no FUTIDX/FUTSTK contract found in Dhan's master (no futures for this underlying) — skipped`);
@@ -24,9 +35,14 @@ async function enrichFuturesYear(symbol, year) {
     }
     const isIndex = Object.prototype.hasOwnProperty.call(instrumentMaster.INDEX_SECURITY_IDS, symbol.toUpperCase()) && symbol.toUpperCase() !== "INDIAVIX";
     const instrument = isIndex ? "FUTIDX" : "FUTSTK";
+    const exchangeSegment = instrumentMaster.exchangeSegmentForFno(symbol); // SENSEX/BANKEX need BSE_FNO, not NSE_FNO — see instrumentMaster.js
 
     const from = `${year}-01-01`, to = `${year}-12-31`;
-    const rows = await historicalService.getFuturesDaily(securityId, instrument, from, to);
+    const ranges = missingDates ? toRanges(missingDates) : [[from, to]];
+    const rows = [];
+    for (const [rangeFrom, rangeTo] of ranges) {
+        rows.push(...await historicalService.getFuturesDaily(securityId, instrument, rangeFrom, rangeTo, exchangeSegment));
+    }
     if (!rows.length) {
         console.log(`[dhan-futures] ${symbol} ${year}: 0 rows returned`);
         return { rowsStored: 0 };
