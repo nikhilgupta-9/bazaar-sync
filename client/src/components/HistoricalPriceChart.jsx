@@ -11,7 +11,7 @@
 //       - Annotations: Text Note, Price Callout, Up Arrow, Down Arrow, Sticky Note
 //       - Utilities: Pointer, Eraser, Undo/Redo, Lock/Unlock, Hide/Show, Clear All, Color Palette, Line Width & Style
 //       - Persistence: Auto-saves per-symbol drawings to localStorage
-//   • Interactive Crosshair OHLC Legend, PNG Screenshot, Fullscreen, Dark/Light Theme (Emerald Green #059669)
+//   • High z-index popovers (Candle Selector, Indicators, Flyout Drawers) with click-outside auto-close
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
     createChart,
@@ -39,12 +39,13 @@ import {
     FiCheck,
     FiEdit3,
     FiX,
+    FiChevronDown,
 } from "react-icons/fi";
 
 const CHART_TYPES = [
     { key: "candles", label: "Candles" },
-    { key: "hollow", label: "Hollow" },
-    { key: "bars", label: "Bars" },
+    { key: "hollow", label: "Hollow Candles" },
+    { key: "bars", label: "Bars (OHLC)" },
     { key: "line", label: "Line" },
     { key: "area", label: "Area" },
     { key: "heikinashi", label: "Heikin Ashi" },
@@ -331,6 +332,11 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
     const chartRef = useRef(null);
     const priceSeriesRef = useRef(null);
 
+    // Dropdown DOM refs for click-outside closing
+    const chartTypeRef = useRef(null);
+    const indicatorsRef = useRef(null);
+    const flyoutRef = useRef(null);
+
     // Chart Options & Indicators
     const [chartType, setChartType] = useState("candles");
     const [chartTypeOpen, setChartTypeOpen] = useState(false);
@@ -377,17 +383,17 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
     // Style & Utilities State
     const [activeColor, setActiveColor] = useState("#059669");
     const [activeLineWidth, setActiveLineWidth] = useState(2);
-    const [activeLineStyle, setActiveLineStyle] = useState("solid"); // "solid" | "dashed" | "dotted"
+    const [activeLineStyle, setActiveLineStyle] = useState("solid");
     const [drawingsVisible, setDrawingsVisible] = useState(true);
     const [isLocked, setIsLocked] = useState(false);
     const [selectedDrawingId, setSelectedDrawingId] = useState(null);
 
     // In-Progress Drawing State
     const [inProgressPoints, setInProgressPoints] = useState([]);
-    const [mouseCoord, setMouseCoord] = useState(null); // { time, price, x, y }
+    const [mouseCoord, setMouseCoord] = useState(null);
 
     // Text Editing Modal
-    const [editingTextModal, setEditingTextModal] = useState(null); // { id, initialText }
+    const [editingTextModal, setEditingTextModal] = useState(null);
     const [textInputValue, setTextInputValue] = useState("");
 
     // Render Tick for SVG overlays coordinate tracking
@@ -395,6 +401,23 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
     const triggerRender = useCallback(() => setRenderTick((n) => n + 1), []);
 
     const hasVolume = useMemo(() => (points || []).some((p) => p.volume > 0), [points]);
+
+    // Click outside listener for all dropdowns
+    useEffect(() => {
+        function handleClickOutside(e) {
+            if (chartTypeRef.current && !chartTypeRef.current.contains(e.target)) {
+                setChartTypeOpen(false);
+            }
+            if (indicatorsRef.current && !indicatorsRef.current.contains(e.target)) {
+                setIndicatorsOpen(false);
+            }
+            if (flyoutRef.current && !flyoutRef.current.contains(e.target)) {
+                setOpenFlyout(null);
+            }
+        }
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => document.removeEventListener("mousedown", handleClickOutside);
+    }, []);
 
     // Load drawings when symbol changes
     useEffect(() => {
@@ -598,7 +621,6 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
 
         chart.timeScale().fitContent();
 
-        // Subscribe to range changes to sync SVG coordinates
         chart.timeScale().subscribeVisibleLogicalRangeChange(triggerRender);
         chart.timeScale().subscribeVisibleTimeRangeChange(triggerRender);
 
@@ -621,7 +643,6 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                 setHover({ c: d.value, date: isoDay(Number(param.time)), lineOnly: true });
             }
 
-            // Capture precise mouse coordinates for drawing engine
             if (param.point && param.time != null) {
                 const pPrice = priceSeries.coordinateToPrice(param.point.y);
                 if (pPrice != null) {
@@ -657,7 +678,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
         };
     }, [points, chartType, indicators, showVolume, isDark, hasVolume, triggerRender]);
 
-    // Handle Chart Canvas Click for Drawing Tool Placement
+    // Handle Chart Click for Drawings
     useEffect(() => {
         const chart = chartRef.current;
         const series = priceSeriesRef.current;
@@ -680,7 +701,6 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
             if (nextPoints.length < needed) {
                 setInProgressPoints(nextPoints);
             } else {
-                // Completed Drawing
                 const newId = `draw_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
                 let meta = {};
 
@@ -709,7 +729,6 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                 setSelectedDrawingId(newId);
                 setInProgressPoints([]);
 
-                // If text or sticky, open text editor immediately
                 if (activeTool === "text" || activeTool === "sticky") {
                     setEditingTextModal({ id: newId, initialText: meta.text });
                     setTextInputValue(meta.text);
@@ -721,10 +740,9 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
         return () => chart.unsubscribeClick(handleClick);
     }, [activeTool, inProgressPoints, drawings, activeColor, activeLineWidth, activeLineStyle, isLocked, saveDrawings]);
 
-    // Keyboard Shortcuts for Pro Speed
+    // Keyboard Shortcuts
     useEffect(() => {
         const handleKeyDown = (e) => {
-            // Check if typing in an input
             if (["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
 
             if (e.key === "Escape") {
@@ -732,6 +750,8 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                 setInProgressPoints([]);
                 setSelectedDrawingId(null);
                 setOpenFlyout(null);
+                setChartTypeOpen(false);
+                setIndicatorsOpen(false);
                 return;
             }
 
@@ -742,14 +762,12 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                 return;
             }
 
-            // Undo: Ctrl+Z / Cmd+Z
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
                 e.preventDefault();
                 handleUndo();
                 return;
             }
 
-            // Redo: Ctrl+Y or Ctrl+Shift+Z
             if (
                 ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") ||
                 ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "z")
@@ -759,7 +777,6 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                 return;
             }
 
-            // Alt Shortcuts
             if (e.altKey) {
                 const k = e.key.toLowerCase();
                 if (k === "t") {
@@ -866,7 +883,6 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
         setTextInputValue("");
     };
 
-    // Fullscreen Toggle
     const toggleFullscreen = () => {
         if (document.fullscreenElement) {
             document.exitFullscreen();
@@ -881,7 +897,6 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
         return () => document.removeEventListener("fullscreenchange", onFsChange);
     }, []);
 
-    // Screenshot
     const takeScreenshot = () => {
         const chart = chartRef.current;
         if (!chart) return;
@@ -892,7 +907,6 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
         link.click();
     };
 
-    // Helper Coordinate Conversion
     const getCoords = (p) => {
         const chart = chartRef.current;
         const series = priceSeriesRef.current;
@@ -913,7 +927,6 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
             return { ...p, x, y };
         });
 
-        // If ghost drawing with active mouse, append live mouse coordinate
         if (isGhost && mouseCoord) {
             pts.push(mouseCoord);
         }
@@ -930,7 +943,6 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                 : undefined;
         const isSelected = selectedDrawingId === d.id && !isGhost;
 
-        // Render based on tool type
         switch (d.type) {
             case "trendline": {
                 if (pts.length < 2 || pts[0].x == null || pts[1].x == null) return null;
@@ -1210,15 +1222,9 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
 
                 return (
                     <g key={d.id || "ghost"} className="cursor-pointer" onClick={() => !isGhost && setSelectedDrawingId(d.id)}>
-                        {/* Target Box (Green) */}
                         <rect x={entryX} y={targetTop} width={boxW} height={targetH} fill="#059669" fillOpacity={0.25} stroke="#059669" strokeWidth={1.5} />
-                        {/* Stop Loss Box (Red) */}
                         <rect x={entryX} y={slTop} width={boxW} height={slH} fill="#e11d48" fillOpacity={0.25} stroke="#e11d48" strokeWidth={1.5} />
-
-                        {/* Entry Line */}
                         <line x1={entryX} y1={entryY} x2={entryX + boxW} y2={entryY} stroke="#3b82f6" strokeWidth={2} />
-
-                        {/* Badges */}
                         <text x={entryX + 6} y={targetTop + 14} fill="#059669" fontSize={10} fontWeight="bold">
                             Target: ₹{targetPrice.toFixed(1)} (+{targetPct}%)
                         </text>
@@ -1258,7 +1264,6 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                             strokeDasharray="4 4"
                         />
                         <line x1={pts[0].x} y1={pts[0].y} x2={pts[1].x} y2={pts[1].y} stroke={isPositive ? "#059669" : "#e11d48"} strokeWidth={2} />
-                        {/* Info Badge */}
                         <g transform={`translate(${(minX + maxX) / 2 - 60}, ${(minY + maxY) / 2 - 20})`}>
                             <rect width={120} height={42} rx={6} fill="#0f172a" fillOpacity={0.92} stroke="#334155" />
                             <text x={60} y={16} fill={isPositive ? "#10b981" : "#f43f5e"} fontSize={11} fontWeight="bold" textAnchor="middle">
@@ -1357,24 +1362,30 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                     : "relative w-full"
             }`}
         >
-            {/* TOP BAR: Chart Type, Indicators, Volumes, OHLC Legend, Actions */}
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-gray-100 bg-gray-50/80 px-3 py-2 text-xs backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/80">
+            {/* TOP BAR: High z-index (z-50) so dropdowns float ON TOP of chart canvas */}
+            <div className="relative z-50 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-gray-100 bg-gray-50/90 px-3 py-2 text-xs backdrop-blur-md dark:border-gray-800 dark:bg-gray-900/90 shadow-xs">
                 {/* Left Controls */}
                 <div className="flex flex-wrap items-center gap-2">
-                    {/* Chart Type Selector */}
-                    <div className="relative">
+                    {/* Chart Type Selector Dropdown */}
+                    <div className="relative" ref={chartTypeRef}>
                         <button
-                            onClick={() => setChartTypeOpen(!chartTypeOpen)}
-                            className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1 font-bold text-gray-700 shadow-xs hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                            type="button"
+                            onClick={() => {
+                                setChartTypeOpen(!chartTypeOpen);
+                                setIndicatorsOpen(false);
+                            }}
+                            className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 font-bold text-gray-700 shadow-xs hover:border-emerald-500 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
                         >
                             <FiTrendingUp className="h-3.5 w-3.5 text-emerald-600" />
                             <span>{CHART_TYPES.find((c) => c.key === chartType)?.label || "Candles"}</span>
+                            <FiChevronDown className="h-3 w-3 text-gray-400" />
                         </button>
                         {chartTypeOpen && (
-                            <div className="absolute left-0 top-full z-40 mt-1 min-w-[140px] rounded-xl border border-gray-200 bg-white p-1 shadow-lg dark:border-gray-700 dark:bg-gray-800">
+                            <div className="absolute left-0 top-full z-50 mt-1 min-w-[160px] rounded-xl border border-gray-200 bg-white p-1.5 shadow-2xl dark:border-gray-700 dark:bg-gray-800 animate-fade-in">
                                 {CHART_TYPES.map((ct) => (
                                     <button
                                         key={ct.key}
+                                        type="button"
                                         onClick={() => {
                                             setChartType(ct.key);
                                             setChartTypeOpen(false);
@@ -1393,17 +1404,22 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                     </div>
 
                     {/* Indicators Popover */}
-                    <div className="relative">
+                    <div className="relative" ref={indicatorsRef}>
                         <button
-                            onClick={() => setIndicatorsOpen(!indicatorsOpen)}
-                            className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1 font-bold text-gray-700 shadow-xs hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                            type="button"
+                            onClick={() => {
+                                setIndicatorsOpen(!indicatorsOpen);
+                                setChartTypeOpen(false);
+                            }}
+                            className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 font-bold text-gray-700 shadow-xs hover:border-emerald-500 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
                         >
                             <FiSliders className="h-3.5 w-3.5 text-emerald-600" />
                             <span>Indicators</span>
+                            <FiChevronDown className="h-3 w-3 text-gray-400" />
                         </button>
                         {indicatorsOpen && (
-                            <div className="absolute left-0 top-full z-40 mt-1 min-w-[180px] rounded-xl border border-gray-200 bg-white p-2 shadow-lg dark:border-gray-700 dark:bg-gray-800">
-                                <div className="mb-1 text-[10px] font-bold uppercase text-gray-400">Overlays & Oscillators</div>
+                            <div className="absolute left-0 top-full z-50 mt-1 min-w-[200px] rounded-xl border border-gray-200 bg-white p-2.5 shadow-2xl dark:border-gray-700 dark:bg-gray-800 animate-fade-in">
+                                <div className="mb-1.5 text-[10px] font-bold uppercase text-gray-400">Overlays & Oscillators</div>
                                 {[
                                     { key: "ema9", label: "EMA (9)" },
                                     { key: "ema21", label: "EMA (21)" },
@@ -1415,7 +1431,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                                 ].map((ind) => (
                                     <label
                                         key={ind.key}
-                                        className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                                        className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
                                     >
                                         <span>{ind.label}</span>
                                         <input
@@ -1424,7 +1440,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                                             onChange={(e) =>
                                                 setIndicators({ ...indicators, [ind.key]: e.target.checked })
                                             }
-                                            className="accent-emerald-600"
+                                            className="accent-emerald-600 h-3.5 w-3.5"
                                         />
                                     </label>
                                 ))}
@@ -1435,8 +1451,9 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                     {/* Volume Toggle */}
                     {hasVolume && (
                         <button
+                            type="button"
                             onClick={() => setShowVolume(!showVolume)}
-                            className={`flex items-center gap-1 rounded-lg border px-2.5 py-1 font-bold transition ${
+                            className={`flex items-center gap-1 rounded-lg border px-2.5 py-1.5 font-bold transition ${
                                 showVolume
                                     ? "border-emerald-600 bg-emerald-50 text-emerald-700 dark:border-emerald-500 dark:bg-emerald-950/60 dark:text-emerald-300"
                                     : "border-gray-200 bg-white text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
@@ -1447,13 +1464,14 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                     )}
                 </div>
 
-                {/* Right Controls: Drawing Style / Screenshot & Fullscreen */}
+                {/* Right Controls */}
                 <div className="flex items-center gap-1.5">
                     {/* Floating Color Palette */}
                     <div className="flex items-center gap-1 border-r border-gray-200 pr-2 mr-1 dark:border-gray-700">
                         {COLOR_PALETTE.slice(0, 5).map((c) => (
                             <button
                                 key={c.hex}
+                                type="button"
                                 onClick={() => {
                                     setActiveColor(c.hex);
                                     updateSelectedDrawingStyle({ color: c.hex });
@@ -1468,6 +1486,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                     </div>
 
                     <button
+                        type="button"
                         onClick={takeScreenshot}
                         title="Download Chart Screenshot (PNG)"
                         className="rounded-lg border border-gray-200 bg-white p-1.5 text-gray-600 shadow-xs hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
@@ -1475,6 +1494,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                         <FiCamera className="h-3.5 w-3.5" />
                     </button>
                     <button
+                        type="button"
                         onClick={toggleFullscreen}
                         title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
                         className="rounded-lg border border-gray-200 bg-white p-1.5 text-gray-600 shadow-xs hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
@@ -1485,9 +1505,9 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
             </div>
 
             {/* MAIN CHART BODY + LEFT DRAWING TOOLBAR */}
-            <div className="flex w-full gap-2">
-                {/* Left Drawing Tools Rail (TradingView / Dhan Pro Grade) */}
-                <div className="relative flex shrink-0 flex-col gap-1.5 rounded-xl border border-gray-100 bg-gray-50/70 p-1.5 dark:border-gray-800 dark:bg-gray-900/50 z-30">
+            <div className="relative z-10 flex w-full gap-2">
+                {/* Left Drawing Tools Rail */}
+                <div ref={flyoutRef} className="relative flex shrink-0 flex-col gap-1.5 rounded-xl border border-gray-100 bg-gray-50/70 p-1.5 dark:border-gray-800 dark:bg-gray-900/50 z-30">
                     {/* Tool Categories with Flyouts */}
                     {TOOL_GROUPS.map((group) => {
                         const currentToolKey = selectedToolPerGroup[group.id] || group.tools[0].key;
@@ -1498,6 +1518,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                             <div key={group.id} className="relative">
                                 <div className="flex items-center">
                                     <button
+                                        type="button"
                                         onClick={() => selectTool(currentToolKey)}
                                         title={`${currentTool.label} (${currentTool.shortcut})`}
                                         className={`flex h-8 w-8 items-center justify-center rounded-lg border text-xs font-bold transition-all ${
@@ -1508,8 +1529,8 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                                     >
                                         <span>{currentTool.icon}</span>
                                     </button>
-                                    {/* Flyout Arrow */}
                                     <button
+                                        type="button"
                                         onClick={(e) => {
                                             e.stopPropagation();
                                             setOpenFlyout(openFlyout === group.id ? null : group.id);
@@ -1529,6 +1550,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                                         {group.tools.map((t) => (
                                             <button
                                                 key={t.key}
+                                                type="button"
                                                 onClick={() => selectTool(t.key)}
                                                 className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-semibold ${
                                                     activeTool === t.key
@@ -1555,6 +1577,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
 
                     {/* Undo */}
                     <button
+                        type="button"
                         onClick={handleUndo}
                         disabled={!undoStack.length}
                         title="Undo Drawing (Ctrl+Z)"
@@ -1565,6 +1588,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
 
                     {/* Redo */}
                     <button
+                        type="button"
                         onClick={handleRedo}
                         disabled={!redoStack.length}
                         title="Redo Drawing (Ctrl+Y)"
@@ -1575,6 +1599,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
 
                     {/* Lock Drawings */}
                     <button
+                        type="button"
                         onClick={() => setIsLocked(!isLocked)}
                         title={isLocked ? "Unlock All Drawings" : "Lock All Drawings"}
                         className={`flex h-8 w-8 items-center justify-center rounded-lg border transition ${
@@ -1588,6 +1613,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
 
                     {/* Hide/Show Drawings */}
                     <button
+                        type="button"
                         onClick={() => setDrawingsVisible(!drawingsVisible)}
                         title={drawingsVisible ? "Hide Drawings" : "Show Drawings"}
                         className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
@@ -1597,6 +1623,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
 
                     {/* Clear Drawings */}
                     <button
+                        type="button"
                         onClick={clearAllDrawings}
                         title="Clear All Drawings (Del)"
                         className="flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 dark:border-rose-900/50 dark:bg-gray-800 dark:text-rose-400"
@@ -1651,6 +1678,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                                 {inProgressPoints.length}/{ALL_TOOLS_MAP[activeTool]?.pointsNeeded || 1})
                             </span>
                             <button
+                                type="button"
                                 onClick={() => {
                                     setActiveTool(null);
                                     setInProgressPoints([]);
@@ -1667,10 +1695,10 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                         <div className="absolute left-1/2 top-2.5 -translate-x-1/2 z-20 flex items-center gap-2 rounded-xl border border-gray-200 bg-white/95 px-3 py-1.5 text-xs shadow-xl backdrop-blur-md dark:border-gray-700 dark:bg-gray-800/95 animate-fade-in">
                             <span className="font-bold text-emerald-600 text-[11px]">Selected Drawing</span>
                             <div className="h-3 w-px bg-gray-300 dark:bg-gray-600" />
-                            {/* Width */}
                             {[1, 2, 3, 4].map((w) => (
                                 <button
                                     key={w}
+                                    type="button"
                                     onClick={() => updateSelectedDrawingStyle({ lineWidth: w })}
                                     className="px-1.5 py-0.5 text-[10px] font-bold rounded hover:bg-gray-100 dark:hover:bg-gray-700"
                                 >
@@ -1678,9 +1706,9 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                                 </button>
                             ))}
                             <div className="h-3 w-px bg-gray-300 dark:bg-gray-600" />
-                            {/* Edit text if note */}
                             {drawings.find((d) => d.id === selectedDrawingId)?.meta?.text && (
                                 <button
+                                    type="button"
                                     onClick={() => {
                                         const d = drawings.find((x) => x.id === selectedDrawingId);
                                         setEditingTextModal({ id: selectedDrawingId, initialText: d.meta.text });
@@ -1692,8 +1720,8 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                                     <FiEdit3 className="h-3.5 w-3.5" />
                                 </button>
                             )}
-                            {/* Delete */}
                             <button
+                                type="button"
                                 onClick={() => deleteDrawing(selectedDrawingId)}
                                 className="p-1 text-rose-600 hover:bg-rose-50 rounded dark:hover:bg-rose-950/50"
                                 title="Delete Drawing"
@@ -1709,10 +1737,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                     {/* SVG Vector Drawing Layer */}
                     {drawingsVisible && (
                         <svg className="absolute inset-0 h-full w-full pointer-events-none z-10" key={renderTick}>
-                            {/* Render Completed Saved Drawings */}
                             {drawings.map((d) => renderDrawingItem(d, false))}
-
-                            {/* Render Ghost / In-Progress Drawing */}
                             {activeTool && inProgressPoints.length > 0 && (
                                 renderDrawingItem(
                                     {
@@ -1739,6 +1764,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                         <div className="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-gray-800">
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white">Edit Chart Annotation</h3>
                             <button
+                                type="button"
                                 onClick={() => setEditingTextModal(null)}
                                 className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
                             >
@@ -1755,12 +1781,14 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                         />
                         <div className="mt-4 flex justify-end gap-2">
                             <button
+                                type="button"
                                 onClick={() => setEditingTextModal(null)}
                                 className="rounded-lg px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
                             >
                                 Cancel
                             </button>
                             <button
+                                type="button"
                                 onClick={handleSaveText}
                                 className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700"
                             >
