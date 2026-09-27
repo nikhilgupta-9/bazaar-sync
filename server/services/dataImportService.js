@@ -149,6 +149,77 @@ function getSchema(table) {
 }
 
 /**
+ * Checks if the given cells represent a column header row or already contain data.
+ */
+function isLikelyHeaderRow(cells, schema) {
+    if (!cells || cells.length === 0) return false;
+
+    let dateOrTimeCount = 0;
+    let numericCount = 0;
+    let headerKeywordMatches = 0;
+
+    const allAliases = new Set(
+        Object.values(COLUMN_ALIASES).flat().map((a) => a.toLowerCase().replace(/[^a-z0-9]/g, ""))
+    );
+    Object.values(TABLE_SCHEMAS).forEach((s) => {
+        s.header.forEach((h) => allAliases.add(h.toLowerCase().replace(/[^a-z0-9]/g, "")));
+    });
+
+    for (let i = 0; i < cells.length; i++) {
+        const raw = String(cells[i] || "").replace(/^\uFEFF/, "").replace(/['"]+/g, "").trim();
+        if (!raw) continue;
+        const normalized = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+        if (allAliases.has(normalized)) {
+            headerKeywordMatches++;
+        }
+
+        if (normalizeDate(raw) && (raw.includes("-") || raw.includes("/"))) {
+            dateOrTimeCount++;
+        } else if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(raw)) {
+            dateOrTimeCount++;
+        } else if (/^-?\d+(\.\d+)?$/.test(raw)) {
+            numericCount++;
+        }
+    }
+
+    // If there is date/time or mostly numbers, it is a data row (headerless CSV)
+    if (dateOrTimeCount >= 1 || (numericCount > 3 && headerKeywordMatches < 2)) {
+        return false;
+    }
+
+    return headerKeywordMatches >= 2;
+}
+
+/**
+ * Derives positional mapping for headerless CSV files based on column count and signatures.
+ */
+function getPositionalMapping(cells, table, schema) {
+    const mapping = {};
+    const colCount = cells.length;
+    const cell0 = String(cells[0] || "").trim();
+    const cell1 = String(cells[1] || "").trim();
+    const cell2 = String(cells[2] || "").trim();
+
+    // Check if cell0 is an integer ID (e.g. 4867, 1), cell1 is symbol (e.g. nifty), and cell2 is date (e.g. 2023-01-02)
+    const cell0IsNum = /^\d+$/.test(cell0) && cell0.length <= 10;
+    const cell1IsSymbol = isNaN(cell1) && /^[a-zA-Z0-9_\-& ]+$/.test(cell1);
+    const cell2IsDate = /^\d{4}-\d{2}-\d{2}/.test(cell2) || /^\d{1,2}[-/]\d{1,2}[-/]\d{4}/.test(cell2);
+
+    const firstIsId = (colCount > schema.header.length || cell0IsNum) && cell1IsSymbol && cell2IsDate;
+    const offset = firstIsId ? 1 : 0;
+
+    const cols = schema.header;
+    for (let i = 0; i < cols.length; i++) {
+        if (i + offset < colCount) {
+            mapping[cols[i]] = i + offset;
+        }
+    }
+
+    return mapping;
+}
+
+/**
  * Creates dynamic header mapping from raw CSV columns to canonical schema columns
  */
 function createHeaderMapping(rawHeader, schema) {
@@ -359,7 +430,7 @@ async function importFromStream({ readableStream, fileName, table }) {
         crlfDelay: Infinity,
     });
 
-    let isHeader = true;
+    let isFirstLine = true;
     let headerMapping = null;
     let lineIndex = 0;
     let rowBuffer = [];
@@ -379,11 +450,16 @@ async function importFromStream({ readableStream, fileName, table }) {
             if (!trimmed) continue;
             lineIndex++;
 
-            if (isHeader) {
-                isHeader = false;
+            if (isFirstLine) {
+                isFirstLine = false;
                 const rawCols = splitCsvLine(trimmed);
-                headerMapping = createHeaderMapping(rawCols, schema);
-                continue;
+                if (isLikelyHeaderRow(rawCols, schema)) {
+                    headerMapping = createHeaderMapping(rawCols, schema);
+                    continue; // Header row consumed
+                } else {
+                    // Headerless CSV file — positionally map columns and proceed to process line as data
+                    headerMapping = getPositionalMapping(rawCols, table, schema);
+                }
             }
 
             const cells = splitCsvLine(trimmed);
@@ -391,7 +467,7 @@ async function importFromStream({ readableStream, fileName, table }) {
 
             schema.header.forEach((canonicalCol) => {
                 const colIdx = headerMapping[canonicalCol];
-                rawRow[canonicalCol] = colIdx !== undefined ? cells[colIdx] : "";
+                rawRow[canonicalCol] = colIdx !== undefined && colIdx < cells.length ? cells[colIdx] : "";
             });
 
             try {
@@ -460,6 +536,10 @@ module.exports = {
     splitCsvLine,
     normalizeDate,
     normalizeTime,
+    isLikelyHeaderRow,
+    getPositionalMapping,
+    createHeaderMapping,
+    validateRow,
     TABLE_SCHEMAS,
     COLUMN_ALIASES,
 };

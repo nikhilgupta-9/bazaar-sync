@@ -127,39 +127,110 @@ const COLUMN_ALIASES = {
     oi_change: ["oi_change", "change_in_oi", "oi_chg", "chg_oi", "open_interest_change"],
 };
 
-function parseCsv(text, schema) {
+function isLikelyHeaderRow(cells) {
+    if (!cells || cells.length === 0) return false;
+    let dateOrTimeCount = 0;
+    let numericCount = 0;
+    let headerKeywordMatches = 0;
+
+    const allAliases = new Set(
+        Object.values(COLUMN_ALIASES).flat().map((a) => a.toLowerCase().replace(/[^a-z0-9]/g, ""))
+    );
+    Object.values(SCHEMAS).forEach((s) => {
+        s.header.forEach((h) => allAliases.add(h.toLowerCase().replace(/[^a-z0-9]/g, "")));
+    });
+
+    for (let i = 0; i < cells.length; i++) {
+        const raw = String(cells[i] || "").replace(/^\uFEFF/, "").replace(/['"]+/g, "").trim();
+        if (!raw) continue;
+        const normalized = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+        if (allAliases.has(normalized)) {
+            headerKeywordMatches++;
+        }
+
+        if (/^\d{4}-\d{2}-\d{2}/.test(raw) || /^\d{1,2}[-/]\d{1,2}[-/]\d{4}/.test(raw)) {
+            dateOrTimeCount++;
+        } else if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(raw)) {
+            dateOrTimeCount++;
+        } else if (/^-?\d+(\.\d+)?$/.test(raw)) {
+            numericCount++;
+        }
+    }
+
+    if (dateOrTimeCount >= 1 || (numericCount > 3 && headerKeywordMatches < 2)) {
+        return false;
+    }
+    return headerKeywordMatches >= 2;
+}
+
+function getPositionalMapping(cells, table, schema) {
+    const mapping = {};
+    const colCount = cells.length;
+    const cell0 = String(cells[0] || "").trim();
+    const cell1 = String(cells[1] || "").trim();
+    const cell2 = String(cells[2] || "").trim();
+
+    const cell0IsNum = /^\d+$/.test(cell0) && cell0.length <= 10;
+    const cell1IsSymbol = isNaN(cell1) && /^[a-zA-Z0-9_\-& ]+$/.test(cell1);
+    const cell2IsDate = /^\d{4}-\d{2}-\d{2}/.test(cell2) || /^\d{1,2}[-/]\d{1,2}[-/]\d{4}/.test(cell2);
+
+    const firstIsId = (colCount > schema.header.length || cell0IsNum) && cell1IsSymbol && cell2IsDate;
+    const offset = firstIsId ? 1 : 0;
+
+    const cols = schema.header;
+    for (let i = 0; i < cols.length; i++) {
+        if (i + offset < colCount) {
+            mapping[cols[i]] = i + offset;
+        }
+    }
+    return mapping;
+}
+
+function parseCsv(text, schema, table = "option_chain_history") {
     const lines = text.replace(/\r\n/g, "\n").split("\n").filter((l) => l.trim() !== "");
     if (!lines.length) return { rows: null, parseError: "The file is empty." };
 
-    const rawHeader = splitCsvLine(lines[0]).map((h) =>
-        String(h || "")
-            .replace(/^\uFEFF/, "")
-            .replace(/['"]+/g, "")
-            .trim()
-            .toLowerCase()
-    );
+    const firstLineCells = splitCsvLine(lines[0]);
+    const isHeader = isLikelyHeaderRow(firstLineCells);
 
-    const mapping = {};
-    schema.header.forEach((canonicalCol) => {
-        const aliases = COLUMN_ALIASES[canonicalCol] || [canonicalCol];
-        for (let i = 0; i < rawHeader.length; i++) {
-            if (aliases.includes(rawHeader[i])) {
-                mapping[canonicalCol] = i;
-                break;
+    let mapping = {};
+    let startIdx = 0;
+
+    if (isHeader) {
+        const rawHeader = firstLineCells.map((h) =>
+            String(h || "")
+                .replace(/^\uFEFF/, "")
+                .replace(/['"]+/g, "")
+                .trim()
+                .toLowerCase()
+        );
+
+        schema.header.forEach((canonicalCol) => {
+            const aliases = COLUMN_ALIASES[canonicalCol] || [canonicalCol];
+            for (let i = 0; i < rawHeader.length; i++) {
+                if (aliases.includes(rawHeader[i])) {
+                    mapping[canonicalCol] = i;
+                    break;
+                }
             }
-        }
-    });
+        });
 
-    const missingRequired = (schema.required || []).filter((reqCol) => mapping[reqCol] === undefined);
-    if (missingRequired.length > 0) {
-        return {
-            rows: null,
-            parseError: `Missing required column(s): ${missingRequired.join(", ")}. Found in file: ${rawHeader.join(", ")}`,
-        };
+        const missingRequired = (schema.required || []).filter((reqCol) => mapping[reqCol] === undefined);
+        if (missingRequired.length > 0) {
+            return {
+                rows: null,
+                parseError: `Missing required column(s): ${missingRequired.join(", ")}. Found in file: ${rawHeader.join(", ")}`,
+            };
+        }
+        startIdx = 1;
+    } else {
+        mapping = getPositionalMapping(firstLineCells, table, schema);
+        startIdx = 0;
     }
 
     const rows = [];
-    for (let i = 1; i < lines.length; i++) {
+    for (let i = startIdx; i < lines.length; i++) {
         const rowNumber = i + 1;
         const cells = splitCsvLine(lines[i]);
         const row = { rowNumber };
@@ -293,7 +364,7 @@ export default function DataImport() {
 
         const reader = new FileReader();
         reader.onload = async () => {
-            const { rows, parseError } = parseCsv(String(reader.result), schema);
+            const { rows, parseError } = parseCsv(String(reader.result), schema, table);
             if (parseError) {
                 setLocalErrors([{ row: null, message: parseError }]);
                 return;
