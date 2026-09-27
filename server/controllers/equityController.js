@@ -227,12 +227,16 @@ async function get52WeekHighLow(req, res) {
         // 3. Fetch Quotes
         const quotes = await upstoxQuotes.getQuotesForSymbols(symbolList);
 
-        // 4. Fetch real 52-week min/max from DB
+        // 4. Fetch real 52-week min/max from DB (past 365 days relative to latest available market date)
+        const latestDateRes = await db.query("SELECT MAX(trade_date) as max_date FROM ohlcv_data").catch(() => []);
+        const maxTradeDate = latestDateRes[0]?.max_date || "2026-09-27";
+
         const dbStats = await db.query(`
             SELECT symbol, MIN(low) as year_low, MAX(high) as year_high, AVG(volume) as avg_vol
             FROM ohlcv_data
+            WHERE trade_date >= DATE_SUB(?, INTERVAL 365 DAY)
             GROUP BY symbol
-        `).catch(() => []);
+        `, [maxTradeDate]).catch(() => []);
         const statMap = new Map(dbStats.map((s) => [s.symbol.toUpperCase(), s]));
 
         const records = symbolList.map((sym) => {
