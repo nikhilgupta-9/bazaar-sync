@@ -74,9 +74,23 @@ async function main() {
         batch.push(["INDIAVIX", tradeDate, tradeTime, Number(open), Number(high), Number(low), Number(close), Number(volume) || 0]);
         if (batch.length >= BATCH) await flush();
     }
-    await flush();
-
     console.log(`\nDone. ${total} rows written, ${skipped} lines skipped (${lineNo} lines read).`);
+    
+    console.log("Syncing ohlcv_coverage_summary for INDIAVIX...");
+    await pool.query(`
+        INSERT INTO ohlcv_coverage_summary (symbol, trade_date, row_count, minute_rows, first_time, last_time)
+        SELECT symbol, trade_date, COUNT(*), SUM(trade_time <> '15:30:00'), MIN(trade_time), MAX(trade_time)
+        FROM ohlcv_data
+        WHERE symbol = 'INDIAVIX'
+        GROUP BY symbol, trade_date
+        ON DUPLICATE KEY UPDATE
+            row_count = VALUES(row_count),
+            minute_rows = VALUES(minute_rows),
+            first_time = VALUES(first_time),
+            last_time = VALUES(last_time)
+    `);
+    console.log("✅ Coverage summary synced successfully!");
+
     await pool.end();
 }
 
