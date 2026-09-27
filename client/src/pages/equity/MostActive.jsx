@@ -21,8 +21,8 @@ import {
 const TABS = [
     { id: "all", label: "All Universe", icon: FiLayers },
     { id: "indices", label: "7 Major Indices", icon: FiBarChart2 },
-    { id: "gainers", label: "Top Gainers", icon: FiTrendingUp },
-    { id: "losers", label: "Top Losers", icon: FiTrendingDown },
+    { id: "advances", label: "Advances", icon: FiTrendingUp },
+    { id: "declines", label: "Declines", icon: FiTrendingDown },
     { id: "volume", label: "Volume Leaders", icon: FiActivity },
     { id: "turnover", label: "Highest Turnover", icon: FiDollarSign },
 ];
@@ -69,6 +69,12 @@ export default function MostActive() {
         switch (activeTab) {
             case "indices":
                 return data.indices || [];
+            case "advances":
+                return (data.stocks || data.all || []).filter((s) => s.pChange > 0.05);
+            case "declines":
+                return (data.stocks || data.all || []).filter((s) => s.pChange < -0.05);
+            case "unchanged":
+                return (data.stocks || data.all || []).filter((s) => Math.abs(s.pChange) <= 0.05);
             case "gainers":
                 return data.topGainers || [];
             case "losers":
@@ -216,34 +222,87 @@ export default function MostActive() {
             {/* StockMojo Market Breadth & Summary Cards */}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 {/* Card 1: Market Breadth */}
-                <div className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-xs dark:border-gray-800 dark:bg-gray-900">
+                <div className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-xs dark:border-gray-800 dark:bg-gray-900 transition">
                     <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
                         <span className="font-medium">Market Breadth (F&O)</span>
-                        <span className="font-semibold text-gray-700 dark:text-gray-300">
+                        <button
+                            onClick={() => {
+                                setActiveTab("all");
+                                setCategoryFilter("stocks");
+                            }}
+                            className="font-semibold text-gray-700 hover:text-emerald-600 dark:text-gray-300 dark:hover:text-emerald-400 underline decoration-dotted transition"
+                            title="Click to view all 210 F&O stocks"
+                        >
                             {summary.totalStocks} Stocks
-                        </span>
+                        </button>
                     </div>
-                    <div className="mt-2 flex items-baseline justify-between">
-                        <div className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                    <div className="mt-2 flex items-center justify-between gap-1">
+                        {/* Advances Button */}
+                        <button
+                            onClick={() => {
+                                setActiveTab("advances");
+                                setSortKey("pChange");
+                                setSortDir("desc");
+                            }}
+                            className={`flex items-center gap-1.5 rounded-lg px-2 py-1 transition ${
+                                activeTab === "advances"
+                                    ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-500 dark:bg-emerald-950/80 dark:text-emerald-300"
+                                    : "hover:bg-emerald-50 text-emerald-600 dark:text-emerald-400 dark:hover:bg-emerald-950/30"
+                            }`}
+                            title="Click to show all Advancing stocks"
+                        >
                             <span className="text-base font-bold sm:text-lg">{summary.advances}</span>
-                            <span className="text-[11px] font-medium">Adv</span>
-                        </div>
-                        <div className="flex items-center gap-1 text-rose-600 dark:text-rose-400">
+                            <span className="text-[11px] font-semibold">Advances</span>
+                        </button>
+
+                        {/* Declines Button */}
+                        <button
+                            onClick={() => {
+                                setActiveTab("declines");
+                                setSortKey("pChange");
+                                setSortDir("asc");
+                            }}
+                            className={`flex items-center gap-1.5 rounded-lg px-2 py-1 transition ${
+                                activeTab === "declines"
+                                    ? "bg-rose-100 text-rose-800 ring-1 ring-rose-500 dark:bg-rose-950/80 dark:text-rose-300"
+                                    : "hover:bg-rose-50 text-rose-600 dark:text-rose-400 dark:hover:bg-rose-950/30"
+                            }`}
+                            title="Click to show all Declining stocks"
+                        >
                             <span className="text-base font-bold sm:text-lg">{summary.declines}</span>
-                            <span className="text-[11px] font-medium">Dec</span>
-                        </div>
-                        <div className="text-[11px] text-gray-400">
-                            {summary.unchanged} Unch
-                        </div>
+                            <span className="text-[11px] font-semibold">Declines</span>
+                        </button>
+
+                        {/* Unchanged Button */}
+                        <button
+                            onClick={() => {
+                                setActiveTab("unchanged");
+                            }}
+                            className={`flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] transition ${
+                                activeTab === "unchanged"
+                                    ? "bg-gray-200 text-gray-900 ring-1 ring-gray-400 dark:bg-gray-800 dark:text-white"
+                                    : "text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+                            }`}
+                            title="Click to show Unchanged stocks"
+                        >
+                            <span>{summary.unchanged}</span>
+                            <span>Unchanged</span>
+                        </button>
                     </div>
                     {/* Visual Advance/Decline bar */}
-                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800 flex">
+                    <div
+                        className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800 flex cursor-pointer"
+                        onClick={() => {
+                            setActiveTab(activeTab === "advances" ? "declines" : "advances");
+                        }}
+                        title="Click to switch between Advances and Declines"
+                    >
                         <div
-                            className="bg-emerald-500 transition-all duration-500"
+                            className="bg-emerald-500 transition-all duration-500 hover:brightness-110"
                             style={{ width: `${advanceRatio}%` }}
                         />
                         <div
-                            className="bg-rose-500 transition-all duration-500"
+                            className="bg-rose-500 transition-all duration-500 hover:brightness-110"
                             style={{ width: `${100 - advanceRatio}%` }}
                         />
                     </div>
@@ -264,7 +323,15 @@ export default function MostActive() {
                 </div>
 
                 {/* Card 3: Top Gainer */}
-                <div className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-xs dark:border-gray-800 dark:bg-gray-900">
+                <div
+                    onClick={() => {
+                        if (summary.topGainer) {
+                            setSearchQuery(summary.topGainer.symbol);
+                        }
+                    }}
+                    className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-xs dark:border-gray-800 dark:bg-gray-900 cursor-pointer hover:border-emerald-300 dark:hover:border-emerald-800 transition"
+                    title="Click to search this stock"
+                >
                     <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Top Gainer Today</span>
                     {summary.topGainer ? (
                         <div className="mt-1 flex items-center justify-between">
@@ -286,7 +353,15 @@ export default function MostActive() {
                 </div>
 
                 {/* Card 4: Top Loser */}
-                <div className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-xs dark:border-gray-800 dark:bg-gray-900">
+                <div
+                    onClick={() => {
+                        if (summary.topLoser) {
+                            setSearchQuery(summary.topLoser.symbol);
+                        }
+                    }}
+                    className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-xs dark:border-gray-800 dark:bg-gray-900 cursor-pointer hover:border-rose-300 dark:hover:border-rose-800 transition"
+                    title="Click to search this stock"
+                >
                     <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Top Loser Today</span>
                     {summary.topLoser ? (
                         <div className="mt-1 flex items-center justify-between">
@@ -320,8 +395,8 @@ export default function MostActive() {
                             if (data) {
                                 if (t.id === "all") count = data.all?.length || 217;
                                 else if (t.id === "indices") count = data.indices?.length || 7;
-                                else if (t.id === "gainers") count = data.topGainers?.length || 0;
-                                else if (t.id === "losers") count = data.topLosers?.length || 0;
+                                else if (t.id === "advances") count = summary.advances || 0;
+                                else if (t.id === "declines") count = summary.declines || 0;
                                 else if (t.id === "volume") count = data.topVolume?.length || 0;
                                 else if (t.id === "turnover") count = data.topTurnover?.length || 0;
                             }
