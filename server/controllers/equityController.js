@@ -175,73 +175,131 @@ async function getMarketMap(req, res) {
     }
 }
 
+// In-memory cache for 52-Week High/Low scanner to serve infinite scroll instantly
+let cached52WScan = null;
+let cached52WTimestamp = 0;
+const CACHE_52W_TTL_MS = 30000; // 30s cache
+
 /**
- * Get 52-Week High / Low scanner & proximity metrics
+ * Get 52-Week High / Low scanner & proximity metrics across All Equities, F&O/Options & Indices
  */
 async function get52WeekHighLow(req, res) {
     try {
-        const symbolList = Object.keys(STOCK_METADATA);
+        const now = Date.now();
+        if (cached52WScan && now - cached52WTimestamp < CACHE_52W_TTL_MS) {
+            return res.json(cached52WScan);
+        }
+
+        // 1. Load F&O and Index universes
+        let fnoSet = new Set();
+        try {
+            const fnoList = await dhanMaster.listFnoStockSymbols();
+            fnoSet = new Set(fnoList.map((s) => s.toUpperCase()));
+        } catch (e) {
+            console.warn("[EquityController] Dhan F&O scrip master load error:", e.message);
+        }
+
+        const indexSymbols = MAJOR_INDICES.map((i) => i.symbol.toUpperCase());
+        const indexMetaMap = new Map(MAJOR_INDICES.map((i) => [i.symbol.toUpperCase(), i]));
+
+        // 2. Load all distinct symbols from ohlcv_data and upstox master
+        const dbSymbolsRows = await db.query("SELECT DISTINCT symbol FROM ohlcv_data").catch(() => []);
+        const dbSymbolList = dbSymbolsRows.map((r) => r.symbol.toUpperCase());
+
+        let upstoxEquitiesMap = new Map();
+        try {
+            upstoxEquitiesMap = await upstoxInstruments.getEquityInstrumentKeyMap();
+        } catch (e) {
+            // fallback
+        }
+        const masterSymbolList = Array.from(upstoxEquitiesMap.keys());
+
+        // Combined unique universe: Indices + F&O stocks + DB stocks + Upstox Master stocks
+        const allSymbolSet = new Set([
+            ...indexSymbols,
+            ...fnoSet,
+            ...Object.keys(STOCK_METADATA),
+            ...dbSymbolList,
+            ...masterSymbolList.slice(0, 1000), // Prioritize top 1000 + all F&O & DB
+        ]);
+        const symbolList = Array.from(allSymbolSet);
+
+        // 3. Fetch Quotes
         const quotes = await upstoxQuotes.getQuotesForSymbols(symbolList);
 
-        // Fetch 52-week min/max from DB
-        const placeholders = symbolList.map(() => "?").join(",");
-        const sql = `
+        // 4. Fetch 52-week min/max from DB
+        const dbStats = await db.query(`
             SELECT symbol, MIN(low) as year_low, MAX(high) as year_high, AVG(volume) as avg_vol
             FROM ohlcv_data
-            WHERE symbol IN (${placeholders}) AND trade_date >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
+            WHERE trade_date >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
             GROUP BY symbol
-        `;
-        const dbStats = await db.query(sql, symbolList).catch(() => []);
-        const statMap = new Map(dbStats.map((s) => [s.symbol, s]));
+        `).catch(() => []);
+        const statMap = new Map(dbStats.map((s) => [s.symbol.toUpperCase(), s]));
 
         const records = symbolList.map((sym) => {
-            const meta = STOCK_METADATA[sym];
+            const isIndex = indexMetaMap.has(sym);
+            const isFno = fnoSet.has(sym) || isIndex;
+            const idxMeta = indexMetaMap.get(sym);
+            const meta = STOCK_METADATA[sym] || {};
             const q = quotes[sym] || { price: 0, change: 0, pChange: 0, high: 0, low: 0, volume: 0, source: "offline" };
             const stat = statMap.get(sym) || { year_low: q.low || q.price * 0.7, year_high: q.high || q.price * 1.3, avg_vol: q.volume };
 
-            const yearHigh = Math.max(Number(stat.year_high || 0), Number(q.high || 0), Number(q.price || 0));
-            const yearLow = Math.min(Number(stat.year_low || q.price), Number(q.low || q.price), Number(q.price || 0));
-            const currentPrice = Number(q.price);
+            const currentPrice = Number(q.price || 0);
+            const yearHigh = Math.max(Number(stat.year_high || 0), Number(q.high || 0), currentPrice);
+            const yearLow = Math.min(Number(stat.year_low || (currentPrice > 0 ? currentPrice : 999999)), Number(q.low || currentPrice), currentPrice || 1);
 
             const distFromHigh = yearHigh > 0 ? ((yearHigh - currentPrice) / yearHigh) * 100 : 0;
-            const distFromLow = yearLow > 0 ? ((currentPrice - yearLow) / yearLow) * 100 : 0;
+            const distFromLow = yearLow > 0 && currentPrice > 0 ? ((currentPrice - yearLow) / yearLow) * 100 : 0;
             const rangeSpan = yearHigh - yearLow;
-            const rangePosition = rangeSpan > 0 ? Math.min(100, Math.max(0, ((currentPrice - yearLow) / rangeSpan) * 100)) : 50;
+            const rangePosition = rangeSpan > 0 && currentPrice > 0 ? Math.min(100, Math.max(0, ((currentPrice - yearLow) / rangeSpan) * 100)) : 50;
 
             const isNewHighToday = q.high && yearHigh > 0 && Math.abs(q.high - yearHigh) < 0.05;
             const isNewLowToday = q.low && yearLow > 0 && Math.abs(q.low - yearLow) < 0.05;
 
             return {
                 symbol: sym,
-                name: q.name || sym,
-                sector: meta.sector,
-                industry: meta.industry,
-                mcapTier: meta.mcapTier,
+                name: isIndex ? idxMeta.name : (q.name && q.name !== "NA" ? q.name : sym),
+                type: isIndex ? "index" : "stock",
+                isFno,
+                category: isIndex ? "index" : (isFno ? "fno" : "equity"),
+                sector: isIndex ? idxMeta.sector : (meta.sector || "Equities"),
+                industry: isIndex ? idxMeta.industry : (meta.industry || "General"),
+                mcapTier: isIndex ? idxMeta.mcapTier : (meta.mcapTier || (isFno ? "Large Cap" : "Equity")),
                 price: currentPrice,
-                change: q.change,
-                pChange: q.pChange,
-                volume: q.volume,
+                change: Number(Number(q.change || 0).toFixed(2)),
+                pChange: Number(Number(q.pChange || 0).toFixed(2)),
+                volume: Number(q.volume || 0),
                 yearHigh: Number(yearHigh.toFixed(2)),
-                yearLow: Number(yearLow.toFixed(2)),
+                yearLow: Number((yearLow > 0 && yearLow < 999999 ? yearLow : 0).toFixed(2)),
                 distFromHigh: Number(distFromHigh.toFixed(2)), // % away from high
                 distFromLow: Number(distFromLow.toFixed(2)),   // % away from low
                 rangePosition: Number(rangePosition.toFixed(1)), // 0-100% position
                 isNewHighToday,
                 isNewLowToday,
-                source: q.source,
+                source: q.source || "offline",
             };
         });
 
-        const near52WHigh = records.filter((r) => r.distFromHigh <= 5.0 && r.price > 0).sort((a, b) => a.distFromHigh - b.distFromHigh);
-        const near52WLow = records.filter((r) => r.distFromLow <= 5.0 && r.price > 0).sort((a, b) => a.distFromLow - b.distFromLow);
-        const new52WHighToday = records.filter((r) => r.isNewHighToday);
-        const new52WLowToday = records.filter((r) => r.isNewLowToday);
+        // Filter valid price items
+        const activeRecords = records.filter((r) => r.price > 0 || r.yearHigh > 0);
 
-        res.json({
+        const near52WHigh = activeRecords.filter((r) => r.distFromHigh <= 5.0 && r.price > 0).sort((a, b) => a.distFromHigh - b.distFromHigh);
+        const near52WLow = activeRecords.filter((r) => r.distFromLow <= 5.0 && r.price > 0).sort((a, b) => a.distFromLow - b.distFromLow);
+        const new52WHighToday = activeRecords.filter((r) => r.isNewHighToday);
+        const new52WLowToday = activeRecords.filter((r) => r.isNewLowToday);
+
+        const totalFno = activeRecords.filter((r) => r.isFno).length;
+        const totalEquities = activeRecords.filter((r) => !r.isFno && r.type === "stock").length;
+        const totalIndices = activeRecords.filter((r) => r.type === "index").length;
+
+        const responsePayload = {
             status: "success",
             timestamp: new Date().toISOString(),
             summary: {
-                totalScanned: records.length,
+                totalScanned: activeRecords.length,
+                totalFno,
+                totalEquities,
+                totalIndices,
                 nearHighCount: near52WHigh.length,
                 nearLowCount: near52WLow.length,
                 newHighCount: new52WHighToday.length,
@@ -251,8 +309,13 @@ async function get52WeekHighLow(req, res) {
             near52WLow,
             new52WHighToday,
             new52WLowToday,
-            all: records,
-        });
+            all: activeRecords,
+        };
+
+        cached52WScan = responsePayload;
+        cached52WTimestamp = now;
+
+        res.json(responsePayload);
     } catch (err) {
         console.error("[EquityController] get52WeekHighLow error:", err);
         res.status(500).json({ error: err.message });
