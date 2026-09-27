@@ -154,7 +154,7 @@ export default function FiftyTwoWeekHighLow() {
     // Export to CSV
     function exportToCsv() {
         if (!sortedList.length) return;
-        const headers = ["Symbol", "Name", "Type", "F&O", "Sector", "LTP (INR)", "Change (%)", "52W High", "52W Low", "% From High", "% From Low", "52W Range Pos (%)"];
+        const headers = ["Symbol", "Name", "Type", "F&O", "Sector", "LTP (INR)", "Change (%)", "52W High", "52W Low", "% From High", "% From Low"];
         const rows = sortedList.map((i) => [
             i.symbol,
             `"${i.name || i.symbol}"`,
@@ -167,7 +167,6 @@ export default function FiftyTwoWeekHighLow() {
             i.yearLow,
             i.distFromHigh,
             i.distFromLow,
-            i.rangePosition,
         ]);
         const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
         const encodedUri = encodeURI(csvContent);
@@ -468,17 +467,6 @@ export default function FiftyTwoWeekHighLow() {
                                     </div>
                                 </th>
                                 <th
-                                    onClick={() => handleSort("rangePosition")}
-                                    className="cursor-pointer px-4 py-3 font-semibold text-center hover:text-gray-900 dark:hover:text-white select-none"
-                                >
-                                    <div className="flex items-center justify-center gap-1">
-                                        <span>52W Range & Position</span>
-                                        {sortKey === "rangePosition" && (
-                                            sortDir === "asc" ? <FiArrowUp size={12} /> : <FiArrowDown size={12} />
-                                        )}
-                                    </div>
-                                </th>
-                                <th
                                     onClick={() => handleSort("yearHigh")}
                                     className="cursor-pointer px-4 py-3 font-semibold text-right hover:text-gray-900 dark:hover:text-white select-none"
                                 >
@@ -505,7 +493,7 @@ export default function FiftyTwoWeekHighLow() {
                         <tbody className="divide-y divide-gray-100 dark:divide-gray-800/60">
                             {visibleItems.length === 0 ? (
                                 <tr>
-                                    <td colSpan={7} className="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
+                                    <td colSpan={6} className="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
                                         {loading ? "Scanning 52-week high & low universe..." : "No matching securities found."}
                                     </td>
                                 </tr>
@@ -574,25 +562,6 @@ export default function FiftyTwoWeekHighLow() {
                                             {/* 52W Low */}
                                             <td className="px-4 py-3 text-right font-mono text-gray-500 dark:text-gray-400">
                                                 ₹{formatPrice(item.yearLow)}
-                                            </td>
-
-                                            {/* 52W Range & Position Bar */}
-                                            <td className="px-4 py-3">
-                                                <div className="mx-auto max-w-[150px] space-y-1">
-                                                    <div className="relative h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden flex">
-                                                        <div
-                                                            className="h-full bg-gradient-to-r from-rose-500 via-amber-400 to-emerald-500 rounded-full transition-all duration-500"
-                                                            style={{ width: `${Math.max(5, Math.min(100, item.rangePosition))}%` }}
-                                                        />
-                                                    </div>
-                                                    <div className="flex items-center justify-between text-[10px] font-mono text-gray-400">
-                                                        <span>L: ₹{formatPrice(item.yearLow)}</span>
-                                                        <span className="font-semibold text-gray-700 dark:text-gray-300">
-                                                            {item.rangePosition}%
-                                                        </span>
-                                                        <span>H: ₹{formatPrice(item.yearHigh)}</span>
-                                                    </div>
-                                                </div>
                                             </td>
 
                                             {/* 52W High */}

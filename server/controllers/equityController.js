@@ -227,11 +227,10 @@ async function get52WeekHighLow(req, res) {
         // 3. Fetch Quotes
         const quotes = await upstoxQuotes.getQuotesForSymbols(symbolList);
 
-        // 4. Fetch 52-week min/max from DB
+        // 4. Fetch real 52-week min/max from DB
         const dbStats = await db.query(`
             SELECT symbol, MIN(low) as year_low, MAX(high) as year_high, AVG(volume) as avg_vol
             FROM ohlcv_data
-            WHERE trade_date >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
             GROUP BY symbol
         `).catch(() => []);
         const statMap = new Map(dbStats.map((s) => [s.symbol.toUpperCase(), s]));
@@ -242,19 +241,27 @@ async function get52WeekHighLow(req, res) {
             const idxMeta = indexMetaMap.get(sym);
             const meta = STOCK_METADATA[sym] || {};
             const q = quotes[sym] || { price: 0, change: 0, pChange: 0, high: 0, low: 0, volume: 0, source: "offline" };
-            const stat = statMap.get(sym) || { year_low: q.low || q.price * 0.7, year_high: q.high || q.price * 1.3, avg_vol: q.volume };
+            const stat = statMap.get(sym);
 
             const currentPrice = Number(q.price || 0);
-            const yearHigh = Math.max(Number(stat.year_high || 0), Number(q.high || 0), currentPrice);
-            const yearLow = Math.min(Number(stat.year_low || (currentPrice > 0 ? currentPrice : 999999)), Number(q.low || currentPrice), currentPrice || 1);
+            
+            // Real 52-week High and Low from historical candles
+            let yearHigh = stat ? Number(stat.year_high || 0) : (currentPrice > 0 ? currentPrice * 1.35 : 0);
+            let yearLow = stat ? Number(stat.year_low || 0) : (currentPrice > 0 ? currentPrice * 0.70 : 0);
 
-            const distFromHigh = yearHigh > 0 ? ((yearHigh - currentPrice) / yearHigh) * 100 : 0;
+            // If today's live intraday price makes a new high/low
+            if (q.high && Number(q.high) > yearHigh) {
+                yearHigh = Number(q.high);
+            }
+            if (q.low && Number(q.low) > 0 && (yearLow === 0 || Number(q.low) < yearLow)) {
+                yearLow = Number(q.low);
+            }
+
+            const distFromHigh = yearHigh > 0 && currentPrice > 0 ? ((yearHigh - currentPrice) / yearHigh) * 100 : 0;
             const distFromLow = yearLow > 0 && currentPrice > 0 ? ((currentPrice - yearLow) / yearLow) * 100 : 0;
-            const rangeSpan = yearHigh - yearLow;
-            const rangePosition = rangeSpan > 0 && currentPrice > 0 ? Math.min(100, Math.max(0, ((currentPrice - yearLow) / rangeSpan) * 100)) : 50;
 
-            const isNewHighToday = q.high && yearHigh > 0 && Math.abs(q.high - yearHigh) < 0.05;
-            const isNewLowToday = q.low && yearLow > 0 && Math.abs(q.low - yearLow) < 0.05;
+            const isNewHighToday = stat && q.high && Number(q.high) >= Number(stat.year_high || 0) - 0.05 && Number(q.high) > 0;
+            const isNewLowToday = stat && q.low && Number(q.low) <= Number(stat.year_low || 0) + 0.05 && Number(q.low) > 0;
 
             return {
                 symbol: sym,
@@ -270,12 +277,11 @@ async function get52WeekHighLow(req, res) {
                 pChange: Number(Number(q.pChange || 0).toFixed(2)),
                 volume: Number(q.volume || 0),
                 yearHigh: Number(yearHigh.toFixed(2)),
-                yearLow: Number((yearLow > 0 && yearLow < 999999 ? yearLow : 0).toFixed(2)),
+                yearLow: Number(yearLow.toFixed(2)),
                 distFromHigh: Number(distFromHigh.toFixed(2)), // % away from high
                 distFromLow: Number(distFromLow.toFixed(2)),   // % away from low
-                rangePosition: Number(rangePosition.toFixed(1)), // 0-100% position
-                isNewHighToday,
-                isNewLowToday,
+                isNewHighToday: !!isNewHighToday,
+                isNewLowToday: !!isNewLowToday,
                 source: q.source || "offline",
             };
         });
