@@ -339,7 +339,21 @@ export function computeMarginDetails(legs, spot, symbol) {
         }
     }
 
-    // Match vertical spreads per type
+    const hasShort = legs.some((l) => l.action === "sell");
+    if (!hasShort) {
+        return {
+            fundsRequired: Math.round(premiumPaid),
+            estMargin: 0,
+            nakedMargin: 0,
+            marginBenefit: 0,
+            netPremium: Math.round(-premiumPaid),
+            premiumPaid: Math.round(premiumPaid),
+            premiumReceived: 0,
+            isHedged: false,
+        };
+    }
+
+    // Match vertical & calendar spreads per type
     const spreadMargins = { CE: 0, PE: 0 };
     let anyHedgeMatched = false;
 
@@ -351,15 +365,45 @@ export function computeMarginDetails(legs, spot, symbol) {
             if (sLeg.lotsLeft <= 0) continue;
             const lotSize = sLeg.lotSize || 1;
 
+            // Prioritize same expiry hedges first, then cross-expiry calendar hedges
             const candidates = longs
-                .filter((l) => l.lotsLeft > 0 && (sLeg.expiry == null || l.expiry == null || l.expiry === sLeg.expiry))
-                .sort((a, b) => Math.abs(a.strike - sLeg.strike) - Math.abs(b.strike - sLeg.strike));
+                .filter((l) => l.lotsLeft > 0)
+                .sort((a, b) => {
+                    const aSameExp = a.expiry === sLeg.expiry ? 0 : 1;
+                    const bSameExp = b.expiry === sLeg.expiry ? 0 : 1;
+                    if (aSameExp !== bSameExp) return aSameExp - bSameExp;
+                    return Math.abs(a.strike - sLeg.strike) - Math.abs(b.strike - sLeg.strike);
+                });
 
             for (const lLeg of candidates) {
                 if (sLeg.lotsLeft <= 0) break;
                 const pairLots = Math.min(sLeg.lotsLeft, lLeg.lotsLeft);
-                const lossPerUnit = verticalMaxLossPerUnit(sLeg, lLeg);
-                spreadMargins[type] += lossPerUnit * lotSize * pairLots;
+                const isSameExpiry = !sLeg.expiry || !lLeg.expiry || sLeg.expiry === lLeg.expiry;
+
+                let spreadMarginForPair = 0;
+                if (isSameExpiry) {
+                    const strikeDiff = Math.abs(sLeg.strike - lLeg.strike);
+                    const isDebitSpread = (type === "CE" && lLeg.strike < sLeg.strike) || (type === "PE" && lLeg.strike > sLeg.strike);
+
+                    if (isDebitSpread) {
+                        // Debit spread: Max risk is bounded by net debit paid / buy leg premium
+                        const netDebitPerUnit = Math.max(0, (lLeg.premium || 0) - (sLeg.premium || 0));
+                        spreadMarginForPair = netDebitPerUnit * lotSize * pairLots;
+                    } else {
+                        // Credit spread: Bounded by strike difference * lotSize + 0.5% exposure buffer
+                        const spreadSpan = strikeDiff * lotSize * pairLots;
+                        const spreadExposure = (spot * lotSize * pairLots) * 0.005;
+                        spreadMarginForPair = Math.min(
+                            spot * lotSize * pairLots * 0.113,
+                            spreadSpan + spreadExposure
+                        );
+                    }
+                } else {
+                    // Calendar Spread: ~30% of naked margin
+                    spreadMarginForPair = (spot * lotSize * pairLots * 0.113) * 0.30;
+                }
+
+                spreadMargins[type] += spreadMarginForPair;
                 sLeg.lotsLeft -= pairLots;
                 lLeg.lotsLeft -= pairLots;
                 anyHedgeMatched = true;
@@ -367,8 +411,7 @@ export function computeMarginDetails(legs, spot, symbol) {
         }
     }
 
-    // Hedged margin for matched spreads:
-    // When both CE and PE wings are hedged (e.g. Iron Condor), exchange takes max(CE wing, PE wing)
+    // Hedged margin for matched spreads (Iron Condor rule: Max of CE wing and PE wing)
     const hedgedSpreadsMargin = (spreadMargins.CE > 0 && spreadMargins.PE > 0)
         ? Math.max(spreadMargins.CE, spreadMargins.PE)
         : (spreadMargins.CE + spreadMargins.PE);
@@ -397,20 +440,19 @@ export function computeMarginDetails(legs, spot, symbol) {
         }
     }
 
-    // Portfolio SPAN takes the worst scenario between remaining short CE and short PE
     const unhedgedPortfolioSpan = Math.max(unhedgedCeSpan, unhedgedPeSpan);
     const unhedgedTotalExposure = unhedgedCeExposure + unhedgedPeExposure;
     const remainingNakedMargin = unhedgedPortfolioSpan + unhedgedTotalExposure;
 
     const totalEstMargin = hedgedSpreadsMargin + remainingNakedMargin;
-
     const netPremium = premiumReceived - premiumPaid;
     const marginBenefit = anyHedgeMatched ? Math.max(0, totalNakedMargin - totalEstMargin) : 0;
-    const hasShort = legs.some((l) => l.action === "sell");
 
-    const fundsRequired = !hasShort
-        ? premiumPaid
-        : totalEstMargin + (netPremium < 0 ? Math.abs(netPremium) : 0);
+    // In Indian brokers: Funds Required accounts for entry margin and initial buy leg premiums
+    const fundsRequired = Math.max(
+        totalEstMargin,
+        netPremium < 0 ? premiumPaid : totalEstMargin
+    );
 
     return {
         fundsRequired: Math.round(fundsRequired),

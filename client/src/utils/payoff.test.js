@@ -198,6 +198,27 @@ describe("Iron Condor (4 legs, fully defined risk)", () => {
         expect(margin.marginBenefit).toBeGreaterThan(0);
         expect(margin.fundsRequired).toBeLessThan(margin.nakedMargin);
     });
+
+    it("calculates accurate margin for a 2-leg Credit Spread", () => {
+        const creditSpread = [
+            leg({ action: "sell", type: "CE", strike: 18000, premium: 119.25, qty: 1, lotSize: 65, expiry: "2023-01-12", iv: 13.23 }),
+            leg({ action: "buy", type: "CE", strike: 18200, premium: 54.00, qty: 1, lotSize: 65, expiry: "2023-01-12", iv: 12.53 }),
+        ];
+        const margin = computeMarginDetails(creditSpread, 18000, "NIFTY");
+        expect(margin.isHedged).toBe(true);
+        expect(margin.fundsRequired).toBeLessThan(30000);
+        expect(margin.marginBenefit).toBeGreaterThan(100000);
+    });
+
+    it("requires only premium paid for a pure Debit Spread", () => {
+        const debitSpread = [
+            leg({ action: "buy", type: "CE", strike: 18000, premium: 119.25, qty: 1, lotSize: 65, expiry: "2023-01-12", iv: 13.23 }),
+            leg({ action: "sell", type: "CE", strike: 18200, premium: 54.00, qty: 1, lotSize: 65, expiry: "2023-01-12", iv: 12.53 }),
+        ];
+        const margin = computeMarginDetails(debitSpread, 18000, "NIFTY");
+        expect(margin.isHedged).toBe(true);
+        expect(margin.fundsRequired).toBeLessThan(25000);
+    });
 });
 
 describe("computePOP (Probability of Profit)", () => {
