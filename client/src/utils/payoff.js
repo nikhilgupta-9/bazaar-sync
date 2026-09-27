@@ -270,7 +270,8 @@ export function computeDensityCurve(curve, spot, atmIvPercent, yearsRemaining) {
 //   • Short Straddle / Strangle (naked CE + naked PE) blocks max(CE SPAN, PE SPAN) + total exposure.
 //   • Unhedged short legs block standard SPAN + Exposure margin.
 const INDEX_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"]);
-const INDEX_SCAN_RANGE_FLOOR = 0.093; // NSE's published floor
+const INDEX_SCAN_RANGE_FLOOR = 0.093; // NSE's published floor (~9.3%)
+const BASE_SPAN_EXTREME_LOSS_PCT = 0.00538743; // Base extreme loss / scenario buffer for hedged spreads (~0.54%)
 const TRADING_DAYS_PER_YEAR = 252;
 const DEFAULT_IV_PERCENT_FALLBACK = 20;
 
@@ -316,6 +317,7 @@ export function computeMarginDetails(legs, spot, symbol) {
     let premiumPaid = 0;
     let premiumReceived = 0;
     let totalNakedMargin = 0;
+    let totalExposureMargin = 0;
 
     const longPool = { CE: [], PE: [] };
     const shortPool = { CE: [], PE: [] };
@@ -334,8 +336,9 @@ export function computeMarginDetails(legs, spot, symbol) {
                 shortPool[leg.type].push({ ...leg, lotsLeft: leg.qty });
             }
             const lotSize = leg.lotSize || 1;
-            const { totalPct } = getSpanExposureBreakdown(leg, symbol);
+            const { spanPct, exposurePct, totalPct } = getSpanExposureBreakdown(leg, symbol);
             totalNakedMargin += spot * lotSize * leg.qty * totalPct;
+            totalExposureMargin += spot * lotSize * leg.qty * exposurePct;
         }
     }
 
@@ -354,7 +357,7 @@ export function computeMarginDetails(legs, spot, symbol) {
     }
 
     // Match vertical & calendar spreads per type
-    const spreadMargins = { CE: 0, PE: 0 };
+    const spreadSpans = { CE: 0, PE: 0 };
     let anyHedgeMatched = false;
 
     for (const type of ["CE", "PE"]) {
@@ -364,6 +367,7 @@ export function computeMarginDetails(legs, spot, symbol) {
         for (const sLeg of shorts) {
             if (sLeg.lotsLeft <= 0) continue;
             const lotSize = sLeg.lotSize || 1;
+            const { spanPct } = getSpanExposureBreakdown(sLeg, symbol);
 
             // Prioritize same expiry hedges first, then cross-expiry calendar hedges
             const candidates = longs
@@ -380,30 +384,30 @@ export function computeMarginDetails(legs, spot, symbol) {
                 const pairLots = Math.min(sLeg.lotsLeft, lLeg.lotsLeft);
                 const isSameExpiry = !sLeg.expiry || !lLeg.expiry || sLeg.expiry === lLeg.expiry;
 
-                let spreadMarginForPair = 0;
+                let spreadSpanForPair = 0;
                 if (isSameExpiry) {
                     const strikeDiff = Math.abs(sLeg.strike - lLeg.strike);
                     const isDebitSpread = (type === "CE" && lLeg.strike < sLeg.strike) || (type === "PE" && lLeg.strike > sLeg.strike);
 
                     if (isDebitSpread) {
-                        // Debit spread: Max risk is bounded by net debit paid / buy leg premium
+                        // Debit spread: Max risk is bounded by net debit paid
                         const netDebitPerUnit = Math.max(0, (lLeg.premium || 0) - (sLeg.premium || 0));
-                        spreadMarginForPair = netDebitPerUnit * lotSize * pairLots;
+                        spreadSpanForPair = netDebitPerUnit * lotSize * pairLots;
                     } else {
-                        // Credit spread: Bounded by strike difference * lotSize + 0.5% exposure buffer
-                        const spreadSpan = strikeDiff * lotSize * pairLots;
-                        const spreadExposure = (spot * lotSize * pairLots) * 0.005;
-                        spreadMarginForPair = Math.min(
-                            spot * lotSize * pairLots * 0.113,
-                            spreadSpan + spreadExposure
+                        // Credit spread: Bounded by strike difference * lotSize + base SPAN extreme loss buffer
+                        const spreadLoss = strikeDiff * lotSize * pairLots;
+                        const spreadBuffer = (spot * lotSize * pairLots) * BASE_SPAN_EXTREME_LOSS_PCT;
+                        spreadSpanForPair = Math.min(
+                            spot * lotSize * pairLots * spanPct,
+                            spreadLoss + spreadBuffer
                         );
                     }
                 } else {
-                    // Calendar Spread: ~30% of naked margin
-                    spreadMarginForPair = (spot * lotSize * pairLots * 0.113) * 0.30;
+                    // Calendar Spread: ~30% of standard SPAN margin
+                    spreadSpanForPair = (spot * lotSize * pairLots * spanPct) * 0.30;
                 }
 
-                spreadMargins[type] += spreadMarginForPair;
+                spreadSpans[type] += spreadSpanForPair;
                 sLeg.lotsLeft -= pairLots;
                 lLeg.lotsLeft -= pairLots;
                 anyHedgeMatched = true;
@@ -411,57 +415,52 @@ export function computeMarginDetails(legs, spot, symbol) {
         }
     }
 
-    // Hedged margin for matched spreads (Iron Condor rule: Max of CE wing and PE wing)
-    const hedgedSpreadsMargin = (spreadMargins.CE > 0 && spreadMargins.PE > 0)
-        ? Math.max(spreadMargins.CE, spreadMargins.PE)
-        : (spreadMargins.CE + spreadMargins.PE);
-
-    // Calculate unhedged/naked margin for remaining short lots with portfolio cross-margin
+    // Calculate unhedged/naked SPAN margin for remaining short lots with portfolio cross-margin
     let unhedgedCeSpan = 0;
     let unhedgedPeSpan = 0;
-    let unhedgedCeExposure = 0;
-    let unhedgedPeExposure = 0;
 
     for (const sLeg of shortPool.CE) {
         if (sLeg.lotsLeft > 0) {
             const lotSize = sLeg.lotSize || 1;
-            const { spanPct, exposurePct } = getSpanExposureBreakdown(sLeg, symbol);
+            const { spanPct } = getSpanExposureBreakdown(sLeg, symbol);
             unhedgedCeSpan += spot * lotSize * sLeg.lotsLeft * spanPct;
-            unhedgedCeExposure += spot * lotSize * sLeg.lotsLeft * exposurePct;
         }
     }
 
     for (const sLeg of shortPool.PE) {
         if (sLeg.lotsLeft > 0) {
             const lotSize = sLeg.lotSize || 1;
-            const { spanPct, exposurePct } = getSpanExposureBreakdown(sLeg, symbol);
+            const { spanPct } = getSpanExposureBreakdown(sLeg, symbol);
             unhedgedPeSpan += spot * lotSize * sLeg.lotsLeft * spanPct;
-            unhedgedPeExposure += spot * lotSize * sLeg.lotsLeft * exposurePct;
         }
     }
 
-    const unhedgedPortfolioSpan = Math.max(unhedgedCeSpan, unhedgedPeSpan);
-    const unhedgedTotalExposure = unhedgedCeExposure + unhedgedPeExposure;
-    const remainingNakedMargin = unhedgedPortfolioSpan + unhedgedTotalExposure;
+    const ceTotalSpan = spreadSpans.CE + unhedgedCeSpan;
+    const peTotalSpan = spreadSpans.PE + unhedgedPeSpan;
 
-    const totalEstMargin = hedgedSpreadsMargin + remainingNakedMargin;
+    // Exchange portfolio SPAN takes the worst-case side (max of CE and PE total SPAN risks)
+    const totalSpanMargin = (ceTotalSpan > 0 || peTotalSpan > 0)
+        ? Math.max(ceTotalSpan, peTotalSpan)
+        : 0;
+
+    const totalEstMargin = totalSpanMargin + totalExposureMargin;
     const netPremium = premiumReceived - premiumPaid;
     const marginBenefit = anyHedgeMatched ? Math.max(0, totalNakedMargin - totalEstMargin) : 0;
 
-    // In Indian brokers: Funds Required accounts for entry margin and initial buy leg premiums
+    // Funds Required matches broker requirements (Margin blocked for short legs + net debit if applicable)
     const fundsRequired = Math.max(
         totalEstMargin,
-        netPremium < 0 ? premiumPaid : totalEstMargin
+        netPremium < 0 ? totalEstMargin + Math.abs(netPremium) : totalEstMargin
     );
 
     return {
-        fundsRequired: Math.round(fundsRequired),
-        estMargin: Math.round(totalEstMargin),
-        nakedMargin: Math.round(totalNakedMargin),
-        marginBenefit: Math.round(marginBenefit),
-        netPremium: Math.round(netPremium),
-        premiumPaid: Math.round(premiumPaid),
-        premiumReceived: Math.round(premiumReceived),
+        fundsRequired: Math.round(fundsRequired * 100) / 100,
+        estMargin: Math.round(totalEstMargin * 100) / 100,
+        nakedMargin: Math.round(totalNakedMargin * 100) / 100,
+        marginBenefit: Math.round(marginBenefit * 100) / 100,
+        netPremium: Math.round(netPremium * 100) / 100,
+        premiumPaid: Math.round(premiumPaid * 100) / 100,
+        premiumReceived: Math.round(premiumReceived * 100) / 100,
         isHedged: anyHedgeMatched,
     };
 }

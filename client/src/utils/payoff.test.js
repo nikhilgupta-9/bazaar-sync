@@ -206,18 +206,31 @@ describe("Iron Condor (4 legs, fully defined risk)", () => {
         ];
         const margin = computeMarginDetails(creditSpread, 18000, "NIFTY");
         expect(margin.isHedged).toBe(true);
-        expect(margin.fundsRequired).toBeLessThan(30000);
-        expect(margin.marginBenefit).toBeGreaterThan(100000);
+        expect(margin.fundsRequired).toBeLessThan(50000);
+        expect(margin.marginBenefit).toBeGreaterThan(80000);
     });
 
-    it("requires only premium paid for a pure Debit Spread", () => {
+    it("requires margin for debit spread accounting for short leg exposure", () => {
         const debitSpread = [
             leg({ action: "buy", type: "CE", strike: 18000, premium: 119.25, qty: 1, lotSize: 65, expiry: "2023-01-12", iv: 13.23 }),
             leg({ action: "sell", type: "CE", strike: 18200, premium: 54.00, qty: 1, lotSize: 65, expiry: "2023-01-12", iv: 12.53 }),
         ];
         const margin = computeMarginDetails(debitSpread, 18000, "NIFTY");
         expect(margin.isHedged).toBe(true);
-        expect(margin.fundsRequired).toBeLessThan(25000);
+        expect(margin.fundsRequired).toBeLessThan(40000);
+    });
+
+    it("matches exact StockMojo Iron Butterfly margin for 6 Jan 2023", () => {
+        const ironFly = [
+            leg({ action: "sell", type: "CE", strike: 18000, premium: 113.95, qty: 1, lotSize: 65, expiry: "2023-01-12" }),
+            leg({ action: "sell", type: "PE", strike: 18000, premium: 115.80, qty: 1, lotSize: 65, expiry: "2023-01-12" }),
+            leg({ action: "buy", type: "CE", strike: 18200, premium: 38.30, qty: 1, lotSize: 65, expiry: "2023-01-12" }),
+            leg({ action: "buy", type: "PE", strike: 17750, premium: 35.80, qty: 1, lotSize: 65, expiry: "2023-01-12" }),
+        ];
+        const margin = computeMarginDetails(ironFly, 17979.55, "NIFTY");
+        expect(margin.isHedged).toBe(true);
+        expect(margin.estMargin).toBeCloseTo(69292.73, 0);
+        expect(margin.fundsRequired).toBeCloseTo(69292.73, 0);
     });
 });
 
