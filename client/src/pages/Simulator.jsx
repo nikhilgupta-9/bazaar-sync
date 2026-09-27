@@ -2584,121 +2584,102 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
           <div className="mb-4 flex flex-col gap-4 items-stretch md:flex-row">
             {legs.length > 0 && (
               <div className="w-full shrink-0 flex flex-col justify-between rounded-2xl border border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 p-4 shadow-xs space-y-3 md:w-64 backdrop-blur-md">
-                {/* Strategy P&L Hero Card */}
-                <div
-                  className={`rounded-xl p-3 border transition-all ${
-                    strategyPnl > 0
-                      ? "bg-emerald-50/70 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800/60"
-                      : strategyPnl < 0
-                      ? "bg-rose-50/70 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800/60"
-                      : "bg-gray-50/80 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700/60"
-                  }`}
-                >
-                  <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    <span>Strategy P&L</span>
-                    <span className="rounded px-1.5 py-0.5 text-[9px] font-extrabold bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
-                      {replayData ? "Replay MTM" : "Live MTM"}
-                    </span>
+                {/* P&L Card with StockMojo Badge */}
+                <div className="border-b border-gray-100 dark:border-gray-800/80 pb-3">
+                  <div className="text-[11px] font-bold text-gray-500 dark:text-gray-400">
+                    P&L
                   </div>
-                  <div
-                    className={`text-lg font-black tabular-nums mt-1 ${
-                      strategyPnl > 0
-                        ? "text-emerald-600 dark:text-emerald-400"
-                        : strategyPnl < 0
-                        ? "text-rose-600 dark:text-rose-400"
-                        : "text-gray-800 dark:text-gray-200"
-                    }`}
-                  >
-                    {formatPrice(strategyPnl)}
+                  <div className="mt-1 flex items-center gap-2">
+                    <span
+                      className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold font-mono tabular-nums ${
+                        (strategyPnl ?? 0) >= 0
+                          ? "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-800/40"
+                          : "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border border-rose-200/60 dark:border-rose-800/40"
+                      }`}
+                    >
+                      {(strategyPnl ?? 0) >= 0 ? "+" : ""}{formatPrice(strategyPnl ?? 0)} ({((marginDetails?.fundsRequired || estMargin) ? (((strategyPnl ?? 0) / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2) : "0.00")}%)
+                    </span>
                   </div>
                 </div>
 
-                {/* Funds Required & Hedge Benefit */}
+                {/* Est Margin */}
                 <div title="Estimated margin required by exchange/broker" className="border-b border-gray-100 dark:border-gray-800/80 pb-2.5">
-                  <div className="flex items-center justify-between text-[10px] font-bold text-gray-400 dark:text-gray-400 uppercase tracking-wider">
-                    <span>Funds Required</span>
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-gray-400 dark:text-gray-400">
+                    <span>Est. Margin</span>
                     {marginDetails?.isHedged && (
                       <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400">Hedged</span>
                     )}
                   </div>
-                  <div className="text-sm font-black tabular-nums text-gray-900 dark:text-gray-100 mt-0.5">
-                    {marginDetails?.fundsRequired ? formatPrice(marginDetails.fundsRequired) : (estMargin ? formatPrice(estMargin) : "₹0")}
+                  <div className="text-sm font-bold font-mono tabular-nums text-gray-900 dark:text-gray-100 mt-0.5">
+                    {marginDetails?.fundsRequired ? formatPrice(marginDetails.fundsRequired) : (estMargin ? formatPrice(estMargin) : "₹0.00")}
                   </div>
                   {marginDetails?.isHedged && marginDetails?.marginBenefit > 0 && (
-                    <div className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 border border-emerald-200/50 dark:border-emerald-800/40">
+                    <div className="mt-1 inline-flex items-center gap-1 rounded bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.2 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
                       <span>✓ Saved</span>
                       <span className="font-bold">{formatPrice(marginDetails.marginBenefit)}</span>
                     </div>
                   )}
                 </div>
 
-                {/* POP & Risk:Reward Dual Card */}
+                {/* POP & Reward : Risk */}
                 <div className="grid grid-cols-2 gap-2 border-b border-gray-100 dark:border-gray-800/80 pb-2.5">
                   <div>
-                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">POP</div>
-                    <div className="mt-1">
-                      {pop != null ? (
-                        <span
-                          className={`inline-block rounded-md px-2 py-0.5 text-xs font-black tabular-nums ${
-                            pop >= 50
-                              ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
-                              : pop >= 35
-                              ? "bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300"
-                              : "bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300"
-                          }`}
-                        >
-                          {pop.toFixed(0)}%
-                        </span>
-                      ) : (
-                        <span className="text-xs font-bold text-gray-400">—</span>
-                      )}
+                    <div className="text-[11px] font-semibold text-gray-400">POP</div>
+                    <div className="mt-0.5 text-xs font-bold font-mono tabular-nums text-gray-800 dark:text-gray-200">
+                      {pop != null ? `${pop.toFixed(0)}%` : "—"}
                     </div>
                   </div>
                   <div>
-                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Risk : Reward</div>
-                    <div className="mt-1 text-xs font-black tabular-nums text-gray-800 dark:text-gray-200">
-                      {riskRewardRatio || "—"}
+                    <div className="text-[11px] font-semibold text-gray-400">Reward : Risk</div>
+                    <div className="mt-0.5 text-xs font-bold font-mono tabular-nums text-gray-800 dark:text-gray-200">
+                      {riskRewardRatio && riskRewardRatio.startsWith("1 : ")
+                        ? riskRewardRatio.replace("1 : ", "")
+                        : (riskRewardRatio || "—")}
                     </div>
                   </div>
                 </div>
 
                 {/* Max Profit & Max Loss */}
-                <div className="grid grid-cols-2 gap-2 border-b border-gray-100 dark:border-gray-800/80 pb-2.5">
+                <div className="space-y-2 border-b border-gray-100 dark:border-gray-800/80 pb-2.5 text-xs font-mono">
                   <div>
-                    <div className="text-[10px] font-bold text-emerald-600/80 dark:text-emerald-400/80 uppercase tracking-wider">Max Profit</div>
-                    <div className="text-xs font-black tabular-nums text-emerald-600 dark:text-emerald-400 mt-0.5">
-                      {typeof maxProfit === "number" ? formatPrice(maxProfit) : (maxProfit || "Unlimited")}
+                    <div className="text-[11px] font-semibold text-gray-400 font-sans">Max Profit</div>
+                    <div className="text-xs font-bold tabular-nums text-emerald-600 dark:text-emerald-400 mt-0.5">
+                      {typeof maxProfit === "number"
+                        ? `+${formatPrice(maxProfit)} (${((marginDetails?.fundsRequired || estMargin) ? ((maxProfit / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2) : "0.00")}%)`
+                        : (maxProfit || "Unlimited")}
                     </div>
                   </div>
                   <div>
-                    <div className="text-[10px] font-bold text-rose-600/80 dark:text-rose-400/80 uppercase tracking-wider">Max Loss</div>
-                    <div className="text-xs font-black tabular-nums text-rose-600 dark:text-rose-400 mt-0.5">
-                      {typeof maxLoss === "number" ? formatPrice(maxLoss) : (maxLoss || "Unlimited")}
+                    <div className="text-[11px] font-semibold text-gray-400 font-sans">Max Loss</div>
+                    <div className="text-xs font-bold tabular-nums text-rose-600 dark:text-rose-400 mt-0.5">
+                      {typeof maxLoss === "number"
+                        ? `${formatPrice(maxLoss)} (${((marginDetails?.fundsRequired || estMargin) ? ((maxLoss / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2) : "0.00")}%)`
+                        : (maxLoss || "Unlimited")}
                     </div>
                   </div>
                 </div>
 
                 {/* Breakevens */}
                 <div className="border-b border-gray-100 dark:border-gray-800/80 pb-2.5">
-                  <div className="text-[10px] font-bold text-gray-400 dark:text-gray-400 uppercase tracking-wider mb-1">
+                  <div className="text-[11px] font-semibold text-gray-400 dark:text-gray-400 mb-1">
                     Breakevens
                   </div>
                   {breakevens && breakevens.length ? (
-                    <div className="space-y-1">
+                    <div className="space-y-1 font-mono text-xs">
                       {breakevens.map((be, i) => {
                         const pctFromSpot = displaySpot ? ((be - displaySpot) / displaySpot) * 100 : null;
                         return (
-                          <div key={i} className="flex items-center justify-between text-xs font-bold tabular-nums text-gray-800 dark:text-gray-200">
-                            <span>{formatPrice(be)}</span>
+                          <div key={i} className="flex items-center justify-between font-bold tabular-nums text-gray-800 dark:text-gray-200">
+                            <span>{Math.round(be)}</span>
                             {pctFromSpot != null && (
                               <span
-                                className={`text-[10px] font-semibold px-1.5 py-0.2 rounded ${
+                                className={`text-[10px] font-semibold ${
                                   pctFromSpot >= 0
-                                    ? "text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60"
-                                    : "text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60"
+                                    ? "text-emerald-600 dark:text-emerald-400"
+                                    : "text-rose-600 dark:text-rose-400"
                                 }`}
                               >
-                                {pctFromSpot >= 0 ? "+" : ""}{pctFromSpot.toFixed(2)}%
+                                ({pctFromSpot >= 0 ? "+" : ""}{pctFromSpot.toFixed(2)}%)
                               </span>
                             )}
                           </div>
@@ -2712,7 +2693,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
                 {/* Greeks Grid */}
                 {netGreeks && (
-                  <div className="grid grid-cols-3 gap-1.5 pt-1 text-[10px]">
+                  <div className="grid grid-cols-3 gap-1 pt-0.5 text-[10px]">
                     <div className="rounded-lg bg-gray-50 dark:bg-gray-850 p-1.5 text-center border border-gray-100 dark:border-gray-800">
                       <div className="text-gray-400 font-bold">Delta (Δ)</div>
                       <div className={`font-black tabular-nums text-xs mt-0.5 ${netGreeks.delta > 0 ? "text-emerald-600 dark:text-emerald-400" : netGreeks.delta < 0 ? "text-rose-600 dark:text-rose-400" : "text-gray-700 dark:text-gray-300"}`}>
@@ -2737,20 +2718,22 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
             )}
 
             <div className="flex-1 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 shadow-xs overflow-hidden flex flex-col backdrop-blur-md">
-              <div className="flex gap-1 border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-850 px-3 pt-2.5 overflow-x-auto">
-                {CHART_TABS.map(([key, label]) => (
-                  <button
-                    key={key}
-                    onClick={() => setChartTab(key)}
-                    className={`shrink-0 rounded-t-xl px-3.5 py-2 text-xs font-bold transition-all ${
-                      chartTab === key
-                        ? "bg-white dark:bg-gray-900 text-emerald-600 dark:text-emerald-400 border border-b-0 border-gray-200 dark:border-gray-800 shadow-2xs"
-                        : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
+              <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-850 px-3 pt-2.5 overflow-x-auto">
+                <div className="flex gap-1">
+                  {CHART_TABS.map(([key, label]) => (
+                    <button
+                      key={key}
+                      onClick={() => setChartTab(key)}
+                      className={`shrink-0 rounded-t-xl px-3.5 py-2 text-xs font-bold transition-all ${
+                        chartTab === key
+                          ? "bg-white dark:bg-gray-900 text-blue-600 dark:text-blue-400 border border-b-0 border-gray-200 dark:border-gray-800 shadow-2xs"
+                          : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
               <div className="flex-1 p-4">
                 {chartTab === "payoff" && (
@@ -2830,98 +2813,100 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                           checked={allLegsActive}
                           disabled={!!replayData}
                           onChange={toggleSelectAllLegs}
-                          className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 disabled:cursor-not-allowed"
-                        />{" "}
-                        Select All
+                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
+                        />
                       </label>
                       <button
                         onClick={() => setLegsTopFirst((v) => !v)}
-                        className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-1 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition"
+                        className="rounded-full bg-blue-600 px-3 py-0.5 text-[11px] font-bold text-white shadow-2xs hover:bg-blue-700 transition"
                       >
-                        {legsTopFirst ? "Top ↓" : "Bottom ↑"}
+                        {legsTopFirst ? "Top" : "Bottom"}
                       </button>
-                      <div className="flex items-center gap-1">
-                        <span className="text-gray-400 dark:text-gray-400 font-medium">Lots:</span>
+                      <div className="flex items-center gap-1.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-0.5">
+                        <span className="text-gray-500 dark:text-gray-400 font-medium">Multiplier:</span>
                         <button
                           onClick={() => bulkAdjustLots(-1)}
                           disabled={!!replayData}
-                          className="rounded-lg border border-gray-200 dark:border-gray-700 px-2 py-0.5 font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
+                          className="px-1 text-xs font-bold text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 disabled:opacity-30"
                         >
                           −
                         </button>
-                        <span className="w-6 text-center font-bold tabular-nums text-gray-800 dark:text-gray-200">{commonLots ?? "—"}</span>
+                        <span className="w-5 text-center font-bold tabular-nums text-gray-800 dark:text-gray-200">{commonLots ?? "1"}</span>
                         <button
                           onClick={() => bulkAdjustLots(1)}
                           disabled={!!replayData}
-                          className="rounded-lg border border-gray-200 dark:border-gray-700 px-2 py-0.5 font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
+                          className="px-1 text-xs font-bold text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 disabled:opacity-30"
                         >
                           +
                         </button>
-                      </div>
-                      <div>
-                        <span className="text-gray-400 dark:text-gray-400 font-medium">Total Qty: </span>
-                        <span className="font-bold tabular-nums text-gray-800 dark:text-gray-200">{totalLots}</span>
+                        <span className="ml-1 text-gray-400 dark:text-gray-500">|</span>
+                        <span className="ml-1 text-gray-500 dark:text-gray-400 font-medium">Qty:</span>
+                        <span className="font-bold tabular-nums text-gray-800 dark:text-gray-200">
+                          {(commonLots ?? 1) * (legs[0]?.lotSize || 65)}
+                        </span>
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
-                      <div>
-                        <span className="text-gray-400 dark:text-gray-400 font-medium">Total P&L: </span>
-                        <span className={`font-black tabular-nums ${totalLivePnl != null && totalLivePnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
-                          {totalLivePnl != null ? formatPrice(totalLivePnl) : "-"}
+                      <div className="flex items-center gap-1 font-mono text-xs">
+                        <span className="text-gray-500 dark:text-gray-400 font-sans font-medium text-[11px]">Total P&L:</span>
+                        <span className={`font-bold tabular-nums ${totalLivePnl != null && totalLivePnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                          {totalLivePnl != null ? `${totalLivePnl >= 0 ? "+" : ""}${formatPrice(totalLivePnl)}` : "+0"}
+                          <span className="ml-1 text-[10px] font-medium">
+                            ({((marginDetails?.fundsRequired || estMargin) ? (((totalLivePnl ?? 0) / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2) : "0.00")}%)
+                          </span>
                         </span>
                       </div>
                       <button
                         onClick={archiveCurrentPosition}
                         disabled={!legs.length}
                         title="Snapshot the current legs into Upcoming Positions and clear them"
-                        className="inline-flex items-center gap-1 rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-1 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 transition"
+                        className="inline-flex items-center gap-1 rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-1 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 transition text-[11px]"
                       >
                         <FiArchive className="h-3.5 w-3.5" /> Archive
                       </button>
                       <button
                         onClick={resetWorkspace}
-                        className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-1 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition"
+                        className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-1 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition text-[11px]"
                       >
-                        Reset Workspace
+                        Reset/New
                       </button>
                     </div>
                   </div>
                   <div className="overflow-x-auto">
-                  <table className="w-full min-w-[820px] border-collapse text-xs">
+                  <table className="w-full min-w-[860px] border-collapse text-xs">
                     <thead>
                       <tr className="text-gray-400 dark:text-gray-400 bg-gray-50/40 dark:bg-gray-800/40 border-b border-gray-100 dark:border-gray-800">
-                        <th className="px-3 py-2.5 w-8" title="Include in payoff calculation"></th>
-                        <th className="px-4 py-2.5 text-left font-bold uppercase tracking-wider text-[10px]">
-                          Action
+                        <th className="px-3 py-2 w-8" title="Include in payoff calculation"></th>
+                        <th className="px-3 py-2 text-center font-semibold text-[11px] w-12">
+                          Side
                         </th>
-                        <th className="px-4 py-2.5 text-left font-bold uppercase tracking-wider text-[10px]">
-                          Type
+                        <th className="px-3 py-2 text-center font-semibold text-[11px] w-14">
+                          Lots
                         </th>
-                        <th className="px-4 py-2.5 text-left font-bold uppercase tracking-wider text-[10px]">
+                        <th className="px-3 py-2 text-left font-semibold text-[11px]">
                           Expiry
                         </th>
-                        <th className="px-4 py-2.5 text-right font-bold uppercase tracking-wider text-[10px]">
+                        <th className="px-3 py-2 text-center font-semibold text-[11px]">
                           Strike
                         </th>
-                        <th className="px-4 py-2.5 text-right font-bold uppercase tracking-wider text-[10px]">
-                          Entry Price
+                        <th className="px-3 py-2 text-center font-semibold text-[11px]">
+                          Type
                         </th>
-                        <th className="px-4 py-2.5 text-right font-bold uppercase tracking-wider text-[10px]">
-                          LTP
+                        <th className="px-3 py-2 text-right font-semibold text-[11px]">
+                          Entry
                         </th>
-                        <th className="px-4 py-2.5 text-right font-bold uppercase tracking-wider text-[10px]">
-                          Live P&L
+                        <th className="px-3 py-2 text-right font-semibold text-[11px]">
+                          LTP/Exit
                         </th>
-                        <th className="px-4 py-2.5 text-right font-bold uppercase tracking-wider text-[10px]" title="Real per-lot share count for this symbol">
-                          Lot Size
+                        <th className="px-3 py-2 text-right font-semibold text-[11px]">
+                          P&L
                         </th>
-                        <th className="px-4 py-2.5 text-right font-bold uppercase tracking-wider text-[10px]" title="Approximation: 15% of notional on short legs">
-                          Margin
-                        </th>
-                        <th className="px-4 py-2.5 text-center font-bold uppercase tracking-wider text-[10px]">
+                        <th className="px-3 py-2 text-center font-semibold text-[11px]">
                           SL/TG
                         </th>
-                        <th className="px-4 py-2.5 w-10"></th>
+                        <th className="px-3 py-2 text-center font-semibold text-[11px] w-20">
+                          Exit
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100 dark:divide-gray-800 font-medium">
@@ -2946,61 +2931,63 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             key={leg.id}
                             className={`hover:bg-gray-50/50 dark:hover:bg-gray-800/50 transition-colors ${included ? "" : "opacity-50"}`}
                           >
-                            <td className="px-3 py-2.5 text-center">
+                            <td className="px-3 py-2 text-center">
                               <input
                                 type="checkbox"
                                 checked={included}
                                 disabled={!!replayData}
                                 onChange={() => toggleLegActive(leg.id)}
                                 title={included ? "Included in payoff calculation — uncheck to exclude" : "Excluded from payoff calculation — check to include"}
-                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 disabled:cursor-not-allowed"
+                                className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
                               />
                             </td>
-                            <td className="px-4 py-2.5">
+                            <td className="px-3 py-2 text-center">
                               <button
                                 onClick={() => toggleLegSide(leg.id)}
                                 disabled={!!replayData}
                                 title="Click to flip Buy/Sell"
-                                className={`rounded-lg px-2.5 py-0.5 text-[10px] font-black text-white shadow-xs transition disabled:cursor-not-allowed disabled:opacity-70 ${!replayData ? "cursor-pointer hover:opacity-90" : ""} ${leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"}`}
+                                className={`w-7 h-6 inline-flex items-center justify-center rounded-md text-xs font-black transition border ${
+                                  leg.action === "buy"
+                                    ? "border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100"
+                                    : "border-rose-500 text-rose-600 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100"
+                                } disabled:opacity-70 disabled:cursor-not-allowed`}
                               >
-                                {leg.action === "buy" ? "BUY" : "SELL"}
+                                {leg.action === "buy" ? "B" : "S"}
                               </button>
                             </td>
-                            <td className="px-4 py-2.5">
-                              <span
-                                className={`rounded-lg px-2 py-0.5 text-[10px] font-extrabold ${leg.type === "CE" ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300" : "bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300"}`}
-                              >
-                                {leg.type}
+                            <td className="px-3 py-2 text-center">
+                              <span className="font-bold tabular-nums text-gray-800 dark:text-gray-200">
+                                {leg.qty}
                               </span>
                             </td>
-                            <td className="px-4 py-2.5 text-left">
+                            <td className="px-3 py-2 text-left">
                               <select
                                 value={leg.expiry || ""}
                                 disabled={!!replayData || !chainData?.expiries?.length}
                                 onChange={(e) => updateLegExpiry(leg.id, e.target.value)}
-                                className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-1 text-[11px] font-semibold text-gray-700 dark:text-gray-200 outline-none focus:border-emerald-500 disabled:opacity-50"
+                                className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:text-gray-200 outline-none focus:border-blue-500 disabled:opacity-50 cursor-pointer"
                               >
                                 {(chainData?.expiries?.includes(leg.expiry) ? chainData.expiries : [leg.expiry, ...(chainData?.expiries || [])]).map((exp) => (
                                   <option key={exp} value={exp}>{formatExpiryShort(exp)}</option>
                                 ))}
                               </select>
                             </td>
-                            <td className="px-4 py-2.5 text-right font-bold tabular-nums text-gray-900 dark:text-gray-100 font-mono">
+                            <td className="px-3 py-2 text-center font-bold tabular-nums text-gray-900 dark:text-gray-100 font-mono">
                               {canPickStrike ? (
-                                <div className="flex items-center justify-end gap-1">
+                                <div className="inline-flex items-center justify-center gap-1">
                                   <button
                                     onClick={() => rollLegStrike(leg.id, -1)}
                                     disabled={!!replayData}
-                                    className="rounded-md border border-gray-200 dark:border-gray-700 px-1 text-[10px] font-bold text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
+                                    className="h-5 w-5 inline-flex items-center justify-center rounded border border-gray-200 dark:border-gray-700 text-[11px] font-bold text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
                                     title="Roll to lower strike"
                                   >
                                     −
                                   </button>
-                                  <span className="tabular-nums">{leg.strike}</span>
+                                  <span className="tabular-nums px-1">{leg.strike}</span>
                                   <button
                                     onClick={() => rollLegStrike(leg.id, 1)}
                                     disabled={!!replayData}
-                                    className="rounded-md border border-gray-200 dark:border-gray-700 px-1 text-[10px] font-bold text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
+                                    className="h-5 w-5 inline-flex items-center justify-center rounded border border-gray-200 dark:border-gray-700 text-[11px] font-bold text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
                                     title="Roll to higher strike"
                                   >
                                     +
@@ -3012,7 +2999,18 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 </span>
                               )}
                             </td>
-                            <td className="px-4 py-2.5 text-right">
+                            <td className="px-3 py-2 text-center">
+                              <span
+                                className={`rounded px-2 py-0.5 text-[11px] font-bold ${
+                                  leg.type === "CE"
+                                    ? "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/60"
+                                    : "text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-950/60"
+                                }`}
+                              >
+                                {leg.type}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-right">
                               <input
                                 type="number"
                                 step="0.05"
@@ -3020,10 +3018,10 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 disabled={!!replayData}
                                 onChange={(e) => updateLeg(leg.id, { premium: Number(e.target.value) })}
                                 title="Entry price — editable"
-                                className="w-20 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-1 text-right font-mono tabular-nums text-gray-900 dark:text-gray-100 focus:border-emerald-500 outline-none disabled:opacity-50"
+                                className="w-16 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-1.5 py-0.5 text-right font-mono tabular-nums text-gray-900 dark:text-gray-100 focus:border-blue-500 outline-none disabled:opacity-50 text-xs"
                               />
                             </td>
-                            <td className="px-4 py-2.5 text-right">
+                            <td className="px-3 py-2 text-right">
                               <input
                                 type="number"
                                 step="0.05"
@@ -3031,35 +3029,22 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 disabled={!!replayData}
                                 onChange={(e) => updateLeg(leg.id, { ltpOverride: e.target.value === "" ? null : Number(e.target.value) })}
                                 title="LTP — editable"
-                                className={`w-20 rounded-lg border px-2 py-1 text-right font-mono tabular-nums outline-none focus:border-emerald-500 disabled:opacity-50 ${leg.ltpOverride != null ? "border-amber-400 bg-amber-50 dark:bg-amber-950/40 text-gray-900 dark:text-gray-100" : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"}`}
+                                className={`w-16 rounded border px-1.5 py-0.5 text-right font-mono tabular-nums outline-none focus:border-blue-500 disabled:opacity-50 text-xs ${leg.ltpOverride != null ? "border-amber-400 bg-amber-50 dark:bg-amber-950/40 text-gray-900 dark:text-gray-100" : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"}`}
                               />
                             </td>
                             <td
-                              className={`px-4 py-2.5 text-right font-black font-mono tabular-nums ${livePnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}
+                              className={`px-3 py-2 text-right font-bold font-mono tabular-nums ${livePnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}
                             >
-                              {livePnl != null ? formatPrice(livePnl) : "-"}
+                              {livePnl != null ? `${livePnl >= 0 ? "+" : ""}${formatPrice(livePnl)}` : "+0"}
                             </td>
-                            <td className="px-4 py-2.5 text-right">
-                              <span
-                                className="font-bold tabular-nums text-gray-800 dark:text-gray-200"
-                                title="Real per-lot share count for this symbol"
-                              >
-                                {leg.lotSize ?? "1 (unknown)"}
-                              </span>
-                            </td>
-                            <td className="px-4 py-2.5 text-right tabular-nums text-gray-700 dark:text-gray-300 font-mono">
-                              {leg.action === "sell" && displaySpot
-                                ? formatPrice(computeEstMargin([leg], displaySpot, symbol))
-                                : <span className="text-gray-300 dark:text-gray-600">—</span>}
-                            </td>
-                            <td className="px-4 py-2.5 text-center relative">
+                            <td className="px-3 py-2 text-center relative">
                               <button
                                 onClick={() => openSlTgModal(leg)}
                                 disabled={!!replayData}
-                                className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition"
+                                className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-blue-600 transition disabled:opacity-30"
                                 title={leg.slPercent != null || leg.tgPercent != null ? `SL ${leg.slPercent ?? "—"}% / TG ${leg.tgPercent ?? "—"}%` : "Set SL/TG"}
                               >
-                                <FiSettings size={14} />
+                                <span className="font-bold text-xs">@</span>
                               </button>
                               {(leg.slPercent != null || leg.tgPercent != null) && (
                                 <div className="text-[9px] font-semibold text-gray-400">SL {leg.slPercent ?? "—"}% / TG {leg.tgPercent ?? "—"}%</div>
@@ -3070,23 +3055,23 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 </div>
                               )}
                             </td>
-                            <td className="px-4 py-2.5 text-center">
-                              <div className="flex items-center justify-center gap-2">
+                            <td className="px-3 py-2 text-center">
+                              <div className="flex items-center justify-center gap-1.5">
                                 <button
                                   onClick={() => resetLegEntryToLtp(leg.id)}
                                   disabled={!!replayData}
-                                  className="text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition disabled:opacity-30"
+                                  className="text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition disabled:opacity-30 p-1"
                                   title="Reset entry to current LTP"
                                 >
-                                  <FiRefreshCw size={13} />
+                                  <FiRefreshCw size={12} />
                                 </button>
                                 <button
                                   onClick={() => removeLeg(leg.id)}
                                   disabled={!!replayData}
-                                  className="text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 transition disabled:opacity-30"
+                                  className="text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 transition disabled:opacity-30 p-1"
                                   title="Remove leg"
                                 >
-                                  <FiTrash2 size={14} />
+                                  <FiTrash2 size={13} />
                                 </button>
                               </div>
                             </td>

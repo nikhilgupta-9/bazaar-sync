@@ -54,24 +54,11 @@ function CustomTooltip({ active, payload, label, spotPrice }) {
     );
 }
 
-// Shows two curves, matching stockmojo's Strategy Builder: a solid "Expiry"
-// line (intrinsic value only, hard kinks at strikes) and a dashed "Today"
-// line (Black-Scholes mark-to-market with remaining time value, smooth near
-// the money) — plus ±1SD/±2SD expected-move reference lines based on ATM IV,
-// a light probability-density histogram in the background (decorative, same
-// normal-distribution approximation computePOP already uses, not a precise
-// distribution), and a marker dot on each curve at the current spot price.
-//
-// Spot/SD values are shown in a header row above the chart, not as inline
-// chart labels — cramming "-2SD -1SD BE Spot BE +1SD +2SD" text into the
-// plot area produced illegible overlapping labels, worse right at the spot
-// P&L dots where the Expiry/Today values used to be drawn as text directly
-// on the curve and collided with each other whenever the two curves were
-// close together (routinely, near the money). The header row + a single
-// "P&L at spot" line below it carry that information instead; the chart
-// itself keeps only the reference lines and two small unlabeled dots.
-export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove, atmIv, yearsRemaining, height = 340 }) {
-    if (!curve.length) {
+// Shows two curves, matching StockMojo's Strategy Builder / Simulator:
+// a solid "Expiry" line with green/red profit-loss shading, a dashed blue "Today" line,
+// ±1SD/±2SD expected-move references, and a clean spot indicator line.
+export default function PayoffChart({ curve, spotPrice, breakevens = [], expectedMove, atmIv, yearsRemaining, height = 340 }) {
+    if (!curve || !curve.length) {
         return (
             <div className="p-16 text-center text-xs text-gray-400">
                 Add a leg from the option chain to see the payoff chart.
@@ -81,8 +68,6 @@ export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove
 
     const max = Math.max(...curve.map((p) => p.pnl));
     const min = Math.min(...curve.map((p) => p.pnl));
-    // Gradient offset placed exactly at pnl=0 so the fill is green above the
-    // zero line and red below it, regardless of how skewed the range is.
     const zeroOffset = max <= 0 ? 0 : min >= 0 ? 1 : max / (max - min);
 
     const hasToday = curve.some((p) => p.todayPnl != null);
@@ -93,88 +78,103 @@ export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove
     const chartData = density ? curve.map((p, i) => ({ ...p, density: density[i] })) : curve;
 
     return (
-        <div>
+        <div className="w-full">
             {(spotPrice || expectedMove) && (
-                <div className="mb-2 flex items-center justify-between px-1 text-[11px] font-semibold text-gray-500 dark:text-gray-400">
-                    <span>{expectedMove ? formatPrice(expectedMove.minus2sd) : ""}<span className="ml-1 text-gray-400 dark:text-gray-500">−2SD</span></span>
-                    <span>{expectedMove ? formatPrice(expectedMove.minus1sd) : ""}<span className="ml-1 text-gray-400 dark:text-gray-500">−1SD</span></span>
-                    <span className="text-sm font-black text-blue-600 dark:text-blue-400">{spotPrice ? `Spot ${formatPrice(spotPrice)}` : ""}</span>
-                    <span>{expectedMove ? formatPrice(expectedMove.plus1sd) : ""}<span className="ml-1 text-gray-400 dark:text-gray-500">+1SD</span></span>
-                    <span>{expectedMove ? formatPrice(expectedMove.plus2sd) : ""}<span className="ml-1 text-gray-400 dark:text-gray-500">+2SD</span></span>
+                <div className="mb-2.5 flex items-center justify-between px-2 text-[11px] font-semibold text-gray-500 dark:text-gray-400">
+                    <span className="text-gray-400 dark:text-gray-500">−2SD</span>
+                    <span className="text-gray-400 dark:text-gray-500">−1SD</span>
+                    <span className="text-xs font-black text-gray-800 dark:text-gray-100 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-md">
+                        {spotPrice ? `Spot: ${formatPrice(spotPrice)}` : ""}
+                    </span>
+                    <span className="text-gray-400 dark:text-gray-500">+1SD</span>
+                    <span className="text-gray-400 dark:text-gray-500">+2SD</span>
                 </div>
             )}
 
             <ResponsiveContainer width="100%" height={height}>
-                <ComposedChart data={chartData}>
+                <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
                     <defs>
                         <linearGradient id="payoffGradient" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset={0} stopColor="#10b981" stopOpacity={0.35} />
-                            <stop offset={zeroOffset} stopColor="#10b981" stopOpacity={0.05} />
-                            <stop offset={zeroOffset} stopColor="#f43f5e" stopOpacity={0.05} />
-                            <stop offset={1} stopColor="#f43f5e" stopOpacity={0.35} />
+                            <stop offset={0} stopColor="#22c55e" stopOpacity={0.25} />
+                            <stop offset={zeroOffset} stopColor="#22c55e" stopOpacity={0.03} />
+                            <stop offset={zeroOffset} stopColor="#ef4444" stopOpacity={0.03} />
+                            <stop offset={1} stopColor="#ef4444" stopOpacity={0.25} />
                         </linearGradient>
                     </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#888888" strokeOpacity={0.15} />
-                    <XAxis dataKey="price" type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 11, fill: "#888888" }} tickFormatter={(v) => formatPrice(v)} />
-                    <YAxis yAxisId="pnl" tick={{ fontSize: 11, fill: "#888888" }} width={60} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#888888" strokeOpacity={0.12} vertical={true} />
+                    <XAxis 
+                        dataKey="price" 
+                        type="number" 
+                        domain={["dataMin", "dataMax"]} 
+                        tick={{ fontSize: 10, fill: "#888888" }} 
+                        tickFormatter={(v) => Math.round(v)} 
+                        axisLine={{ stroke: "#888888", strokeOpacity: 0.2 }}
+                        tickLine={{ stroke: "#888888", strokeOpacity: 0.2 }}
+                    />
+                    <YAxis 
+                        yAxisId="pnl" 
+                        tick={{ fontSize: 10, fill: "#888888" }} 
+                        width={60} 
+                        axisLine={{ stroke: "#888888", strokeOpacity: 0.2 }}
+                        tickLine={{ stroke: "#888888", strokeOpacity: 0.2 }}
+                        tickFormatter={(v) => formatPrice(v)}
+                    />
                     {density && <YAxis yAxisId="density" domain={[0, 4]} hide />}
                     <Tooltip content={<CustomTooltip spotPrice={spotPrice} />} />
-                    <Legend wrapperStyle={{ fontSize: 11 }} />
 
                     {density && (
-                        <Bar yAxisId="density" dataKey="density" barSize={6} isAnimationActive={false} legendType="none">
+                        <Bar yAxisId="density" dataKey="density" barSize={5} isAnimationActive={false} legendType="none">
                             {chartData.map((p, i) => (
-                                <Cell key={i} fill={p.pnl >= 0 ? "#10b981" : "#f43f5e"} fillOpacity={0.12} />
+                                <Cell key={i} fill={p.pnl >= 0 ? "#22c55e" : "#ef4444"} fillOpacity={0.15} />
                             ))}
                         </Bar>
                     )}
 
-                    <ReferenceLine yAxisId="pnl" y={0} stroke="#9ca3af" />
-                    {spotPrice && <ReferenceLine yAxisId="pnl" x={spotPrice} stroke="#2563eb" strokeDasharray="4 4" />}
+                    <ReferenceLine yAxisId="pnl" y={0} stroke="#94a3b8" strokeWidth={1} />
+                    {spotPrice && <ReferenceLine yAxisId="pnl" x={spotPrice} stroke="#475569" strokeWidth={1.5} />}
                     {breakevens.map((be) => (
-                        <ReferenceLine key={be} yAxisId="pnl" x={be} stroke="#a855f7" strokeDasharray="2 2" />
+                        <ReferenceLine key={be} yAxisId="pnl" x={be} stroke="#8b5cf6" strokeDasharray="3 3" strokeWidth={1} />
                     ))}
                     {expectedMove && (
                         <>
-                            <ReferenceLine yAxisId="pnl" x={expectedMove.minus2sd} stroke="#888888" strokeOpacity={0.25} />
-                            <ReferenceLine yAxisId="pnl" x={expectedMove.minus1sd} stroke="#888888" strokeOpacity={0.25} />
-                            <ReferenceLine yAxisId="pnl" x={expectedMove.plus1sd} stroke="#888888" strokeOpacity={0.25} />
-                            <ReferenceLine yAxisId="pnl" x={expectedMove.plus2sd} stroke="#888888" strokeOpacity={0.25} />
+                            <ReferenceLine yAxisId="pnl" x={expectedMove.minus2sd} stroke="#94a3b8" strokeOpacity={0.3} strokeDasharray="2 2" />
+                            <ReferenceLine yAxisId="pnl" x={expectedMove.minus1sd} stroke="#94a3b8" strokeOpacity={0.3} strokeDasharray="2 2" />
+                            <ReferenceLine yAxisId="pnl" x={expectedMove.plus1sd} stroke="#94a3b8" strokeOpacity={0.3} strokeDasharray="2 2" />
+                            <ReferenceLine yAxisId="pnl" x={expectedMove.plus2sd} stroke="#94a3b8" strokeOpacity={0.3} strokeDasharray="2 2" />
                         </>
                     )}
 
-                    <Area yAxisId="pnl" type="monotone" dataKey="pnl" name="Expiry P&L" stroke="#2563eb" strokeWidth={2} fill="url(#payoffGradient)" />
+                    <Area 
+                        yAxisId="pnl" 
+                        type="monotone" 
+                        dataKey="pnl" 
+                        name="Expiry P&L" 
+                        stroke="#22c55e" 
+                        strokeWidth={2} 
+                        fill="url(#payoffGradient)" 
+                        dot={false}
+                    />
                     {hasToday && (
-                        <Line yAxisId="pnl" type="monotone" dataKey="todayPnl" name="Today P&L" stroke="#ea580c" strokeWidth={2} strokeDasharray="5 3" dot={false} />
+                        <Line 
+                            yAxisId="pnl" 
+                            type="monotone" 
+                            dataKey="todayPnl" 
+                            name="Today P&L" 
+                            stroke="#3b82f6" 
+                            strokeWidth={1.5} 
+                            strokeDasharray="4 4" 
+                            dot={false} 
+                        />
                     )}
 
                     {spotExpiryPnl != null && (
-                        <ReferenceDot yAxisId="pnl" x={spotPrice} y={spotExpiryPnl} r={5} fill="#2563eb" stroke="#fff" strokeWidth={2} />
+                        <ReferenceDot yAxisId="pnl" x={spotPrice} y={spotExpiryPnl} r={4} fill="#22c55e" stroke="#fff" strokeWidth={2} />
                     )}
                     {spotTodayPnl != null && (
-                        <ReferenceDot yAxisId="pnl" x={spotPrice} y={spotTodayPnl} r={5} fill="#ea580c" stroke="#fff" strokeWidth={2} />
+                        <ReferenceDot yAxisId="pnl" x={spotPrice} y={spotTodayPnl} r={4} fill="#3b82f6" stroke="#fff" strokeWidth={2} />
                     )}
                 </ComposedChart>
             </ResponsiveContainer>
-
-            {(spotExpiryPnl != null || spotTodayPnl != null) && (
-                <div className="mt-1 flex items-center justify-center gap-5 text-[11px] font-semibold">
-                    {spotExpiryPnl != null && (
-                        <span className="flex items-center gap-1.5">
-                            <span className="h-2 w-2 rounded-full bg-blue-600" />
-                            <span className="text-gray-400 dark:text-gray-400">P&L at spot (Expiry):</span>
-                            <span className={`font-mono font-bold ${spotExpiryPnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{formatPrice(spotExpiryPnl)}</span>
-                        </span>
-                    )}
-                    {spotTodayPnl != null && (
-                        <span className="flex items-center gap-1.5">
-                            <span className="h-2 w-2 rounded-full bg-orange-600" />
-                            <span className="text-gray-400 dark:text-gray-400">P&L at spot (Today):</span>
-                            <span className={`font-mono font-bold ${spotTodayPnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{formatPrice(spotTodayPnl)}</span>
-                        </span>
-                    )}
-                </div>
-            )}
         </div>
     );
 }
