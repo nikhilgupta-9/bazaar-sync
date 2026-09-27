@@ -107,7 +107,17 @@ async function ensureNseCookies({ force = false } = {}) {
 
 async function nseFetch(url, { retryOn403or503 = true } = {}) {
     const cookie = await ensureNseCookies();
-    const res = await fetchWithTimeout(url, { headers: { ...FETCH_HEADERS, ...(cookie ? { Cookie: cookie } : {}) } });
+    let res;
+    try {
+        res = await fetchWithTimeout(url, { headers: { ...FETCH_HEADERS, ...(cookie ? { Cookie: cookie } : {}) } });
+    } catch (err) {
+        // Seen 2026-09-25: after a long run NSE throttles the cookie-bearing
+        // session (every request hangs to timeout) while the SAME URL with no
+        // cookie answers in <0.5s. The archive hosts don't need the cookie.
+        if (!/timed out/.test(err.message) || !cookie) throw err;
+        dbLogger.warn(`[bhavcopy] timeout with NSE session cookie on ${url} — retrying once without it`);
+        res = await fetchWithTimeout(url, { headers: FETCH_HEADERS });
+    }
     if ((res.status === 403 || res.status === 503) && retryOn403or503) {
         dbLogger.warn(`[bhavcopy] HTTP ${res.status} on ${url} — refreshing NSE session cookies and retrying once`);
         const freshCookie = await ensureNseCookies({ force: true });
@@ -158,14 +168,13 @@ async function downloadZip(dateStr) {
     return zipPath;
 }
 
-/** Unzip via adm-zip (in-process, cross-platform) and return the raw CSV text. */
+/** Unzip via adm-zip (in-process, cross-platform) and return the raw CSV text directly from memory. */
 async function extractCsv(zipPath) {
-    const extractDir = zipPath.replace(/\.zip$/, "");
-    if (!fs.existsSync(extractDir)) fs.mkdirSync(extractDir, { recursive: true });
-    new AdmZip(zipPath).extractAllTo(extractDir, true);
-    const files = fs.readdirSync(extractDir).filter((f) => f.toLowerCase().endsWith(".csv"));
-    if (!files.length) throw new Error(`No CSV found after unzipping ${zipPath} — NSE may have changed the archive contents`);
-    return fs.readFileSync(path.join(extractDir, files[0]), "utf8");
+    const zip = new AdmZip(zipPath);
+    const zipEntries = zip.getEntries();
+    const csvEntry = zipEntries.find((e) => !e.isDirectory && e.entryName.toLowerCase().endsWith(".csv"));
+    if (!csvEntry) throw new Error(`No CSV found after unzipping ${zipPath} — NSE may have changed the archive contents`);
+    return zip.readAsText(csvEntry);
 }
 
 // Candidate header names per logical field — matched case-insensitively

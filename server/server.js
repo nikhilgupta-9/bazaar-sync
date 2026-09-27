@@ -42,6 +42,7 @@ const eventsRoutes = require("./routes/events");
 const contentRoutes = require("./routes/content");
 const seoRoutes = require("./routes/seo");
 const tvDatafeedRoutes = require("./routes/tvDatafeed");
+const equityRoutes = require("./routes/equity");
 
 const app = express();
 
@@ -120,6 +121,7 @@ app.use("/api/events", eventsRoutes);
 app.use("/api/content", contentRoutes);
 app.use("/api/seo", seoRoutes);
 app.use("/api/tv", tvDatafeedRoutes);
+app.use("/api/equity", equityRoutes);
 
 // 404 handler
 app.use((req, res) => {

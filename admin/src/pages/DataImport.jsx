@@ -11,7 +11,7 @@ import { useRef, useState } from "react";
 import { FiUploadCloud, FiDownload, FiAlertTriangle } from "react-icons/fi";
 import { useAdminAuth } from "../context/AdminAuthContext";
 import { importData } from "../services/adminApi";
-import TopBar from "../components/TopBar";
+import DataNavHeader from "../components/DataNavHeader";
 import Card from "../components/Card";
 
 const SCHEMAS = {
@@ -134,41 +134,42 @@ export default function DataImport() {
 
     return (
         <div>
-            <TopBar title="Data Import (CSV)" subtitle="Manually fill a gap Data Coverage found and no automated source can cover — upload a CSV in the exact table format. Nothing is written unless every row matches; on a mismatch you get the exact reason for every bad row." />
-            <div className="p-6">
-                <Card title="Import" className="mb-4">
-                    <div className="mb-4 flex items-center gap-3">
-                        <label className="text-xs font-medium text-gray-400">Table</label>
-                        <select value={table} onChange={(e) => { setTable(e.target.value); setErrors(null); setSuccess(null); }} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500">
+            <DataNavHeader
+                title="Manual Data Ingest (CSV Upload)"
+                subtitle="Manually import option chain, futures, or OHLCV datasets to fill gaps. Pre-validates schema and column headers before writing to database."
+            />
+            <div className="p-3.5 sm:p-6 max-w-7xl mx-auto space-y-4">
+                <Card title="Import">
+                    <div className="mb-4 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+                        <label className="text-xs font-semibold text-gray-300">Target Table</label>
+                        <select value={table} onChange={(e) => { setTable(e.target.value); setErrors(null); setSuccess(null); }} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs sm:text-sm text-white outline-none focus:border-violet-500">
                             {Object.entries(SCHEMAS).map(([k, v]) => <option key={k} value={k}>{v.label} ({k})</option>)}
                         </select>
                     </div>
 
-                    <p className="mb-3 text-xs text-gray-400">
-                        Header must be exactly: <code className="rounded bg-white/10 px-1 py-0.5 text-gray-200">{schema.header.join(",")}</code>.
-                        Non-required numeric fields may be left blank (stored as NULL, never guessed). Rows are upserted — a row for a
-                        symbol/date/time/strike (option chain), symbol/expiry/date/time (futures), or symbol/date/time (India VIX / OHLCV)
-                        that already exists gets its values refreshed, never duplicated.
+                    <p className="mb-3 text-xs text-gray-400 leading-relaxed">
+                        Header format: <code className="break-all rounded-md bg-white/10 px-1.5 py-0.5 font-mono text-[11px] text-violet-300">{schema.header.join(",")}</code>.
+                        Non-required numeric fields may be left blank (stored as NULL, never guessed). Rows are upserted with <code className="text-gray-300 font-mono">ON DUPLICATE KEY UPDATE</code> to ensure no duplicates.
                     </p>
 
-                    <div className="flex flex-wrap items-center gap-3">
-                        <button type="button" onClick={() => downloadTemplate(table, schema)} className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-gray-200 hover:bg-white/10">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                        <button type="button" onClick={() => downloadTemplate(table, schema)} className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs sm:text-sm font-semibold text-gray-200 hover:bg-white/10 transition">
                             <FiDownload className="h-4 w-4" /> Download CSV template
                         </button>
-                        <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-gray-200 hover:bg-white/10">
+                        <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-xs sm:text-sm font-bold text-white hover:bg-violet-700 transition shadow-md shadow-violet-600/20">
                             <FiUploadCloud className="h-4 w-4" />
-                            {fileName || "Choose CSV file…"}
+                            <span>{fileName || "Choose CSV file to upload…"}</span>
                             <input ref={fileInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={handleFilePicked} disabled={importing} />
                         </label>
-                        {importing && <span className="text-xs text-gray-500">Importing…</span>}
+                        {importing && <span className="text-xs text-violet-400 font-semibold animate-pulse">Importing & verifying rows…</span>}
                     </div>
 
-                    {success && <div className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">{success}</div>}
+                    {success && <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-300 font-semibold">{success}</div>}
 
                     {errors && (
-                        <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
-                            <div className="mb-1 flex items-center gap-1.5 font-semibold"><FiAlertTriangle className="h-3.5 w-3.5" /> Fix your file and re-upload — nothing was imported:</div>
-                            <ul className="max-h-64 list-disc space-y-0.5 overflow-y-auto pl-4">
+                        <div className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3.5 text-xs text-rose-300">
+                            <div className="mb-1.5 flex items-center gap-1.5 font-bold"><FiAlertTriangle className="h-4 w-4 shrink-0" /> Fix your file and re-upload — nothing was imported:</div>
+                            <ul className="max-h-64 list-disc space-y-1 overflow-y-auto pl-5 font-mono text-[11px]">
                                 {errors.map((e, i) => <li key={i}>{e.row ? `Row ${e.row}: ${e.message}` : e.message}</li>)}
                             </ul>
                         </div>

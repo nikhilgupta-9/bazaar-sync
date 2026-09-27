@@ -23,7 +23,7 @@ function App() {
     usePageSeo();
 
     return (
-        <div className="flex min-h-screen flex-col bg-gray-50">
+        <div className="flex min-h-screen flex-col bg-gray-50 text-gray-900 transition-colors dark:bg-[#0b1420] dark:text-gray-100">
             <TopNav />
             <div className="flex-1">
                 <Routes>

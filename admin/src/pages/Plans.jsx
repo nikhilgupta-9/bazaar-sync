@@ -166,13 +166,13 @@ function PlansSection({ token }) {
                 </form>
             </Card>
 
-            <Card title={`Plans${plans ? ` (${plans.length})` : ""}`} className="mb-6">
+            <Card title={`Plans${plans ? ` (${plans.length})` : ""}`} bodyClassName="p-3 sm:p-5 overflow-x-auto custom-scrollbar">
                 {!plans ? (
                     <div className="py-10 text-center text-xs text-gray-500">Loading…</div>
                 ) : plans.length === 0 ? (
                     <div className="py-10 text-center text-xs text-gray-500">No plans yet — the Pricing page will show nothing until one is created.</div>
                 ) : (
-                    <table className="w-full border-collapse text-xs">
+                    <table className="w-full border-collapse text-xs whitespace-nowrap">
                         <thead>
                             <tr className="text-gray-600">
                                 <th className="pb-2 text-left font-medium">ID</th>
@@ -278,10 +278,10 @@ export default function Plans() {
                 title="Plans & Coupons"
                 subtitle="Manage the Pro plan catalog shown on the public Pricing page, and discount coupon codes applied at checkout."
             />
-            <div className="p-6">
+            <div className="p-3.5 sm:p-6 max-w-7xl mx-auto space-y-4">
                 <PlansSection token={token} />
 
-                {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
+                {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 font-medium">{error}</div>}
 
                 <Card title="Create a coupon" className="mb-4">
                     <form onSubmit={handleCreate} className="flex flex-wrap items-end gap-3">
@@ -338,13 +338,13 @@ export default function Plans() {
                     </form>
                 </Card>
 
-                <Card title={`Coupons${coupons ? ` (${coupons.length})` : ""}`}>
+                <Card title={`Coupons${coupons ? ` (${coupons.length})` : ""}`} bodyClassName="p-3 sm:p-5 overflow-x-auto custom-scrollbar">
                     {!coupons ? (
                         <div className="py-10 text-center text-xs text-gray-500">Loading…</div>
                     ) : coupons.length === 0 ? (
                         <div className="py-10 text-center text-xs text-gray-500">No coupons yet.</div>
                     ) : (
-                        <table className="w-full border-collapse text-xs">
+                        <table className="w-full border-collapse text-xs whitespace-nowrap">
                             <thead>
                                 <tr className="text-gray-600">
                                     <th className="pb-2 text-left font-medium">Code</th>

@@ -1,13 +1,11 @@
-// data/tools.js — the tool catalog shared between Home.jsx's grid and
-// Footer.jsx's link list, so the two can never drift out of sync with each
-// other (previously this array only lived inline in Home.jsx).
+// data/tools.js — the tool catalog shared between Home.jsx's grid and Footer.jsx's link list
 export const TOOLS = [
-    { to: "/option-chain", title: "Option Chain", image: "/images/oi.png", desc: "Full chain with OI, buildup, Greeks" },
-    { to: "/strategy-builder", title: "Strategy Builder", icon: "strategy", desc: "Multi-leg payoff + live Greeks" },
-    { to: "/simulator", title: "Simulator", icon: "backtest", desc: "Replay a real past day minute by minute" },
-    { to: "/paper-trade", title: "Paper Trade", icon: "papertrade", desc: "Trade virtual capital on real historical data" },
-    { to: "/historical-chart", title: "Historical Chart", icon: "historicalchart", desc: "Multi-day historical price charts" },
-    { to: "/equity-data", title: "Equity Data", icon: "equitydata", desc: "Sector rotation, market map, 52W high/low & more" },
+    { to: "/strategy-builder", title: "Strategy Builder", image: "/images/hero_3d.jpg", icon: "strategy", desc: "Multi-leg strategy builder with real-time Black-Scholes Greeks, dynamic payoff curve, and trade adjustments." },
+    { to: "/simulator", title: "Option Backtester", image: "/images/analytics_3d.jpg", icon: "backtest", desc: "Minute-by-minute historical tick replay with full multi-strike option chains, contract charts, and real execution." },
+    { to: "/option-chain", title: "Live Option Chain Matrix", image: "/images/hero_3d.jpg", icon: "chain", desc: "High-density matrix with live LTP, PCR, Max Pain, Open Interest change, and IV skew." },
+    { to: "/equity-data", title: "Equity Data & Market Map", image: "/images/analytics_3d.jpg", icon: "equitydata", desc: "Real-time sector heatmaps, 52-week high/low scanners, industry momentum leaderboards, and active volumes." },
+    { to: "/historical-chart", title: "Historical Contract Charts", image: "/images/hero_3d.jpg", icon: "historicalchart", desc: "1-min to daily database-driven candlestick charts with multi-timeframes and complete technical drawing tools." },
+    { to: "/paper-trade", title: "Virtual Paper Trading", image: "/images/analytics_3d.jpg", icon: "papertrade", desc: "Forward paper trade execution with ₹50,000 virtual margin, real-time MTM, and position analytics." },
 ];
 
-export const POPULAR = ["/option-chain", "/strategy-builder", "/paper-trade", "/simulator", "/historical-chart"];
+export const POPULAR = ["/strategy-builder", "/simulator", "/option-chain", "/equity-data", "/historical-chart", "/paper-trade"];

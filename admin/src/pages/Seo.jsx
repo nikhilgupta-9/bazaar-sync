@@ -50,10 +50,10 @@ export default function Seo() {
                 title="SEO Tool"
                 subtitle="Per-page meta title/description/OG image, applied client-side on route change (client/src/hooks/usePageSeo.js). This is a client-rendered SPA with no server-side rendering, so this helps JS-executing crawlers (e.g. Googlebot) but isn't full SSR-grade SEO."
             />
-            <div className="p-6">
-                {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
+            <div className="p-3.5 sm:p-6 max-w-7xl mx-auto space-y-4">
+                {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 font-medium">{error}</div>}
 
-                <Card title="Add / update a page's meta tags" className="mb-4">
+                <Card title="Add / update a page's meta tags">
                     <form onSubmit={handleSave} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <div>
                             <label className="mb-1 block text-xs font-medium text-gray-400">Path</label>

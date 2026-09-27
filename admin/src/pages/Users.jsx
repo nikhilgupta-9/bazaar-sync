@@ -157,11 +157,11 @@ export default function Users() {
     return (
         <div>
             <TopBar title="Users" subtitle="Per-user strategies, paper wallet balance, Pro renewal history, and paper-trade log." />
-            <div className="p-6">
-                {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
+            <div className="p-3.5 sm:p-6 max-w-7xl mx-auto space-y-4">
+                {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 font-medium">{error}</div>}
 
-                <div className="flex gap-4">
-                    <Card className="w-96 shrink-0" bodyClassName="p-0">
+                <div className="flex flex-col lg:flex-row gap-4">
+                    <Card className="w-full lg:w-96 lg:shrink-0" bodyClassName="p-0">
                         <div className="max-h-[75vh] overflow-y-auto">
                             {!users ? (
                                 <div className="p-6 text-center text-xs text-gray-500">Loading users…</div>

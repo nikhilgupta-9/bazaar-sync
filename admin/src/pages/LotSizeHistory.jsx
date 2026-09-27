@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FiTrash2, FiUploadCloud, FiDownload } from "react-icons/fi";
 import { useAdminAuth } from "../context/AdminAuthContext";
 import { fetchLotSizeHistory, addLotSizeHistoryEntry, bulkImportLotSizeHistory, removeLotSizeHistoryEntry } from "../services/adminApi";
-import TopBar from "../components/TopBar";
+import DataNavHeader from "../components/DataNavHeader";
 import Card from "../components/Card";
 
 // The bulk-import CSV format — a fixed 4-column layout so a hand-rolled parser is enough
@@ -187,50 +187,50 @@ export default function LotSizeHistory() {
 
     return (
         <div>
-            <TopBar
-                title="Lot Size History"
-                subtitle="Real historical F&O lot sizes, effective-dated — Simulator and Backtest use the value in effect on the historical trade date, not today's. Enter these from NSE's own published lot-size-revision circulars only; nothing here is auto-populated or guessed."
+            <DataNavHeader
+                title="Historical Lot Size Revisions"
+                subtitle="Effective-dated F&O contract lot sizes for Simulator and Backtest accuracy. Sourced from official NSE circulars with bulk CSV import."
             />
-            <div className="p-6">
-                {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
+            <div className="p-3.5 sm:p-6 max-w-7xl mx-auto space-y-4">
+                {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 font-medium">{error}</div>}
 
-                <Card title="Add an entry" className="mb-4">
-                    <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3">
-                        <div className="min-w-[120px]">
+                <Card title="Add an entry">
+                    <form onSubmit={handleAdd} className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:flex-wrap items-end gap-3">
+                        <div className="w-full sm:w-auto sm:min-w-[120px]">
                             <label className="mb-1 block text-xs font-medium text-gray-400">Symbol</label>
                             <input
                                 required value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())}
                                 placeholder="NIFTY"
-                                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500"
+                                className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs sm:text-sm text-white outline-none focus:border-violet-500"
                             />
                         </div>
-                        <div className="min-w-[100px]">
+                        <div className="w-full sm:w-auto sm:min-w-[100px]">
                             <label className="mb-1 block text-xs font-medium text-gray-400">Lot size</label>
                             <input
                                 required type="number" min="1" value={lotSize} onChange={(e) => setLotSize(e.target.value)}
                                 placeholder="75"
-                                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500"
+                                className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs sm:text-sm text-white outline-none focus:border-violet-500"
                             />
                         </div>
-                        <div className="min-w-[160px]">
+                        <div className="w-full sm:w-auto sm:min-w-[160px]">
                             <label className="mb-1 block text-xs font-medium text-gray-400">Effective from</label>
                             <input
                                 required type="date" value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)}
-                                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500"
+                                className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs sm:text-sm text-white outline-none focus:border-violet-500"
                             />
                         </div>
-                        <div className="min-w-[160px]">
+                        <div className="w-full sm:w-auto sm:min-w-[160px]">
                             <label className="mb-1 block text-xs font-medium text-gray-400">Effective to (optional)</label>
                             <input
                                 type="date" value={effectiveTo} onChange={(e) => setEffectiveTo(e.target.value)}
-                                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500"
+                                className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs sm:text-sm text-white outline-none focus:border-violet-500"
                             />
                         </div>
                         <button
                             type="submit" disabled={submitting}
-                            className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+                            className="w-full sm:w-auto rounded-xl bg-violet-600 px-5 py-2 text-xs sm:text-sm font-bold text-white hover:bg-violet-700 transition disabled:opacity-50 shadow-md shadow-violet-600/20"
                         >
-                            {submitting ? "Adding…" : "Add"}
+                            {submitting ? "Adding…" : "Add Entry"}
                         </button>
                     </form>
                 </Card>

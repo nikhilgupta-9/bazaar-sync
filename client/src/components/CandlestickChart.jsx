@@ -522,8 +522,8 @@ const CandlestickChart = forwardRef(function CandlestickChart({ symbol, date, co
                         title={tool.wired ? tool.label : `${tool.label} — coming soon`}
                         className={`w-9 rounded-md border px-1 py-1.5 text-[10px] font-bold transition disabled:opacity-30 disabled:cursor-not-allowed ${
                             activeTool === tool.key
-                                ? "border-purple-300 bg-purple-50 text-purple-700"
-                                : "border-gray-200 text-gray-500 hover:bg-gray-50"
+                                ? "border-purple-300 dark:border-purple-600 bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300"
+                                : "border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
                         }`}
                     >
                         {tool.icon}
@@ -533,7 +533,7 @@ const CandlestickChart = forwardRef(function CandlestickChart({ symbol, date, co
                     onClick={toggleDrawingsVisible}
                     title={drawingsVisible ? "Hide drawings" : "Show drawings"}
                     className={`w-9 rounded-md border px-1 py-1.5 text-[10px] font-bold transition ${
-                        drawingsVisible ? "border-gray-200 text-gray-500 hover:bg-gray-50" : "border-amber-300 bg-amber-50 text-amber-700"
+                        drawingsVisible ? "border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800" : "border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300"
                     }`}
                 >
                     {drawingsVisible ? "👁" : "🚫"}
@@ -541,7 +541,7 @@ const CandlestickChart = forwardRef(function CandlestickChart({ symbol, date, co
                 <button
                     onClick={clearDrawings}
                     title="Clear drawings"
-                    className="w-9 rounded-md border border-gray-200 px-1 py-1.5 text-[10px] font-bold text-gray-500 hover:bg-gray-50"
+                    className="w-9 rounded-md border border-gray-200 dark:border-gray-700 px-1 py-1.5 text-[10px] font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
                 >
                     ✕
                 </button>
@@ -556,7 +556,7 @@ const CandlestickChart = forwardRef(function CandlestickChart({ symbol, date, co
                                     key={tf.key}
                                     onClick={() => setTimeframe(tf.key)}
                                     className={`rounded-md px-2 py-1 text-[11px] font-semibold transition ${
-                                        timeframe === tf.key ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                                        timeframe === tf.key ? "bg-emerald-600 dark:bg-emerald-500 text-white" : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
                                     }`}
                                 >
                                     {tf.label}
@@ -567,20 +567,20 @@ const CandlestickChart = forwardRef(function CandlestickChart({ symbol, date, co
                         <div className="relative">
                             <button
                                 onClick={() => setChartTypeOpen((v) => !v)}
-                                className="rounded-md border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-50"
+                                className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-[11px] font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
                             >
                                 {CHART_TYPES.find((t) => t.key === chartType)?.label}
                             </button>
                             {chartTypeOpen && (
                                 <>
                                     <div className="fixed inset-0 z-10" onClick={() => setChartTypeOpen(false)} />
-                                    <div className="absolute left-0 z-20 mt-1 w-28 rounded-lg border border-gray-200 bg-white p-1 shadow-xl text-xs">
+                                    <div className="absolute left-0 z-20 mt-1 w-28 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-1 shadow-xl text-xs">
                                         {CHART_TYPES.map((t) => (
                                             <button
                                                 key={t.key}
                                                 onClick={() => { setChartType(t.key); setChartTypeOpen(false); }}
                                                 className={`block w-full rounded-md px-2 py-1 text-left ${
-                                                    chartType === t.key ? "bg-blue-50 text-blue-600 font-semibold" : "text-gray-600 hover:bg-gray-50"
+                                                    chartType === t.key ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 font-semibold" : "text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
                                                 }`}
                                             >
                                                 {t.label}
@@ -591,7 +591,7 @@ const CandlestickChart = forwardRef(function CandlestickChart({ symbol, date, co
                             )}
                         </div>
 
-                        <label className="flex cursor-pointer items-center gap-1 text-[11px] text-gray-600">
+                        <label className="flex cursor-pointer items-center gap-1 text-[11px] text-gray-600 dark:text-gray-300">
                             <input type="checkbox" checked={showVolume} onChange={() => setShowVolume((v) => !v)} /> Volume
                         </label>
                     </div>
@@ -600,15 +600,15 @@ const CandlestickChart = forwardRef(function CandlestickChart({ symbol, date, co
                         <div className="relative">
                             <button
                                 onClick={() => setIndicatorsOpen((v) => !v)}
-                                className="rounded-md border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-50"
+                                className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-[11px] font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
                             >
                                 Indicators
                             </button>
                             {indicatorsOpen && (
                                 <>
                                     <div className="fixed inset-0 z-10" onClick={() => setIndicatorsOpen(false)} />
-                                    <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-gray-200 bg-white p-2 shadow-xl text-xs">
-                                        <label className="flex cursor-pointer items-center gap-2 py-1">
+                                    <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-2 shadow-xl text-xs text-gray-800 dark:text-gray-200">
+                                        <label className="flex cursor-pointer items-center gap-2 py-1 hover:bg-gray-50 dark:hover:bg-gray-800 px-1 rounded">
                                             <input
                                                 type="checkbox"
                                                 checked={indicators.sma}
@@ -616,7 +616,7 @@ const CandlestickChart = forwardRef(function CandlestickChart({ symbol, date, co
                                             />
                                             SMA (20)
                                         </label>
-                                        <label className="flex cursor-pointer items-center gap-2 py-1">
+                                        <label className="flex cursor-pointer items-center gap-2 py-1 hover:bg-gray-50 dark:hover:bg-gray-800 px-1 rounded">
                                             <input
                                                 type="checkbox"
                                                 checked={indicators.ema}
@@ -624,7 +624,7 @@ const CandlestickChart = forwardRef(function CandlestickChart({ symbol, date, co
                                             />
                                             EMA (20)
                                         </label>
-                                        <label className="flex cursor-pointer items-center gap-2 py-1">
+                                        <label className="flex cursor-pointer items-center gap-2 py-1 hover:bg-gray-50 dark:hover:bg-gray-800 px-1 rounded">
                                             <input
                                                 type="checkbox"
                                                 checked={indicators.bollinger}
@@ -632,7 +632,7 @@ const CandlestickChart = forwardRef(function CandlestickChart({ symbol, date, co
                                             />
                                             Bollinger (20,2)
                                         </label>
-                                        <label className="flex cursor-pointer items-center gap-2 py-1">
+                                        <label className="flex cursor-pointer items-center gap-2 py-1 hover:bg-gray-50 dark:hover:bg-gray-800 px-1 rounded">
                                             <input
                                                 type="checkbox"
                                                 checked={indicators.vwap}
@@ -648,14 +648,14 @@ const CandlestickChart = forwardRef(function CandlestickChart({ symbol, date, co
                         <button
                             onClick={takeScreenshot}
                             title="Download chart as PNG"
-                            className="rounded-md border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-50"
+                            className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-[11px] font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
                         >
                             📷
                         </button>
                         <button
                             onClick={toggleFullscreen}
                             title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-                            className="rounded-md border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-50"
+                            className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-[11px] font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
                         >
                             {isFullscreen ? "⤡" : "⤢"}
                         </button>

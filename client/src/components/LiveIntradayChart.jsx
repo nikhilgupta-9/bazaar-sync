@@ -233,7 +233,6 @@ export default function LiveIntradayChart({ symbol, mode, legs, selectedExpiry, 
             overlaysRef.current = [];
             pendingPointRef.current = null;
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [niftyCandles, strategyCandles, showNifty, showStrategy, height, indicators.sma, indicators.ema]);
 
     // Live-append: builds/updates the current minute's candle in place from

@@ -125,7 +125,7 @@ function parseRows(rawRows) {
  * range, chunked internally to respect the 1,000-candle cap, paced via
  * rateLimiter.throttle() to respect the 100/min + 5,000/day caps.
  */
-async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fromDateStr, toDateStr, exchangeCode = "NFO" }) {
+async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fromDateStr, toDateStr, exchangeCode = "NFO", chunks: presetChunks = null }) {
     const breeze = await getBreeze();
     const breezeRight = RIGHT_MAP[right];
     if (!breezeRight) throw new Error(`Unknown right "${right}", expected CE or PE`);
@@ -135,7 +135,10 @@ async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fro
     // NSE symbol for most stocks (see symbolMap.js header for why).
     const isecStockCode = await symbolMap.resolveStockCode(stockCode);
 
-    const chunks = chunkDateRange(fromDateStr, toDateStr);
+    // presetChunks: optional [[from, to], ...] supplied by a caller that
+    // already knows the trading calendar (backtest/ pipeline) — lets a
+    // Fri..Mon pair be ONE call instead of two calendar-day chunks.
+    const chunks = presetChunks || chunkDateRange(fromDateStr, toDateStr);
     const all = [];
     for (const [chunkFrom, chunkTo] of chunks) {
         await rateLimiter.throttle();
@@ -168,11 +171,14 @@ async function getOptionMinuteCandles({ stockCode, expirySql, strike, right, fro
  * productType "futures" and no strike / no right. Breeze returns OHLC +
  * volume + open_interest here (parseRows already handles the OI field).
  */
-async function getFutureMinuteCandles({ stockCode, expirySql, fromDateStr, toDateStr, exchangeCode = "NFO" }) {
+async function getFutureMinuteCandles({ stockCode, expirySql, fromDateStr, toDateStr, exchangeCode = "NFO", chunks: presetChunks = null }) {
     const breeze = await getBreeze();
     const isecStockCode = await symbolMap.resolveStockCode(stockCode);
 
-    const chunks = chunkDateRange(fromDateStr, toDateStr);
+    // presetChunks: optional [[from, to], ...] supplied by a caller that
+    // already knows the trading calendar (backtest/ pipeline) — lets a
+    // Fri..Mon pair be ONE call instead of two calendar-day chunks.
+    const chunks = presetChunks || chunkDateRange(fromDateStr, toDateStr);
     const all = [];
     for (const [chunkFrom, chunkTo] of chunks) {
         await rateLimiter.throttle();

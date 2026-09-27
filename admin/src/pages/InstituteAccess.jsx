@@ -50,10 +50,10 @@ export default function InstituteAccess() {
                 title="Institute Access"
                 subtitle="A logged-in user connecting from an allowlisted IP or CIDR range gets Pro-equivalent access — their account tier is never changed, only requests from that network are let through."
             />
-            <div className="p-6">
-                {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
+            <div className="p-3.5 sm:p-6 max-w-7xl mx-auto space-y-4">
+                {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 font-medium">{error}</div>}
 
-                <Card title="Add an entry" className="mb-4">
+                <Card title="Add an entry">
                     <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3">
                         <div className="flex-1 min-w-[200px]">
                             <label className="mb-1 block text-xs font-medium text-gray-400">IP address or CIDR range</label>

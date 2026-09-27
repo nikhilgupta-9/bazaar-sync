@@ -44,9 +44,9 @@ export default function Terms() {
     return (
         <div>
             <TopBar title="T&C" subtitle="Markdown editor for the Terms & Conditions shown on the public /terms page." />
-            <div className="p-6">
-                {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
-                {saved && <div className="mb-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">Saved.</div>}
+            <div className="p-3.5 sm:p-6 max-w-7xl mx-auto space-y-4">
+                {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 font-medium">{error}</div>}
+                {saved && <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-300 font-semibold">Saved.</div>}
 
                 <Card title="Edit content" action={updatedAt && <span className="text-[11px] text-gray-500">Last updated {formatDateTime(updatedAt)}</span>}>
                     {loading ? (

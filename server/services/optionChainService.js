@@ -98,20 +98,21 @@ class OptionChainService {
     }
 
     /**
-     * Every symbol that actually has data in option_chain_history, split into
-     * indices vs stocks — powers the Option Chain page's "Select Asset"
-     * dropdown. Historical-data-driven (not a hardcoded "210 companies"
-     * list) so it's automatically correct as Bhavcopy/Breeze coverage grows.
+     * Every symbol that has data in option_chain_history OR ohlcv_data, split into
+     * indices vs stocks — powers the Option Chain, Simulator, and Strategy Builder
+     * dropdowns with the complete 270+ universe.
      */
     async computeSymbolList() {
-        const rows = await db.query(`SELECT DISTINCT symbol FROM option_chain_history ORDER BY symbol ASC`);
-        const all = (rows || []).map((r) => r.symbol);
+        const optRows = await db.query(`SELECT DISTINCT symbol FROM option_chain_history`).catch(() => []);
+        const ohlcvRows = await db.query(`SELECT DISTINCT symbol FROM ohlcv_data`).catch(() => []);
+        const unionSet = new Set([
+            ...optRows.map((r) => r.symbol),
+            ...ohlcvRows.map((r) => r.symbol),
+            "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX",
+        ]);
+        const all = [...unionSet].filter(Boolean).sort();
         const indices = all.filter((s) => INDEX_SYMBOLS.has(s));
         const stocks = all.filter((s) => !INDEX_SYMBOLS.has(s));
-        // Indices in a sensible fixed order (not alphabetical — NIFTY first
-        // matters more than list-order purity), any newly-seen index symbol
-        // not in INDEX_SYMBOLS yet just falls through to the stocks list
-        // rather than being dropped.
         const indexOrder = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX", "SENSEX50"];
         indices.sort((a, b) => indexOrder.indexOf(a) - indexOrder.indexOf(b));
         return { indices, stocks, liveSymbols: [...LIVE_SYMBOLS] };

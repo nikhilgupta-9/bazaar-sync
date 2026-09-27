@@ -22,6 +22,7 @@ const path = require("path");
 const { pool } = require("../config/db");
 const lotSizeHistoryService = require("../services/lotSizeHistoryService");
 const { parityForward, spotFromForwardCurve, yearsBetween } = require("../utils/syntheticSpot");
+const { impliedVolatility, greeks, RISK_FREE_RATE } = require("../utils/blackScholes");
 
 // listDates scans every (trade_date, trade_time) pair for a symbol (NIFTY
 // alone is 6M+ rows after Phase 7's backfills) to compute a per-date
@@ -394,32 +395,6 @@ async function getChainAtTime(req, res) {
             console.error("[simulator/chain] lot size lookup failed:", err.message);
         }
 
-        const rows = rawRows.map((r) => ({
-            strike: Number(r.strike),
-            ce: {
-                ltp: r.ce_ltp != null ? Number(r.ce_ltp) : null,
-                oi: r.ce_oi != null ? Number(r.ce_oi) : null,
-                oiChange: r.ce_oi_change != null ? Number(r.ce_oi_change) : null,
-                iv: r.ce_iv != null ? Number(r.ce_iv) : null,
-                volume: r.ce_volume != null ? Number(r.ce_volume) : null,
-                delta: r.ce_delta != null ? Number(r.ce_delta) : null,
-                gamma: r.ce_gamma != null ? Number(r.ce_gamma) : null,
-                theta: r.ce_theta != null ? Number(r.ce_theta) : null,
-                vega: r.ce_vega != null ? Number(r.ce_vega) : null,
-            },
-            pe: {
-                ltp: r.pe_ltp != null ? Number(r.pe_ltp) : null,
-                oi: r.pe_oi != null ? Number(r.pe_oi) : null,
-                oiChange: r.pe_oi_change != null ? Number(r.pe_oi_change) : null,
-                iv: r.pe_iv != null ? Number(r.pe_iv) : null,
-                volume: r.pe_volume != null ? Number(r.pe_volume) : null,
-                delta: r.pe_delta != null ? Number(r.pe_delta) : null,
-                gamma: r.pe_gamma != null ? Number(r.pe_gamma) : null,
-                theta: r.pe_theta != null ? Number(r.pe_theta) : null,
-                vega: r.pe_vega != null ? Number(r.pe_vega) : null,
-            },
-        }));
-
         // Real spot for this minute: the stored underlying_price / EOD ohlcv
         // close are static all day. Recover it by computing the put-call
         // parity FORWARD at every expiry available this minute and fitting
@@ -451,23 +426,138 @@ async function getChainAtTime(req, res) {
             paritySpot = spotFromForwardCurve(points);
         }
 
-        const ohlcvIsMinuteBar = ohlcvSpot != null; // getSpotAt already filters trade_time >= selectedTime
+        const ohlcvIsMinuteBar = ohlcvSpot != null;
         const spotPrice = (ohlcvIsMinuteBar ? ohlcvSpot : null) ?? paritySpot ?? anchor;
         const spotSource = ohlcvIsMinuteBar ? "ohlcv" : paritySpot != null ? "parity" : "stored";
 
+        // Time to expiry `t` in fractional years for Black-Scholes calculations
+        const [y, m, d] = date.split("-").map(Number);
+        const [hh, mm, ss] = (selectedTime || "09:15:00").split(":").map(Number);
+        const nowInstant = new Date(Date.UTC(y, m - 1, d, hh - 5, mm - 30, ss || 0)); // IST UTC+5:30
+        const [ey, em, ed] = selectedExpiry.split("-").map(Number);
+        const expiryInstant = new Date(Date.UTC(ey, em - 1, ed, 10, 0, 0)); // 15:30 IST is 10:00 UTC
+        const tYears = Math.max((expiryInstant.getTime() - nowInstant.getTime()) / (365 * 24 * 60 * 60 * 1000), 1 / (365 * 24 * 4));
+
+        const rows = rawRows.map((r) => {
+            const strike = Number(r.strike);
+            let ceLtp = r.ce_ltp != null ? Number(r.ce_ltp) : null;
+            let ceOi = r.ce_oi != null ? Number(r.ce_oi) : null;
+            let ceOiChange = r.ce_oi_change != null ? Number(r.ce_oi_change) : null;
+            let ceIv = r.ce_iv != null && Number(r.ce_iv) > 0 ? Number(r.ce_iv) : null;
+            let ceVolume = r.ce_volume != null ? Number(r.ce_volume) : null;
+            let ceDelta = r.ce_delta != null ? Number(r.ce_delta) : null;
+            let ceGamma = r.ce_gamma != null ? Number(r.ce_gamma) : null;
+            let ceTheta = r.ce_theta != null ? Number(r.ce_theta) : null;
+            let ceVega = r.ce_vega != null ? Number(r.ce_vega) : null;
+
+            let peLtp = r.pe_ltp != null ? Number(r.pe_ltp) : null;
+            let peOi = r.pe_oi != null ? Number(r.pe_oi) : null;
+            let peOiChange = r.pe_oi_change != null ? Number(r.pe_oi_change) : null;
+            let peIv = r.pe_iv != null && Number(r.pe_iv) > 0 ? Number(r.pe_iv) : null;
+            let peVolume = r.pe_volume != null ? Number(r.pe_volume) : null;
+            let peDelta = r.pe_delta != null ? Number(r.pe_delta) : null;
+            let peGamma = r.pe_gamma != null ? Number(r.pe_gamma) : null;
+            let peTheta = r.pe_theta != null ? Number(r.pe_theta) : null;
+            let peVega = r.pe_vega != null ? Number(r.pe_vega) : null;
+
+            // Black-Scholes fallback for CE if missing in database
+            if (spotPrice && spotPrice > 0 && ceLtp != null && ceLtp > 0) {
+                if (ceIv == null) {
+                    const solved = impliedVolatility({ marketPrice: ceLtp, spot: spotPrice, strike, t: tYears, right: "call" });
+                    if (solved != null) ceIv = Number((solved * 100).toFixed(2));
+                }
+                if (ceDelta == null) {
+                    const vol = (ceIv && ceIv > 0 ? ceIv : 15.0) / 100;
+                    const g = greeks({ spot: spotPrice, strike, t: tYears, vol, right: "call" });
+                    ceDelta = Number(g.delta.toFixed(4));
+                    ceGamma = Number(g.gamma.toFixed(4));
+                    ceTheta = Number(g.theta.toFixed(2));
+                    ceVega = Number(g.vega.toFixed(2));
+                }
+            }
+
+            // Black-Scholes fallback for PE if missing in database
+            if (spotPrice && spotPrice > 0 && peLtp != null && peLtp > 0) {
+                if (peIv == null) {
+                    const solved = impliedVolatility({ marketPrice: peLtp, spot: spotPrice, strike, t: tYears, right: "put" });
+                    if (solved != null) peIv = Number((solved * 100).toFixed(2));
+                }
+                if (peDelta == null) {
+                    const vol = (peIv && peIv > 0 ? peIv : 15.0) / 100;
+                    const g = greeks({ spot: spotPrice, strike, t: tYears, vol, right: "put" });
+                    peDelta = Number(g.delta.toFixed(4));
+                    peGamma = Number(g.gamma.toFixed(4));
+                    peTheta = Number(g.theta.toFixed(2));
+                    peVega = Number(g.vega.toFixed(2));
+                }
+            }
+
+            return {
+                strike,
+                ce: {
+                    ltp: ceLtp,
+                    oi: ceOi,
+                    oiChange: ceOiChange,
+                    iv: ceIv,
+                    volume: ceVolume,
+                    delta: ceDelta,
+                    gamma: ceGamma,
+                    theta: ceTheta,
+                    vega: ceVega,
+                },
+                pe: {
+                    ltp: peLtp,
+                    oi: peOi,
+                    oiChange: peOiChange,
+                    iv: peIv,
+                    volume: peVolume,
+                    delta: peDelta,
+                    gamma: peGamma,
+                    theta: peTheta,
+                    vega: peVega,
+                },
+            };
+        });
+
+        const atmStrike = computeAtmStrike(rows.map((r) => r.strike), spotPrice);
+
         let futPrice = null;
         let futExpiry = null;
+        let futSource = "history";
         try {
             ({ futPrice, futExpiry } = await getFuturesAt(symbol, date, selectedTime));
         } catch (err) {
             console.error("[simulator/chain] futures lookup failed:", err.message);
         }
 
+        // Put-Call Parity Synthetic Future fallback if database has no futures record
+        if (futPrice == null && spotPrice != null) {
+            futPrice = paritySpot != null
+                ? Number((paritySpot * Math.exp(RISK_FREE_RATE * tYears)).toFixed(2))
+                : Number((spotPrice * Math.exp(RISK_FREE_RATE * tYears)).toFixed(2));
+            futSource = "parity";
+            futExpiry = selectedExpiry;
+        }
+
+        const futBasis = futPrice != null && spotPrice != null ? Number((futPrice - spotPrice).toFixed(2)) : null;
+        const futBasisPct = futBasis != null && spotPrice ? Number(((futBasis / spotPrice) * 100).toFixed(2)) : null;
+
         let vix = null;
+        let vixSource = "ohlcv";
         try {
             vix = await getVixAt(date, selectedTime);
         } catch (err) {
             console.error("[simulator/chain] vix lookup failed:", err.message);
+        }
+
+        // Implied Volatility VIX Fallback: if India VIX OHLC is missing, use ATM option IV average
+        if (vix == null && atmStrike != null) {
+            const atmRow = rows.find((r) => r.strike === atmStrike);
+            const atmIv = atmRow?.ce?.iv || atmRow?.pe?.iv || null;
+            if (atmIv != null) {
+                vix = Number(atmIv.toFixed(2));
+                vixSource = "implied";
+            }
         }
 
         res.json({
@@ -482,9 +572,13 @@ async function getChainAtTime(req, res) {
             spotSource,
             futPrice,
             futExpiry,
+            futSource,
+            futBasis,
+            futBasisPct,
             vix,
+            vixSource,
             lotSize,
-            atmStrike: computeAtmStrike(rows.map((r) => r.strike), spotPrice),
+            atmStrike,
             maxPainStrike: computeMaxPain(rows.map((r) => ({ strike: r.strike, ceOi: r.ce.oi, peOi: r.pe.oi }))),
             pcr: computePcr(rows.map((r) => ({ ceOi: r.ce.oi, peOi: r.pe.oi }))),
             rows,

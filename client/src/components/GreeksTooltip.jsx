@@ -1,5 +1,4 @@
 // components/GreeksTooltip.jsx
-import React from 'react';
 
 export default function GreeksTooltip({ children, greeks, strike }) {
   if (!greeks) return children;

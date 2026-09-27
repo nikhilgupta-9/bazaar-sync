@@ -26,7 +26,7 @@ export async function fetchOptionChain(symbol, expiry, forceLive = false) {
             try {
                 const body = await res.json();
                 errorMessage = body.error || errorMessage;
-            } catch (e) {
+            } catch {
                 // If response is not JSON
                 const text = await res.text();
                 errorMessage = text || errorMessage;
@@ -42,10 +42,10 @@ export async function fetchOptionChain(symbol, expiry, forceLive = false) {
         // UI instead of this friendly one. A manual AbortController().abort()
         // elsewhere would still be 'AbortError', so both are checked.
         if (err.name === 'AbortError' || err.name === 'TimeoutError') {
-            throw new Error('Request timeout - server took too long to respond');
+            throw new Error('Request timeout - server took too long to respond', { cause: err });
         }
-        if (err.code === 'ECONNREFUSED' || err.message.includes('Failed to fetch')) {
-            throw new Error('Cannot connect to server. Please check if the backend is running on port 5001');
+        if (err.code === 'ECONNREFUSED' || (err.message && err.message.includes('Failed to fetch'))) {
+            throw new Error('Cannot connect to server. Please check if the backend is running on port 5001', { cause: err });
         }
         throw err;
     }
@@ -83,8 +83,8 @@ export async function refreshOptionChain(symbol, expiry = null) {
         }
         return res.json();
     } catch (err) {
-        if (err.message.includes('Failed to fetch')) {
-            throw new Error('Cannot connect to server. Please check if the backend is running');
+        if (err.message && err.message.includes('Failed to fetch')) {
+            throw new Error('Cannot connect to server. Please check if the backend is running', { cause: err });
         }
         throw err;
     }
@@ -152,7 +152,7 @@ export async function testConnection() {
         if (!res.ok) throw new Error(`Health check failed (${res.status})`);
         return await res.json();
     } catch (err) {
-        throw new Error(`Cannot connect to server: ${err.message}`);
+        throw new Error(`Cannot connect to server: ${err.message}`, { cause: err });
     }
 }
 

@@ -59,10 +59,10 @@ export default function Events() {
     return (
         <div>
             <TopBar title="Events" subtitle="Simple announcement/webinar listing — shown on the public /events page when published. No registration or ticketing." />
-            <div className="p-6">
-                {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
+            <div className="p-3.5 sm:p-6 max-w-7xl mx-auto space-y-4">
+                {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 font-medium">{error}</div>}
 
-                <Card title="Create an event" className="mb-4">
+                <Card title="Create an event">
                     <form onSubmit={handleCreate} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <div>
                             <label className="mb-1 block text-xs font-medium text-gray-400">Title</label>

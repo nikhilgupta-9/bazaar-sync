@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { FiSun, FiMoon, FiMenu, FiX } from "react-icons/fi";
 import Logo from "./Logo";
+import MarketTickerBar from "./MarketTickerBar";
 
 function ThemeToggle() {
     const { isDark, toggleTheme } = useTheme();
@@ -11,26 +12,26 @@ function ThemeToggle() {
         <button
             type="button"
             onClick={toggleTheme}
-            className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+            className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
             aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
             title={isDark ? "Switch to light theme" : "Switch to dark theme"}
         >
-            {isDark ? <FiSun size={18} /> : <FiMoon size={18} />}
+            {isDark ? <FiSun size={18} className="text-amber-400" /> : <FiMoon size={18} />}
         </button>
     );
 }
 
 const links = [
     { to: "/strategy-builder", label: "Strategy Builder" },
-    { dropdown: "simulator", label: "Simulator" },
+    { dropdown: "simulator", label: "Option Backtesting" },
     { to: "/option-chain", label: "Option Chain" },
     { to: "/paper-trade", label: "Paper Trade" },
     { to: "/historical-chart", label: "Historical Chart" },
 ];
 
 const SIMULATOR_LINKS = [
-    { to: "/simulator", label: "Indian Stock", end: true },
-    { to: "/simulator/bitcoin", label: "Bitcoin" },
+    { to: "/simulator", label: "Indian Options Backtest", end: true },
+    { to: "/simulator/bitcoin", label: "Crypto / BTC Backtest" },
 ];
 
 const EQUITY_DATA_LINKS = [
@@ -55,7 +56,11 @@ function NavDropdown({ label, basePath, items }) {
             <button
                 type="button"
                 onClick={() => setOpen((v) => !v)}
-                className={`flex items-center gap-1 ${isActive ? "text-blue-600" : "hover:text-gray-900"}`}
+                className={`flex items-center gap-1 transition ${
+                    isActive
+                        ? "text-emerald-600 font-bold dark:text-emerald-400"
+                        : "text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+                }`}
             >
                 {label}
                 <svg viewBox="0 0 20 20" fill="currentColor" className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`}>
@@ -65,7 +70,7 @@ function NavDropdown({ label, basePath, items }) {
             {open && (
                 <>
                     <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-                    <div className="absolute left-0 top-full z-20 mt-2 w-56 rounded-lg border border-gray-200 bg-white py-1.5 shadow-xl">
+                    <div className="absolute left-0 top-full z-20 mt-2 w-56 rounded-xl border border-gray-200 bg-white py-1.5 shadow-xl dark:border-gray-700 dark:bg-gray-800">
                         {items.map((link) => (
                             <NavLink
                                 key={link.to}
@@ -73,7 +78,11 @@ function NavDropdown({ label, basePath, items }) {
                                 end={link.end}
                                 onClick={() => setOpen(false)}
                                 className={({ isActive: linkActive }) =>
-                                    `block px-4 py-2 text-sm ${linkActive ? "bg-blue-50 text-blue-600" : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"}`
+                                    `block px-4 py-2 text-xs font-semibold ${
+                                        linkActive
+                                            ? "bg-emerald-50 text-emerald-700 font-bold dark:bg-emerald-950/60 dark:text-emerald-300"
+                                            : "text-gray-700 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white"
+                                    }`
                                 }
                             >
                                 {link.label}
@@ -87,7 +96,7 @@ function NavDropdown({ label, basePath, items }) {
 }
 
 function SimulatorMenu() {
-    return <NavDropdown label="Simulator" basePath="/simulator" items={SIMULATOR_LINKS} />;
+    return <NavDropdown label="Option Backtest" basePath="/simulator" items={SIMULATOR_LINKS} />;
 }
 
 function EquityDataMenu() {
@@ -100,7 +109,8 @@ export default function TopNav() {
     const [mobileOpen, setMobileOpen] = useState(false);
 
     return (
-        <header className="border-b border-gray-200 bg-white">
+        <header className="border-b border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
+            <MarketTickerBar />
             <div className="flex items-center justify-between px-4 py-3 sm:px-6">
                 <NavLink to="/" onClick={() => setMobileOpen(false)}>
                     <Logo />
@@ -108,7 +118,7 @@ export default function TopNav() {
 
                 {/* Full nav — hidden below md, where it would overflow the viewport
                     (see mobile <nav> panel below for the collapsed equivalent). */}
-                <nav className="hidden items-center gap-6 text-sm font-medium text-gray-600 md:flex">
+                <nav className="hidden items-center gap-6 text-sm font-medium text-gray-600 dark:text-gray-300 md:flex">
                     {links.map((link) =>
                         link.dropdown === "simulator" ? (
                             <SimulatorMenu key="simulator" />
@@ -117,7 +127,9 @@ export default function TopNav() {
                                 key={link.to}
                                 to={link.to}
                                 className={({ isActive }) =>
-                                    isActive ? "text-blue-600" : "hover:text-gray-900"
+                                    isActive
+                                        ? "text-emerald-600 font-bold dark:text-emerald-400"
+                                        : "hover:text-gray-900 dark:hover:text-white"
                                 }
                             >
                                 {link.label}
@@ -143,7 +155,7 @@ export default function TopNav() {
                         <button
                             type="button"
                             onClick={() => navigate("/login")}
-                            className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700 sm:px-4"
+                            className="rounded-xl bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 shadow-xs transition sm:px-4"
                         >
                             Login
                         </button>
@@ -161,11 +173,11 @@ export default function TopNav() {
             </div>
 
             {mobileOpen && (
-                <nav className="flex flex-col border-t border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 md:hidden">
+                <nav className="flex flex-col border-t border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 md:hidden">
                     {links.map((link) =>
                         link.dropdown === "simulator" ? (
-                            <div key="simulator" className="border-t border-gray-100 py-1">
-                                <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gray-400">Simulator</div>
+                            <div key="simulator" className="border-t border-gray-100 py-1 dark:border-gray-800">
+                                <div className="px-2 py-1 text-xs font-bold uppercase tracking-wide text-gray-400">Option Backtesting</div>
                                 {SIMULATOR_LINKS.map((sub) => (
                                     <NavLink
                                         key={sub.to}
@@ -173,7 +185,11 @@ export default function TopNav() {
                                         end={sub.end}
                                         onClick={() => setMobileOpen(false)}
                                         className={({ isActive }) =>
-                                            `block rounded-md px-2 py-2 ${isActive ? "text-blue-600" : "hover:bg-gray-50 hover:text-gray-900"}`
+                                            `block rounded-md px-2 py-2 ${
+                                                isActive
+                                                    ? "bg-emerald-50 text-emerald-700 font-bold dark:bg-emerald-950/60 dark:text-emerald-300"
+                                                    : "hover:bg-gray-50 hover:text-gray-900 dark:hover:bg-gray-800 dark:hover:text-white"
+                                            }`
                                         }
                                     >
                                         {sub.label}
@@ -186,22 +202,30 @@ export default function TopNav() {
                                 to={link.to}
                                 onClick={() => setMobileOpen(false)}
                                 className={({ isActive }) =>
-                                    `rounded-md px-2 py-2 ${isActive ? "text-blue-600" : "hover:bg-gray-50 hover:text-gray-900"}`
+                                    `rounded-md px-2 py-2 ${
+                                        isActive
+                                            ? "bg-emerald-50 text-emerald-700 font-bold dark:bg-emerald-950/60 dark:text-emerald-300"
+                                            : "hover:bg-gray-50 hover:text-gray-900 dark:hover:bg-gray-800 dark:hover:text-white"
+                                    }`
                                 }
                             >
                                 {link.label}
                             </NavLink>
                         )
                     )}
-                    <div className="mt-1 border-t border-gray-100 pt-1">
-                        <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gray-400">Equity Data</div>
+                    <div className="mt-1 border-t border-gray-100 pt-1 dark:border-gray-800">
+                        <div className="px-2 py-1 text-xs font-bold uppercase tracking-wide text-gray-400">Equity Analytics</div>
                         {EQUITY_DATA_LINKS.map((link) => (
                             <NavLink
                                 key={link.to}
                                 to={link.to}
                                 onClick={() => setMobileOpen(false)}
                                 className={({ isActive }) =>
-                                    `block rounded-md px-2 py-2 ${isActive ? "text-blue-600" : "hover:bg-gray-50 hover:text-gray-900"}`
+                                    `block rounded-md px-2 py-2 ${
+                                        isActive
+                                            ? "bg-emerald-50 text-emerald-700 font-bold dark:bg-emerald-950/60 dark:text-emerald-300"
+                                            : "hover:bg-gray-50 hover:text-gray-900 dark:hover:bg-gray-800 dark:hover:text-white"
+                                    }`
                                 }
                             >
                                 {link.label}
@@ -209,9 +233,9 @@ export default function TopNav() {
                         ))}
                     </div>
                     {user && (
-                        <div className="mt-1 flex items-center justify-between border-t border-gray-100 px-2 pt-2 sm:hidden">
-                            <span className="text-gray-600">{user.name}</span>
-                            <button onClick={() => { setMobileOpen(false); logout(); }} className="text-gray-500 hover:text-gray-900">Log out</button>
+                        <div className="mt-1 flex items-center justify-between border-t border-gray-100 px-2 pt-2 dark:border-gray-800 sm:hidden">
+                            <span className="text-gray-600 dark:text-gray-300">{user.name}</span>
+                            <button onClick={() => { setMobileOpen(false); logout(); }} className="text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white">Log out</button>
                         </div>
                     )}
                 </nav>

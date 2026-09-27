@@ -74,7 +74,7 @@ router.get("/:symbol/contract-history", async (req, res) => {
 router.get("/:symbol/underlying-history", async (req, res) => {
     try {
         const { symbol } = req.params;
-        const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
+        const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 3650);
 
         const rows = await db.query(
             `SELECT trade_date, trade_time, open, high, low, close, volume

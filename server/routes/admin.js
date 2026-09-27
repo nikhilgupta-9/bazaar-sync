@@ -11,6 +11,7 @@ const {
     startExtractionJob, listExtractionJobs, getExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob, restartExtractionJob,
     getCoverageSummary, getCoverageDetail, getCoverageDays, getCoverageMinutes, getCoverageMinuteRows, getExpiryStatus, getGreeksCoverage, refreshCoverageCache,
     importData,
+    getDiskUsage, exportData, previewDataPrune, executeDataPrune,
 } = require("../controllers/dataOpsController");
 const { previewExport, downloadExport, deleteExport } = require("../controllers/dataExportController");
 const { requireAuth } = require("../middleware/auth");
@@ -69,9 +70,38 @@ router.get("/data/expiry-status", getExpiryStatus);
 router.get("/data/greeks-coverage", getGreeksCoverage);
 
 router.post("/data/import", importData);
+router.get("/data/disk-usage", getDiskUsage);
+router.get("/data/export", exportData);
+router.post("/data/prune-preview", previewDataPrune);
+router.post("/data/prune", executeDataPrune);
+
+const {
+    getGDriveStatus, testGDriveConnection, saveGDriveCredentials,
+    getCloudCoverage, startPipeline, stopPipeline, getPipelineStatus,
+    initDriveFolders, manualArchiveBatch, getCronStatus, updateCronSettings,
+    getOAuthUrl, handleOAuthCallback, saveOAuthCredentials, disconnectOAuth, updateRootFolder,
+} = require("../controllers/gdriveArchivalController");
+
+router.get("/data/gdrive/status", getGDriveStatus);
+router.post("/data/gdrive/test", testGDriveConnection);
+router.post("/data/gdrive/credentials", saveGDriveCredentials);
+router.post("/data/gdrive/oauth/url", getOAuthUrl);
+router.post("/data/gdrive/oauth/callback", handleOAuthCallback);
+router.post("/data/gdrive/oauth/credentials", saveOAuthCredentials);
+router.post("/data/gdrive/oauth/disconnect", disconnectOAuth);
+router.post("/data/gdrive/root-folder", updateRootFolder);
+router.post("/data/gdrive/init-folders", initDriveFolders);
+router.get("/data/gdrive/coverage", getCloudCoverage);
+router.post("/data/gdrive/pipeline/start", startPipeline);
+router.post("/data/gdrive/pipeline/stop", stopPipeline);
+router.get("/data/gdrive/pipeline/status", getPipelineStatus);
+router.post("/data/gdrive/manual-archive", manualArchiveBatch);
+router.get("/data/gdrive/cron", getCronStatus);
+router.post("/data/gdrive/cron", updateCronSettings);
 
 router.get("/data/export/preview", previewExport);
 router.get("/data/export/download", downloadExport);
 router.post("/data/export/delete", deleteExport);
 
 module.exports = router;
+

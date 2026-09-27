@@ -300,62 +300,62 @@ const StrategyChart = forwardRef(function StrategyChart({ replayData, date, curr
 
     return (
         <div className="flex gap-2">
-            <div className="flex shrink-0 flex-col gap-1 border-r border-gray-100 pr-2">
+            <div className="flex shrink-0 flex-col gap-1 border-r border-gray-100 dark:border-gray-800 pr-2">
                 {DRAWING_TOOLS.map((tool) => (
                     <button
                         key={tool.key}
                         onClick={() => setActiveTool((t) => (t === tool.key ? null : tool.key))}
                         title={tool.label}
                         className={`w-9 rounded-md border px-1 py-1.5 text-[10px] font-bold transition ${
-                            activeTool === tool.key ? "border-purple-300 bg-purple-50 text-purple-700" : "border-gray-200 text-gray-500 hover:bg-gray-50"
+                            activeTool === tool.key ? "border-purple-300 dark:border-purple-600 bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300" : "border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
                         }`}
                     >
                         {tool.icon}
                     </button>
                 ))}
-                <button onClick={clearDrawings} title="Clear drawings" className="w-9 rounded-md border border-gray-200 px-1 py-1.5 text-[10px] font-bold text-gray-500 hover:bg-gray-50">
+                <button onClick={clearDrawings} title="Clear drawings" className="w-9 rounded-md border border-gray-200 dark:border-gray-700 px-1 py-1.5 text-[10px] font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800">
                     ✕
                 </button>
             </div>
 
             <div className="min-w-0 flex-1">
                 {preview && (
-                    <div className="mb-2 rounded-md bg-blue-50 px-3 py-1.5 text-[11px] text-blue-700">
+                    <div className="mb-2 rounded-md bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 px-3 py-1.5 text-[11px] text-blue-700 dark:text-blue-300">
                         Live preview of this strategy's P&L across the day — click <span className="font-semibold">Run Simulation</span> to scrub minute-by-minute and autoplay.
                     </div>
                 )}
                 <div className="mb-2 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-[11px]">
-                        <span className="font-semibold text-gray-500">Strategy P&L (approx. candles)</span>
+                        <span className="font-semibold text-gray-500 dark:text-gray-400">Strategy P&L (approx. candles)</span>
                         <button
                             onClick={() => setInverted((v) => !v)}
                             title="Flip the P&L scale — useful for viewing a short/credit strategy the other way"
                             className={`rounded-md border px-2 py-1 font-semibold transition ${
-                                inverted ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                                inverted ? "border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300" : "border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
                             }`}
                         >
                             Inverted price
                         </button>
-                        <label className="flex cursor-pointer items-center gap-1 text-gray-600">
+                        <label className="flex cursor-pointer items-center gap-1 text-gray-600 dark:text-gray-300">
                             <input type="checkbox" checked={showVolume} onChange={() => setShowVolume((v) => !v)} /> Volume
                         </label>
-                        <label className="flex cursor-pointer items-center gap-1 text-gray-600">
+                        <label className="flex cursor-pointer items-center gap-1 text-gray-600 dark:text-gray-300">
                             <input type="checkbox" checked={showOi} onChange={() => setShowOi((v) => !v)} /> OI
                         </label>
                     </div>
 
                     <div className="relative">
-                        <button onClick={() => setIndicatorsOpen((v) => !v)} className="rounded-md border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-50">
+                        <button onClick={() => setIndicatorsOpen((v) => !v)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-[11px] font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">
                             Indicators
                         </button>
                         {indicatorsOpen && (
                             <>
                                 <div className="fixed inset-0 z-10" onClick={() => setIndicatorsOpen(false)} />
-                                <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-gray-200 bg-white p-2 shadow-xl text-xs">
-                                    <label className="flex cursor-pointer items-center gap-2 py-1">
+                                <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-2 shadow-xl text-xs text-gray-800 dark:text-gray-200">
+                                    <label className="flex cursor-pointer items-center gap-2 py-1 hover:bg-gray-50 dark:hover:bg-gray-800 px-1 rounded">
                                         <input type="checkbox" checked={indicators.sma} onChange={() => setIndicators((s) => ({ ...s, sma: !s.sma }))} /> SMA (20)
                                     </label>
-                                    <label className="flex cursor-pointer items-center gap-2 py-1">
+                                    <label className="flex cursor-pointer items-center gap-2 py-1 hover:bg-gray-50 dark:hover:bg-gray-800 px-1 rounded">
                                         <input type="checkbox" checked={indicators.ema} onChange={() => setIndicators((s) => ({ ...s, ema: !s.ema }))} /> EMA (20)
                                     </label>
                                 </div>
@@ -364,7 +364,7 @@ const StrategyChart = forwardRef(function StrategyChart({ replayData, date, curr
                     </div>
                 </div>
                 <div ref={containerRef} />
-                <div className="mt-2 text-[11px] text-gray-400 text-center">
+                <div className="mt-2 text-[11px] text-gray-400 dark:text-gray-500 text-center">
                     Candles are close-to-close between real stored per-minute P&L samples — not true intra-minute price action (only one price was ever recorded per minute).
                 </div>
             </div>

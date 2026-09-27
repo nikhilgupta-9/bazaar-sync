@@ -1,5 +1,4 @@
 // components/MarketStatusBadge.jsx
-import React from 'react';
 import { formatDateTime } from '../utils/format';
 
 export default function MarketStatusBadge({ isOpen, isLive, nextOpen }) {

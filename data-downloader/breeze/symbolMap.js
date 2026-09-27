@@ -80,8 +80,8 @@ const INDEX_OVERRIDES = {
     // env-overridable treatment as BANKNIFTY/FINNIFTY above. If a run stores
     // 0 rows for one of these while Bhavcopy discovery found contracts for
     // it, the stock code here is the first thing to fix.
-    MIDCPNIFTY: process.env.BREEZE_STOCKCODE_MIDCPNIFTY || "NIFMDCP50",
-    NIFTYNXT50: process.env.BREEZE_STOCKCODE_NIFTYNXT50 || "NIFTYNXT50",
+    MIDCPNIFTY: process.env.BREEZE_STOCKCODE_MIDCPNIFTY || "NIFSEL", // confirmed live 2026-09-25 (FUTIDX, ICICI F&O master)
+    NIFTYNXT50: process.env.BREEZE_STOCKCODE_NIFTYNXT50 || "NIFNEX", // confirmed live 2026-09-25 (FUTIDX, ICICI F&O master)
     SENSEX: process.env.BREEZE_STOCKCODE_SENSEX || "BSESEN",
     BANKEX: process.env.BREEZE_STOCKCODE_BANKEX || "BANKEX",
 };
@@ -130,8 +130,15 @@ function parseScripMaster(csvText) {
         const cols = lines[i].split(",");
         if (cols.length < 61) continue;
         const isecCode = stripQuotes(cols[1]);
+        const series = stripQuotes(cols[2]);
         const nseSymbol = stripQuotes(cols[60]);
-        if (nseSymbol && isecCode) map.set(nseSymbol, isecCode);
+        if (!nseSymbol || !isecCode) continue;
+        // One NSE symbol can have several rows (EQ plus warrants/NCDs, e.g.
+        // HDFCBANK -> HDFBAN "EQ" and HDFWA2 "W3"). The EQ row is the one
+        // Breeze's F&O/cash data is keyed on — never let a later non-EQ row
+        // overwrite it (last-row-wins sent HDFCBANK/ABFRL/M&MFIN/IIFL to
+        // warrant/bond codes, which silently return 0 candles).
+        if (series === "EQ" || !map.has(nseSymbol)) map.set(nseSymbol, isecCode);
     }
     return map;
 }
@@ -209,8 +216,26 @@ async function ensureLoaded() {
  * matches this project's existing convention of never quietly swallowing an
  * unmapped case (see instrumentMaster.js).
  */
+// NSE symbols that appear in 2023/2024 bhavcopy but were later RENAMED, so
+// today's ICICI scrip master only lists the new name. ICICI's own code stays
+// with the company, found by company name in NSEScripMaster.txt; every code
+// below confirmed with a real Breeze futures call (2026-09-25).
+// Override any of these with BREEZE_STOCKCODE_<SYMBOL> (non-alnum → "_").
+const RENAMED_STOCKS = {
+    "TATAMOTORS": "TATMOT",  // now TMPV (2025 demerger; same listed entity)
+    "MCDOWELL-N": "UNISPI",  // now UNITDSPR
+    "L&TFH": "LTFINA",       // now LTF
+    "PVR": "PVRLIM",         // now PVRINOX
+    "GMRINFRA": "GMRINF",    // now GMRAIRPORT
+    "GUJGASLTD": "GUJGA",    // F&O code (cash master says GUJGAS, which returns 0 futures candles)
+    "LTIM": "LTINFO",        // LTIMindtree (confirmed live; MINLIM returns 0)
+};
+
 async function resolveStockCode(symbol) {
     if (INDEX_OVERRIDES[symbol]) return INDEX_OVERRIDES[symbol];
+    const envOverride = process.env[`BREEZE_STOCKCODE_${symbol.replace(/[^A-Z0-9]/gi, "_")}`];
+    if (envOverride) return envOverride;
+    if (RENAMED_STOCKS[symbol]) return RENAMED_STOCKS[symbol];
     const map = await ensureLoaded();
     const isec = map.get(symbol);
     if (!isec) {
@@ -220,4 +245,4 @@ async function resolveStockCode(symbol) {
     return isec;
 }
 
-module.exports = { resolveStockCode, exchangeCodeFor, INDEX_OVERRIDES, BSE_FO_SYMBOLS, LOCAL_FALLBACK_PATH };
+module.exports = { resolveStockCode, exchangeCodeFor, INDEX_OVERRIDES, RENAMED_STOCKS, BSE_FO_SYMBOLS, LOCAL_FALLBACK_PATH };

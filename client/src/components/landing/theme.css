@@ -1,32 +1,24 @@
 /* Landing page theme tokens — scoped to `.landing-page` (Home.jsx's root).
-   The page's STRUCTURE (Hero, PinnedWalkthrough, FeatureCarousel, About) is
-   unchanged; only these color tokens now follow the site-wide light/dark
-   toggle (ThemeContext.jsx puts `.dark` on <html>), instead of being locked
-   to a single dark palette.
+   Standardized to our Emerald Green brand theme (#059669) across both Light and Dark modes.
+   Provides crisp contrast, elegant glassmorphism, 3D card depths, and smooth responsive transitions. */
 
-   Light values are the defaults below (site light theme: near-white ground,
-   #111827 text, blue-600 accent). The `.dark .landing-page` block swaps in
-   the site's dark brand palette (index.css's `.dark` block: #030108 ground,
-   #f5f7fa text, green accent, #18202c borders) so the landing page matches
-   the rest of the app in both modes. The blue accent maps to green in dark
-   for the same reason every other `blue-600` in the app does. */
 .landing-page {
-    --landing-bg: #f8f9fb;
+    --landing-bg: #f8fafc;
     --landing-bg-alt: #ffffff;
-    --landing-text: #111827;
-    --landing-text-muted: #5b6472;
-    --landing-accent: #2563eb;
-    --landing-accent-hover: #1d4ed8;
+    --landing-text: #0f172a;
+    --landing-text-muted: #64748b;
+    --landing-accent: #059669;
+    --landing-accent-hover: #047857;
     --landing-accent-text: #ffffff;
     --landing-card-bg: #ffffff;
-    --landing-card-bg-hover: #f9fafb;
-    --landing-card-border: #e5e7eb;
-    --landing-card-border-hover: #d1d5db;
-    --landing-track: rgba(0, 0, 0, 0.06);
-    --landing-card-radius: 18px;
-    --landing-cta-shadow: rgba(37, 99, 235, 0.28);
-    --font-headline: "Lato", system-ui, "Segoe UI", sans-serif;
-    --font-body: "Nunito Sans", system-ui, "Segoe UI", sans-serif;
+    --landing-card-bg-hover: #f8fafc;
+    --landing-card-border: #e2e8f0;
+    --landing-card-border-hover: #cbd5e1;
+    --landing-track: rgba(0, 0, 0, 0.05);
+    --landing-card-radius: 20px;
+    --landing-cta-shadow: rgba(5, 150, 105, 0.25);
+    --font-headline: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 
     background: var(--landing-bg);
     color: var(--landing-text);
@@ -34,35 +26,34 @@
 }
 
 .dark .landing-page {
-    --landing-bg: #030108;
-    --landing-bg-alt: #010814;
-    --landing-text: #f5f7fa;
-    --landing-text-muted: #8b93a7;
-    --landing-accent: #02ca3a;
-    --landing-accent-hover: #0be55c;
-    --landing-accent-text: #010814;
-    --landing-card-bg: rgba(255, 255, 255, 0.03);
-    --landing-card-bg-hover: rgba(255, 255, 255, 0.05);
+    --landing-bg: #070d18;
+    --landing-bg-alt: #0b1424;
+    --landing-text: #f8fafc;
+    --landing-text-muted: #94a3b8;
+    --landing-accent: #10b981;
+    --landing-accent-hover: #34d399;
+    --landing-accent-text: #022c22;
+    --landing-card-bg: rgba(15, 23, 42, 0.65);
+    --landing-card-bg-hover: rgba(30, 41, 59, 0.8);
     --landing-card-border: rgba(255, 255, 255, 0.08);
-    --landing-card-border-hover: rgba(255, 255, 255, 0.14);
-    --landing-track: rgba(255, 255, 255, 0.06);
-    --landing-cta-shadow: rgba(2, 202, 58, 0.35);
+    --landing-card-border-hover: rgba(16, 185, 129, 0.3);
+    --landing-track: rgba(255, 255, 255, 0.05);
+    --landing-cta-shadow: rgba(16, 185, 129, 0.35);
 }
 
 .landing-page .eyebrow {
-    font-family: var(--font-body);
     font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.1em;
+    font-weight: 800;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--landing-text-muted);
+    color: var(--landing-accent);
 }
 
 .landing-page .headline {
     font-family: var(--font-headline);
     font-weight: 900;
-    letter-spacing: -0.01em;
-    line-height: 1.1;
+    letter-spacing: -0.025em;
+    line-height: 1.15;
 }
 
 .landing-page .headline-muted {
@@ -74,72 +65,56 @@
     background: var(--landing-card-bg);
     border: 1px solid var(--landing-card-border);
     border-radius: var(--landing-card-radius);
-    transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
+    transition: all 220ms cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.03);
+    backdrop-filter: blur(12px);
 }
 
 .landing-page .landing-card:hover {
     background: var(--landing-card-bg-hover);
     border-color: var(--landing-card-border-hover);
+    transform: translateY(-3px);
+    box-shadow: 0 12px 28px -4px rgba(0, 0, 0, 0.08);
 }
 
 .landing-page .landing-cta {
     background: var(--landing-accent);
     color: var(--landing-accent-text);
     font-family: var(--font-body);
-    transition: background 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+    transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 14px var(--landing-cta-shadow);
 }
 
 .landing-page .landing-cta:hover {
     background: var(--landing-accent-hover);
-    transform: scale(1.03);
-    box-shadow: 0 8px 30px var(--landing-cta-shadow);
+    transform: translateY(-1px) scale(1.02);
+    box-shadow: 0 8px 25px var(--landing-cta-shadow);
 }
 
-/* Floating micro-interaction badges (Hero/PinnedWalkthrough mockups) —
-   plain CSS transition driven by IntersectionObserver toggling this class,
-   deliberately not GSAP (see the "keep it lightweight" instruction). */
-.landing-page .float-badge {
+/* 3D Glass Mockup & Ambient Glows */
+.landing-page .mockup-3d-wrapper {
+    perspective: 1200px;
+    transform-style: preserve-3d;
+}
+
+.landing-page .mockup-3d-card {
+    transition: transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.5s ease;
+    transform: rotateX(4deg) scale(0.98);
+}
+
+.landing-page .mockup-3d-card:hover {
+    transform: rotateX(0deg) scale(1);
+    box-shadow: 0 25px 50px -12px rgba(5, 150, 105, 0.25);
+}
+
+.landing-page .floating-badge {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(12px) scale(0.95);
     transition: opacity 400ms ease, transform 400ms ease;
+    backdrop-filter: blur(8px);
 }
-.landing-page .float-badge.in-view {
+
+.landing-page .floating-badge.in-view {
     opacity: 1;
-    transform: translateY(0);
-}
-
-/* PinnedWalkthrough's bottom tab bar — active tab (driven by GSAP
-   ScrollTrigger progress) gets the accent-pill treatment (reads in both
-   themes, unlike the old hardcoded white pill). */
-.landing-page .walkthrough-tab {
-    color: var(--landing-text-muted);
-    background: transparent;
-    border: none;
-    cursor: pointer;
-}
-.landing-page .walkthrough-tab.active-tab {
-    background: var(--landing-accent);
-    color: var(--landing-accent-text);
-}
-
-/* prefers-reduced-motion fallback for PinnedWalkthrough — stacked steps
-   that fade in on scroll instead of pinning (StackedWalkthrough below). */
-.landing-page .fade-step {
-    opacity: 0;
-    transform: translateY(24px);
-    transition: opacity 500ms ease, transform 500ms ease;
-}
-.landing-page .fade-step.in-view {
-    opacity: 1;
-    transform: translateY(0);
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .landing-page .landing-cta:hover {
-        transform: none;
-    }
-    .landing-page .float-badge {
-        transition: opacity 200ms ease;
-        transform: none;
-    }
+    transform: translateY(0) scale(1);
 }

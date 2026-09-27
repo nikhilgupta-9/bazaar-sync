@@ -37,11 +37,11 @@ export async function fetchPositions(token, status = "open") {
     return handle(res);
 }
 
-export async function openPosition(token, { symbol, expiry, strike, optRight, lots }) {
+export async function openPosition(token, { symbol, expiry, strike, optRight, lots, side = "long" }) {
     const res = await fetch(`${API_URL}/api/paper-trade/positions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ symbol, expiry, strike, optRight, lots }),
+        body: JSON.stringify({ symbol, expiry, strike, optRight, lots, side }),
     });
     return handle(res);
 }

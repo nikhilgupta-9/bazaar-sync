@@ -9,6 +9,9 @@ import {
     computeBreakevens,
     computeMaxProfitLoss,
     computeNetGreeks,
+    computeRiskRewardRatio,
+    computeMarginDetails,
+    computePOP,
     totalPayoffAtPrice,
     legMultiplier,
     otherAction,
@@ -148,3 +151,68 @@ describe("2-leg spread with mixed sides (bull call spread: buy 100CE, sell 120CE
         expect(net.theta).toBeCloseTo(-0.4, 5);
     });
 });
+
+describe("computeRiskRewardRatio", () => {
+    it("returns NA when max loss is Unlimited", () => {
+        expect(computeRiskRewardRatio(28980.25, "Unlimited")).toBe("NA");
+    });
+
+    it("returns 1 : ∞ when max profit is Unlimited", () => {
+        expect(computeRiskRewardRatio("Unlimited", -5000)).toBe("1 : ∞");
+    });
+
+    it("formats standard defined risk:reward as 1 : (profit / loss)", () => {
+        expect(computeRiskRewardRatio(10000, -5000)).toBe("1 : 2.00");
+        expect(computeRiskRewardRatio(5000, -10000)).toBe("1 : 0.50");
+    });
+
+    it("returns — for null or missing values", () => {
+        expect(computeRiskRewardRatio(null, null)).toBe("—");
+    });
+});
+
+describe("Iron Condor (4 legs, fully defined risk)", () => {
+    const legs = [
+        leg({ action: "buy", type: "PE", strike: 90, premium: 1, qty: 1, lotSize: 50 }),
+        leg({ action: "sell", type: "PE", strike: 95, premium: 3, qty: 1, lotSize: 50 }),
+        leg({ action: "sell", type: "CE", strike: 105, premium: 3, qty: 1, lotSize: 50 }),
+        leg({ action: "buy", type: "CE", strike: 110, premium: 1, qty: 1, lotSize: 50 }),
+    ];
+
+    it("calculates bounded max profit and bounded max loss without Unlimited", () => {
+        const curve = computePayoffCurve(legs, { minPrice: 70, maxPrice: 130, steps: 100 });
+        const { maxProfit, maxLoss } = computeMaxProfitLoss(legs, curve);
+        expect(maxProfit).toBe(200); // net credit = (3-1) + (3-1) = 4 per share * 50 = 200
+        expect(maxLoss).toBe(-50); // wing width 5 - 4 credit = 1 loss per share * 50 = -50
+    });
+
+    it("computes defined risk:reward ratio", () => {
+        const curve = computePayoffCurve(legs, { minPrice: 70, maxPrice: 130, steps: 100 });
+        const { maxProfit, maxLoss } = computeMaxProfitLoss(legs, curve);
+        expect(computeRiskRewardRatio(maxProfit, maxLoss)).toBe("1 : 4.00");
+    });
+
+    it("hedges margin properly and shows significant margin benefit for Iron Condor", () => {
+        const margin = computeMarginDetails(legs, 100, "NIFTY");
+        expect(margin.isHedged).toBe(true);
+        expect(margin.marginBenefit).toBeGreaterThan(0);
+        expect(margin.fundsRequired).toBeLessThan(margin.nakedMargin);
+    });
+});
+
+describe("computePOP (Probability of Profit)", () => {
+    it("returns null for invalid inputs", () => {
+        expect(computePOP([], 100, 15, 0.05)).toBe(null);
+        expect(computePOP(null, 100, 15, 0.05)).toBe(null);
+    });
+
+    it("returns a sensible percentage between 0 and 100", () => {
+        const legs = [leg({ action: "sell", type: "CE", strike: 105, premium: 3, qty: 1, lotSize: 50 })];
+        const curve = computePayoffCurve(legs, { minPrice: 80, maxPrice: 120, steps: 100 });
+        const pop = computePOP(curve, 100, 15, 7 / 365);
+        expect(pop).toBeGreaterThan(50);
+        expect(pop).toBeLessThanOrEqual(100);
+    });
+});
+
+

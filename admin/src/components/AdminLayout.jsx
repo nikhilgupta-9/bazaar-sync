@@ -13,18 +13,30 @@ export default function AdminLayout() {
     const [sidebarOpen, setSidebarOpen] = useState(false);
 
     if (loading) {
-        return <div className="flex min-h-screen items-center justify-center bg-[#08080b] text-sm text-gray-500">Loading…</div>;
+        return (
+            <div className="flex min-h-screen items-center justify-center bg-[#08080b] text-sm text-gray-500">
+                <div className="flex items-center gap-2">
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-violet-500 border-t-transparent" />
+                    <span>Loading Admin…</span>
+                </div>
+            </div>
+        );
     }
     if (!user) {
         return <Navigate to="/login" replace />;
     }
 
     return (
-        <div className="flex min-h-screen bg-[#08080b]">
+        <div className="flex min-h-screen w-full bg-[#08080b] text-gray-200 antialiased">
+            {/* Sidebar for Desktop & Mobile Overlay */}
             <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-            <div className="flex min-h-screen flex-1 flex-col lg:pl-0">
+
+            {/* Main Application Area */}
+            <div className="flex min-h-screen flex-1 flex-col w-full min-w-0 max-w-full overflow-x-hidden">
                 <AppHeader onToggleSidebar={() => setSidebarOpen((v) => !v)} />
-                <Outlet />
+                <main className="flex-1 w-full min-w-0 max-w-full">
+                    <Outlet />
+                </main>
             </div>
         </div>
     );

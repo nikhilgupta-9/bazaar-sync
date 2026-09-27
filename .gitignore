@@ -35,4 +35,12 @@ package-lock.json
 # TradingView Charting Library — licensed, obtained from TradingView, never
 # committed (see client/public/charting_library/README.md). Keep the README.
 client/public/charting_library/*
-!client/public/charting_library/README.md
+# Google credentials
+server/config/google_oauth.json
+server/config/google_service_account.json
+
+# Staging & temp archives
+tmp/
+*.csv.gz
+data-downloader/data/
+*.pdf

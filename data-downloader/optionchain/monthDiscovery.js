@@ -118,8 +118,8 @@ async function getDayRowsBothExchanges(dateStr) {
     let bse = new Map();
     try {
         bse = await bseBhavcopy.getDayRowsBySymbol(dateStr);
-    } catch (err) {
-        console.warn(`[discovery] ${dateStr}: BSE bhavcopy failed (${err.message}) — continuing with NSE only for this day`);
+    } catch {
+        // BSE bhavcopy is only needed for SENSEX/BANKEX — all F&O stocks are on NSE
     }
     for (const [symbol, rows] of bse) {
         if (nse.has(symbol)) nse.get(symbol).push(...rows);
@@ -138,10 +138,13 @@ async function getDayRowsBothExchanges(dateStr) {
 async function discoverMonth(year, month, { onlySymbols = null } = {}) {
     const { first, last } = monthBounds(year, month);
 
-    const [existing] = await pool.query(
-        `SELECT DISTINCT trade_date FROM option_chain_history WHERE trade_date BETWEEN ? AND ?`,
-        [first, last]
-    );
+    let query = `SELECT DISTINCT trade_date FROM option_chain_history WHERE trade_date BETWEEN ? AND ?`;
+    let params = [first, last];
+    if (onlySymbols && onlySymbols.size > 0) {
+        query = `SELECT DISTINCT trade_date FROM option_chain_history WHERE symbol IN (?) AND trade_date BETWEEN ? AND ?`;
+        params = [[...onlySymbols], first, last];
+    }
+    const [existing] = await pool.query(query, params);
     const alreadyCovered = new Set(existing.map((r) => r.trade_date));
 
     let d = first;

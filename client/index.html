@@ -14,11 +14,14 @@
     <script>
       (function () {
         try {
-          if (localStorage.getItem("bazaar_sync_theme") === "dark") {
+          var saved = localStorage.getItem("bazaar_sync_theme");
+          if (saved === "dark") {
             document.documentElement.classList.add("dark");
+          } else {
+            document.documentElement.classList.remove("dark");
           }
         } catch (e) {
-          /* localStorage unavailable — falls back to light, same as no preference saved yet */
+          document.documentElement.classList.remove("dark");
         }
       })();
     </script>

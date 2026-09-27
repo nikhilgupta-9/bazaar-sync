@@ -217,20 +217,15 @@ const SHAPES = {
     ],
 };
 
-const COLORS = { green: "#10b981", red: "#f43f5e" };
+const COLORS = {
+    green: "#10b981",
+    red: "#f43f5e",
+    greenGradient: "url(#profitGrad)",
+    redGradient: "url(#lossGrad)",
+};
 
-// Bottom edge of the viewBox — used as the fill's closing edge for every
-// segment. There's no single "zero P&L" y-value shared across these hand-
-// tuned shapes, so the fill is a decorative wash grounded at the icon's
-// floor rather than a literal zero-line area (same wash convention as
-// marks-and-anatomy's "~10% opacity, never a saturated block").
 const BASELINE_Y = 49;
 
-// Catmull-Rom -> cubic Bezier, so each segment reads as a soft curve instead
-// of a jointed polyline while still passing through every real data point
-// (including flat plateau runs, which stay flat). Kinks are only introduced
-// at segment boundaries (color changes), which is where the shape's real
-// pivots already are.
 function smoothPath(points) {
     if (points.length < 2) return "";
     let d = `M ${points[0][0]},${points[0][1]}`;
@@ -258,21 +253,49 @@ export default function PayoffIcon({ shape }) {
     const segments = SHAPES[shape];
     if (!segments) return null;
     return (
-        <svg viewBox="0 0 100 50" className="h-12 w-full" preserveAspectRatio="none">
+        <svg viewBox="0 0 100 50" className="h-14 w-full overflow-visible" preserveAspectRatio="none">
+            <defs>
+                <linearGradient id="profitGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#10b981" stopOpacity="0.25" />
+                    <stop offset="100%" stopColor="#10b981" stopOpacity="0.02" />
+                </linearGradient>
+                <linearGradient id="lossGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.25" />
+                    <stop offset="100%" stopColor="#f43f5e" stopOpacity="0.02" />
+                </linearGradient>
+                <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+                    <feDropShadow dx="0" dy="1" stdDeviation="1" floodColor="#059669" floodOpacity="0.2" />
+                </filter>
+            </defs>
+
+            {/* Zero P&L Dashed Reference Line */}
+            <line x1="0" y1="30" x2="100" y2="30" stroke="#cbd5e1" strokeWidth="1" strokeDasharray="2 2" strokeOpacity="0.8" />
+
+            {/* Area Fills with soft gradient */}
             {segments.map((seg, i) => (
-                <path key={`fill-${i}`} d={areaPath(seg.pts)} fill={COLORS[seg.c]} fillOpacity="0.12" stroke="none" />
+                <path
+                    key={`fill-${i}`}
+                    d={areaPath(seg.pts)}
+                    fill={seg.c === "green" ? "url(#profitGrad)" : "url(#lossGrad)"}
+                    stroke="none"
+                />
             ))}
+
+            {/* Curve Stroke Lines */}
             {segments.map((seg, i) => (
                 <path
                     key={`line-${i}`}
                     d={smoothPath(seg.pts)}
                     fill="none"
                     stroke={COLORS[seg.c]}
-                    strokeWidth="3"
+                    strokeWidth="2.5"
                     strokeLinecap="round"
                     strokeLinejoin="round"
                 />
             ))}
+
+            {/* ATM Spot Marker Point */}
+            <circle cx="50" cy="30" r="1.5" fill="#64748b" opacity="0.6" />
         </svg>
     );
 }

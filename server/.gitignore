@@ -9,3 +9,5 @@ node_modules/
 # Logs
 *.log
 server/logs/
+
+printf "\n# Google credentials\nserver/config/google_oauth.json\nserver/config/google_service_account.json\n" >> .gitignore

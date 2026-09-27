@@ -77,7 +77,7 @@ export default function OptionChainSettingsDrawer({
                                         onClick={() => onStrikesAroundAtmChange(o.value)}
                                         className={`rounded-md border px-2 py-1 font-semibold ${
                                             strikesAroundAtm === o.value
-                                                ? "border-blue-400 bg-blue-50 text-blue-700"
+                                                ? "border-emerald-500 bg-emerald-50 text-emerald-700 font-bold shadow-xs"
                                                 : "border-gray-200 text-gray-600 hover:bg-gray-50"
                                         }`}
                                     >

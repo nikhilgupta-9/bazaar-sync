@@ -31,54 +31,54 @@ export default function SlTgModal({ leg, symbol, draft, onDraftChange, onClose, 
             : "Applied automatically when you Run Simulation — once this leg's own running P&L crosses either threshold, its P&L freezes at that minute while other legs keep going.";
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={onClose}>
-            <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs px-4" onClick={onClose}>
+            <div className="w-full max-w-sm rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
                 <div className="mb-1 flex items-center justify-between">
-                    <h3 className="text-sm font-bold text-gray-900">Stop Loss / Target</h3>
-                    <button onClick={onClose} className="text-gray-400 hover:text-gray-700" aria-label="Close">
+                    <h3 className="text-sm font-black text-gray-900 dark:text-gray-100">Stop Loss / Target</h3>
+                    <button onClick={onClose} className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200" aria-label="Close">
                         <FiX size={16} />
                     </button>
                 </div>
-                <div className="mb-4 text-xs text-gray-500">
+                <div className="mb-4 text-xs text-gray-500 dark:text-gray-400">
                     <span className={`mr-1.5 rounded px-1.5 py-0.5 text-[10px] font-bold text-white ${leg.action === "buy" ? "bg-emerald-500" : "bg-rose-500"}`}>
                         {leg.action === "buy" ? "BUY" : "SELL"}
                     </span>
                     {symbol} {leg.strike} {leg.type} · Entry {formatPrice(leg.premium)} · Lot {leg.lotSize ?? "1 (unknown)"} × {leg.qty}
                 </div>
 
-                <label className="mb-1 block text-xs font-medium text-gray-600">Stop Loss %</label>
+                <label className="mb-1 block text-xs font-semibold text-gray-700 dark:text-gray-300">Stop Loss %</label>
                 <input
                     type="number"
                     min="0"
                     value={draft.sl}
                     onChange={(e) => onDraftChange((d) => ({ ...d, sl: e.target.value }))}
                     placeholder="e.g. 30"
-                    className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-rose-500"
+                    className="mb-1 w-full rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-rose-500 transition"
                 />
-                <div className="mb-3 text-[11px] text-gray-400">
+                <div className="mb-3 text-[11px] text-gray-400 dark:text-gray-500">
                     {slAmount != null ? `≈ ${formatPrice(slAmount)} loss on this leg triggers it` : "% of this leg's own entry notional"}
                 </div>
 
-                <label className="mb-1 block text-xs font-medium text-gray-600">Target %</label>
+                <label className="mb-1 block text-xs font-semibold text-gray-700 dark:text-gray-300">Target %</label>
                 <input
                     type="number"
                     min="0"
                     value={draft.tg}
                     onChange={(e) => onDraftChange((d) => ({ ...d, tg: e.target.value }))}
                     placeholder="e.g. 50"
-                    className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-emerald-500"
+                    className="mb-1 w-full rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-emerald-500 transition"
                 />
-                <div className="mb-4 text-[11px] text-gray-400">
+                <div className="mb-4 text-[11px] text-gray-400 dark:text-gray-500">
                     {tgAmount != null ? `≈ ${formatPrice(tgAmount)} profit on this leg triggers it` : "% of this leg's own entry notional"}
                 </div>
 
-                <div className="mb-4 rounded-lg bg-blue-50 p-2.5 text-[11px] text-blue-700">{footerCopy}</div>
+                <div className="mb-4 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/50 p-2.5 text-[11px] text-blue-700 dark:text-blue-300">{footerCopy}</div>
 
                 <div className="flex justify-end gap-2">
-                    <button onClick={onClose} className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50">
+                    <button onClick={onClose} className="rounded-xl border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-xs font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition">
                         Cancel
                     </button>
-                    <button onClick={onSave} className="rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-700">
+                    <button onClick={onSave} className="rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-700 px-3.5 py-1.5 text-xs font-bold text-white hover:from-emerald-500 hover:to-emerald-600 shadow-xs transition">
                         Save
                     </button>
                 </div>

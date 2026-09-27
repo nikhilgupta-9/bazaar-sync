@@ -240,7 +240,7 @@ async function main() {
     await pool.end();
 }
 
-module.exports = { backfillSymbol };
+module.exports = { backfillSymbol, storeRows, yearsToExpiryAsOf };
 
 if (require.main === module) {
     main().catch((err) => {

@@ -101,7 +101,7 @@ export default function HomePage() {
         return (
             <div>
                 <TopBar title="Home Page" subtitle="Edit the public homepage's copy and images." />
-                <div className="p-6"><div className="py-10 text-center text-xs text-gray-500">Loading…</div></div>
+                <div className="p-3.5 sm:p-6 max-w-7xl mx-auto"><div className="py-10 text-center text-xs text-gray-500">Loading…</div></div>
             </div>
         );
     }
@@ -109,9 +109,9 @@ export default function HomePage() {
     return (
         <div>
             <TopBar title="Home Page" subtitle="Edit the public homepage's hero, tool cards and about section. Blank fields keep the original copy." />
-            <form onSubmit={handleSave} className="space-y-4 p-6">
-                {error && <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
-                {saved && <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">Saved.</div>}
+            <form onSubmit={handleSave} className="space-y-4 p-3.5 sm:p-6 max-w-7xl mx-auto">
+                {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 font-medium">{error}</div>}
+                {saved && <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-300 font-semibold">Saved.</div>}
 
                 <Card title="Hero section">
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

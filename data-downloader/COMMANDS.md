@@ -23,6 +23,36 @@ DB + Breeze creds in `.env` (see `.env.example`). `BREEZE_API_SESSION`
 expires **daily** — get a fresh one before each session (login URL in
 `.env.example`).
 
+### ★ Backtest data, 2023 → now (spot + options + futures, 1-minute) — START HERE
+
+```bash
+npm run backtest-data -- 2023 2026 --plan                   # dry run: 0 Breeze calls, prints call estimate
+npm run backtest-data -- 2023 2026                          # 7 indices, one symbol fully at a time
+npm run backtest-data -- 2023 2026 --symbols=NIFTY          # one symbol
+npm run backtest-data -- 2023 2026 --symbols=ALL            # 7 indices, then every F&O stock
+npm run backtest-data -- 2023 2023 --symbols=NIFTY --months=1-3
+
+# FUTURES ONLY (index + stock futures, near + next expiry, 1-minute → futures_history)
+npm run futures-data -- 2023 2026 --symbols=ALL            # 7 indices, then every F&O stock
+npm run futures-data -- 2023 2026 --symbols=RELIANCE,NIFTY
+```
+
+Stock futures need ICICI's own stock codes (RELIANCE → RELIND): put
+`NSEScripMaster.txt` (from https://directlink.icicidirect.com/MotherAppMaster/SecurityMaster.zip)
+in `data/` if the automatic download fails. A symbol whose calls all come
+back empty is skipped and listed at the end (month not marked done).
+
+Per (symbol, month): **spot** (Breeze 1-min cash → `ohlcv_data`) → **plan**
+(in-memory bhavcopy: nearest 2 expiries + monthly, ATM ± 10 strikes around
+the day's real low/high — nothing written from bhavcopy) → **options**
+(Breeze 1-min CE/PE + IV/Greeks on the same minute's spot →
+`option_chain_history`) → **futures** (near + next, 1-min →
+`futures_history`) → verify (`data/breeze-backtest-reports/`).
+~1,300 calls per NIFTY month ≈ 3-4 index-months per daily session. Stops
+cleanly when the budget/session runs out; paste a fresh
+`BREEZE_API_SESSION` and re-run the same command next day. Tune scope with
+the `BT_*` vars in `.env.example`.
+
 ### Option chain (CE/PE, every strike, + Greeks) → `option_chain_history`
 
 ```bash

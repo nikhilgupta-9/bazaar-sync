@@ -29,25 +29,25 @@ function CustomTooltip({ active, payload, label, spotPrice }) {
     const todayEntry = payload.find((p) => p.dataKey === "todayPnl");
     const pctFromSpot = spotPrice ? ((label - spotPrice) / spotPrice) * 100 : null;
     return (
-        <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs shadow-lg">
-            <div className="mb-1 font-bold text-gray-800">
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md px-3 py-2 text-xs shadow-xl">
+            <div className="mb-1 font-bold text-gray-800 dark:text-gray-100">
                 {formatPrice(label)}
                 {pctFromSpot != null && (
-                    <span className={`ml-1.5 font-semibold ${pctFromSpot >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                    <span className={`ml-1.5 font-semibold ${pctFromSpot >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
                         ({pctFromSpot >= 0 ? "+" : ""}{pctFromSpot.toFixed(2)}%)
                     </span>
                 )}
             </div>
             {pnlEntry && (
                 <div className="flex items-center justify-between gap-4">
-                    <span className="text-gray-400">Expiry P&L</span>
-                    <span className={`font-bold ${pnlEntry.value >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{formatPrice(pnlEntry.value)}</span>
+                    <span className="text-gray-400 dark:text-gray-400">Expiry P&L</span>
+                    <span className={`font-bold tabular-nums ${pnlEntry.value >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{formatPrice(pnlEntry.value)}</span>
                 </div>
             )}
             {todayEntry?.value != null && (
                 <div className="flex items-center justify-between gap-4">
-                    <span className="text-gray-400">Today P&L</span>
-                    <span className={`font-bold ${todayEntry.value >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{formatPrice(todayEntry.value)}</span>
+                    <span className="text-gray-400 dark:text-gray-400">Today P&L</span>
+                    <span className={`font-bold tabular-nums ${todayEntry.value >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{formatPrice(todayEntry.value)}</span>
                 </div>
             )}
         </div>
@@ -70,7 +70,7 @@ function CustomTooltip({ active, payload, label, spotPrice }) {
 // close together (routinely, near the money). The header row + a single
 // "P&L at spot" line below it carry that information instead; the chart
 // itself keeps only the reference lines and two small unlabeled dots.
-export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove, atmIv, yearsRemaining }) {
+export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove, atmIv, yearsRemaining, height = 340 }) {
     if (!curve.length) {
         return (
             <div className="p-16 text-center text-xs text-gray-400">
@@ -95,16 +95,16 @@ export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove
     return (
         <div>
             {(spotPrice || expectedMove) && (
-                <div className="mb-2 flex items-center justify-between px-1 text-[11px] font-semibold text-gray-400">
-                    <span>{expectedMove ? formatPrice(expectedMove.minus2sd) : ""}<span className="ml-1 text-gray-300">−2SD</span></span>
-                    <span>{expectedMove ? formatPrice(expectedMove.minus1sd) : ""}<span className="ml-1 text-gray-300">−1SD</span></span>
-                    <span className="text-sm font-bold text-blue-600">{spotPrice ? `Spot ${formatPrice(spotPrice)}` : ""}</span>
-                    <span>{expectedMove ? formatPrice(expectedMove.plus1sd) : ""}<span className="ml-1 text-gray-300">+1SD</span></span>
-                    <span>{expectedMove ? formatPrice(expectedMove.plus2sd) : ""}<span className="ml-1 text-gray-300">+2SD</span></span>
+                <div className="mb-2 flex items-center justify-between px-1 text-[11px] font-semibold text-gray-500 dark:text-gray-400">
+                    <span>{expectedMove ? formatPrice(expectedMove.minus2sd) : ""}<span className="ml-1 text-gray-400 dark:text-gray-500">−2SD</span></span>
+                    <span>{expectedMove ? formatPrice(expectedMove.minus1sd) : ""}<span className="ml-1 text-gray-400 dark:text-gray-500">−1SD</span></span>
+                    <span className="text-sm font-black text-blue-600 dark:text-blue-400">{spotPrice ? `Spot ${formatPrice(spotPrice)}` : ""}</span>
+                    <span>{expectedMove ? formatPrice(expectedMove.plus1sd) : ""}<span className="ml-1 text-gray-400 dark:text-gray-500">+1SD</span></span>
+                    <span>{expectedMove ? formatPrice(expectedMove.plus2sd) : ""}<span className="ml-1 text-gray-400 dark:text-gray-500">+2SD</span></span>
                 </div>
             )}
 
-            <ResponsiveContainer width="100%" height={340}>
+            <ResponsiveContainer width="100%" height={height}>
                 <ComposedChart data={chartData}>
                     <defs>
                         <linearGradient id="payoffGradient" x1="0" y1="0" x2="0" y2="1">
@@ -114,19 +114,9 @@ export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove
                             <stop offset={1} stopColor="#f43f5e" stopOpacity={0.35} />
                         </linearGradient>
                     </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    {/* type="number" is required — otherwise this defaults to a
-                        category axis, and ReferenceLine's x prop can only land on
-                        an exact sampled data point (this is why breakeven/SD
-                        reference lines silently failed to render: their computed
-                        values never exactly matched one of the curve's sample
-                        points, unlike Spot which coincidentally did). */}
-                    <XAxis dataKey="price" type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 11 }} tickFormatter={(v) => formatPrice(v)} />
-                    <YAxis yAxisId="pnl" tick={{ fontSize: 11 }} width={60} />
-                    {/* Hidden secondary axis just for the density bars, fixed
-                        0-4 range (density is normalized 0-1 already, so this
-                        keeps the tallest bar to roughly a quarter of the plot
-                        height — a background texture, not a competing series). */}
+                    <CartesianGrid strokeDasharray="3 3" stroke="#888888" strokeOpacity={0.15} />
+                    <XAxis dataKey="price" type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 11, fill: "#888888" }} tickFormatter={(v) => formatPrice(v)} />
+                    <YAxis yAxisId="pnl" tick={{ fontSize: 11, fill: "#888888" }} width={60} />
                     {density && <YAxis yAxisId="density" domain={[0, 4]} hide />}
                     <Tooltip content={<CustomTooltip spotPrice={spotPrice} />} />
                     <Legend wrapperStyle={{ fontSize: 11 }} />
@@ -146,10 +136,10 @@ export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove
                     ))}
                     {expectedMove && (
                         <>
-                            <ReferenceLine yAxisId="pnl" x={expectedMove.minus2sd} stroke="#e5e7eb" />
-                            <ReferenceLine yAxisId="pnl" x={expectedMove.minus1sd} stroke="#e5e7eb" />
-                            <ReferenceLine yAxisId="pnl" x={expectedMove.plus1sd} stroke="#e5e7eb" />
-                            <ReferenceLine yAxisId="pnl" x={expectedMove.plus2sd} stroke="#e5e7eb" />
+                            <ReferenceLine yAxisId="pnl" x={expectedMove.minus2sd} stroke="#888888" strokeOpacity={0.25} />
+                            <ReferenceLine yAxisId="pnl" x={expectedMove.minus1sd} stroke="#888888" strokeOpacity={0.25} />
+                            <ReferenceLine yAxisId="pnl" x={expectedMove.plus1sd} stroke="#888888" strokeOpacity={0.25} />
+                            <ReferenceLine yAxisId="pnl" x={expectedMove.plus2sd} stroke="#888888" strokeOpacity={0.25} />
                         </>
                     )}
 
@@ -172,15 +162,15 @@ export default function PayoffChart({ curve, spotPrice, breakevens, expectedMove
                     {spotExpiryPnl != null && (
                         <span className="flex items-center gap-1.5">
                             <span className="h-2 w-2 rounded-full bg-blue-600" />
-                            <span className="text-gray-400">P&L at spot (Expiry):</span>
-                            <span className={spotExpiryPnl >= 0 ? "text-emerald-600" : "text-rose-600"}>{formatPrice(spotExpiryPnl)}</span>
+                            <span className="text-gray-400 dark:text-gray-400">P&L at spot (Expiry):</span>
+                            <span className={`font-mono font-bold ${spotExpiryPnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{formatPrice(spotExpiryPnl)}</span>
                         </span>
                     )}
                     {spotTodayPnl != null && (
                         <span className="flex items-center gap-1.5">
                             <span className="h-2 w-2 rounded-full bg-orange-600" />
-                            <span className="text-gray-400">P&L at spot (Today):</span>
-                            <span className={spotTodayPnl >= 0 ? "text-emerald-600" : "text-rose-600"}>{formatPrice(spotTodayPnl)}</span>
+                            <span className="text-gray-400 dark:text-gray-400">P&L at spot (Today):</span>
+                            <span className={`font-mono font-bold ${spotTodayPnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{formatPrice(spotTodayPnl)}</span>
                         </span>
                     )}
                 </div>

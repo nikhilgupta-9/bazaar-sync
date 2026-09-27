@@ -1,53 +1,73 @@
-// pages/EquityData.jsx — shared placeholder for the remaining Equity Data
-// submenu items (market map, 52-week high/low, industry momentum, most
-// active). Sector Rotation and Sector Performance now have their own real
-// pages (SectorRotation.jsx / SectorPerformance.jsx, routed directly in
-// App.jsx) — removed from this TOOLS map since they're no longer reachable
-// through the :tool wildcard. Each of the rest becomes a real page in a
-// later phase once a data source for it (none come from Angel One) is
-// decided.
-import { useParams } from "react-router-dom";
-import PageShell from "../components/PageShell";
+// pages/EquityData.jsx — Equity Data Hub Container supporting Market Map, 52W High/Low, Industry Momentum, and Most Active
+import { useParams, NavLink, Navigate } from "react-router-dom";
+import MarketMap from "./equity/MarketMap";
+import FiftyTwoWeekHighLow from "./equity/FiftyTwoWeekHighLow";
+import IndustryMomentum from "./equity/IndustryMomentum";
+import MostActive from "./equity/MostActive";
+import { FiGrid, FiActivity, FiTrendingUp, FiBarChart2 } from "react-icons/fi";
 
-const TOOLS = {
-    "market-map": {
-        title: "Market Map",
-        desc: "A heatmap of stock performance across the market, sized by market cap.",
-    },
-    "52-week-high-low": {
-        title: "52 Week High/Low",
-        desc: "Stocks currently trading near their 52-week highs or lows.",
-    },
-    "industry-momentum": {
-        title: "Industry Momentum Stocks",
-        desc: "Momentum ranking of stocks within their industry group.",
-    },
-    "most-active": {
-        title: "Most Active",
-        desc: "Stocks with the highest traded volume/value today.",
-    },
-};
+const TABS = [
+    { key: "market-map", label: "Market Map", icon: FiGrid },
+    { key: "52-week-high-low", label: "52-Week High/Low", icon: FiActivity },
+    { key: "industry-momentum", label: "Industry Momentum", icon: FiTrendingUp },
+    { key: "most-active", label: "Most Active", icon: FiBarChart2 },
+];
 
 export default function EquityData() {
     const { tool } = useParams();
-    const meta = TOOLS[tool];
 
-    if (!meta) {
-        return (
-            <PageShell className="text-center">
-                <h1 className="text-xl font-bold text-gray-900">Equity Data</h1>
-                <p className="mt-2 text-sm text-gray-500">Pick a tool from the Equity Data menu above.</p>
-            </PageShell>
-        );
+    // Default redirect to market-map if no specific tool path or on root
+    if (!tool) {
+        return <Navigate to="/equity-data/market-map" replace />;
     }
 
     return (
-        <PageShell className="text-center">
-            <h1 className="text-xl font-bold text-gray-900">{meta.title}</h1>
-            <p className="mt-2 text-sm text-gray-500">{meta.desc}</p>
-            <div className="mt-6 inline-block rounded-full bg-amber-100 px-4 py-1.5 text-xs font-semibold text-amber-700">
-                Coming soon
+        <div className="mx-auto max-w-[1440px] px-3 py-4 sm:px-6 sm:py-6">
+            {/* Top Navigation Tabs */}
+            <div className="mb-6 flex flex-wrap items-center gap-2 border-b border-gray-200 pb-3 dark:border-gray-800">
+                {TABS.map((tab) => {
+                    const Icon = tab.icon;
+                    const isActive = tool === tab.key;
+                    return (
+                        <NavLink
+                            key={tab.key}
+                            to={`/equity-data/${tab.key}`}
+                            className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition ${
+                                isActive
+                                    ? "bg-emerald-600 text-white shadow-xs"
+                                    : "bg-white text-gray-600 hover:bg-gray-100 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-800"
+                            }`}
+                        >
+                            <Icon size={15} />
+                            <span>{tab.label}</span>
+                        </NavLink>
+                    );
+                })}
+
+                <div className="ml-auto flex items-center gap-2">
+                    <NavLink
+                        to="/equity-data/sector-performance"
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+                    >
+                        Sector Performance
+                    </NavLink>
+                    <NavLink
+                        to="/equity-data/sector-rotation"
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+                    >
+                        Sector Rotation (RRG)
+                    </NavLink>
+                </div>
             </div>
-        </PageShell>
+
+            {/* Active Sub-Tool Rendering */}
+            {tool === "market-map" && <MarketMap />}
+            {tool === "52-week-high-low" && <FiftyTwoWeekHighLow />}
+            {tool === "industry-momentum" && <IndustryMomentum />}
+            {tool === "most-active" && <MostActive />}
+            {!["market-map", "52-week-high-low", "industry-momentum", "most-active"].includes(tool) && (
+                <Navigate to="/equity-data/market-map" replace />
+            )}
+        </div>
     );
 }

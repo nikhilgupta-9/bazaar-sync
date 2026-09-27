@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { FiAlertTriangle, FiCheckCircle, FiSearch, FiRefreshCw } from "react-icons/fi";
 import { useAdminAuth } from "../context/AdminAuthContext";
 import { fetchExpiryStatus, refreshCoverageCache } from "../services/adminApi";
-import TopBar from "../components/TopBar";
+import DataNavHeader from "../components/DataNavHeader";
 import Card from "../components/Card";
 
 export default function ExpiryStatus() {
@@ -36,33 +36,36 @@ export default function ExpiryStatus() {
 
     return (
         <div>
-            <TopBar title="Expiry Status" subtitle="Does each symbol have data for its current/upcoming expiry, and is the latest row recent? Red = a real gap worth investigating." />
-            <div className="p-6">
-                {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
+            <DataNavHeader
+                title="Expiry Status & Contract Timeliness"
+                subtitle="Verification of upcoming contract expiries, last recorded snapshot freshness, and cross-checks with Bhavcopy."
+            />
+            <div className="p-3.5 sm:p-6 max-w-7xl mx-auto space-y-4">
+                {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 font-medium">{error}</div>}
 
-                <div className="mb-4 flex flex-wrap items-center gap-3">
-                    <select value={dataType} onChange={(e) => { setDataType(e.target.value); setRows(null); }} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                    <select value={dataType} onChange={(e) => { setDataType(e.target.value); setRows(null); }} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs sm:text-sm text-white outline-none focus:border-violet-500">
                         <option value="option_chain">Option Chain</option>
                         <option value="futures">Futures</option>
                     </select>
-                    <div className="relative min-w-[180px] max-w-xs flex-1">
-                        <FiSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
-                        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search symbol…" className="w-full rounded-lg border border-white/10 bg-white/5 py-2 pl-9 pr-3 text-sm text-white outline-none focus:border-violet-500" />
+                    <div className="relative flex-1 max-w-md">
+                        <FiSearch className="pointer-events-none absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+                        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search symbol…" className="w-full rounded-xl border border-white/10 bg-white/5 py-2 pl-9 pr-3 text-xs sm:text-sm text-white outline-none focus:border-violet-500 placeholder-gray-500" />
                     </div>
                     <label className="flex items-center gap-2 text-xs text-gray-300">
-                        <input type="checkbox" checked={onlyFlags} onChange={(e) => setOnlyFlags(e.target.checked)} className="rounded border-white/20 bg-white/5" />
-                        Only show red flags
+                        <input type="checkbox" checked={onlyFlags} onChange={(e) => setOnlyFlags(e.target.checked)} className="rounded border-white/20 bg-white/5 text-violet-600 focus:ring-0" />
+                        <span>Only show red flags</span>
                     </label>
-                    <button onClick={handleRefresh} disabled={refreshing} className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-300 hover:bg-white/10 disabled:opacity-50">
+                    <button onClick={handleRefresh} disabled={refreshing} className="sm:ml-auto inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-gray-300 hover:bg-white/10 disabled:opacity-50 transition">
                         <FiRefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh
                     </button>
                 </div>
 
-                <Card bodyClassName="p-0">
+                <Card bodyClassName="p-0 overflow-x-auto custom-scrollbar">
                     {!rows ? (
                         <div className="py-10 text-center text-xs text-gray-500">Loading…</div>
                     ) : (
-                        <table className="w-full text-left text-sm">
+                        <table className="w-full text-left text-xs sm:text-sm whitespace-nowrap">
                             <thead className="bg-white/5 text-xs text-gray-500">
                                 <tr>
                                     <th className="px-4 py-2.5 font-medium">Symbol</th>

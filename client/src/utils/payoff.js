@@ -73,27 +73,43 @@ export function totalPayoffAtPrice(legs, price, evaluationExpiry) {
     return legs.reduce((sum, leg) => sum + legPayoffAtPrice(leg, price, evalExp), 0);
 }
 
-// Payoff curve across a price range, evenly spaced, for the chart.
-export function computePayoffCurve(legs, { minPrice, maxPrice, steps = 60 }) {
+// Payoff curve across a price range for the chart, sampling grid points plus exact leg strikes.
+export function computePayoffCurve(legs, { minPrice, maxPrice, steps = 120 }) {
+    if (!legs || !legs.length || minPrice >= maxPrice) return [];
     const evaluationExpiry = evaluationExpiryOf(legs);
-    const points = [];
+
+    // Build price sample points including exact strikes
+    const priceSet = new Set();
     const step = (maxPrice - minPrice) / steps;
     for (let i = 0; i <= steps; i++) {
-        const price = minPrice + i * step;
-        points.push({ price: Math.round(price * 100) / 100, pnl: totalPayoffAtPrice(legs, price, evaluationExpiry) });
+        priceSet.add(Math.round((minPrice + i * step) * 100) / 100);
     }
-    return points;
+    for (const leg of legs) {
+        if (leg.strike >= minPrice && leg.strike <= maxPrice) {
+            priceSet.add(Math.round(leg.strike * 100) / 100);
+        }
+    }
+
+    const sortedPrices = Array.from(priceSet).sort((a, b) => a - b);
+    return sortedPrices.map((price) => ({
+        price,
+        pnl: Math.round(totalPayoffAtPrice(legs, price, evaluationExpiry) * 100) / 100,
+    }));
 }
 
-// Breakevens: linear-interpolated zero crossings of the payoff curve. Only
-// as precise as the curve's resolution — fine for display, not for pricing.
+// Breakevens: zero crossings of the payoff curve, linear-interpolated.
 export function computeBreakevens(curve) {
+    if (!curve || curve.length < 2) return [];
     const crossings = [];
     for (let i = 1; i < curve.length; i++) {
         const a = curve[i - 1], b = curve[i];
         if ((a.pnl <= 0 && b.pnl > 0) || (a.pnl >= 0 && b.pnl < 0)) {
             const t = a.pnl === b.pnl ? 0 : -a.pnl / (b.pnl - a.pnl);
-            crossings.push(Math.round((a.price + t * (b.price - a.price)) * 100) / 100);
+            const crossPrice = Math.round((a.price + t * (b.price - a.price)) * 100) / 100;
+            // Prevent duplicate crossing entries
+            if (!crossings.length || Math.abs(crossings[crossings.length - 1] - crossPrice) > 0.1) {
+                crossings.push(crossPrice);
+            }
         }
     }
     return crossings;
@@ -102,21 +118,73 @@ export function computeBreakevens(curve) {
 // Max profit/loss over the sampled range. Detects "unlimited" by checking
 // whether the curve is still trending away from zero at the range edges
 // (e.g. a naked long call/put, or a net long strategy) rather than plateauing.
+// Max profit/loss over the sampled range and leg structure.
+// Uses analytical slope at the tails (asymptotic behavior as spot -> 0 and spot -> +inf)
+// so that defined-risk strategies (Iron Condors, Spreads, Butterflies) are never falsely
+// classified as "Unlimited" due to sampling window cutoffs.
 export function computeMaxProfitLoss(legs, curve) {
-    const maxPnl = Math.max(...curve.map((p) => p.pnl));
-    const minPnl = Math.min(...curve.map((p) => p.pnl));
+    if (!curve || !curve.length) {
+        return { maxProfit: null, maxLoss: null };
+    }
 
-    const first = curve[0], last = curve[curve.length - 1];
-    const second = curve[1], secondLast = curve[curve.length - 2];
-    const risingAtTop = last.pnl > secondLast.pnl;
-    const risingAtBottom = first.pnl > second.pnl; // pnl increasing as price decreases, at the left edge
+    const maxPnl = Math.round(Math.max(...curve.map((p) => p.pnl)) * 100) / 100;
+    const minPnl = Math.round(Math.min(...curve.map((p) => p.pnl)) * 100) / 100;
+
+    // Asymptotic slopes:
+    // Upside (spot -> +inf): only CE legs are ITM
+    // Downside (spot -> 0): only PE legs are ITM
+    let netCallSlope = 0;
+    let netPutSlope = 0;
+
+    for (const leg of legs) {
+        const mult = legMultiplier(leg);
+        const sign = leg.action === "buy" ? 1 : -1;
+        if (leg.type === "CE") {
+            netCallSlope += sign * mult;
+        } else if (leg.type === "PE") {
+            netPutSlope += sign * mult;
+        }
+    }
+
+    // If netCallSlope > 0: unbounded upside profit (e.g. Long Call)
+    // If netPutSlope > 0: unbounded downside profit (e.g. Long Put, practically capped at 0 spot but standardly huge)
+    const isProfitUnlimited = netCallSlope > 0 || netPutSlope > 0;
+
+    // If netCallSlope < 0: unbounded upside loss (e.g. Short Call)
+    // If netPutSlope < 0: unbounded downside loss (e.g. Short Put)
+    const isLossUnlimited = netCallSlope < 0 || netPutSlope < 0;
 
     return {
-        maxProfit: risingAtTop || risingAtBottom ? "Unlimited" : maxPnl,
-        maxLoss: (!risingAtTop && last.pnl < secondLast.pnl) || (!risingAtBottom && first.pnl < second.pnl)
-            ? (risingAtTop ? minPnl : "Unlimited")
-            : minPnl,
+        maxProfit: isProfitUnlimited ? "Unlimited" : maxPnl,
+        maxLoss: isLossUnlimited ? "Unlimited" : minPnl,
     };
+}
+
+export function computeRiskRewardRatio(maxProfit, maxLoss) {
+    if (maxProfit == null || maxLoss == null) return "—";
+
+    // When loss is unlimited (e.g. naked short options), risk is undefined
+    if (maxLoss === "Unlimited") {
+        return "NA";
+    }
+
+    // When profit is unlimited and loss is defined (e.g. long call/put)
+    if (maxProfit === "Unlimited") {
+        return "1 : ∞";
+    }
+
+    if (typeof maxProfit !== "number" || typeof maxLoss !== "number") {
+        return "—";
+    }
+
+    const profit = Math.abs(maxProfit);
+    const loss = Math.abs(maxLoss);
+
+    if (loss < 0.01) return "1 : ∞";
+    if (profit < 0.01) return "NA";
+
+    const ratio = (profit / loss).toFixed(2);
+    return `1 : ${ratio}`;
 }
 
 // "Today" P&L at a given underlying price — theoretical (Black-Scholes)
@@ -147,7 +215,7 @@ export function addMarkToMarketCurve(curve, legs, fallbackYearsRemaining, nowMs)
             if (v == null) return { ...point, todayPnl: null };
             sum += v;
         }
-        return { ...point, todayPnl: sum };
+        return { ...point, todayPnl: Math.round(sum * 100) / 100 };
     });
 }
 
@@ -168,8 +236,9 @@ export function computeExpectedMove(spot, atmIvPercent, yearsRemaining) {
 // sums the probability mass over price ranges where the curve is profitable.
 // This is a numeric approximation for display, not a precise pricing model.
 export function computePOP(curve, spot, atmIvPercent, yearsRemaining) {
+    if (!curve || !curve.length || !spot || !atmIvPercent || !yearsRemaining || yearsRemaining <= 0) return null;
     const sigma = spot * (atmIvPercent / 100) * Math.sqrt(yearsRemaining);
-    if (!sigma) return null;
+    if (!sigma || isNaN(sigma)) return null;
     let pop = 0;
     for (let i = 1; i < curve.length; i++) {
         const a = curve[i - 1], b = curve[i];
@@ -177,7 +246,7 @@ export function computePOP(curve, spot, atmIvPercent, yearsRemaining) {
         const midPnl = (a.pnl + b.pnl) / 2;
         if (midPnl > 0) pop += massInBucket;
     }
-    return Math.max(0, Math.min(100, pop * 100));
+    return Math.max(0, Math.min(100, Math.round(pop * 100)));
 }
 
 // Rough relative probability-density bars drawn behind the payoff curve —
@@ -194,64 +263,29 @@ export function computeDensityCurve(curve, spot, atmIvPercent, yearsRemaining) {
     return raw.map((v) => v / peak);
 }
 
-// Estimated margin — a spread-AWARE approximation of what a broker would
-// block. Real margin is SPAN + Exposure (a scenario-based system run on
-// NSE Clearing's own daily risk-array files, which this app has no access
-// to), so this is deliberately an estimate, labelled as such in the UI. The
-// model:
-//
-//   • Long legs need no margin — their worst case is the premium already
-//     paid, already in the P&L / max-loss numbers.
-//   • A short leg hedged by a long leg of the SAME type + expiry is a
-//     vertical spread: it blocks only that spread's own max loss (computed
-//     numerically at the kink points), NOT a full naked requirement. This is
-//     why an Iron Condor / credit spread / bull-call spread needs a fraction
-//     of a naked short's margin.
-//   • A still-unhedged (naked) short leg blocks SPAN + Exposure margin on its
-//     contract notional (spot × lot size × lots), computed per NSE's own
-//     PUBLISHED formulas (not a flat guess) — see spanExposurePct() below.
-//     Confirmed against NSE Clearing / Zerodha Varsity's public
-//     documentation, 2026-09-13:
-//       - Exposure margin: 2% of notional for INDEX options, 3.5% for STOCK
-//         options (stock exposure is actually max(3.5%, 1.5σ of the stock's
-//         6-month log returns) — we don't have 6-month return history handy
-//         here, so 3.5% alone, which is the more common real-world outcome
-//         for the liquid F&O stocks this app targets).
-//       - SPAN's own "price scan range" (the dominant piece of SPAN margin
-//         for a single-leg short) is exchange-defined as
-//         max(9.3% of spot, 6σ√2) for index options with ≤9 months to
-//         expiry, where σ is the ONE-DAY volatility implied by the option's
-//         own IV (σ_daily = IV_annual / √252). This app never estimated
-//         margin for anything anywhere near 9 months out, so the >9-month
-//         17.7% floor isn't implemented. Applied to stocks too (no
-//         index-specific floor — a stock's own IV, which runs higher than
-//         index IV for most names, ends up driving the number instead).
-//
-// Hedging is matched lot-by-lot: a short 3-lot CE covered by a long 1-lot CE
-// counts as 1 spread lot + 2 naked lots. A balanced condor reserves both
-// wings' max loss (slightly conservative vs. a broker that nets to the worse
-// wing — acceptable for a paper tool, and safer than under-reserving).
-//
-// Returns null when spot isn't known yet, 0 for an all-long strategy.
+// Estimated margin — a portfolio spread-aware approximation matching NSE Clearing / broker rules.
+//   • Long legs need no margin — their maximum risk is the premium already paid.
+//   • A short leg hedged by a long leg (vertical spread) blocks only the spread's max risk.
+//   • Iron Condor / Box spreads block the worst-case wing risk max(CE spread, PE spread).
+//   • Short Straddle / Strangle (naked CE + naked PE) blocks max(CE SPAN, PE SPAN) + total exposure.
+//   • Unhedged short legs block standard SPAN + Exposure margin.
 const INDEX_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"]);
-const INDEX_SCAN_RANGE_FLOOR = 0.093; // NSE's own published floor, ≤9-month index options
+const INDEX_SCAN_RANGE_FLOOR = 0.093; // NSE's published floor
 const TRADING_DAYS_PER_YEAR = 252;
-const DEFAULT_IV_PERCENT_FALLBACK = 20; // used only when a leg's own IV is missing/zero — a mid-range NSE index IV, not a guess at THIS leg's real vol
+const DEFAULT_IV_PERCENT_FALLBACK = 20;
 
-/** SPAN (price-scan-range approx.) + Exposure margin, as a fraction of contract notional, for one naked short leg. */
-function spanExposurePct(leg, symbol) {
-    const isIndex = symbol ? INDEX_SYMBOLS.has(String(symbol).toUpperCase()) : true; // unknown symbol: assume index (the lower, more common case) rather than over-charge
+function getSpanExposureBreakdown(leg, symbol) {
+    const isIndex = symbol ? INDEX_SYMBOLS.has(String(symbol).toUpperCase()) : true;
     const ivPercent = leg.iv > 0 ? leg.iv : DEFAULT_IV_PERCENT_FALLBACK;
     const dailySigma = ivPercent / 100 / Math.sqrt(TRADING_DAYS_PER_YEAR);
     const priceScanRangePct = 6 * dailySigma * Math.SQRT2;
     const spanPct = isIndex ? Math.max(priceScanRangePct, INDEX_SCAN_RANGE_FLOOR) : priceScanRangePct;
     const exposurePct = isIndex ? 0.02 : 0.035;
-    return spanPct + exposurePct;
+    return { spanPct, exposurePct, totalPct: spanPct + exposurePct };
 }
 
 // Max loss per unit of a two-leg vertical (one short, one long, same type),
-// evaluated at every price where the combined payoff can kink plus both
-// tails. Works for credit AND debit verticals regardless of strike order.
+// evaluated at kink prices.
 function verticalMaxLossPerUnit(shortLeg, longLeg) {
     const isCE = shortLeg.type === "CE";
     const testPrices = [0, shortLeg.strike, longLeg.strike, Math.max(shortLeg.strike, longLeg.strike) * 10];
@@ -265,42 +299,135 @@ function verticalMaxLossPerUnit(shortLeg, longLeg) {
     return Math.max(0, -worst);
 }
 
+export function computeMarginDetails(legs, spot, symbol) {
+    if (!spot || !legs || !legs.length) {
+        return {
+            fundsRequired: 0,
+            estMargin: 0,
+            nakedMargin: 0,
+            marginBenefit: 0,
+            netPremium: 0,
+            premiumPaid: 0,
+            premiumReceived: 0,
+            isHedged: false,
+        };
+    }
+
+    let premiumPaid = 0;
+    let premiumReceived = 0;
+    let totalNakedMargin = 0;
+
+    const longPool = { CE: [], PE: [] };
+    const shortPool = { CE: [], PE: [] };
+
+    for (const leg of legs) {
+        const mult = legMultiplier(leg);
+        const cost = (leg.premium || 0) * mult;
+        if (leg.action === "buy") {
+            premiumPaid += cost;
+            if (longPool[leg.type]) {
+                longPool[leg.type].push({ ...leg, lotsLeft: leg.qty });
+            }
+        } else {
+            premiumReceived += cost;
+            if (shortPool[leg.type]) {
+                shortPool[leg.type].push({ ...leg, lotsLeft: leg.qty });
+            }
+            const lotSize = leg.lotSize || 1;
+            const { totalPct } = getSpanExposureBreakdown(leg, symbol);
+            totalNakedMargin += spot * lotSize * leg.qty * totalPct;
+        }
+    }
+
+    // Match vertical spreads per type
+    const spreadMargins = { CE: 0, PE: 0 };
+    let anyHedgeMatched = false;
+
+    for (const type of ["CE", "PE"]) {
+        const shorts = shortPool[type];
+        const longs = longPool[type];
+
+        for (const sLeg of shorts) {
+            if (sLeg.lotsLeft <= 0) continue;
+            const lotSize = sLeg.lotSize || 1;
+
+            const candidates = longs
+                .filter((l) => l.lotsLeft > 0 && (sLeg.expiry == null || l.expiry == null || l.expiry === sLeg.expiry))
+                .sort((a, b) => Math.abs(a.strike - sLeg.strike) - Math.abs(b.strike - sLeg.strike));
+
+            for (const lLeg of candidates) {
+                if (sLeg.lotsLeft <= 0) break;
+                const pairLots = Math.min(sLeg.lotsLeft, lLeg.lotsLeft);
+                const lossPerUnit = verticalMaxLossPerUnit(sLeg, lLeg);
+                spreadMargins[type] += lossPerUnit * lotSize * pairLots;
+                sLeg.lotsLeft -= pairLots;
+                lLeg.lotsLeft -= pairLots;
+                anyHedgeMatched = true;
+            }
+        }
+    }
+
+    // Hedged margin for matched spreads:
+    // When both CE and PE wings are hedged (e.g. Iron Condor), exchange takes max(CE wing, PE wing)
+    const hedgedSpreadsMargin = (spreadMargins.CE > 0 && spreadMargins.PE > 0)
+        ? Math.max(spreadMargins.CE, spreadMargins.PE)
+        : (spreadMargins.CE + spreadMargins.PE);
+
+    // Calculate unhedged/naked margin for remaining short lots with portfolio cross-margin
+    let unhedgedCeSpan = 0;
+    let unhedgedPeSpan = 0;
+    let unhedgedCeExposure = 0;
+    let unhedgedPeExposure = 0;
+
+    for (const sLeg of shortPool.CE) {
+        if (sLeg.lotsLeft > 0) {
+            const lotSize = sLeg.lotSize || 1;
+            const { spanPct, exposurePct } = getSpanExposureBreakdown(sLeg, symbol);
+            unhedgedCeSpan += spot * lotSize * sLeg.lotsLeft * spanPct;
+            unhedgedCeExposure += spot * lotSize * sLeg.lotsLeft * exposurePct;
+        }
+    }
+
+    for (const sLeg of shortPool.PE) {
+        if (sLeg.lotsLeft > 0) {
+            const lotSize = sLeg.lotSize || 1;
+            const { spanPct, exposurePct } = getSpanExposureBreakdown(sLeg, symbol);
+            unhedgedPeSpan += spot * lotSize * sLeg.lotsLeft * spanPct;
+            unhedgedPeExposure += spot * lotSize * sLeg.lotsLeft * exposurePct;
+        }
+    }
+
+    // Portfolio SPAN takes the worst scenario between remaining short CE and short PE
+    const unhedgedPortfolioSpan = Math.max(unhedgedCeSpan, unhedgedPeSpan);
+    const unhedgedTotalExposure = unhedgedCeExposure + unhedgedPeExposure;
+    const remainingNakedMargin = unhedgedPortfolioSpan + unhedgedTotalExposure;
+
+    const totalEstMargin = hedgedSpreadsMargin + remainingNakedMargin;
+
+    const netPremium = premiumReceived - premiumPaid;
+    const marginBenefit = anyHedgeMatched ? Math.max(0, totalNakedMargin - totalEstMargin) : 0;
+    const hasShort = legs.some((l) => l.action === "sell");
+
+    const fundsRequired = !hasShort
+        ? premiumPaid
+        : totalEstMargin + (netPremium < 0 ? Math.abs(netPremium) : 0);
+
+    return {
+        fundsRequired: Math.round(fundsRequired),
+        estMargin: Math.round(totalEstMargin),
+        nakedMargin: Math.round(totalNakedMargin),
+        marginBenefit: Math.round(marginBenefit),
+        netPremium: Math.round(netPremium),
+        premiumPaid: Math.round(premiumPaid),
+        premiumReceived: Math.round(premiumReceived),
+        isHedged: anyHedgeMatched,
+    };
+}
+
 export function computeEstMargin(legs, spot, symbol) {
     if (!spot) return null;
-
-    // Pools of long lots still available to hedge a short, per option type.
-    const longPool = { CE: [], PE: [] };
-    for (const leg of legs) {
-        if (leg.action === "buy" && longPool[leg.type]) {
-            longPool[leg.type].push({ ...leg, lotsLeft: leg.qty });
-        }
-    }
-
-    let margin = 0;
-    for (const leg of legs) {
-        if (leg.action !== "sell" || !longPool[leg.type]) continue;
-        const lotSize = leg.lotSize || 1;
-        let lotsLeft = leg.qty;
-
-        // Nearest-strike protective long first — tightest spread, lowest
-        // margin, and matches how a trader pairs a wing to a short.
-        const candidates = longPool[leg.type]
-            .filter((l) => l.lotsLeft > 0 && (leg.expiry == null || l.expiry == null || l.expiry === leg.expiry))
-            .sort((a, b) => Math.abs(a.strike - leg.strike) - Math.abs(b.strike - leg.strike));
-
-        for (const long of candidates) {
-            if (lotsLeft <= 0) break;
-            const pairLots = Math.min(lotsLeft, long.lotsLeft);
-            margin += verticalMaxLossPerUnit(leg, long) * lotSize * pairLots;
-            lotsLeft -= pairLots;
-            long.lotsLeft -= pairLots;
-        }
-
-        if (lotsLeft > 0) {
-            margin += spot * lotSize * lotsLeft * spanExposurePct(leg, symbol);
-        }
-    }
-    return margin;
+    const details = computeMarginDetails(legs, spot, symbol);
+    return details.fundsRequired || details.estMargin || 0;
 }
 
 // Net Greeks — sum of each leg's per-unit Greek × qty × (+1 buy / -1 sell).
@@ -319,3 +446,4 @@ export function computeNetGreeks(legs) {
         { delta: 0, gamma: 0, theta: 0, vega: 0 }
     );
 }
+
