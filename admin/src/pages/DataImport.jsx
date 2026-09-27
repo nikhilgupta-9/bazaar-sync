@@ -90,31 +90,86 @@ function splitCsvLine(line) {
     return cells.map((c) => c.trim());
 }
 
-function parseCsv(text, header) {
-    const lines = text.replace(/\r\n/g, "\n").split("\n").filter((l) => l.trim() !== "");
-    if (!lines.length) return { rows: null, parseError: "the file is empty" };
+const COLUMN_ALIASES = {
+    symbol: ["symbol", "ticker", "instrument", "underlying_symbol", "stock", "index", "sym", "name", "contract"],
+    trade_date: ["trade_date", "date", "timestamp", "tradedate", "trade date", "trade_dt", "datetime", "dt", "candle_date", "time_stamp"],
+    trade_time: ["trade_time", "time", "tradetime", "trade time", "time_str", "bar_time", "candle_time"],
+    expiry: ["expiry", "expiry_date", "expirydate", "exp_date", "expiry date", "exp_dt", "expdate", "expiration", "exp"],
+    strike: ["strike", "strike_price", "strikeprice", "strike price", "str_prc", "strike_prc", "strikeprc"],
+    underlying_price: [
+        "underlying_price", "underlying", "spot", "spot_price", "spotprice", "spot price",
+        "underlying_val", "underlyingvalue", "underlying_value", "underlying_close", "close", "future_price", "fut_price"
+    ],
+    ce_ltp: ["ce_ltp", "ce_close", "ce_last_price", "ce_price", "call_ltp", "call_close", "call_price", "ce", "call_last", "c_ltp", "ce_last", "call", "c_close"],
+    ce_oi: ["ce_oi", "ce_open_interest", "call_oi", "call_open_interest", "c_oi", "ce_open_int", "call_open_int"],
+    ce_oi_change: ["ce_oi_change", "ce_change_in_oi", "ce_chg_oi", "ce_oi_chg", "call_oi_change", "call_chg_in_oi", "c_oi_change", "ce_oi_chnge", "call_oi_chg"],
+    ce_iv: ["ce_iv", "ce_implied_volatility", "call_iv", "c_iv", "ce_impl_vol", "call_implied_volatility"],
+    ce_volume: ["ce_volume", "ce_vol", "ce_total_traded_volume", "call_volume", "call_vol", "c_volume", "c_vol", "ce_traded_vol"],
+    ce_delta: ["ce_delta", "call_delta", "c_delta", "delta_ce", "delta_call"],
+    ce_gamma: ["ce_gamma", "call_gamma", "c_gamma", "gamma_ce", "gamma_call"],
+    ce_theta: ["ce_theta", "call_theta", "c_theta", "theta_ce", "theta_call"],
+    ce_vega: ["ce_vega", "call_vega", "c_vega", "vega_ce", "vega_call"],
+    pe_ltp: ["pe_ltp", "pe_close", "pe_last_price", "pe_price", "put_ltp", "put_close", "put_price", "pe", "put_last", "p_ltp", "pe_last", "put", "p_close"],
+    pe_oi: ["pe_oi", "pe_open_interest", "put_oi", "put_open_interest", "p_oi", "pe_open_int", "put_open_int"],
+    pe_oi_change: ["pe_oi_change", "pe_change_in_oi", "pe_chg_oi", "pe_oi_chg", "put_oi_change", "put_chg_in_oi", "p_oi_change", "pe_oi_chnge", "put_oi_chg"],
+    pe_iv: ["pe_iv", "pe_implied_volatility", "put_iv", "p_iv", "pe_impl_vol", "put_implied_volatility"],
+    pe_volume: ["pe_volume", "pe_vol", "pe_total_traded_volume", "put_volume", "put_vol", "p_volume", "p_vol", "pe_traded_vol"],
+    pe_delta: ["pe_delta", "put_delta", "p_delta", "delta_pe", "delta_put"],
+    pe_gamma: ["pe_gamma", "put_gamma", "p_gamma", "gamma_pe", "gamma_put"],
+    pe_theta: ["pe_theta", "put_theta", "p_theta", "theta_pe", "theta_put"],
+    pe_vega: ["pe_vega", "put_vega", "p_vega", "vega_pe", "vega_put"],
+    open: ["open", "open_price", "openprice", "o"],
+    high: ["high", "high_price", "highprice", "h"],
+    low: ["low", "low_price", "lowprice", "l"],
+    close: ["close", "close_price", "closeprice", "c", "ltp", "last_price"],
+    volume: ["volume", "vol", "traded_volume", "total_volume", "tot_vol", "v"],
+    oi: ["oi", "open_interest", "open_int"],
+    oi_change: ["oi_change", "change_in_oi", "oi_chg", "chg_oi", "open_interest_change"],
+};
 
-    const gotHeader = splitCsvLine(lines[0]).map((c) => c.toLowerCase());
-    const headerOk = gotHeader.length === header.length && header.every((h, i) => gotHeader[i] === h);
-    if (!headerOk) return { rows: null, parseError: `first row must be exactly this header: ${header.join(",")}` };
+function parseCsv(text, schema) {
+    const lines = text.replace(/\r\n/g, "\n").split("\n").filter((l) => l.trim() !== "");
+    if (!lines.length) return { rows: null, parseError: "The file is empty." };
+
+    const rawHeader = splitCsvLine(lines[0]).map((h) =>
+        String(h || "")
+            .replace(/^\uFEFF/, "")
+            .replace(/['"]+/g, "")
+            .trim()
+            .toLowerCase()
+    );
+
+    const mapping = {};
+    schema.header.forEach((canonicalCol) => {
+        const aliases = COLUMN_ALIASES[canonicalCol] || [canonicalCol];
+        for (let i = 0; i < rawHeader.length; i++) {
+            if (aliases.includes(rawHeader[i])) {
+                mapping[canonicalCol] = i;
+                break;
+            }
+        }
+    });
+
+    const missingRequired = (schema.required || []).filter((reqCol) => mapping[reqCol] === undefined);
+    if (missingRequired.length > 0) {
+        return {
+            rows: null,
+            parseError: `Missing required column(s): ${missingRequired.join(", ")}. Found in file: ${rawHeader.join(", ")}`,
+        };
+    }
 
     const rows = [];
-    const structuralErrors = [];
     for (let i = 1; i < lines.length; i++) {
         const rowNumber = i + 1;
         const cells = splitCsvLine(lines[i]);
-        if (cells.length !== header.length) {
-            structuralErrors.push({ row: rowNumber, message: `expected ${header.length} columns, got ${cells.length}` });
-            continue;
-        }
         const row = { rowNumber };
-        header.forEach((col, idx) => {
-            row[col] = cells[idx];
+        schema.header.forEach((canonicalCol) => {
+            const idx = mapping[canonicalCol];
+            row[canonicalCol] = idx !== undefined && idx < cells.length ? cells[idx] : "";
         });
         rows.push(row);
     }
-    if (structuralErrors.length) return { rows: null, parseError: null, structuralErrors };
-    return { rows, parseError: null, structuralErrors: null };
+    return { rows, parseError: null };
 }
 
 function downloadTemplate(table, schema) {
@@ -238,13 +293,9 @@ export default function DataImport() {
 
         const reader = new FileReader();
         reader.onload = async () => {
-            const { rows, parseError, structuralErrors } = parseCsv(String(reader.result), schema.header);
+            const { rows, parseError } = parseCsv(String(reader.result), schema);
             if (parseError) {
                 setLocalErrors([{ row: null, message: parseError }]);
-                return;
-            }
-            if (structuralErrors) {
-                setLocalErrors(structuralErrors);
                 return;
             }
 

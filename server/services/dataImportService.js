@@ -1,17 +1,8 @@
-// services/dataImportService.js — manual CSV import for the two historical
-// tables (option_chain_history, futures_history), for the specific case the
-// admin Data Coverage page exists to surface: "this month is missing for
-// this symbol and none of the automated sources can fill it — someone has a
-// CSV of it from somewhere else, let them import it correctly."
-//
-// Same "all-or-nothing, report every problem row up front" pattern as
-// lotSizeHistoryService.js's bulkAddLotSizeEntries — CSV *parsing* happens
-// client-side (admin/src/pages/DataImport.jsx), this only validates fields
-// against the real table schema and reports exactly which rows/columns
-// don't match, never guesses or coerces silently. Writes go through the
-// exact same ON DUPLICATE KEY UPDATE upsert every automated pipeline uses,
-// so an import can only ever fill a gap or refresh a row — never duplicate.
-
+// services/dataImportService.js — High-Resilience Historical Data Ingest Engine
+// Supports flexible column ordering, common column aliases, automatic date/time format conversion,
+// UTF-8 BOM removal, and streaming CSV / GZIP decompression for option_chain_history, futures_history, and ohlcv_data.
+const zlib = require("zlib");
+const readline = require("readline");
 const { pool } = require("../config/db");
 const coverageSummary = require("./coverageSummaryService");
 
@@ -19,12 +10,7 @@ function badRequest(message) {
     return Object.assign(new Error(message), { status: 400 });
 }
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const TIME_RE = /^\d{2}:\d{2}:\d{2}$/;
-
-// One entry per importable table: the exact CSV header expected (order
-// matters — it IS the column order the template/instructions show), which
-// columns are required vs optional-numeric, and the INSERT this compiles to.
+// Canonical column schemas
 const TABLE_SCHEMAS = {
     option_chain_history: {
         header: [
@@ -32,7 +18,7 @@ const TABLE_SCHEMAS = {
             "ce_ltp", "ce_oi", "ce_oi_change", "ce_iv", "ce_volume", "ce_delta", "ce_gamma", "ce_theta", "ce_vega",
             "pe_ltp", "pe_oi", "pe_oi_change", "pe_iv", "pe_volume", "pe_delta", "pe_gamma", "pe_theta", "pe_vega",
         ],
-        required: ["symbol", "trade_date", "trade_time", "expiry", "strike"],
+        required: ["symbol", "trade_date", "expiry", "strike"],
         insertColumns: [
             "symbol", "trade_date", "trade_time", "expiry", "strike", "underlying_price",
             "ce_ltp", "ce_oi", "ce_oi_change", "ce_iv", "ce_volume", "ce_delta", "ce_gamma", "ce_theta", "ce_vega",
@@ -45,23 +31,116 @@ const TABLE_SCHEMAS = {
     },
     futures_history: {
         header: ["symbol", "expiry", "trade_date", "trade_time", "open", "high", "low", "close", "volume", "oi", "oi_change", "underlying_price"],
-        required: ["symbol", "expiry", "trade_date", "trade_time"],
+        required: ["symbol", "expiry", "trade_date"],
         insertColumns: ["symbol", "expiry", "trade_date", "trade_time", "open", "high", "low", "close", "volume", "oi", "oi_change", "underlying_price"],
         updateColumns: ["open", "high", "low", "close", "volume", "oi", "oi_change", "underlying_price"],
     },
-    // Primarily for India VIX (symbol=INDIAVIX, see dataCoverageService.js's
-    // VIX branch and simulatorController.js's getVixAt) — but ohlcv_data
-    // also holds index/stock daily candles, so this is left generic over
-    // `symbol` like the other two schemas rather than hardcoding INDIAVIX,
-    // same "never silently override what the CSV says" instinct validateRow
-    // already applies everywhere else in this file.
     ohlcv_data: {
         header: ["symbol", "trade_date", "trade_time", "open", "high", "low", "close", "volume"],
-        required: ["symbol", "trade_date", "trade_time"],
+        required: ["symbol", "trade_date"],
         insertColumns: ["symbol", "trade_date", "trade_time", "open", "high", "low", "close", "volume"],
         updateColumns: ["open", "high", "low", "close", "volume"],
     },
 };
+
+// Common column name aliases in Indian financial datasets (NSE, Opstra, Sensibull, Dhan, GDrive)
+const COLUMN_ALIASES = {
+    symbol: ["symbol", "ticker", "instrument", "underlying_symbol", "stock", "index", "sym", "name", "contract"],
+    trade_date: ["trade_date", "date", "timestamp", "tradedate", "trade date", "trade_dt", "datetime", "dt", "candle_date", "time_stamp"],
+    trade_time: ["trade_time", "time", "tradetime", "trade time", "time_str", "bar_time", "candle_time"],
+    expiry: ["expiry", "expiry_date", "expirydate", "exp_date", "expiry date", "exp_dt", "expdate", "expiration", "exp"],
+    strike: ["strike", "strike_price", "strikeprice", "strike price", "str_prc", "strike_prc", "strikeprc"],
+    underlying_price: [
+        "underlying_price", "underlying", "spot", "spot_price", "spotprice", "spot price",
+        "underlying_val", "underlyingvalue", "underlying_value", "underlying_close", "close", "future_price", "fut_price"
+    ],
+    // Call options
+    ce_ltp: ["ce_ltp", "ce_close", "ce_last_price", "ce_price", "call_ltp", "call_close", "call_price", "ce", "call_last", "c_ltp", "ce_last", "call", "c_close"],
+    ce_oi: ["ce_oi", "ce_open_interest", "call_oi", "call_open_interest", "c_oi", "ce_open_int", "call_open_int"],
+    ce_oi_change: ["ce_oi_change", "ce_change_in_oi", "ce_chg_oi", "ce_oi_chg", "call_oi_change", "call_chg_in_oi", "c_oi_change", "ce_oi_chnge", "call_oi_chg"],
+    ce_iv: ["ce_iv", "ce_implied_volatility", "call_iv", "c_iv", "ce_impl_vol", "call_implied_volatility"],
+    ce_volume: ["ce_volume", "ce_vol", "ce_total_traded_volume", "call_volume", "call_vol", "c_volume", "c_vol", "ce_traded_vol"],
+    ce_delta: ["ce_delta", "call_delta", "c_delta", "delta_ce", "delta_call"],
+    ce_gamma: ["ce_gamma", "call_gamma", "c_gamma", "gamma_ce", "gamma_call"],
+    ce_theta: ["ce_theta", "call_theta", "c_theta", "theta_ce", "theta_call"],
+    ce_vega: ["ce_vega", "call_vega", "c_vega", "vega_ce", "vega_call"],
+    // Put options
+    pe_ltp: ["pe_ltp", "pe_close", "pe_last_price", "pe_price", "put_ltp", "put_close", "put_price", "pe", "put_last", "p_ltp", "pe_last", "put", "p_close"],
+    pe_oi: ["pe_oi", "pe_open_interest", "put_oi", "put_open_interest", "p_oi", "pe_open_int", "put_open_int"],
+    pe_oi_change: ["pe_oi_change", "pe_change_in_oi", "pe_chg_oi", "pe_oi_chg", "put_oi_change", "put_chg_in_oi", "p_oi_change", "pe_oi_chnge", "put_oi_chg"],
+    pe_iv: ["pe_iv", "pe_implied_volatility", "put_iv", "p_iv", "pe_impl_vol", "put_implied_volatility"],
+    pe_volume: ["pe_volume", "pe_vol", "pe_total_traded_volume", "put_volume", "put_vol", "p_volume", "p_vol", "pe_traded_vol"],
+    pe_delta: ["pe_delta", "put_delta", "p_delta", "delta_pe", "delta_put"],
+    pe_gamma: ["pe_gamma", "put_gamma", "p_gamma", "gamma_pe", "gamma_put"],
+    pe_theta: ["pe_theta", "put_theta", "p_theta", "theta_pe", "theta_put"],
+    pe_vega: ["pe_vega", "put_vega", "p_vega", "vega_pe", "vega_put"],
+    // Futures & OHLCV
+    open: ["open", "open_price", "openprice", "o"],
+    high: ["high", "high_price", "highprice", "h"],
+    low: ["low", "low_price", "lowprice", "l"],
+    close: ["close", "close_price", "closeprice", "c", "ltp", "last_price"],
+    volume: ["volume", "vol", "traded_volume", "total_volume", "tot_vol", "v"],
+    oi: ["oi", "open_interest", "open_int"],
+    oi_change: ["oi_change", "change_in_oi", "oi_chg", "chg_oi", "open_interest_change"],
+};
+
+const MONTH_MAP = {
+    jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+    jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
+};
+
+/**
+ * Normalizes any common Indian date format to standard YYYY-MM-DD
+ */
+function normalizeDate(val) {
+    if (!val) return null;
+    let str = String(val).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+
+    // ISO DateTime YYYY-MM-DD HH:MM:SS
+    const isoMatch = str.match(/^(\d{4}-\d{2}-\d{2})[ T]/);
+    if (isoMatch) return isoMatch[1];
+
+    // DD-MM-YYYY or DD/MM/YYYY
+    const ddmmyyyy = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+    if (ddmmyyyy) {
+        return `${ddmmyyyy[3]}-${ddmmyyyy[2].padStart(2, "0")}-${ddmmyyyy[1].padStart(2, "0")}`;
+    }
+
+    // DD-MMM-YYYY (e.g. 25-Jan-2024, 25JAN2024, 25-01-2024)
+    const ddmmmyyyy = str.match(/^(\d{1,2})[- ]?([a-zA-Z]{3})[- ]?(\d{4})/);
+    if (ddmmmyyyy) {
+        const m = MONTH_MAP[ddmmmyyyy[2].toLowerCase()] || "01";
+        return `${ddmmmyyyy[3]}-${m}-${ddmmmyyyy[1].padStart(2, "0")}`;
+    }
+
+    // YYYYMMDD
+    if (/^\d{8}$/.test(str)) {
+        return `${str.slice(0, 4)}-${str.slice(4, 6)}-${str.slice(6, 8)}`;
+    }
+
+    return str;
+}
+
+/**
+ * Normalizes time string to standard HH:MM:SS
+ */
+function normalizeTime(val, fallback = "15:30:00") {
+    if (!val) return fallback;
+    let str = String(val).trim();
+    if (/^\d{1,2}:\d{2}:\d{2}$/.test(str)) {
+        return str.padStart(8, "0");
+    }
+    if (/^\d{1,2}:\d{2}$/.test(str)) {
+        return `${str.padStart(5, "0")}:00`;
+    }
+    const timeMatch = str.match(/\d{1,2}:\d{2}(:\d{2})?/);
+    if (timeMatch) {
+        const t = timeMatch[0];
+        return t.length === 5 ? `${t}:00`.padStart(8, "0") : t.padStart(8, "0");
+    }
+    return fallback;
+}
 
 function getSchema(table) {
     const schema = TABLE_SCHEMAS[table];
@@ -69,106 +148,107 @@ function getSchema(table) {
     return schema;
 }
 
-/** Validates+normalizes one row object against a table's schema. Throws with a specific field name on the first problem. */
+/**
+ * Creates dynamic header mapping from raw CSV columns to canonical schema columns
+ */
+function createHeaderMapping(rawHeader, schema) {
+    // Clean raw header: strip BOM (\uFEFF), remove quotes, trim, lowercase
+    const cleanHeader = rawHeader.map((h) =>
+        String(h || "")
+            .replace(/^\uFEFF/, "")
+            .replace(/['"]+/g, "")
+            .trim()
+            .toLowerCase()
+    );
+
+    const mapping = {}; // canonicalCol -> rawColIndex
+
+    schema.header.forEach((canonicalCol) => {
+        const aliases = COLUMN_ALIASES[canonicalCol] || [canonicalCol];
+        for (let i = 0; i < cleanHeader.length; i++) {
+            const rawCol = cleanHeader[i];
+            if (aliases.includes(rawCol)) {
+                mapping[canonicalCol] = i;
+                break;
+            }
+        }
+    });
+
+    // Verify all required columns are present in CSV
+    const missingRequired = schema.required.filter((reqCol) => mapping[reqCol] === undefined);
+    if (missingRequired.length > 0) {
+        throw badRequest(
+            `Missing required column(s): ${missingRequired.join(", ")}. Found columns in file: ${cleanHeader.join(", ")}`
+        );
+    }
+
+    return mapping;
+}
+
+/**
+ * Validates and normalizes one row object against schema
+ */
 function validateRow(schema, raw) {
     const row = {};
+
     for (const col of schema.header) {
-        const value = raw[col] === undefined || raw[col] === null ? "" : String(raw[col]).trim();
+        let value = raw[col] === undefined || raw[col] === null ? "" : String(raw[col]).trim();
 
         if (col === "symbol") {
-            if (!value) throw badRequest("symbol is required");
+            if (!value) throw badRequest("Symbol is required");
             row.symbol = value.toUpperCase();
             continue;
         }
-        if (col === "trade_date" || col === "expiry") {
-            if (schema.required.includes(col) && !value) throw badRequest(`${col} is required`);
-            if (value && !DATE_RE.test(value)) throw badRequest(`${col} must be YYYY-MM-DD (got "${value}")`);
-            row[col] = value || null;
+
+        if (col === "trade_date") {
+            const normalizedDate = normalizeDate(value);
+            if (!normalizedDate) throw badRequest("trade_date is required");
+            row.trade_date = normalizedDate;
             continue;
         }
+
+        if (col === "expiry") {
+            const normalizedExp = normalizeDate(value);
+            if (schema.required.includes("expiry") && !normalizedExp) {
+                throw badRequest("expiry date is required");
+            }
+            row.expiry = normalizedExp || null;
+            continue;
+        }
+
         if (col === "trade_time") {
-            if (!value) throw badRequest("trade_time is required");
-            if (!TIME_RE.test(value)) throw badRequest(`trade_time must be HH:MM:SS (got "${value}")`);
-            row.trade_time = value;
+            row.trade_time = normalizeTime(value, "15:30:00");
             continue;
         }
-        // Every other column is optional-numeric — blank is a legitimate
-        // "no data for this field" (matches every automated pipeline's own
-        // convention of writing NULL rather than guessing 0).
-        if (value === "") { row[col] = null; continue; }
-        const num = Number(value);
-        if (!Number.isFinite(num)) throw badRequest(`${col} must be a number or blank (got "${value}")`);
-        row[col] = num;
+
+        if (col === "strike") {
+            if (value === "") {
+                if (schema.required.includes("strike")) throw badRequest("strike is required");
+                row.strike = 0;
+            } else {
+                const strikeNum = Number(value);
+                if (!Number.isFinite(strikeNum)) throw badRequest(`strike must be a number (got "${value}")`);
+                row.strike = strikeNum;
+            }
+            continue;
+        }
+
+        // Numeric fields (optional)
+        if (value === "" || value === "-" || value.toLowerCase() === "null") {
+            row[col] = null;
+            continue;
+        }
+
+        const num = Number(value.replace(/,/g, ""));
+        if (!Number.isFinite(num)) {
+            row[col] = null;
+        } else {
+            row[col] = num;
+        }
     }
+
     return row;
 }
-
-const MAX_ROWS = 50000;
-
-/**
- * Validates every row against the table schema (all-or-nothing — throws
- * with `.rowErrors` listing every problem row at once, nothing is written
- * if any row fails), then upserts via the same ON DUPLICATE KEY UPDATE
- * pattern the automated pipelines use. Returns the number of rows written.
- */
-async function importRows(table, rows) {
-    const schema = getSchema(table);
-    if (!Array.isArray(rows) || rows.length === 0) throw badRequest("no rows to import");
-    if (rows.length > MAX_ROWS) throw badRequest(`too many rows in one import (max ${MAX_ROWS} — split the file)`);
-
-    const normalized = [];
-    const rowErrors = [];
-    rows.forEach((raw, idx) => {
-        const rowNumber = Number(raw && raw.rowNumber) || idx + 2; // header is CSV line 1
-        try {
-            normalized.push(validateRow(schema, raw || {}));
-        } catch (err) {
-            rowErrors.push({ row: rowNumber, message: err.message });
-        }
-    });
-    if (rowErrors.length) {
-        const err = badRequest("some rows do not match the expected format — fix and re-upload, nothing was imported");
-        err.rowErrors = rowErrors;
-        throw err;
-    }
-
-    const values = normalized.map((r) => schema.insertColumns.map((c) => r[c]));
-    const updateClause = schema.updateColumns.map((c) => `${c}=VALUES(${c})`).join(", ");
-    const BATCH = 500; // same max_allowed_packet caution every bulk writer in this codebase already applies
-    let written = 0;
-    const conn = await pool.getConnection();
-    try {
-        await conn.beginTransaction();
-        for (let i = 0; i < values.length; i += BATCH) {
-            const batch = values.slice(i, i + BATCH);
-            await conn.query(
-                `INSERT INTO ${table} (${schema.insertColumns.join(", ")}) VALUES ? ON DUPLICATE KEY UPDATE ${updateClause}`,
-                [batch]
-            );
-            written += batch.length;
-        }
-        await conn.commit();
-    } catch (err) {
-        await conn.rollback();
-        throw err;
-    } finally {
-        conn.release();
-    }
-    // Coverage summary only tracks option_chain_history (see schema.sql) —
-    // futures_history's insertColumns order (symbol, expiry, trade_date, ...)
-    // doesn't match the (symbol, trade_date, ..., expiry) layout
-    // keysFromInsertValues expects, so this is intentionally scoped to the
-    // one table it actually applies to.
-    if (table === "option_chain_history") {
-        await coverageSummary.recordIngestedFromInsertValues(values);
-    } else if (table === "ohlcv_data") {
-        await coverageSummary.recordOhlcvIngested(values);
-    }
-    return written;
-}
-
-const zlib = require("zlib");
-const readline = require("readline");
 
 function splitCsvLine(line) {
     const cells = [];
@@ -200,6 +280,67 @@ function splitCsvLine(line) {
     return cells.map((c) => c.trim());
 }
 
+const MAX_ROWS = 100000;
+
+/**
+ * Validates and upserts in-memory parsed rows into database
+ */
+async function importRows(table, rows) {
+    const schema = getSchema(table);
+    if (!Array.isArray(rows) || rows.length === 0) throw badRequest("No rows to import");
+    if (rows.length > MAX_ROWS) throw badRequest(`Too many rows in one import (max ${MAX_ROWS} — split the file)`);
+
+    const normalized = [];
+    const rowErrors = [];
+
+    rows.forEach((raw, idx) => {
+        const rowNumber = Number(raw && raw.rowNumber) || idx + 2;
+        try {
+            normalized.push(validateRow(schema, raw || {}));
+        } catch (err) {
+            rowErrors.push({ row: rowNumber, message: err.message });
+        }
+    });
+
+    if (rowErrors.length) {
+        const err = badRequest(`Found ${rowErrors.length} validation errors — nothing was imported`);
+        err.rowErrors = rowErrors.slice(0, 50);
+        throw err;
+    }
+
+    const values = normalized.map((r) => schema.insertColumns.map((c) => r[c]));
+    const updateClause = schema.updateColumns.map((c) => `${c}=VALUES(${c})`).join(", ");
+    const BATCH = 500;
+    let written = 0;
+
+    const conn = await pool.getConnection();
+    try {
+        await conn.beginTransaction();
+        for (let i = 0; i < values.length; i += BATCH) {
+            const batch = values.slice(i, i + BATCH);
+            await conn.query(
+                `INSERT INTO ${table} (${schema.insertColumns.join(", ")}) VALUES ? ON DUPLICATE KEY UPDATE ${updateClause}`,
+                [batch]
+            );
+            written += batch.length;
+        }
+        await conn.commit();
+    } catch (err) {
+        await conn.rollback();
+        throw err;
+    } finally {
+        conn.release();
+    }
+
+    if (table === "option_chain_history") {
+        await coverageSummary.recordIngestedFromInsertValues(values).catch(() => {});
+    } else if (table === "ohlcv_data") {
+        await coverageSummary.recordOhlcvIngested(values).catch(() => {});
+    }
+
+    return written;
+}
+
 /**
  * Stream-parse and import CSV / CSV.GZ directly from a readable stream
  */
@@ -219,6 +360,7 @@ async function importFromStream({ readableStream, fileName, table }) {
     });
 
     let isHeader = true;
+    let headerMapping = null;
     let lineIndex = 0;
     let rowBuffer = [];
     let totalWritten = 0;
@@ -239,31 +381,17 @@ async function importFromStream({ readableStream, fileName, table }) {
 
             if (isHeader) {
                 isHeader = false;
-                const rawCols = splitCsvLine(trimmed).map((c) => c.toLowerCase());
-                const headerOk =
-                    rawCols.length === schema.header.length &&
-                    schema.header.every((h, i) => rawCols[i] === h);
-                if (!headerOk) {
-                    throw badRequest(
-                        `First row must be exactly this header: ${schema.header.join(",")}. Got: ${rawCols.join(",")}`
-                    );
-                }
+                const rawCols = splitCsvLine(trimmed);
+                headerMapping = createHeaderMapping(rawCols, schema);
                 continue;
             }
 
             const cells = splitCsvLine(trimmed);
-            if (cells.length !== schema.header.length) {
-                rowErrors.push({
-                    row: lineIndex,
-                    message: `Expected ${schema.header.length} columns, got ${cells.length}`,
-                });
-                if (rowErrors.length >= 30) break;
-                continue;
-            }
-
             const rawRow = {};
-            schema.header.forEach((col, idx) => {
-                rawRow[col] = cells[idx];
+
+            schema.header.forEach((canonicalCol) => {
+                const colIdx = headerMapping[canonicalCol];
+                rawRow[canonicalCol] = colIdx !== undefined ? cells[colIdx] : "";
             });
 
             try {
@@ -275,7 +403,7 @@ async function importFromStream({ readableStream, fileName, table }) {
                 }
             } catch (err) {
                 rowErrors.push({ row: lineIndex, message: err.message });
-                if (rowErrors.length >= 30) break;
+                if (rowErrors.length >= 40) break;
             }
 
             if (rowBuffer.length >= BATCH_SIZE) {
@@ -293,7 +421,7 @@ async function importFromStream({ readableStream, fileName, table }) {
             const err = badRequest(
                 `Found ${rowErrors.length} validation error(s) in CSV rows — nothing was imported.`
             );
-            err.rowErrors = rowErrors;
+            err.rowErrors = rowErrors.slice(0, 50);
             throw err;
         }
 
@@ -330,5 +458,8 @@ module.exports = {
     importRows,
     importFromStream,
     splitCsvLine,
+    normalizeDate,
+    normalizeTime,
     TABLE_SCHEMAS,
+    COLUMN_ALIASES,
 };
