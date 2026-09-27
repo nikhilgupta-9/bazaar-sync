@@ -4,9 +4,13 @@
 // source (data-downloader/ for the year-pipelines, server/scripts for Angel
 // One/Kotak) — see server/services/dataDownloaderRunner.js for exactly what
 // command each combination runs.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { Link } from "react-router-dom";
-import { FiPlay, FiXCircle, FiRefreshCw, FiChevronDown, FiChevronUp, FiTrash2, FiAlertOctagon, FiCheck, FiPlus, FiClock, FiDatabase, FiKey } from "react-icons/fi";
+import {
+    FiPlay, FiXCircle, FiRefreshCw, FiChevronDown, FiChevronUp, FiTrash2,
+    FiAlertOctagon, FiCheck, FiPlus, FiClock, FiDatabase, FiKey,
+    FiActivity, FiCloud, FiCopy
+} from "react-icons/fi";
 import { useAdminAuth } from "../context/AdminAuthContext";
 import { startExtractionJob, fetchExtractionJobs, fetchExtractionJob, cancelExtractionJob, failExtractionJob, deleteExtractionJob, fetchSymbolList, fetchCoverageDetail } from "../services/adminApi";
 import DataNavHeader from "../components/DataNavHeader";
@@ -303,6 +307,168 @@ function JobRow({ job, onCancel, onFail, onDelete }) {
     );
 }
 
+function LiveExtractionMonitor({ jobs, onCancel, onFail, onRefresh }) {
+    const { token } = useAdminAuth();
+    const [activeDetail, setActiveDetail] = useState(null);
+    const [copied, setCopied] = useState(false);
+    const [autoScroll, setAutoScroll] = useState(true);
+    const logContainerRef = useRef(null);
+
+    // Find the latest running or queued job, or fallback to the latest job
+    const runningJob = jobs?.find((j) => j.status === "running" || j.status === "queued");
+    const activeJob = runningJob || jobs?.[0];
+
+    useEffect(() => {
+        if (!activeJob) {
+            setActiveDetail(null);
+            return;
+        }
+
+        let isMounted = true;
+        const fetchDetail = async () => {
+            try {
+                const res = await fetchExtractionJob(token, activeJob.id);
+                if (isMounted && res?.job) {
+                    setActiveDetail(res.job);
+                }
+            } catch {
+                // Ignore network blips during polling
+            }
+        };
+
+        fetchDetail();
+        // Poll every 2 seconds if job is running, else 6 seconds
+        const interval = setInterval(fetchDetail, activeJob.status === "running" ? 2000 : 6000);
+        return () => {
+            isMounted = false;
+            clearInterval(interval);
+        };
+    }, [activeJob?.id, activeJob?.status, token]);
+
+    useEffect(() => {
+        if (autoScroll && logContainerRef.current) {
+            logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+        }
+    }, [activeDetail?.logTail, autoScroll]);
+
+    function handleCopy() {
+        if (!activeDetail?.logTail) return;
+        navigator.clipboard.writeText(activeDetail.logTail);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    }
+
+    if (!activeJob) {
+        return null;
+    }
+
+    const isRunning = activeJob.status === "running";
+    const isQueued = activeJob.status === "queued";
+    const logLines = (activeDetail?.logTail || "Waiting for live process output stream...").split("\n");
+
+    return (
+        <div className="rounded-2xl border border-emerald-500/30 bg-[#080910] p-4 sm:p-5 shadow-2xl shadow-emerald-950/20 space-y-4">
+            {/* Header Bar */}
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-white/10">
+                <div className="flex items-center gap-3">
+                    <div className="relative flex h-3.5 w-3.5">
+                        {isRunning && (
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        )}
+                        <span className={`relative inline-flex rounded-full h-3.5 w-3.5 ${isRunning ? "bg-emerald-500" : isQueued ? "bg-amber-500" : "bg-gray-500"}`}></span>
+                    </div>
+                    <div>
+                        <div className="flex items-center gap-2">
+                            <h3 className="text-sm sm:text-base font-bold text-white tracking-wide flex items-center gap-2">
+                                <FiActivity className={isRunning ? "text-emerald-400 animate-pulse" : "text-gray-400"} />
+                                Live Extraction Terminal
+                            </h3>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider ${STATUS_TONE[activeJob.status]}`}>
+                                {activeJob.status}
+                            </span>
+                            {activeJob.command?.includes("--auto-gdrive") && (
+                                <span className="rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300 flex items-center gap-1">
+                                    <FiCloud className="h-3 w-3" /> Auto GDrive
+                                </span>
+                            )}
+                        </div>
+                        <p className="text-xs text-gray-400 mt-0.5 font-mono">
+                            {SOURCES[activeJob.source]?.label || activeJob.source} · {DATA_TYPE_LABELS[activeJob.data_type] || activeJob.data_type} · {activeJob.symbols || "All Letters/Symbols"} ({activeJob.year || "2023-2024"})
+                        </p>
+                    </div>
+                </div>
+
+                {/* Controls */}
+                <div className="flex items-center gap-2">
+                    <button
+                        type="button"
+                        onClick={() => setAutoScroll((v) => !v)}
+                        className={`rounded-lg px-2.5 py-1 text-xs font-semibold border transition ${autoScroll ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300" : "bg-white/5 border-white/10 text-gray-400"}`}
+                        title="Auto-scroll to latest log output"
+                    >
+                        Auto-Scroll {autoScroll ? "ON" : "OFF"}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={handleCopy}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-semibold text-gray-300 hover:bg-white/10"
+                    >
+                        {copied ? <FiCheck className="text-emerald-400" /> : <FiCopy />} {copied ? "Copied" : "Copy Log"}
+                    </button>
+                    {isRunning && (
+                        <button
+                            type="button"
+                            onClick={() => onCancel(activeJob.id)}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/20 px-3 py-1 text-xs font-bold text-rose-300 hover:bg-rose-500/30 shadow-sm"
+                        >
+                            <FiXCircle /> Stop Process
+                        </button>
+                    )}
+                </div>
+            </div>
+
+            {/* Terminal Window */}
+            <div className="relative rounded-xl border border-emerald-500/20 bg-[#040508] shadow-inner overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-1.5 bg-white/5 border-b border-white/5 text-[11px] text-gray-400 font-mono">
+                    <span className="flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full bg-rose-500/80 inline-block"></span>
+                        <span className="h-2 w-2 rounded-full bg-amber-500/80 inline-block"></span>
+                        <span className="h-2 w-2 rounded-full bg-emerald-500/80 inline-block"></span>
+                        <span className="ml-2 text-emerald-400 font-semibold">process_stdout.log</span>
+                    </span>
+                    <span className="text-[10px] text-gray-500">PID: {activeJob.pid || "Active"} · Updated live (2s polling)</span>
+                </div>
+                <div
+                    ref={logContainerRef}
+                    className="p-3.5 max-h-80 overflow-y-auto font-mono text-xs leading-relaxed space-y-0.5 select-text"
+                >
+                    {logLines.map((line, idx) => {
+                        let colorClass = "text-gray-300";
+                        if (line.includes("[ERROR]") || line.includes("failed") || line.includes("ERR") || line.includes("401") || line.includes("404")) {
+                            colorClass = "text-rose-400 font-semibold";
+                        } else if (line.includes("[AutoGDrive]") || line.includes("ArchivalPipeline") || line.includes("✅") || line.includes("Uploaded")) {
+                            colorClass = "text-emerald-400 font-semibold";
+                        } else if (line.includes("[bhavcopy]") || line.includes("[discovery]") || line.includes("downloading")) {
+                            colorClass = "text-cyan-300";
+                        } else if (line.includes("[enrich]") || line.includes("budget") || line.includes("WARN") || line.includes("⚠")) {
+                            colorClass = "text-amber-300";
+                        } else if (line.startsWith("===") || line.startsWith("========")) {
+                            colorClass = "text-violet-300 font-bold";
+                        }
+
+                        return (
+                            <div key={idx} className={`flex gap-3 hover:bg-white/5 px-1 rounded ${colorClass}`}>
+                                <span className="text-gray-600 select-none text-[10px] w-6 text-right shrink-0">{idx + 1}</span>
+                                <span className="break-all">{line}</span>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        </div>
+    );
+}
+
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 export default function DataExtraction() {
@@ -487,6 +653,13 @@ export default function DataExtraction() {
                         </div>
                     </div>
                 </div>
+
+                <LiveExtractionMonitor
+                    jobs={jobs}
+                    onCancel={handleCancel}
+                    onFail={handleFail}
+                    onRefresh={loadJobs}
+                />
 
                 <Card title="New extraction request">
                     <form onSubmit={handleSubmit} className="space-y-4">
