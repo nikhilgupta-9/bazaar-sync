@@ -6,10 +6,10 @@
 // month), not a hardcoded holiday calendar; see
 // server/services/dataCoverageService.js's header for why.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { FiRefreshCw, FiSearch, FiClock, FiDatabase, FiChevronRight } from "react-icons/fi";
+import { FiRefreshCw, FiSearch, FiClock, FiDatabase } from "react-icons/fi";
 import { useAdminAuth } from "../context/AdminAuthContext";
-import { fetchCoverageSummary, fetchCoverageDetail, fetchCoverageDays, fetchCoverageMinutes, fetchCoverageMinuteRows, refreshCoverageCache } from "../services/adminApi";
-import TopBar from "../components/TopBar";
+import { fetchCoverageSummary, fetchCoverageDetail, fetchCoverageDays, refreshCoverageCache } from "../services/adminApi";
+import DataNavHeader from "../components/DataNavHeader";
 import Card from "../components/Card";
 
 const SEVEN_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"];
@@ -39,10 +39,6 @@ export default function DataCoverage() {
     const [refreshing, setRefreshing] = useState(false);
     const [selectedMonth, setSelectedMonth] = useState(null);
     const [days, setDays] = useState(null);
-    const [selectedDay, setSelectedDay] = useState(null);
-    const [minutes, setMinutes] = useState(null);
-    const [selectedTime, setSelectedTime] = useState(null);
-    const [minuteRows, setMinuteRows] = useState(null);
 
     const load = useCallback(() => {
         fetchCoverageSummary(token, dataType).then((r) => setSummary(r)).catch((err) => setError(err.message));
@@ -80,10 +76,6 @@ export default function DataCoverage() {
         setDetail(null);
         setSelectedMonth(null);
         setDays(null);
-        setSelectedDay(null);
-        setMinutes(null);
-        setSelectedTime(null);
-        setMinuteRows(null);
         fetchCoverageDetail(token, dataType, symbol).then((r) => setDetail(r.months)).catch((err) => setError(err.message));
     }
 
@@ -91,25 +83,7 @@ export default function DataCoverage() {
         if (selectedMonth === month) { setSelectedMonth(null); setDays(null); return; } // click again to collapse
         setSelectedMonth(month);
         setDays(null);
-        setSelectedDay(null);
-        setMinutes(null);
         fetchCoverageDays(token, dataType, selected, month).then((r) => setDays(r.days)).catch((err) => setError(err.message));
-    }
-
-    function selectDay(date) {
-        if (selectedDay === date) { setSelectedDay(null); setMinutes(null); return; }
-        setSelectedDay(date);
-        setMinutes(null);
-        setSelectedTime(null);
-        setMinuteRows(null);
-        fetchCoverageMinutes(token, dataType, selected, date).then(setMinutes).catch((err) => setError(err.message));
-    }
-
-    function selectMinute(time) {
-        if (selectedTime === time) { setSelectedTime(null); setMinuteRows(null); return; }
-        setSelectedTime(time);
-        setMinuteRows(null);
-        fetchCoverageMinuteRows(token, dataType, selected, selectedDay, time).then(setMinuteRows).catch((err) => setError(err.message));
     }
 
     async function handleRefresh() {
@@ -125,46 +99,49 @@ export default function DataCoverage() {
 
     return (
         <div>
-            <TopBar title="Data Coverage" subtitle={`How much ${dataType === "futures" ? "futures" : dataType === "vix" ? "India VIX" : "option-chain"} data exists${dataType === "vix" ? "" : " per symbol"} per month, ${summary?.coverageStart || "2023-01-01"} onward. "Expected" is the best-covered symbol that month, not a hardcoded holiday list.`} />
-            <div className="p-6">
-                {error && <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
+            <DataNavHeader
+                title="Historical Data Coverage & Classification"
+                subtitle={`Completeness audit for ${dataType === "futures" ? "Futures" : dataType === "vix" ? "India VIX" : "Option Chain"} data per symbol per month (${summary?.coverageStart || "2023-01-01"} onward).`}
+            />
+            <div className="p-3.5 sm:p-6 max-w-7xl mx-auto space-y-4">
+                {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 font-medium">{error}</div>}
 
-                <div className="mb-4 flex flex-wrap items-center gap-3">
-                    <select value={dataType} onChange={(e) => { setDataType(e.target.value); setSelected(null); setDetail(null); setSummary(null); setSelectedMonth(null); setDays(null); setSelectedDay(null); setMinutes(null); }} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-violet-500">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                    <select value={dataType} onChange={(e) => { setDataType(e.target.value); setSelected(null); setDetail(null); setSummary(null); setSelectedMonth(null); setDays(null); }} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs sm:text-sm text-white outline-none focus:border-violet-500">
                         <option value="option_chain">Option Chain</option>
                         <option value="futures">Futures</option>
                         <option value="vix">India VIX</option>
                     </select>
-                    <div className="relative min-w-45 max-w-xs flex-1">
-                        <FiSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
-                        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search stock symbol…" className="w-full rounded-lg border border-white/10 bg-white/5 py-2 pl-9 pr-3 text-sm text-white outline-none focus:border-violet-500" />
+                    <div className="relative flex-1 max-w-md">
+                        <FiSearch className="pointer-events-none absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+                        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search stock symbol…" className="w-full rounded-xl border border-white/10 bg-white/5 py-2 pl-9 pr-3 text-xs sm:text-sm text-white outline-none focus:border-violet-500 placeholder-gray-500" />
                     </div>
-                    <button onClick={handleRefresh} disabled={refreshing} className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-300 hover:bg-white/10 disabled:opacity-50">
+                    <button onClick={handleRefresh} disabled={refreshing} className="sm:ml-auto inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-gray-300 hover:bg-white/10 disabled:opacity-50 transition">
                         <FiRefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh data
                     </button>
                 </div>
 
                 {summary && (
-                    <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                        <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-                            <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-gray-500"><FiDatabase className="h-3.5 w-3.5" /> Symbols with data</div>
-                            <div className="mt-1 text-lg font-semibold text-white">{summary.symbols.length.toLocaleString()}</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="rounded-2xl border border-white/10 bg-[#12121a] p-4 shadow-xs">
+                            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-gray-400"><FiDatabase className="h-3.5 w-3.5" /> Symbols with data</div>
+                            <div className="mt-1 text-2xl font-black text-white">{summary.symbols.length.toLocaleString()}</div>
                         </div>
-                        <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-                            <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-gray-500"><FiClock className="h-3.5 w-3.5" /> Coverage verified</div>
-                            <div className="mt-1 text-sm font-semibold text-white">{formatTimestamp(freshestRow?.lastUpdatedAt)}</div>
-                            <div className="text-[11px] text-gray-500">{freshestRow?.symbol || "No summary available"}</div>
+                        <div className="rounded-2xl border border-white/10 bg-[#12121a] p-4 shadow-xs">
+                            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-gray-400"><FiClock className="h-3.5 w-3.5" /> Coverage verified</div>
+                            <div className="mt-1 text-sm font-bold text-white truncate">{formatTimestamp(freshestRow?.lastUpdatedAt)}</div>
+                            <div className="text-[11px] text-gray-500 truncate">{freshestRow?.symbol || "No summary available"}</div>
                         </div>
-                        <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-                            <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-gray-500"><FiClock className="h-3.5 w-3.5" /> Selected data through</div>
-                            <div className="mt-1 text-sm font-semibold text-white">{selectedSummary?.lastDate || "Select a symbol"}</div>
-                            <div className="text-[11px] text-gray-500">{selectedSummary ? `Summary updated ${formatTimestamp(selectedSummary.lastUpdatedAt)}` : "Click a symbol for month details"}</div>
+                        <div className="rounded-2xl border border-white/10 bg-[#12121a] p-4 shadow-xs">
+                            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-gray-400"><FiClock className="h-3.5 w-3.5" /> Selected data through</div>
+                            <div className="mt-1 text-sm font-bold text-white truncate">{selectedSummary?.lastDate || "Select a symbol"}</div>
+                            <div className="text-[11px] text-gray-500 truncate">{selectedSummary ? `Summary updated ${formatTimestamp(selectedSummary.lastUpdatedAt)}` : "Click a symbol for month details"}</div>
                         </div>
                     </div>
                 )}
 
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
-                    <Card title={`Symbols${summary ? ` (${rows.length})` : ""}`} className="lg:col-span-2" bodyClassName="max-h-[70vh] overflow-y-auto p-0">
+                <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                    <Card title={`Symbols${summary ? ` (${rows.length})` : ""}`} className="lg:col-span-2" bodyClassName="max-h-[70vh] overflow-x-auto overflow-y-auto p-0 custom-scrollbar">
                         {!summary ? (
                             <div className="py-10 text-center text-xs text-gray-500">Loading (first load can take up to a minute — full-history scan)…</div>
                         ) : (
@@ -219,8 +196,8 @@ export default function DataCoverage() {
                                         >
                                             <div className="text-[10px] font-medium opacity-80">{m.month}</div>
                                             <div className="text-sm font-bold">{m.days}{m.expectedDays != null ? `/${m.expectedDays}` : ""}</div>
-                                            {dataType === "option_chain" && <div className="text-[9px] opacity-80">Opt {m.optionDays} · Spot {m.ohlcvDays}</div>}
-                                            {dataType !== "option_chain" && <div className="text-[9px] opacity-80">{m.rows.toLocaleString()} rows</div>}
+                                            {dataType === "option_chain" && m.ohlcvDays > 0 && m.optionDays === 0 && <div className="text-[9px] opacity-80">OHLCV only</div>}
+                                            {dataType === "option_chain" && m.optionDays > 0 && m.ohlcvDays === 0 && <div className="text-[9px] opacity-80">Options only</div>}
                                             {m.missingDays > 0 && <div className="text-[10px] opacity-80">−{m.missingDays}</div>}
                                             {m.lastUpdatedAt && <div className="mt-0.5 text-[9px] opacity-70">updated</div>}
                                         </button>
@@ -235,81 +212,16 @@ export default function DataCoverage() {
                                         ) : (
                                             <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-6 md:grid-cols-8">
                                                 {days.map((d) => (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => selectDay(d.date)}
+                                                    <div
                                                         key={d.date}
-                                                        className={`rounded-md px-1.5 py-1.5 text-center text-[10px] outline-none hover:ring-1 hover:ring-violet-400 ${d.hasData ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300"} ${selectedDay === d.date ? "ring-2 ring-violet-400" : ""}`}
+                                                        className={`rounded-md px-1.5 py-1.5 text-center text-[10px] ${d.hasData ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300"}`}
                                                         title={d.hasData ? `${d.date}: ${d.rows.toLocaleString()} rows (${d.minuteRows.toLocaleString()} minute rows)` : `${d.date}: no data — a genuine gap for this symbol`}
                                                     >
                                                         <div className="font-semibold">{d.date.slice(8)}</div>
-                                                        <div className="opacity-80">{d.hasOptions ? `O ${d.rows.toLocaleString()}` : "O —"}</div>
-                                                        <div className="opacity-80">{d.hasOhlcv ? `S ${d.ohlcvRows.toLocaleString()}` : "S —"}</div>
-                                                    </button>
+                                                        <div className="opacity-80">{d.hasData ? d.rows.toLocaleString() : "—"}</div>
+                                                    </div>
                                                 ))}
                                                 {!days.length && <div className="col-span-full py-4 text-center text-xs text-gray-500">No trading-day reference for this month.</div>}
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-                                {selectedDay && (
-                                    <div className="mt-4 border-t border-white/5 pt-3">
-                                        <div className="mb-2 flex items-center gap-1 text-xs font-semibold text-gray-300">
-                                            <FiChevronRight className="h-3.5 w-3.5 text-violet-400" /> {selected} · {selectedDay} — minute by minute
-                                        </div>
-                                        {!minutes ? (
-                                            <div className="py-6 text-center text-xs text-gray-500">Loading minute coverage…</div>
-                                        ) : !minutes.minutes.length ? (
-                                            <div className="py-6 text-center text-xs text-gray-500">No minute rows for this day.</div>
-                                        ) : (
-                                            <div className="max-h-80 overflow-auto rounded-lg border border-white/5">
-                                                <table className="w-full text-left text-[11px]">
-                                                    <thead className="sticky top-0 bg-[#101015] text-gray-500">
-                                                        <tr>
-                                                            <th className="px-2 py-2 font-medium">Time</th>
-                                                            {dataType === "option_chain" ? <>
-                                                                <th className="px-2 py-2 font-medium">Rows</th><th className="px-2 py-2 font-medium">CE / PE</th><th className="px-2 py-2 font-medium">CE vol</th><th className="px-2 py-2 font-medium">PE vol</th><th className="px-2 py-2 font-medium">Spot</th>
-                                                            </> : <><th className="px-2 py-2 font-medium">Rows</th><th className="px-2 py-2 font-medium">Volume</th></>}
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        {minutes.minutes.map((row) => (
-                                                            <tr key={row.time} onClick={() => selectMinute(row.time)} className={`cursor-pointer border-t border-white/5 text-gray-300 hover:bg-violet-500/10 ${selectedTime === row.time ? "bg-violet-500/10" : ""}`}>
-                                                                <td className="px-2 py-1.5 font-mono">{row.time}</td>
-                                                                {dataType === "option_chain" ? <>
-                                                                    <td className="px-2 py-1.5">{row.rows.toLocaleString()}</td><td className="px-2 py-1.5">{row.ceRows} / {row.peRows}</td><td className="px-2 py-1.5">{row.ceVolume.toLocaleString()}</td><td className="px-2 py-1.5">{row.peVolume.toLocaleString()}</td><td className="px-2 py-1.5">{row.ohlcvMinuteRows ? "yes" : "—"}</td>
-                                                                </> : <><td className="px-2 py-1.5">{row.rows.toLocaleString()}</td><td className="px-2 py-1.5">{row.volume.toLocaleString()}</td></>}
-                                                            </tr>
-                                                        ))}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        )}
-                                        {selectedTime && (
-                                            <div className="mt-3">
-                                                {!minuteRows ? (
-                                                    <div className="py-5 text-center text-xs text-gray-500">Loading strike snapshot…</div>
-                                                ) : !minuteRows.rows.length ? (
-                                                    <div className="py-5 text-center text-xs text-gray-500">No strike rows for this minute.</div>
-                                                ) : (
-                                                    <div className="max-h-96 overflow-auto rounded-lg border border-white/5">
-                                                        <div className="border-b border-white/5 px-3 py-2 text-[11px] text-gray-500">{selectedDay} {selectedTime} · {minuteRows.rows.length.toLocaleString()} strikes</div>
-                                                        <table className="w-full min-w-[760px] text-left text-[11px]">
-                                                            <thead className="sticky top-0 bg-[#101015] text-gray-500">
-                                                                <tr>
-                                                                    <th className="px-2 py-2 font-medium">Strike</th><th className="px-2 py-2 font-medium">CE LTP</th><th className="px-2 py-2 font-medium">CE OI</th><th className="px-2 py-2 font-medium">CE Vol</th><th className="px-2 py-2 font-medium">CE Delta</th><th className="px-2 py-2 font-medium">PE LTP</th><th className="px-2 py-2 font-medium">PE OI</th><th className="px-2 py-2 font-medium">PE Vol</th><th className="px-2 py-2 font-medium">PE Delta</th>
-                                                                </tr>
-                                                            </thead>
-                                                            <tbody>
-                                                                {minuteRows.rows.map((row) => (
-                                                                    <tr key={`${row.expiry}-${row.strike}`} className="border-t border-white/5 text-gray-300">
-                                                                        <td className="px-2 py-1.5 font-semibold text-white">{row.strike.toLocaleString()}</td><td className="px-2 py-1.5 text-emerald-300">{row.ceLtp ?? "—"}</td><td className="px-2 py-1.5">{row.ceOi?.toLocaleString?.() ?? "—"}</td><td className="px-2 py-1.5">{row.ceVolume?.toLocaleString?.() ?? "—"}</td><td className="px-2 py-1.5">{row.ceDelta ?? "—"}</td><td className="px-2 py-1.5 text-rose-300">{row.peLtp ?? "—"}</td><td className="px-2 py-1.5">{row.peOi?.toLocaleString?.() ?? "—"}</td><td className="px-2 py-1.5">{row.peVolume?.toLocaleString?.() ?? "—"}</td><td className="px-2 py-1.5">{row.peDelta ?? "—"}</td>
-                                                                    </tr>
-                                                                ))}
-                                                            </tbody>
-                                                        </table>
-                                                    </div>
-                                                )}
                                             </div>
                                         )}
                                     </div>

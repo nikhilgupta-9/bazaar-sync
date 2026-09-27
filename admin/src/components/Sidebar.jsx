@@ -2,7 +2,7 @@ import { NavLink } from "react-router-dom";
 import {
     FiGrid, FiUsers, FiCreditCard, FiTrendingUp, FiFileText,
     FiMapPin, FiTag, FiCalendar, FiBook, FiSearch, FiX, FiLayout, FiLayers,
-    FiDownloadCloud, FiPieChart, FiClock, FiActivity, FiUploadCloud, FiKey, FiHardDrive,
+    FiDownloadCloud, FiPieChart, FiClock, FiActivity, FiUploadCloud, FiKey, FiDatabase, FiCloud,
 } from "react-icons/fi";
 
 const LIVE_LINKS = [
@@ -13,10 +13,6 @@ const LIVE_LINKS = [
     { to: "/strategies", label: "Strategies", icon: FiFileText },
 ];
 
-// Phase 11: was "Coming Soon" (Phase 9/10) — all five now have real
-// endpoints/data behind them, moved into their own labeled section rather
-// than merged into Menu above, since they're management/config tools
-// (site-wide settings) rather than the operational-data views above.
 const MANAGEMENT_LINKS = [
     { to: "/home-page", label: "Home Page", icon: FiLayout },
     { to: "/institute-access", label: "Institute Access", icon: FiMapPin },
@@ -26,48 +22,49 @@ const MANAGEMENT_LINKS = [
     { to: "/seo", label: "SEO Tool", icon: FiSearch },
 ];
 
-// Data section (2026-09-13): historical-data operations — requesting
-// extraction from the standalone data-downloader/ app (or server/ scripts
-// for the Angel One/Kotak forward-fill case), and reporting on what's
-// actually in option_chain_history/futures_history for the 2023-onward
-// target window. Lot Size History moved here from Management — it's the
-// same "data completeness" concern as the rest of this section, not a
-// site-config tool like Plans/Events/SEO.
 const DATA_LINKS = [
-    { to: "/data-extraction", label: "Data Extraction", icon: FiDownloadCloud },
-    { to: "/data-export", label: "Data Export", icon: FiHardDrive },
-    { to: "/data-coverage", label: "Data Coverage", icon: FiPieChart },
-    { to: "/expiry-status", label: "Expiry Status", icon: FiClock },
-    { to: "/greeks-coverage", label: "Greeks Coverage", icon: FiActivity },
+    { to: "/data-gdrive-archive", label: "GDrive Cloud Archival", icon: FiCloud, badge: "Auto" },
+    { to: "/data-extraction", label: "Extraction Pipelines", icon: FiDownloadCloud, badge: "Live" },
+    { to: "/data-import", label: "Import CSV", icon: FiUploadCloud },
+    { to: "/data-export-prune", label: "Export & Disk Space", icon: FiDatabase },
+    { to: "/data-settings", label: "Broker API & Tokens", icon: FiKey, badge: "Config" },
+    { to: "/data-coverage", label: "Data Coverage Matrix", icon: FiPieChart },
+    { to: "/expiry-status", label: "Expiry Calendar", icon: FiClock },
+    { to: "/greeks-coverage", label: "Greeks Health Audit", icon: FiActivity },
     { to: "/lot-size-history", label: "Lot Size History", icon: FiLayers },
-    { to: "/data-import", label: "Data Import (CSV)", icon: FiUploadCloud },
-    { to: "/data-settings", label: "Credentials", icon: FiKey },
 ];
 
-function NavItem({ to, label, icon: Icon, end, onNavigate }) {
+function NavItem({ to, label, icon: Icon, badge, end, onNavigate }) {
     return (
         <NavLink
             to={to}
             end={end}
             onClick={onNavigate}
             className={({ isActive }) =>
-                `group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                `group relative flex items-center justify-between rounded-xl px-3 py-2 text-xs font-semibold transition-all ${
                     isActive
-                        ? "bg-violet-600/15 text-violet-300"
+                        ? "bg-violet-600 text-white shadow-md shadow-violet-600/20"
                         : "text-gray-400 hover:bg-white/5 hover:text-gray-200"
                 }`
             }
         >
             {({ isActive }) => (
                 <>
-                    <span
-                        className={`absolute -left-1 top-1/2 h-4 -translate-y-1/2 rounded-full bg-violet-500 transition-all ${
-                            isActive ? "w-[3px] opacity-100" : "w-0 opacity-0"
-                        }`}
-                        aria-hidden="true"
-                    />
-                    <Icon className="h-[18px] w-[18px] shrink-0" />
-                    <span className="truncate">{label}</span>
+                    <div className="flex items-center gap-2.5 min-w-0">
+                        <Icon className={`h-4 w-4 shrink-0 ${isActive ? "text-white" : "text-gray-400 group-hover:text-violet-400"}`} />
+                        <span className="truncate">{label}</span>
+                    </div>
+                    {badge && (
+                        <span
+                            className={`rounded-full px-1.5 py-0.2 text-[9px] font-extrabold uppercase tracking-tight ${
+                                isActive
+                                    ? "bg-white/20 text-white"
+                                    : "bg-violet-500/10 text-violet-300 border border-violet-500/20"
+                            }`}
+                        >
+                            {badge}
+                        </span>
+                    )}
                 </>
             )}
         </NavLink>

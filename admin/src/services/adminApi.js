@@ -261,10 +261,6 @@ export async function deleteExtractionJob(token, id) {
     return handle(await fetch(`${API_URL}/api/admin/data/jobs/${id}`, { method: "DELETE", ...authed(token) }));
 }
 
-export async function restartExtractionJob(token, id) {
-    return handle(await fetch(`${API_URL}/api/admin/data/jobs/${id}/restart`, { method: "POST", ...authed(token) }));
-}
-
 export async function fetchCoverageSummary(token, dataType) {
     return handle(await fetch(`${API_URL}/api/admin/data/coverage/summary?dataType=${dataType}`, authed(token)));
 }
@@ -275,14 +271,6 @@ export async function fetchCoverageDetail(token, dataType, symbol) {
 
 export async function fetchCoverageDays(token, dataType, symbol, month) {
     return handle(await fetch(`${API_URL}/api/admin/data/coverage/days?dataType=${dataType}&symbol=${encodeURIComponent(symbol)}&month=${month}`, authed(token)));
-}
-
-export async function fetchCoverageMinutes(token, dataType, symbol, date) {
-    return handle(await fetch(`${API_URL}/api/admin/data/coverage/minutes?dataType=${dataType}&symbol=${encodeURIComponent(symbol)}&date=${date}`, authed(token)));
-}
-
-export async function fetchCoverageMinuteRows(token, dataType, symbol, date, time) {
-    return handle(await fetch(`${API_URL}/api/admin/data/coverage/minute-rows?dataType=${dataType}&symbol=${encodeURIComponent(symbol)}&date=${date}&time=${encodeURIComponent(time)}`, authed(token)));
 }
 
 export async function refreshCoverageCache(token) {
@@ -305,76 +293,32 @@ export async function importData(token, table, rows) {
     }));
 }
 
-function exportQuery({ symbol, dataType, year, fromMonth, toMonth }) {
-    const params = new URLSearchParams({ symbol, dataType, year: String(year) });
-    if (fromMonth) params.set("fromMonth", String(fromMonth));
-    if (toMonth) params.set("toMonth", String(toMonth));
-    return params.toString();
-}
-
-export async function previewDataExport(token, params) {
-    return handle(await fetch(`${API_URL}/api/admin/data/export/preview?${exportQuery(params)}`, authed(token)));
-}
-
-// Downloads via fetch (not a plain <a href>) because the route needs the
-// admin's Bearer token, which a browser navigation/anchor click can't send —
-// same reason every other admin/* call here goes through authed(). Reads
-// the whole response into a blob client-side (fine for one symbol/year;
-// the server-side risk this file's dataExportService.js worries about is
-// unbounded multi-symbol accumulation, not a single bounded export) and
-// triggers a save via a throwaway <a>+ObjectURL, then revokes it.
-export async function downloadDataExport(token, params) {
-    const res = await fetch(`${API_URL}/api/admin/data/export/download?${exportQuery(params)}`, authed(token));
-    if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `Export download failed (${res.status})`);
-    }
-    const disposition = res.headers.get("Content-Disposition") || "";
-    const match = disposition.match(/filename="([^"]+)"/);
-    const filename = match ? match[1] : `${params.symbol}_${params.year}.csv`;
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-    return { filename };
-}
-
-export async function deleteExportedRows(token, params) {
-    return handle(await fetch(`${API_URL}/api/admin/data/export/delete`, {
-        method: "POST",
-        headers: { ...authed(token).headers, "Content-Type": "application/json" },
-        body: JSON.stringify(params),
-    }));
-}
-
-// --- Data Export & Space Lifecycle (Prune) ---
-
 export async function fetchDiskUsage(token) {
     return handle(await fetch(`${API_URL}/api/admin/data/disk-usage`, authed(token)));
 }
 
-export async function previewDataPrune(token, params) {
+export function getExportUrl(token, params) {
+    const query = new URLSearchParams(params).toString();
+    return `${API_URL}/api/admin/data/export?${query}&token=${token}`;
+}
+
+export async function previewDataPrune(token, payload) {
     return handle(await fetch(`${API_URL}/api/admin/data/prune-preview`, {
         method: "POST",
         headers: { ...authed(token).headers, "Content-Type": "application/json" },
-        body: JSON.stringify(params),
+        body: JSON.stringify(payload),
     }));
 }
 
-export async function executeDataPrune(token, params) {
+export async function executeDataPrune(token, payload) {
     return handle(await fetch(`${API_URL}/api/admin/data/prune`, {
         method: "POST",
         headers: { ...authed(token).headers, "Content-Type": "application/json" },
-        body: JSON.stringify(params),
+        body: JSON.stringify(payload),
     }));
 }
 
-// --- Google Drive Cloud Archival ---
+// --- Google Drive Cloud Archival & Storage Management ---
 
 export async function fetchGDriveStatus(token) {
     return handle(await fetch(`${API_URL}/api/admin/data/gdrive/status`, authed(token)));
@@ -388,49 +332,11 @@ export async function testGDriveConnection(token, folderId) {
     }));
 }
 
-export async function saveGDriveCredentials(token, payload) {
+export async function saveGDriveCredentials(token, credentialsJson, rootFolderId) {
     return handle(await fetch(`${API_URL}/api/admin/data/gdrive/credentials`, {
         method: "POST",
         headers: { ...authed(token).headers, "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-    }));
-}
-
-export async function fetchGDriveOAuthUrl(token) {
-    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/oauth/url`, {
-        method: "POST",
-        headers: { ...authed(token).headers, "Content-Type": "application/json" },
-    }));
-}
-
-export async function exchangeGDriveOAuthCode(token, code) {
-    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/oauth/callback`, {
-        method: "POST",
-        headers: { ...authed(token).headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
-    }));
-}
-
-export async function saveGDriveOAuthCredentials(token, payload) {
-    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/oauth/credentials`, {
-        method: "POST",
-        headers: { ...authed(token).headers, "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-    }));
-}
-
-export async function disconnectGDriveOAuth(token) {
-    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/oauth/disconnect`, {
-        method: "POST",
-        headers: { ...authed(token).headers, "Content-Type": "application/json" },
-    }));
-}
-
-export async function updateGDriveRootFolder(token, rootFolderId) {
-    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/root-folder`, {
-        method: "POST",
-        headers: { ...authed(token).headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ rootFolderId }),
+        body: JSON.stringify({ credentialsJson, rootFolderId }),
     }));
 }
 
@@ -442,9 +348,8 @@ export async function initGDriveFolders(token, folderId) {
     }));
 }
 
-export async function fetchGDriveCoverage(token, year) {
-    const qs = year ? `?year=${encodeURIComponent(year)}` : "";
-    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/coverage${qs}`, authed(token)));
+export async function fetchGDriveCoverage(token) {
+    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/coverage`, authed(token)));
 }
 
 export async function startGDrivePipeline(token, payload) {
@@ -458,7 +363,7 @@ export async function startGDrivePipeline(token, payload) {
 export async function stopGDrivePipeline(token) {
     return handle(await fetch(`${API_URL}/api/admin/data/gdrive/pipeline/stop`, {
         method: "POST",
-        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        ...authed(token),
     }));
 }
 
@@ -478,11 +383,50 @@ export async function fetchGDriveCronStatus(token) {
     return handle(await fetch(`${API_URL}/api/admin/data/gdrive/cron`, authed(token)));
 }
 
-export async function updateGDriveCronSettings(token, payload) {
+export async function updateGDriveCronSettings(token, settings) {
     return handle(await fetch(`${API_URL}/api/admin/data/gdrive/cron`, {
         method: "POST",
         headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
+    }));
+}
+
+export async function fetchGDriveOAuthUrl(token, payload) {
+    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/oauth/url`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {}),
+    }));
+}
+
+export async function exchangeGDriveOAuthCode(token, payload) {
+    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/oauth/callback`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
         body: JSON.stringify(payload),
+    }));
+}
+
+export async function saveGDriveOAuthCredentials(token, payload) {
+    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/oauth/credentials`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    }));
+}
+
+export async function disconnectGDriveOAuth(token) {
+    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/oauth/disconnect`, {
+        method: "POST",
+        ...authed(token),
+    }));
+}
+
+export async function updateGDriveRootFolder(token, rootFolderId) {
+    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/root-folder`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ rootFolderId }),
     }));
 }
 
