@@ -21,7 +21,7 @@ const EQUITY_ANALYTICS = [
     { to: "/equity-data/market-map", label: "Live Market Heatmap" },
     { to: "/equity-data/52-week-high-low", label: "52-Week High / Low Breakouts" },
     { to: "/equity-data/industry-momentum", label: "Industry Momentum Stocks" },
-    { to: "/equity-data/most-active", label: "Most Active F&O Contracts" },
+    { to: "/equity-data/most-active", label: "High Activity Options" },
 ];
 
 const COMPANY_LINKS = [

@@ -10,7 +10,7 @@ const TABS = [
     { key: "market-map", label: "Market Map", icon: FiGrid },
     { key: "52-week-high-low", label: "52-Week High/Low", icon: FiActivity },
     { key: "industry-momentum", label: "Industry Momentum", icon: FiTrendingUp },
-    { key: "most-active", label: "Most Active", icon: FiBarChart2 },
+    { key: "most-active", label: "High Activity Options", icon: FiBarChart2 },
 ];
 
 export default function EquityData() {

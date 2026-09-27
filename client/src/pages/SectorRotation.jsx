@@ -40,7 +40,7 @@ const EQUITY_TABS = [
     { to: "/equity-data/market-map", label: "Market Map", icon: FiGrid },
     { to: "/equity-data/52-week-high-low", label: "52-Week High/Low", icon: FiActivity },
     { to: "/equity-data/industry-momentum", label: "Industry Momentum", icon: FiTrendingUp },
-    { to: "/equity-data/most-active", label: "Most Active", icon: FiBarChart2 },
+    { to: "/equity-data/most-active", label: "High Activity Options", icon: FiBarChart2 },
     { to: "/equity-data/sector-performance", label: "Sector Performance", icon: FiTrendingUp },
     { to: "/equity-data/sector-rotation", label: "Sector Rotation (RRG)", icon: FiActivity, active: true },
 ];

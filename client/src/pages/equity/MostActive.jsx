@@ -174,14 +174,14 @@ export default function MostActive() {
                 <div>
                     <div className="flex items-center gap-2">
                         <h2 className="text-xl font-bold tracking-tight text-gray-900 dark:text-white sm:text-2xl">
-                            Most Active Equities & Indices
+                            High Activity Options
                         </h2>
                         <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-400">
                             7 Indices + 210 Stocks
                         </span>
                     </div>
                     <p className="text-xs text-gray-500 dark:text-gray-400 sm:text-sm mt-0.5">
-                        Real-time market analytics, turnover leaderboards, volume leaders, and StockMojo intraday range metrics.
+                        High activity F&O universe analytics across 7 major indices and 210 equities, featuring turnover leaderboards, volume surges, and StockMojo intraday range metrics.
                     </p>
                 </div>
 

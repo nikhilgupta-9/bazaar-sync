@@ -40,7 +40,7 @@ const EQUITY_DATA_LINKS = [
     { to: "/equity-data/market-map", label: "Market Map" },
     { to: "/equity-data/52-week-high-low", label: "52 Week High/Low" },
     { to: "/equity-data/industry-momentum", label: "Industry Momentum Stocks" },
-    { to: "/equity-data/most-active", label: "Most Active" },
+    { to: "/equity-data/most-active", label: "High Activity Options" },
 ];
 
 // Shared dropdown for a nav item that fans out to sub-pages (Simulator,
