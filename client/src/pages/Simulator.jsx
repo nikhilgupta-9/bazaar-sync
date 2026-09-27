@@ -1323,6 +1323,8 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   );
   const displaySpot = liveChain?.spotPrice ?? chainData?.spotPrice;
   const displaySpotStored = liveChain?.spotStored ?? chainData?.spotStored;
+  const displaySpotChange = liveChain?.spotChange ?? chainData?.spotChange;
+  const displaySpotChangePct = liveChain?.spotChangePct ?? chainData?.spotChangePct;
   const displayFutPrice = liveChain?.futPrice ?? chainData?.futPrice;
   const displayFutExpiry = liveChain?.futExpiry ?? chainData?.futExpiry;
   const displayFutBasis = liveChain?.futBasis ?? chainData?.futBasis;
@@ -1330,6 +1332,8 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   const displayFutSource = liveChain?.futSource ?? chainData?.futSource;
   const displayVix = liveChain?.vix ?? chainData?.vix;
   const displayVixSource = liveChain?.vixSource ?? chainData?.vixSource;
+  const displayVixChange = liveChain?.vixChange ?? chainData?.vixChange;
+  const displayVixChangePct = liveChain?.vixChangePct ?? chainData?.vixChangePct;
 
   // Scrolls only the chain table's own container, never the page — native
   // scrollIntoView({block:"center"}) walks up every scrollable ancestor
@@ -2042,12 +2046,24 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   {/* SPOT */}
                   <div
                     className="flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-50/80 dark:bg-emerald-950/40 dark:border-emerald-800/50 px-2.5 py-1 shadow-2xs"
-                    title="Spot underlying price at current simulated timestamp"
+                    title={`Spot underlying price (Change from day open: ${displaySpotChange != null ? (displaySpotChange >= 0 ? "+" : "") + displaySpotChange.toFixed(2) : "0"})`}
                   >
                     <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">SPOT</span>
                     <span className="font-mono text-xs font-bold tabular-nums text-gray-900 dark:text-gray-100">
                       {formatPrice(displaySpot ?? displaySpotStored)}
                     </span>
+                    {displaySpotChangePct != null && (
+                      <span
+                        className={`font-mono text-[10px] tabular-nums font-bold ${
+                          displaySpotChangePct >= 0
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : "text-rose-600 dark:text-rose-400"
+                        }`}
+                        title={`Spot % change from day open (${displaySpotChange >= 0 ? "+" : ""}${displaySpotChange.toFixed(2)})`}
+                      >
+                        ({displaySpotChangePct >= 0 ? "+" : ""}{displaySpotChangePct.toFixed(2)}%)
+                      </span>
+                    )}
                   </div>
 
                   {/* FUT & BASIS */}
@@ -2069,12 +2085,24 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   {/* INDIA VIX */}
                   <div
                     className="flex items-center gap-1.5 rounded-lg border border-purple-500/20 bg-purple-50/80 dark:bg-purple-950/40 dark:border-purple-800/50 px-2.5 py-1 shadow-2xs"
-                    title={displayVix != null ? `India VIX (${displayVixSource === "implied" ? "ATM Implied Volatility" : "Real Historical Close"})` : "No stored India VIX"}
+                    title={displayVix != null ? `India VIX (${displayVixSource === "implied" ? "ATM Implied Volatility" : "Real Historical Close"}${displayVixChange != null ? ` | Change from open: ${displayVixChange >= 0 ? "+" : ""}${displayVixChange.toFixed(2)}` : ""})` : "No stored India VIX"}
                   >
                     <span className="text-[10px] font-extrabold uppercase tracking-wider text-purple-700 dark:text-purple-400">VIX</span>
                     <span className={`font-mono text-xs font-bold tabular-nums ${displayVix != null ? "text-gray-900 dark:text-gray-100" : "text-gray-400"}`}>
                       {displayVix != null ? formatPrice(displayVix) : "—"}
                     </span>
+                    {displayVixChangePct != null && displayVix != null && (
+                      <span
+                        className={`font-mono text-[10px] tabular-nums font-bold ${
+                          displayVixChangePct >= 0
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : "text-rose-600 dark:text-rose-400"
+                        }`}
+                        title={`VIX % change from day open (${displayVixChange >= 0 ? "+" : ""}${displayVixChange.toFixed(2)})`}
+                      >
+                        ({displayVixChangePct >= 0 ? "+" : ""}{displayVixChangePct.toFixed(2)}%)
+                      </span>
+                    )}
                     {displayVixSource === "implied" && (
                       <span className="rounded bg-amber-200/80 dark:bg-amber-900/60 px-1 py-0.2 text-[8px] font-bold text-amber-900 dark:text-amber-200" title="Computed from ATM option chain Implied Volatility">IV</span>
                     )}

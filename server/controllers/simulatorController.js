@@ -542,10 +542,45 @@ async function getChainAtTime(req, res) {
         const futBasis = futPrice != null && spotPrice != null ? Number((futPrice - spotPrice).toFixed(2)) : null;
         const futBasisPct = futBasis != null && spotPrice ? Number(((futBasis / spotPrice) * 100).toFixed(2)) : null;
 
+        // Calculate Spot Change from Day Open
+        let spotOpen = null;
+        if (times.length > 0) {
+            if (selectedTime === times[0]) {
+                spotOpen = spotPrice;
+            } else {
+                try {
+                    const [firstRow] = await pool.query(
+                        `SELECT underlying_price FROM option_chain_history USE INDEX (idx_backtest_range)
+                         WHERE symbol = ? AND trade_date = ? AND expiry = ? AND trade_time = ? AND underlying_price IS NOT NULL LIMIT 1`,
+                        [symbol, date, selectedExpiry, times[0]]
+                    );
+                    spotOpen = firstRow[0]?.underlying_price != null ? Number(firstRow[0].underlying_price) : null;
+                    if (spotOpen == null) {
+                        const ohlcvOpen = await getSpotAt(symbol, date, times[0]);
+                        spotOpen = ohlcvOpen ?? spotPrice;
+                    }
+                } catch (e) {
+                    spotOpen = spotPrice;
+                }
+            }
+        }
+        const spotChange = spotOpen != null && spotPrice != null ? Number((spotPrice - spotOpen).toFixed(2)) : 0;
+        const spotChangePct = spotOpen != null && spotOpen > 0 && spotPrice != null ? Number((((spotPrice - spotOpen) / spotOpen) * 100).toFixed(2)) : 0;
+
         let vix = null;
         let vixSource = "ohlcv";
+        let vixOpen = null;
         try {
             vix = await getVixAt(date, selectedTime);
+            if (vix != null) {
+                const [firstVix] = await pool.query(
+                    `SELECT open, close FROM ohlcv_data WHERE symbol = 'INDIAVIX' AND trade_date = ? ORDER BY trade_time ASC LIMIT 1`,
+                    [date]
+                );
+                if (firstVix.length) {
+                    vixOpen = firstVix[0].open != null ? Number(firstVix[0].open) : (firstVix[0].close != null ? Number(firstVix[0].close) : null);
+                }
+            }
         } catch (err) {
             console.error("[simulator/chain] vix lookup failed:", err.message);
         }
@@ -559,6 +594,9 @@ async function getChainAtTime(req, res) {
                 vixSource = "implied";
             }
         }
+        if (vix != null && vixOpen == null) vixOpen = vix;
+        const vixChange = vix != null && vixOpen != null ? Number((vix - vixOpen).toFixed(2)) : 0;
+        const vixChangePct = vix != null && vixOpen != null && vixOpen > 0 ? Number((((vix - vixOpen) / vixOpen) * 100).toFixed(2)) : 0;
 
         res.json({
             symbol,
@@ -570,6 +608,9 @@ async function getChainAtTime(req, res) {
             spotPrice,
             spotStored: storedSpot != null ? Number(storedSpot) : null,
             spotSource,
+            spotOpen,
+            spotChange,
+            spotChangePct,
             futPrice,
             futExpiry,
             futSource,
@@ -577,6 +618,9 @@ async function getChainAtTime(req, res) {
             futBasisPct,
             vix,
             vixSource,
+            vixOpen,
+            vixChange,
+            vixChangePct,
             lotSize,
             atmStrike,
             maxPainStrike: computeMaxPain(rows.map((r) => ({ strike: r.strike, ceOi: r.ce.oi, peOi: r.pe.oi }))),
