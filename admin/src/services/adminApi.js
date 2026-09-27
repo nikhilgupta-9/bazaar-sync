@@ -430,3 +430,20 @@ export async function updateGDriveRootFolder(token, rootFolderId) {
     }));
 }
 
+export async function fetchGDriveFiles(token, { folderId, query, pageSize } = {}) {
+    const params = new URLSearchParams();
+    if (folderId) params.set("folderId", folderId);
+    if (query) params.set("query", query);
+    if (pageSize) params.set("pageSize", pageSize);
+    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/files?${params.toString()}`, authed(token)));
+}
+
+export async function importDataFromGDrive(token, { fileId, driveUrl, table }) {
+    return handle(await fetch(`${API_URL}/api/admin/data/gdrive/import`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ fileId, driveUrl, table }),
+    }));
+}
+
+

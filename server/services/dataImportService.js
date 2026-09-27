@@ -167,4 +167,168 @@ async function importRows(table, rows) {
     return written;
 }
 
-module.exports = { importRows, TABLE_SCHEMAS };
+const zlib = require("zlib");
+const readline = require("readline");
+
+function splitCsvLine(line) {
+    const cells = [];
+    let cur = "";
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (inQuotes) {
+            if (c === '"') {
+                if (line[i + 1] === '"') {
+                    cur += '"';
+                    i++;
+                } else {
+                    inQuotes = false;
+                }
+            } else {
+                cur += c;
+            }
+        } else if (c === '"') {
+            inQuotes = true;
+        } else if (c === ",") {
+            cells.push(cur);
+            cur = "";
+        } else {
+            cur += c;
+        }
+    }
+    cells.push(cur);
+    return cells.map((c) => c.trim());
+}
+
+/**
+ * Stream-parse and import CSV / CSV.GZ directly from a readable stream
+ */
+async function importFromStream({ readableStream, fileName, table }) {
+    const schema = getSchema(table);
+    let inputStream = readableStream;
+
+    const lowerName = (fileName || "").toLowerCase();
+    if (lowerName.endsWith(".gz") || lowerName.endsWith(".gzip")) {
+        const gunzip = zlib.createGunzip();
+        inputStream = readableStream.pipe(gunzip);
+    }
+
+    const rl = readline.createInterface({
+        input: inputStream,
+        crlfDelay: Infinity,
+    });
+
+    let isHeader = true;
+    let lineIndex = 0;
+    let rowBuffer = [];
+    let totalWritten = 0;
+    const allIngestedValues = [];
+    const rowErrors = [];
+
+    const updateClause = schema.updateColumns.map((c) => `${c}=VALUES(${c})`).join(", ");
+    const BATCH_SIZE = 500;
+
+    const conn = await pool.getConnection();
+    try {
+        await conn.beginTransaction();
+
+        for await (const line of rl) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            lineIndex++;
+
+            if (isHeader) {
+                isHeader = false;
+                const rawCols = splitCsvLine(trimmed).map((c) => c.toLowerCase());
+                const headerOk =
+                    rawCols.length === schema.header.length &&
+                    schema.header.every((h, i) => rawCols[i] === h);
+                if (!headerOk) {
+                    throw badRequest(
+                        `First row must be exactly this header: ${schema.header.join(",")}. Got: ${rawCols.join(",")}`
+                    );
+                }
+                continue;
+            }
+
+            const cells = splitCsvLine(trimmed);
+            if (cells.length !== schema.header.length) {
+                rowErrors.push({
+                    row: lineIndex,
+                    message: `Expected ${schema.header.length} columns, got ${cells.length}`,
+                });
+                if (rowErrors.length >= 30) break;
+                continue;
+            }
+
+            const rawRow = {};
+            schema.header.forEach((col, idx) => {
+                rawRow[col] = cells[idx];
+            });
+
+            try {
+                const validated = validateRow(schema, rawRow);
+                const rowVals = schema.insertColumns.map((c) => validated[c]);
+                rowBuffer.push(rowVals);
+                if (table === "option_chain_history" || table === "ohlcv_data") {
+                    allIngestedValues.push(rowVals);
+                }
+            } catch (err) {
+                rowErrors.push({ row: lineIndex, message: err.message });
+                if (rowErrors.length >= 30) break;
+            }
+
+            if (rowBuffer.length >= BATCH_SIZE) {
+                await conn.query(
+                    `INSERT INTO ${table} (${schema.insertColumns.join(", ")}) VALUES ? ON DUPLICATE KEY UPDATE ${updateClause}`,
+                    [rowBuffer]
+                );
+                totalWritten += rowBuffer.length;
+                rowBuffer = [];
+            }
+        }
+
+        if (rowErrors.length > 0) {
+            await conn.rollback();
+            const err = badRequest(
+                `Found ${rowErrors.length} validation error(s) in CSV rows — nothing was imported.`
+            );
+            err.rowErrors = rowErrors;
+            throw err;
+        }
+
+        if (rowBuffer.length > 0) {
+            await conn.query(
+                `INSERT INTO ${table} (${schema.insertColumns.join(", ")}) VALUES ? ON DUPLICATE KEY UPDATE ${updateClause}`,
+                [rowBuffer]
+            );
+            totalWritten += rowBuffer.length;
+            rowBuffer = [];
+        }
+
+        await conn.commit();
+    } catch (err) {
+        await conn.rollback();
+        throw err;
+    } finally {
+        conn.release();
+    }
+
+    if (table === "option_chain_history" && allIngestedValues.length > 0) {
+        await coverageSummary.recordIngestedFromInsertValues(allIngestedValues).catch(() => {});
+    } else if (table === "ohlcv_data" && allIngestedValues.length > 0) {
+        await coverageSummary.recordOhlcvIngested(allIngestedValues).catch(() => {});
+    }
+
+    return {
+        written: totalWritten,
+        fileName,
+    };
+}
+
+module.exports = {
+    importRows,
+    importFromStream,
+    splitCsvLine,
+    TABLE_SCHEMAS,
+};

@@ -80,6 +80,7 @@ const {
     getCloudCoverage, startPipeline, stopPipeline, getPipelineStatus,
     initDriveFolders, manualArchiveBatch, getCronStatus, updateCronSettings,
     getOAuthUrl, handleOAuthCallback, saveOAuthCredentials, disconnectOAuth, updateRootFolder,
+    listGDriveFiles, importFromGDrive,
 } = require("../controllers/gdriveArchivalController");
 
 router.get("/data/gdrive/status", getGDriveStatus);
@@ -98,6 +99,8 @@ router.get("/data/gdrive/pipeline/status", getPipelineStatus);
 router.post("/data/gdrive/manual-archive", manualArchiveBatch);
 router.get("/data/gdrive/cron", getCronStatus);
 router.post("/data/gdrive/cron", updateCronSettings);
+router.get("/data/gdrive/files", listGDriveFiles);
+router.post("/data/gdrive/import", importFromGDrive);
 
 router.get("/data/export/preview", previewExport);
 router.get("/data/export/download", downloadExport);

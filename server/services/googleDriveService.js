@@ -649,6 +649,90 @@ function getCredentialsStatus() {
     };
 }
 
+/**
+ * Extract Google Drive file ID from URL or alphanumeric ID
+ */
+function extractDriveFileId(input) {
+    if (!input || typeof input !== "string") return null;
+    const trimmed = input.trim();
+    const urlMatch = trimmed.match(/\/d\/([a-zA-Z0-9_-]+)/) || trimmed.match(/id=([a-zA-Z0-9_-]+)/);
+    if (urlMatch) return urlMatch[1];
+    if (/^[a-zA-Z0-9_-]{15,}$/.test(trimmed)) {
+        return trimmed;
+    }
+    return trimmed;
+}
+
+/**
+ * List files and subfolders in Google Drive (with search and folder navigation)
+ */
+async function listDriveFiles({ folderId = null, query = "", pageSize = 60 } = {}) {
+    const drive = await getDriveClient();
+    let qParts = ["trashed = false"];
+
+    if (folderId) {
+        qParts.push(`'${folderId}' in parents`);
+    }
+
+    if (query && query.trim()) {
+        const cleanQuery = query.trim().replace(/'/g, "\\'");
+        qParts.push(`name contains '${cleanQuery}'`);
+    }
+
+    const res = await drive.files.list({
+        q: qParts.join(" and "),
+        pageSize: Math.min(pageSize, 100),
+        fields: "nextPageToken, files(id, name, mimeType, size, modifiedTime, webViewLink, webContentLink, parents, iconLink)",
+        orderBy: "folder,modifiedTime desc",
+        spaces: "drive",
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+    });
+
+    const files = (res.data.files || []).map((f) => ({
+        id: f.id,
+        name: f.name,
+        mimeType: f.mimeType,
+        isFolder: f.mimeType === "application/vnd.google-apps.folder",
+        sizeBytes: f.size ? Number(f.size) : 0,
+        modifiedTime: f.modifiedTime,
+        webViewLink: f.webViewLink,
+        webContentLink: f.webContentLink,
+        parents: f.parents || [],
+    }));
+
+    return {
+        files,
+        nextPageToken: res.data.nextPageToken || null,
+    };
+}
+
+/**
+ * Get readable stream and metadata for a file in Google Drive
+ */
+async function getDriveFileStream({ fileId }) {
+    if (!fileId) throw new Error("Google Drive File ID is required.");
+    const cleanId = extractDriveFileId(fileId);
+    const drive = await getDriveClient();
+
+    const metaRes = await drive.files.get({
+        fileId: cleanId,
+        fields: "id, name, size, mimeType, webViewLink, md5Checksum",
+        supportsAllDrives: true,
+    });
+
+    const fileStreamRes = await drive.files.get(
+        { fileId: cleanId, alt: "media", supportsAllDrives: true },
+        { responseType: "stream" }
+    );
+
+    return {
+        fileId: cleanId,
+        meta: metaRes.data,
+        stream: fileStreamRes.data,
+    };
+}
+
 module.exports = {
     getDriveClient,
     testConnection,
@@ -664,6 +748,9 @@ module.exports = {
     ensureYearSymbolHierarchy,
     uploadFile,
     downloadFile,
+    listDriveFiles,
+    getDriveFileStream,
+    extractDriveFileId,
     saveServiceAccountCredentials,
     getCredentialsStatus,
     getEffectiveRootFolderId,

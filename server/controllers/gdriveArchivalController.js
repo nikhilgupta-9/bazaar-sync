@@ -306,6 +306,65 @@ async function updateCronSettings(req, res) {
     }
 }
 
+/**
+ * List files and folders from Google Drive
+ */
+async function listGDriveFiles(req, res) {
+    try {
+        const { folderId, query, pageSize } = req.query || {};
+        const result = await gdriveService.listDriveFiles({
+            folderId: folderId || null,
+            query: query || "",
+            pageSize: Number(pageSize) || 60,
+        });
+        res.json(result);
+    } catch (err) {
+        sendError(res, err, "failed to list Google Drive files");
+    }
+}
+
+/**
+ * Import historical data directly from a Google Drive file / share link
+ */
+async function importFromGDrive(req, res) {
+    try {
+        const { fileId, driveUrl, table = "option_chain_history" } = req.body || {};
+        const effectiveFileId = gdriveService.extractDriveFileId(fileId || driveUrl);
+
+        if (!effectiveFileId) {
+            return res.status(400).json({ error: "Please provide a valid Google Drive File ID or Share URL." });
+        }
+
+        console.log(`[GDriveImport] Starting import from GDrive File ID: ${effectiveFileId} into table: ${table}...`);
+        const { meta, stream } = await gdriveService.getDriveFileStream({ fileId: effectiveFileId });
+
+        const importRes = await importService.importFromStream({
+            readableStream: stream,
+            fileName: meta.name || "gdrive_file.csv",
+            table,
+        });
+
+        console.log(`[GDriveImport] ✅ Successfully imported ${importRes.written} rows from "${meta.name}" into ${table}!`);
+
+        res.status(201).json({
+            success: true,
+            written: importRes.written,
+            fileName: meta.name,
+            sizeBytes: Number(meta.size || 0),
+            webViewLink: meta.webViewLink || null,
+            table,
+        });
+    } catch (err) {
+        if (err.rowErrors) {
+            return res.status(400).json({
+                error: err.message || "CSV rows failed validation",
+                rowErrors: err.rowErrors,
+            });
+        }
+        sendError(res, err, "failed to import data from Google Drive");
+    }
+}
+
 module.exports = {
     getGDriveStatus,
     testGDriveConnection,
@@ -323,4 +382,6 @@ module.exports = {
     manualArchiveBatch,
     getCronStatus,
     updateCronSettings,
+    listGDriveFiles,
+    importFromGDrive,
 };
