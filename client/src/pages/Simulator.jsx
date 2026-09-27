@@ -1645,7 +1645,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
       style={{ fontFamily: "'Poppins', sans-serif" }}
     >
       <div className={hideChrome ? "w-full" : "w-full px-2 sm:px-5 pt-3"}>
-        <div className="w-full shrink-0 flex flex-col">
+        <div className="w-full shrink-0 flex flex-col relative z-40">
           <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 p-3 shadow-xs backdrop-blur-md">
             <div className="flex flex-wrap items-center justify-between gap-3">
               {hideChrome ? (
@@ -1681,8 +1681,8 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
                 {pickerOpen && (
                   <>
-                    <div className="fixed inset-0 z-10" onClick={() => setPickerOpen(false)} />
-                    <div className="absolute left-0 top-full z-20 mt-1.5 w-64 max-h-96 overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl text-xs">
+                    <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
+                    <div className="absolute left-0 top-full z-50 mt-1.5 w-64 max-h-96 overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl text-xs">
                       <div className="sticky top-0 border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 p-2.5">
                         <input
                           autoFocus
@@ -1741,8 +1741,8 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
                   {speedOpen && (
                     <>
-                      <div className="fixed inset-0 z-10" onClick={() => setSpeedOpen(false)} />
-                      <div className="absolute right-0 z-20 mt-1.5 w-56 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-3.5 shadow-2xl text-xs">
+                      <div className="fixed inset-0 z-40" onClick={() => setSpeedOpen(false)} />
+                      <div className="absolute right-0 z-50 mt-1.5 w-56 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-3.5 shadow-2xl text-xs">
                         <div className="mb-3">
                           <div className="mb-1.5 font-bold text-gray-700 dark:text-gray-300">Move Step</div>
                           <div className="flex flex-col gap-1.5">
@@ -1845,8 +1845,8 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
                 {calendarOpen && calendarYm && (
                   <>
-                    <div className="fixed inset-0 z-10" onClick={() => setCalendarOpen(false)} />
-                    <div className="absolute left-0 z-20 mt-1.5 flex w-[calc(100vw-2rem)] max-w-[440px] flex-col overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl sm:w-[440px] sm:flex-row">
+                    <div className="fixed inset-0 z-40" onClick={() => setCalendarOpen(false)} />
+                    <div className="absolute left-0 z-50 mt-1.5 flex w-[calc(100vw-2rem)] max-w-[440px] flex-col overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl sm:w-[440px] sm:flex-row">
                       {/* Month calendar */}
                       <div className="flex-1 border-b border-gray-100 dark:border-gray-800 p-3.5 sm:border-b-0 sm:border-r">
                         <div className="mb-2.5 flex items-center justify-between">
