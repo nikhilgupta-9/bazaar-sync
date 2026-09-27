@@ -8,6 +8,17 @@ const CACHE_TTL_MS = 3000; // 3-second cache for active live quotes
 
 const quoteCache = new Map(); // instrumentKey -> { data, timestamp }
 
+// 7 Major Index instrument keys in Upstox
+const MAJOR_INDEX_KEYS = {
+    NIFTY: "NSE_INDEX|Nifty 50",
+    BANKNIFTY: "NSE_INDEX|Nifty Bank",
+    FINNIFTY: "NSE_INDEX|Nifty Fin Service",
+    MIDCPNIFTY: "NSE_INDEX|NIFTY MID SELECT",
+    NIFTYNXT50: "NSE_INDEX|Nifty Next 50",
+    SENSEX: "BSE_INDEX|SENSEX",
+    BANKEX: "BSE_INDEX|BANKEX",
+};
+
 // Well-known NSE Sectoral Index tokens in Upstox
 const SECTOR_INDEX_KEYS = {
     "NIFTY 50": "NSE_INDEX|Nifty 50",
@@ -132,10 +143,7 @@ async function getQuotesForSymbols(symbols) {
     const symbolToKey = {};
 
     normSymbols.forEach((sym) => {
-        let key = keyMap.get(sym);
-        if (!key && SECTOR_INDEX_KEYS[sym]) {
-            key = SECTOR_INDEX_KEYS[sym];
-        }
+        let key = MAJOR_INDEX_KEYS[sym] || SECTOR_INDEX_KEYS[sym] || keyMap.get(sym);
         if (key) {
             instrumentKeys.push(key);
             symbolToKey[sym] = key;

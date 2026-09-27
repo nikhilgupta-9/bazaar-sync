@@ -1,7 +1,18 @@
-// controllers/equityController.js — Real-Time Equity Data Controller powered by Upstox & MySQL DB
 const db = require("../config/db");
 const upstoxQuotes = require("../services/upstoxQuoteService");
 const upstoxInstruments = require("../services/upstoxInstrumentMaster");
+const dhanMaster = require("../../data-downloader/dhan/instrumentMaster");
+
+// 7 Major Benchmark & Sectoral Indices
+const MAJOR_INDICES = [
+    { symbol: "NIFTY", name: "NIFTY 50", sector: "Indices", industry: "Benchmark Index", mcapTier: "Benchmark" },
+    { symbol: "BANKNIFTY", name: "NIFTY BANK", sector: "Banking & Finance", industry: "Sectoral Index", mcapTier: "Sectoral" },
+    { symbol: "FINNIFTY", name: "NIFTY FINANCIAL SERVICES", sector: "Banking & Finance", industry: "Sectoral Index", mcapTier: "Sectoral" },
+    { symbol: "MIDCPNIFTY", name: "NIFTY MIDCAP SELECT", sector: "Indices", industry: "Midcap Index", mcapTier: "Mid Cap" },
+    { symbol: "NIFTYNXT50", name: "NIFTY NEXT 50", sector: "Indices", industry: "Largecap Index", mcapTier: "Large Cap" },
+    { symbol: "SENSEX", name: "BSE SENSEX", sector: "Indices", industry: "Benchmark Index", mcapTier: "Benchmark" },
+    { symbol: "BANKEX", name: "BSE BANKEX", sector: "Banking & Finance", industry: "Sectoral Index", mcapTier: "Sectoral" },
+];
 
 // Comprehensive industry & sector mapping for NSE equities
 const STOCK_METADATA = {
@@ -317,41 +328,110 @@ async function getIndustryMomentum(req, res) {
 }
 
 /**
- * Get Most Active Stocks (Volume leaders, Turnover, Gainers, Losers)
+ * Get Most Active Market Universe (7 Indices + 210 F&O Stocks) with Turnover, Volume, Gainers, Losers, and StockMojo Metrics
  */
 async function getMostActive(req, res) {
     try {
-        const symbolList = Object.keys(STOCK_METADATA);
-        const quotes = await upstoxQuotes.getQuotesForSymbols(symbolList);
+        let fnoStockSymbols = [];
+        try {
+            fnoStockSymbols = await dhanMaster.listFnoStockSymbols();
+        } catch (e) {
+            console.warn("[EquityController] Could not fetch Dhan F&O master:", e.message);
+        }
 
-        const list = symbolList.map((sym) => {
-            const meta = STOCK_METADATA[sym];
-            const q = quotes[sym] || { price: 0, change: 0, pChange: 0, volume: 0, avgPrice: 0, source: "offline" };
-            const turnoverCr = ((q.volume * (q.avgPrice || q.price)) / 10000000);
+        if (!fnoStockSymbols || fnoStockSymbols.length === 0) {
+            fnoStockSymbols = Object.keys(STOCK_METADATA);
+        }
+
+        const indexSymbols = MAJOR_INDICES.map((idx) => idx.symbol);
+        const allSymbols = [...new Set([...indexSymbols, ...fnoStockSymbols])];
+
+        const quotes = await upstoxQuotes.getQuotesForSymbols(allSymbols);
+        const indexMetaMap = new Map(MAJOR_INDICES.map((idx) => [idx.symbol, idx]));
+
+        const list = allSymbols.map((sym) => {
+            const isIndex = indexMetaMap.has(sym);
+            const idxMeta = indexMetaMap.get(sym);
+            const stockMeta = STOCK_METADATA[sym] || {};
+            const q = quotes[sym] || { price: 0, change: 0, pChange: 0, open: 0, high: 0, low: 0, close: 0, volume: 0, avgPrice: 0, source: "offline" };
+
+            const price = Number(q.price || 0);
+            const high = Number(q.high || price);
+            const low = Number(q.low || price);
+            const volume = Number(q.volume || 0);
+            const avgPrice = Number(q.avgPrice || price || 0);
+            const turnoverCr = Number(((volume * avgPrice) / 10000000).toFixed(2));
+
+            const rangeSpan = high - low;
+            const dayRangePosition = rangeSpan > 0 ? Number(Math.min(100, Math.max(0, ((price - low) / rangeSpan) * 100)).toFixed(1)) : 50;
+            const distFromHigh = high > 0 ? Number((((high - price) / high) * 100).toFixed(2)) : 0;
+            const distFromLow = low > 0 ? Number((((price - low) / low) * 100).toFixed(2)) : 0;
 
             return {
                 symbol: sym,
-                name: q.name || sym,
-                sector: meta.sector,
-                industry: meta.industry,
-                mcapTier: meta.mcapTier,
-                price: q.price,
-                change: q.change,
-                pChange: q.pChange,
-                volume: q.volume,
-                turnoverCr: Number(turnoverCr.toFixed(2)),
-                source: q.source,
+                name: isIndex ? idxMeta.name : (q.name && q.name !== "NA" ? q.name : sym),
+                type: isIndex ? "index" : "stock",
+                sector: isIndex ? idxMeta.sector : (stockMeta.sector || "Equities"),
+                industry: isIndex ? idxMeta.industry : (stockMeta.industry || "General"),
+                mcapTier: isIndex ? idxMeta.mcapTier : (stockMeta.mcapTier || "Large Cap"),
+                price,
+                change: Number(Number(q.change || 0).toFixed(2)),
+                pChange: Number(Number(q.pChange || 0).toFixed(2)),
+                open: Number(q.open || 0),
+                high,
+                low,
+                close: Number(q.close || price),
+                volume,
+                turnoverCr,
+                dayRangePosition,
+                distFromHigh,
+                distFromLow,
+                source: q.source || "offline",
             };
         });
 
-        const topGainers = [...list].sort((a, b) => b.pChange - a.pChange).slice(0, 15);
-        const topLosers = [...list].sort((a, b) => a.pChange - b.pChange).slice(0, 15);
-        const topVolume = [...list].sort((a, b) => b.volume - a.volume).slice(0, 15);
-        const topTurnover = [...list].sort((a, b) => b.turnoverCr - a.turnoverCr).slice(0, 15);
+        const indices = list.filter((item) => item.type === "index");
+        const stocks = list.filter((item) => item.type === "stock");
+
+        // Calculate Market Breadth across stocks
+        let advances = 0;
+        let declines = 0;
+        let unchanged = 0;
+        let totalTurnoverCr = 0;
+        let totalVolume = 0;
+
+        stocks.forEach((s) => {
+            if (s.pChange > 0.05) advances++;
+            else if (s.pChange < -0.05) declines++;
+            else unchanged++;
+            totalTurnoverCr += s.turnoverCr;
+            totalVolume += s.volume;
+        });
+
+        const topGainers = [...stocks].sort((a, b) => b.pChange - a.pChange).slice(0, 20);
+        const topLosers = [...stocks].sort((a, b) => a.pChange - b.pChange).slice(0, 20);
+        const topVolume = [...stocks].sort((a, b) => b.volume - a.volume).slice(0, 20);
+        const topTurnover = [...stocks].sort((a, b) => b.turnoverCr - a.turnoverCr).slice(0, 20);
+
+        const summary = {
+            totalIndices: indices.length,
+            totalStocks: stocks.length,
+            advances,
+            declines,
+            unchanged,
+            totalTurnoverCr: Number(totalTurnoverCr.toFixed(2)),
+            totalVolume,
+            topGainer: topGainers[0] || null,
+            topLoser: topLosers[0] || null,
+        };
 
         res.json({
             status: "success",
             timestamp: new Date().toISOString(),
+            summary,
+            indices,
+            stocks,
+            all: list,
             topGainers,
             topLosers,
             topVolume,
