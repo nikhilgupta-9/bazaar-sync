@@ -28,6 +28,7 @@ function badRequest(message) {
 /** Real lot size for `symbol` as of `dateStr` ('YYYY-MM-DD'), or the current scrip-master value if unrecorded. */
 async function getLotSizeAsOf(symbol, dateStr) {
     const displaySymbol = String(symbol || "").toUpperCase();
+    // 1. Exact match within effective date window
     const [rows] = await pool.query(
         `SELECT lot_size FROM lot_size_history
          WHERE symbol = ? AND effective_from <= ?
@@ -37,6 +38,16 @@ async function getLotSizeAsOf(symbol, dateStr) {
     );
     if (rows.length) return Number(rows[0].lot_size);
 
+    // 2. If date is earlier than earliest record, use the earliest recorded historical lot size
+    const [earliestRows] = await pool.query(
+        `SELECT lot_size FROM lot_size_history
+         WHERE symbol = ?
+         ORDER BY effective_from ASC LIMIT 1`,
+        [displaySymbol]
+    );
+    if (earliestRows.length) return Number(earliestRows[0].lot_size);
+
+    // 3. Fall back to current scrip-master
     try {
         return await instrumentMaster.getLotSize(displaySymbol);
     } catch {
