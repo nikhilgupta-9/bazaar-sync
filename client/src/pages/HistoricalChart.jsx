@@ -684,23 +684,38 @@ export default function HistoricalChart() {
                         <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 text-xs">
                             <div className="rounded-xl border border-gray-100 bg-gray-50/60 p-3.5 dark:border-gray-800 dark:bg-gray-800/50">
                                 <h4 className="font-bold text-emerald-600 mb-2 flex items-center gap-1.5">
-                                    <FiLayers className="h-4 w-4" /> Drawing Tool Shortcuts
+                                    <FiLayers className="h-4 w-4" /> Pro Drawing Tools & Hotkeys
                                 </h4>
                                 <ul className="space-y-1.5 text-gray-600 dark:text-gray-300">
                                     <li className="flex justify-between">
                                         <span>Trendline:</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Alt + T</kbd>
                                     </li>
                                     <li className="flex justify-between">
-                                        <span>Horizontal Line:</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Alt + H</kbd>
+                                        <span>Horizontal Level:</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Alt + H</kbd>
                                     </li>
                                     <li className="flex justify-between">
                                         <span>Fibonacci Retracement:</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Alt + F</kbd>
                                     </li>
                                     <li className="flex justify-between">
-                                        <span>Long Risk:Reward Tool:</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">▲ Target/SL</kbd>
+                                        <span>Demand/Supply Zone:</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Alt + R</kbd>
                                     </li>
                                     <li className="flex justify-between">
-                                        <span>Short Risk:Reward Tool:</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">▼ Target/SL</kbd>
+                                        <span>Long Risk:Reward (R:R):</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Alt + L</kbd>
+                                    </li>
+                                    <li className="flex justify-between">
+                                        <span>Short Risk:Reward (R:R):</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Alt + S</kbd>
+                                    </li>
+                                    <li className="flex justify-between">
+                                        <span>Price Range (Ruler):</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Alt + M</kbd>
+                                    </li>
+                                    <li className="flex justify-between">
+                                        <span>Vertical Timeline:</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Alt + V</kbd>
+                                    </li>
+                                    <li className="flex justify-between">
+                                        <span>Text / Sticky Annotation:</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Alt + N</kbd>
+                                    </li>
+                                    <li className="flex justify-between">
+                                        <span>Undo / Redo:</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Ctrl + Z / Y</kbd>
                                     </li>
                                 </ul>
                             </div>
@@ -714,27 +729,33 @@ export default function HistoricalChart() {
                                         <span>Candlestick Styles:</span> <span className="font-medium">Candles, Hollow, Bars, Heikin Ashi</span>
                                     </li>
                                     <li className="flex justify-between">
+                                        <span>Persistent Storage:</span> <span className="font-medium text-emerald-600 font-bold">Auto-Saved per Stock</span>
+                                    </li>
+                                    <li className="flex justify-between">
                                         <span>Take Screenshot:</span> <span className="font-medium">Camera Icon (PNG)</span>
                                     </li>
                                     <li className="flex justify-between">
                                         <span>Fullscreen Mode:</span> <span className="font-medium">Expand Icon</span>
                                     </li>
                                     <li className="flex justify-between">
-                                        <span>Zoom & Scroll:</span> <span className="font-medium">Mouse Wheel / Trackpad</span>
+                                        <span>Cancel Tool / Deselect:</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Esc</kbd>
+                                    </li>
+                                    <li className="flex justify-between">
+                                        <span>Delete Selected:</span> <kbd className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] dark:bg-gray-700">Delete / Backspace</kbd>
                                     </li>
                                 </ul>
                             </div>
 
                             <div className="sm:col-span-2 rounded-xl border border-emerald-500/20 bg-emerald-50/50 p-3.5 dark:border-emerald-500/20 dark:bg-emerald-950/20">
                                 <h4 className="font-bold text-emerald-700 dark:text-emerald-300 mb-1">
-                                    💡 Dhan Pro Trick: Support & Resistance Zone Trading
+                                    💡 Dhan Pro Trick: Supply & Demand Zones + Risk:Reward
                                 </h4>
                                 <p className="text-[11px] text-gray-600 dark:text-gray-300 leading-relaxed">
-                                    1. Use the <strong>Horizontal Line</strong> tool to mark the <strong>Period High</strong> and <strong>Period Low</strong> shown in the top stats.
+                                    1. Draw <strong>Demand/Supply Zones (Alt+R)</strong> around high volume rejection levels.
                                     <br />
-                                    2. Apply <strong>EMA (9) and EMA (21)</strong>. When EMA 9 crosses above EMA 21 near a major support level, look for long breakout entries.
+                                    2. Mark Fibonacci Retracements <strong>(Alt+F)</strong> from swing lows to swing highs. Watch for confluence at the <strong>50% (0.5) and 61.8% (Golden Pocket)</strong> levels.
                                     <br />
-                                    3. Click <strong>⚡ Trade from Chart</strong> to simulate your paper trade with predefined risk-to-reward ratio (e.g. 1 : 2).
+                                    3. Deploy <strong>Long Position (Alt+L)</strong> or <strong>Short Position (Alt+S)</strong> tools to visualize target and stop loss zones with automated 1:2 Risk-to-Reward calculation.
                                 </p>
                             </div>
                         </div>
