@@ -12,6 +12,7 @@
 //   server -> client  "marketStatus" { feedConnected, fresh, marketOpen }
 
 const marketCache = require("./marketCache");
+const workerManager = require("./workerManager");
 const { marketHours } = require("../utils/marketUtils");
 const { socketLogger } = require("../config/logger");
 
@@ -19,8 +20,6 @@ const BROADCAST_INTERVAL_MS = Math.min(
     Math.max(Number(process.env.SOCKET_BROADCAST_MS || 1000), 500),
     5000
 );
-
-const VALID_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY"]);
 
 let interval = null;
 
@@ -37,18 +36,22 @@ function attach(io) {
         });
 
         socket.on("subscribe", (payload) => {
-            const symbol = String((payload && payload.symbol) || "").toUpperCase();
-            if (!VALID_SYMBOLS.has(symbol)) return;
+            const symbol = String((payload && payload.symbol) || "").trim().toUpperCase();
+            if (!symbol) return;
             socket.join(roomFor(symbol));
             socketLogger.debug(`${socket.id} subscribed ${symbol}`);
+
+            // Request worker to ensure this symbol is subscribed
+            workerManager.subscribeSymbol(symbol);
+
             // Immediate first frame so the client doesn't wait a full interval
             const frame = marketCache.getBroadcastPayload(symbol);
             if (frame) socket.emit("latestTicks", frame);
         });
 
         socket.on("unsubscribe", (payload) => {
-            const symbol = String((payload && payload.symbol) || "").toUpperCase();
-            if (!VALID_SYMBOLS.has(symbol)) return;
+            const symbol = String((payload && payload.symbol) || "").trim().toUpperCase();
+            if (!symbol) return;
             socket.leave(roomFor(symbol));
         });
 
@@ -58,13 +61,12 @@ function attach(io) {
     });
 
     interval = setInterval(() => {
-        for (const symbol of VALID_SYMBOLS) {
-            const room = roomFor(symbol);
-            const clients = io.sockets.adapter.rooms.get(room);
-            if (!clients || clients.size === 0) continue;
-
+        const rooms = io.sockets.adapter.rooms;
+        for (const [roomName, clientSet] of rooms) {
+            if (!roomName.startsWith("sym:") || !clientSet || clientSet.size === 0) continue;
+            const symbol = roomName.slice(4);
             const frame = marketCache.getBroadcastPayload(symbol);
-            if (frame) io.to(room).emit("latestTicks", frame);
+            if (frame) io.to(roomName).emit("latestTicks", frame);
         }
         io.emit("marketStatus", publicStatus());
     }, BROADCAST_INTERVAL_MS);

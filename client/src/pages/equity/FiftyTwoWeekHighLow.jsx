@@ -1,3 +1,4 @@
+import React from "react";
 // pages/equity/FiftyTwoWeekHighLow.jsx — 52-Week High & Low Scanner with Infinite Scroll & F&O/Equity Universe
 import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { fetch52WeekHighLow } from "../../services/equityApi";

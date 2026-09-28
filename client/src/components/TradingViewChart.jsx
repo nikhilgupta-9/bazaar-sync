@@ -1,3 +1,4 @@
+import React from "react";
 // components/TradingViewChart.jsx — Mounts the official TradingView Advanced Real-Time Chart
 // with 100% of native drawing tools, 100+ technical indicators, multi-timeframe resolution,
 // and Dhan-style instant trading tools for Indian market indices and F&O equities.

@@ -1,3 +1,4 @@
+import React from "react";
 // components/GreeksTooltip.jsx
 
 export default function GreeksTooltip({ children, greeks, strike }) {

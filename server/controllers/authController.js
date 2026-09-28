@@ -163,4 +163,164 @@ async function resetPassword(req, res) {
     }
 }
 
-module.exports = { register, login, me, forgotPassword, resetPassword };
+const paperWalletService = require("../services/paperWalletService");
+
+async function getUserProfile(req, res) {
+    try {
+        const userId = req.user.sub;
+        const [[user]] = await pool.query("SELECT * FROM users WHERE id = ?", [userId]);
+        if (!user) return res.status(404).json({ error: "user not found" });
+
+        const instituteAccess = await isInstituteIp(req.ip);
+        const isPro = Boolean(instituteAccess || (user.tier === "pro" && user.pro_expires_at && new Date(user.pro_expires_at) > new Date()));
+
+        // Pro days remaining
+        let proDaysLeft = 0;
+        if (user.tier === "pro" && user.pro_expires_at) {
+            const ms = new Date(user.pro_expires_at).getTime() - Date.now();
+            proDaysLeft = Math.max(0, Math.ceil(ms / (1000 * 60 * 60 * 24)));
+        }
+
+        // Get or initialize wallet
+        let wallet = null;
+        try {
+            wallet = await paperWalletService.getWalletStatus(userId, user);
+        } catch (err) {
+            console.error("[auth:getUserProfile] walletStatus failed:", err.message);
+        }
+
+        // Trading performance summary
+        const [[stats]] = await pool.query(
+            `SELECT
+                COUNT(*) AS total_trades,
+                SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open_trades,
+                SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed_trades,
+                SUM(CASE WHEN status = 'closed' AND realized_pnl > 0 THEN 1 ELSE 0 END) AS win_trades,
+                SUM(CASE WHEN status = 'closed' AND realized_pnl < 0 THEN 1 ELSE 0 END) AS loss_trades,
+                COALESCE(SUM(CASE WHEN status = 'closed' THEN realized_pnl ELSE 0 END), 0) AS total_realized_pnl,
+                COALESCE(MAX(CASE WHEN status = 'closed' THEN realized_pnl ELSE NULL END), 0) AS max_profit,
+                COALESCE(MIN(CASE WHEN status = 'closed' THEN realized_pnl ELSE NULL END), 0) AS max_loss
+             FROM paper_positions
+             WHERE user_id = ?`,
+            [userId]
+        );
+
+        const totalClosed = Number(stats?.closed_trades || 0);
+        const winTrades = Number(stats?.win_trades || 0);
+        const winRate = totalClosed > 0 ? Number(((winTrades / totalClosed) * 100).toFixed(1)) : 0;
+
+        // Saved strategies count
+        const [[stratRow]] = await pool.query("SELECT COUNT(*) AS count FROM strategies WHERE user_id = ?", [userId]);
+
+        // Payment / Ledger history
+        const [payments] = await pool.query(
+            `SELECT id, type, amount, balance_after, razorpay_order_id, razorpay_payment_id, note, created_at
+             FROM paper_wallet_ledger
+             WHERE user_id = ?
+             ORDER BY id DESC
+             LIMIT 50`,
+            [userId]
+        );
+
+        // Recent trades
+        const [recentTrades] = await pool.query(
+            `SELECT id, symbol, expiry, strike, opt_right, side, lots, lot_size, entry_price, margin_blocked, strategy_name, entry_time, status, exit_price, exit_time, realized_pnl, created_at
+             FROM paper_positions
+             WHERE user_id = ?
+             ORDER BY id DESC
+             LIMIT 20`,
+            [userId]
+        );
+
+        // Available active Pro subscription plans
+        const [availablePlans] = await pool.query(
+            "SELECT id, name, duration_label, days, price_in_paise, badge, sort_order FROM pro_plans WHERE active = 1 ORDER BY sort_order ASC"
+        ).catch(() => [[]]);
+
+        res.json({
+            user: {
+                ...sanitize(user),
+                isPro,
+                proDaysLeft,
+                instituteAccess,
+            },
+            wallet,
+            tradingStats: {
+                totalTrades: Number(stats?.total_trades || 0),
+                openTrades: Number(stats?.open_trades || 0),
+                closedTrades: totalClosed,
+                winTrades,
+                lossTrades: Number(stats?.loss_trades || 0),
+                winRate,
+                totalRealizedPnl: Number(stats?.total_realized_pnl || 0),
+                maxProfit: Number(stats?.max_profit || 0),
+                maxLoss: Number(stats?.max_loss || 0),
+                savedStrategiesCount: Number(stratRow?.count || 0),
+            },
+            payments: payments || [],
+            recentTrades: recentTrades || [],
+            availablePlans: availablePlans || [],
+        });
+    } catch (err) {
+        console.error("[auth:getUserProfile]", err);
+        res.status(500).json({ error: "failed to load user profile" });
+    }
+}
+
+async function updateUserProfile(req, res) {
+    try {
+        const userId = req.user.sub;
+        const { name } = req.body;
+        if (!name || !name.trim()) {
+            return res.status(400).json({ error: "name is required" });
+        }
+
+        await pool.query("UPDATE users SET name = ? WHERE id = ?", [name.trim(), userId]);
+        const [[user]] = await pool.query("SELECT * FROM users WHERE id = ?", [userId]);
+        res.json({ success: true, message: "Profile updated successfully", user: sanitize(user) });
+    } catch (err) {
+        console.error("[auth:updateUserProfile]", err);
+        res.status(500).json({ error: "failed to update profile" });
+    }
+}
+
+async function changePassword(req, res) {
+    try {
+        const userId = req.user.sub;
+        const { currentPassword, newPassword } = req.body;
+        if (!newPassword || newPassword.length < 8) {
+            return res.status(400).json({ error: "new password must be at least 8 characters" });
+        }
+
+        const [[user]] = await pool.query("SELECT * FROM users WHERE id = ?", [userId]);
+        if (!user) return res.status(404).json({ error: "user not found" });
+
+        if (user.password_hash) {
+            if (!currentPassword) {
+                return res.status(400).json({ error: "current password is required" });
+            }
+            const valid = await bcrypt.compare(currentPassword, user.password_hash);
+            if (!valid) {
+                return res.status(400).json({ error: "current password is incorrect" });
+            }
+        }
+
+        const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+        await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, userId]);
+        res.json({ success: true, message: "Password updated successfully" });
+    } catch (err) {
+        console.error("[auth:changePassword]", err);
+        res.status(500).json({ error: err.message || "failed to change password" });
+    }
+}
+
+module.exports = {
+    register,
+    login,
+    me,
+    forgotPassword,
+    resetPassword,
+    getUserProfile,
+    updateUserProfile,
+    changePassword,
+};

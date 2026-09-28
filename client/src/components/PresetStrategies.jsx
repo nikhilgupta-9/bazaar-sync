@@ -2,7 +2,7 @@
 // Comprehensive options strategy templates with live chain strike mapping,
 // category filtering, instant search, risk classifications, and 1-click execution.
 
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import PayoffIcon from "./PayoffIcon";
 import { FiSearch, FiArrowRight, FiShield, FiTrendingUp, FiTrendingDown, FiActivity } from "react-icons/fi";
 

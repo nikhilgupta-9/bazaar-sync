@@ -1,3 +1,4 @@
+import React from "react";
 // components/LiveIntradayChart.jsx
 //
 // Powers Strategy Builder's "Strategy Chart" / "NIFTY Chart" / "Strategy

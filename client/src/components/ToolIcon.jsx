@@ -1,3 +1,4 @@
+import React from "react";
 // components/ToolIcon.jsx
 //
 // Small decorative SVG thumbnails for the homepage tool cards — same

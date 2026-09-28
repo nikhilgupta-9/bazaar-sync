@@ -1,3 +1,4 @@
+import React from "react";
 // pages/SectorRotation.jsx
 //
 // Relative Rotation Graph (RRG) — shows each NSE sector's relative Trend (RS-Ratio)
@@ -280,7 +281,7 @@ export default function SectorRotation() {
                 <div className="flex items-center gap-2">
                     <div className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 shadow-2xs dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300">
                         <span className={`h-2 w-2 rounded-full ${isLiveConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
-                        <span className="font-bold">{isLiveConnected ? "Upstox Live Quotes" : "Local Data Feed"}</span>
+                        <span className="font-bold">{isLiveConnected ? "Live Market Stream" : "Market Data"}</span>
                         {lastUpdated && (
                             <span className="hidden text-[10px] text-gray-400 sm:inline">
                                 ({new Date(lastUpdated).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })})

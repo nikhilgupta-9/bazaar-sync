@@ -1,3 +1,4 @@
+import React from "react";
 // components/IntradayChart.jsx
 //
 // Powers the "NIFTY Chart" / "Strategy Chart" / "Combined" tabs in the

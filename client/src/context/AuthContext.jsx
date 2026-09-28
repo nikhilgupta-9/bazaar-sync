@@ -1,11 +1,30 @@
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import * as authApi from "../services/authApi";
 
 const AuthContext = createContext(null);
 const TOKEN_KEY = "bazaar_sync_token";
 
+function getStoredToken() {
+    try {
+        return typeof window !== "undefined" && window.localStorage ? localStorage.getItem(TOKEN_KEY) : null;
+    } catch {
+        return null;
+    }
+}
+
+function setStoredToken(val) {
+    try {
+        if (typeof window !== "undefined" && window.localStorage) {
+            if (val) localStorage.setItem(TOKEN_KEY, val);
+            else localStorage.removeItem(TOKEN_KEY);
+        }
+    } catch {
+        /* ignore */
+    }
+}
+
 export function AuthProvider({ children }) {
-    const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
+    const [token, setToken] = useState(getStoredToken);
     const [user, setUser] = useState(null);
     const [instituteAccess, setInstituteAccess] = useState(false);
     const [loading, setLoading] = useState(true);
@@ -14,12 +33,12 @@ export function AuthProvider({ children }) {
         if (!token) { setLoading(false); return; }
         authApi.fetchMe(token)
             .then((r) => { setUser(r.user); setInstituteAccess(!!r.instituteAccess); })
-            .catch(() => { setToken(null); localStorage.removeItem(TOKEN_KEY); })
+            .catch(() => { setToken(null); setStoredToken(null); })
             .finally(() => setLoading(false));
     }, [token]);
 
     const applyAuth = useCallback((data) => {
-        localStorage.setItem(TOKEN_KEY, data.token);
+        setStoredToken(data.token);
         setToken(data.token);
         setUser(data.user);
         setInstituteAccess(!!data.instituteAccess);
@@ -36,7 +55,7 @@ export function AuthProvider({ children }) {
     }, [applyAuth]);
 
     const logout = useCallback(() => {
-        localStorage.removeItem(TOKEN_KEY);
+        setStoredToken(null);
         setToken(null);
         setUser(null);
     }, []);

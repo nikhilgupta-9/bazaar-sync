@@ -1,3 +1,4 @@
+import React from "react";
 // components/OptionChainSettingsDrawer.jsx
 //
 // Right-side slide-in drawer for the Option Chain page's gear icon. Scoped

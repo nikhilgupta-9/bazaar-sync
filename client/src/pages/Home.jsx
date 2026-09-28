@@ -1,3 +1,4 @@
+import React from "react";
 // pages/Home.jsx — dark "premium fintech" landing page (fxreplay.com-style
 // spec: pinned scroll walkthrough, feature carousel, two-tone headlines,
 // blue-accent-on-CTAs-only). Scoped to `.landing-page` (theme.css) so this

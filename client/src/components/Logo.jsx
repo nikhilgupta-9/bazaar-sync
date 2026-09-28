@@ -1,3 +1,4 @@
+import React from "react";
 // components/Logo.jsx — shared brand mark, used by both TopNav.jsx (header)
 // and Footer.jsx so the two never drift out of sync with each other. Colors
 // are plain Tailwind utility classes (bg-blue-600, text-gray-900, ...) —

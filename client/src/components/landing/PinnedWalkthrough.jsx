@@ -1,3 +1,4 @@
+import React from "react";
 // components/landing/PinnedWalkthrough.jsx — the signature pinned
 // scroll-driven step walkthrough (fxreplay.com-style). Pins the section
 // while scrolling; a bottom tab bar and a cross-fading content panel both

@@ -1,3 +1,4 @@
+import React from "react";
 import { useState } from "react";
 import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
@@ -144,12 +145,25 @@ export default function TopNav() {
                     {loading ? (
                         <div className="w-20" />
                     ) : user ? (
-                        <div className="flex items-center gap-2 text-sm sm:gap-3">
-                            <span className="hidden text-gray-600 sm:inline">{user.name}</span>
-                            <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${isPro ? "bg-amber-100 text-amber-700" : "bg-gray-100 text-gray-500"}`}>
-                                {isPro ? "Pro" : "Free"}
-                            </span>
-                            <button onClick={logout} className="hidden text-gray-500 hover:text-gray-900 sm:inline">Log out</button>
+                        <div className="flex items-center gap-2 text-sm sm:gap-2.5">
+                            <NavLink
+                                to="/profile"
+                                className="flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-bold text-gray-700 hover:border-emerald-500/50 hover:bg-white dark:border-gray-800 dark:bg-gray-800/80 dark:text-gray-200 dark:hover:bg-gray-800 transition"
+                            >
+                                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-black text-white">
+                                    {user.name ? user.name.charAt(0).toUpperCase() : "U"}
+                                </span>
+                                <span className="hidden sm:inline max-w-[100px] truncate">{user.name}</span>
+                                <span className={`rounded px-1.5 py-0.2 text-[9px] font-black uppercase ${isPro ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300" : "bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"}`}>
+                                    {isPro ? "PRO" : "FREE"}
+                                </span>
+                            </NavLink>
+                            <button
+                                onClick={logout}
+                                className="hidden text-xs font-semibold text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 sm:inline transition"
+                            >
+                                Log out
+                            </button>
                         </div>
                     ) : (
                         <button
@@ -233,9 +247,28 @@ export default function TopNav() {
                         ))}
                     </div>
                     {user && (
-                        <div className="mt-1 flex items-center justify-between border-t border-gray-100 px-2 pt-2 dark:border-gray-800 sm:hidden">
-                            <span className="text-gray-600 dark:text-gray-300">{user.name}</span>
-                            <button onClick={() => { setMobileOpen(false); logout(); }} className="text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white">Log out</button>
+                        <div className="mt-2 flex flex-col gap-2 border-t border-gray-100 pt-2 dark:border-gray-800 sm:hidden">
+                            <NavLink
+                                to="/profile"
+                                onClick={() => setMobileOpen(false)}
+                                className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs font-bold text-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                            >
+                                <span className="flex items-center gap-2">
+                                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-black text-white">
+                                        {user.name ? user.name.charAt(0).toUpperCase() : "U"}
+                                    </span>
+                                    <span>My Profile ({user.name})</span>
+                                </span>
+                                <span className={`rounded px-1.5 py-0.2 text-[9px] font-black uppercase ${isPro ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300" : "bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"}`}>
+                                    {isPro ? "PRO" : "FREE"}
+                                </span>
+                            </NavLink>
+                            <button
+                                onClick={() => { setMobileOpen(false); logout(); }}
+                                className="w-full text-left px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg"
+                            >
+                                Log out
+                            </button>
                         </div>
                     )}
                 </nav>

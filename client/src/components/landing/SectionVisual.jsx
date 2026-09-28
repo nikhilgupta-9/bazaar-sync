@@ -1,3 +1,4 @@
+import React from "react";
 // components/landing/SectionVisual.jsx — renders an admin-uploaded image
 // (Home Page editor, admin/src/pages/HomePage.jsx) when one is set for a
 // section, otherwise falls back to the existing hand-drawn DashboardMockup

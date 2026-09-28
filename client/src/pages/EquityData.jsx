@@ -1,3 +1,4 @@
+import React from "react";
 // pages/EquityData.jsx — Equity Data Hub Container supporting Market Map, 52W High/Low, Industry Momentum, and Most Active
 import { useParams, NavLink, Navigate } from "react-router-dom";
 import MarketMap from "./equity/MarketMap";

@@ -1,3 +1,4 @@
+import React from "react";
 import { ComposedChart, Area, Line, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ReferenceDot, ResponsiveContainer } from "recharts";
 import { formatPrice } from "../utils/format";
 import { computeDensityCurve } from "../utils/payoff";

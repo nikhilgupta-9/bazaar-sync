@@ -1,3 +1,4 @@
+import React from "react";
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 const STRIKE_RANGES = [
     { label: "All", value: null },

@@ -1,3 +1,4 @@
+import React from "react";
 // components/Footer.jsx — Premier International-Standard Financial Market Footer
 // Responsive across Mobile, Tablet, and Desktop with SEBI-compliant Risk Disclosures,
 // product catalog, market analytics links, and clean emerald branding.
@@ -102,8 +103,8 @@ export default function Footer() {
                             <span className="flex items-center gap-1.5 rounded-full bg-emerald-50 border border-emerald-200/60 px-3 py-1 font-bold text-emerald-700">
                                 <span>🇮🇳</span> Made with precision in India
                             </span>
-                            <span className="rounded-full bg-gray-100 px-3 py-1 text-[11px] font-semibold text-gray-600">
-                                Angel One Live Feed
+                            <span className="rounded-full bg-gray-100 dark:bg-gray-800 px-3 py-1 text-[11px] font-semibold text-gray-600 dark:text-gray-400">
+                                Real-Time Market Feed
                             </span>
                         </div>
                     </div>

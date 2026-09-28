@@ -1,3 +1,4 @@
+import React from "react";
 // pages/HistoricalChart.jsx — Dhan-Style TradingView Pro Station Powered 100% by Database History
 // Renders our stored MySQL database records (ohlcv_data) with high-speed Lightweight Charts,
 // all drawing tools, indicators (EMA, SMA, Bollinger Bands, Supertrend, RSI, Volume),

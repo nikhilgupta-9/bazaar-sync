@@ -1,3 +1,5 @@
+import React from "react";
+
 // components/strategy/PortfolioGreeksTable.jsx
 //
 // Per-leg IV/Δ/Γ/Θ/Vega table plus the "Net Risk Aggregates" row, shared by

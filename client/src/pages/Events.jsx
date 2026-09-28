@@ -1,3 +1,4 @@
+import React from "react";
 // pages/Events.jsx — public listing of admin-created events (see
 // admin/src/pages/Events.jsx). Simple announcement/webinar list, no
 // registration/ticketing.

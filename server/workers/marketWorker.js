@@ -35,19 +35,13 @@ const instrumentMaster = require("../services/instrumentMaster");
 const bs = require("../utils/blackScholes");
 const { workerLogger } = require("../config/logger");
 
-const SYMBOLS = (process.env.WORKER_SYMBOLS || "NIFTY,BANKNIFTY,FINNIFTY")
+const DEFAULT_SYMBOLS = "NIFTY,BANKNIFTY,FINNIFTY,MIDCPNIFTY,NIFTYNXT50,SENSEX,BANKEX";
+const SYMBOLS = (process.env.WORKER_SYMBOLS || DEFAULT_SYMBOLS)
     .split(",")
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);
 
-// How many strikes either side of ATM to subscribe per symbol. 3 symbols x
-// (2*15+1) strikes x 2 rights ≈ 186 option tokens + 3 index tokens + 1 VIX
-// token + 3 future tokens ≈ 193 total — well inside Angel One's
-// 1000-tokens-per-connection quota. There's headroom left in that budget,
-// but NOT enough to subscribe every listed expiry's full strike range live
-// for all 3 symbols simultaneously (would run into the thousands) — only the
-// nearest expiry is subscribed live per symbol; other expiries fall back to
-// historical data (see optionChainService.js).
+// How many strikes either side of ATM to subscribe per symbol.
 const STRIKES_PER_SIDE = Number(process.env.WORKER_STRIKES_PER_SIDE || 15);
 
 const GREEKS_INTERVAL_MS = 5000;
@@ -64,12 +58,11 @@ const ws = new AngelOneWebSocket(getSession);
 // token -> { meta, ltp, volume, oi, oiChangePercent, open, high, low, close,
 //            exchangeTimestamp, updatedAt, lastPersistedMinute }
 const latest = new Map();
-// token -> meta ({ kind:'index'|'option', underlying, strike, right, expiry, lotSize })
+// token -> meta ({ kind:'index'|'option'|'stock'|'future'|'vix', underlying, strike, right, expiry, lotSize })
 const tokenMeta = new Map();
 // underlying -> latest spot ltp
 const spot = new Map();
 // underlying -> "YYYY-MM-DD HH:MM" of the last persisted live_index_ticks
-// row for it — see the tick handler below for why this replaced "every tick".
 const lastPersistedIndexMinute = new Map();
 // tokens changed since the last IPC summary
 const dirtyTokens = new Set();
@@ -94,24 +87,28 @@ function istParts(epochMs) {
 // Subscription setup
 // ---------------------------------------------------------------------------
 
-function subscribeIndices() {
-    const tokens = [];
+async function subscribeIndices() {
+    const nseTokens = [];
+    const bseTokens = [];
     for (const sym of SYMBOLS) {
-        const token = instrumentMaster.getIndexToken(sym);
-        if (!token) {
+        const spotInfo = await instrumentMaster.getSpotToken(sym);
+        if (!spotInfo || !spotInfo.token) {
             workerLogger.error(`No index token configured for ${sym} — skipping`);
             continue;
         }
-        tokenMeta.set(token, { kind: "index", underlying: sym });
-        tokens.push(token);
+        tokenMeta.set(spotInfo.token, { kind: "index", underlying: sym });
+        if (spotInfo.exch === "BSE_CM" || spotInfo.exchSeg === "BSE") {
+            bseTokens.push(spotInfo.token);
+        } else {
+            nseTokens.push(spotInfo.token);
+        }
     }
     // QUOTE mode gives OHLC alongside LTP for the index tiles
-    ws.subscribe(MODE.QUOTE, EXCHANGE.NSE_CM, tokens);
+    if (nseTokens.length) ws.subscribe(MODE.QUOTE, EXCHANGE.NSE_CM, nseTokens);
+    if (bseTokens.length) ws.subscribe(MODE.QUOTE, EXCHANGE.BSE_CM, bseTokens);
 }
 
 // India VIX — single persistent index, no per-symbol expiry logic needed.
-// Not persisted to MySQL (no schema tier for it yet); only cached in-memory
-// and pushed over IPC for the option-chain header display.
 function subscribeVix() {
     const token = instrumentMaster.getVixToken();
     if (!token) {
@@ -124,13 +121,12 @@ function subscribeVix() {
 
 // Nearest (front-month) future contract per symbol — resolved once at
 // startup from the scrip master (no spot price needed, unlike options).
-// Also not persisted yet; cached + IPC'd only, same as VIX.
 async function subscribeFutures() {
     for (const sym of SYMBOLS) {
         try {
             const future = await instrumentMaster.getNearestFuture(sym);
             if (!future) {
-                workerLogger.error(`No future contract found for ${sym} — skipping`);
+                workerLogger.debug(`No future contract found for ${sym} — skipping`);
                 continue;
             }
             tokenMeta.set(future.token, {
@@ -139,7 +135,8 @@ async function subscribeFutures() {
                 expiry: future.expiry,
                 lotSize: future.lotSize,
             });
-            ws.subscribe(MODE.QUOTE, EXCHANGE.NSE_FO, [future.token]);
+            const exch = future.exchSeg === "BFO" ? EXCHANGE.BSE_FO : EXCHANGE.NSE_FO;
+            ws.subscribe(MODE.QUOTE, exch, [future.token]);
             workerLogger.info(`${sym}: subscribed future contract (expiry ${future.expiry})`);
         } catch (err) {
             workerLogger.error(`Future subscription failed for ${sym}: ${err.message}`);
@@ -148,7 +145,7 @@ async function subscribeFutures() {
 }
 
 /**
- * Once we know an index's spot price (from its first tick), pick the nearest
+ * Once we know an index/stock's spot price, pick the nearest
  * expiry and subscribe strikes around ATM in SnapQuote mode (needed for OI).
  */
 async function subscribeOptionsFor(underlying, spotPrice) {
@@ -168,6 +165,9 @@ async function subscribeOptionsFor(underlying, spotPrice) {
             strikesPerSide: STRIKES_PER_SIDE,
         });
 
+        const nseTokens = [];
+        const bseTokens = [];
+
         for (const c of contracts) {
             tokenMeta.set(c.token, {
                 kind: "option",
@@ -177,18 +177,54 @@ async function subscribeOptionsFor(underlying, spotPrice) {
                 expiry: c.expiry,
                 lotSize: c.lotSize,
             });
+            if (c.exchSeg === "BFO") bseTokens.push(c.token);
+            else nseTokens.push(c.token);
         }
-        ws.subscribe(
-            MODE.SNAP_QUOTE,
-            EXCHANGE.NSE_FO,
-            contracts.map((c) => c.token)
-        );
+        if (nseTokens.length) ws.subscribe(MODE.SNAP_QUOTE, EXCHANGE.NSE_FO, nseTokens);
+        if (bseTokens.length) ws.subscribe(MODE.SNAP_QUOTE, EXCHANGE.BSE_FO, bseTokens);
+
         workerLogger.info(
             `${underlying}: subscribed ${contracts.length} option contracts (expiry ${nearest}, ATM ~${spotPrice})`
         );
     } catch (err) {
         workerLogger.error(`Option subscription failed for ${underlying}: ${err.message}`);
         optionsSubscribed.delete(underlying); // retry on a later index tick
+    }
+}
+
+/**
+ * Dynamic on-demand subscription for any F&O symbol (indices or stocks)
+ */
+async function subscribeSymbol(symbol) {
+    const sym = (symbol || "").toUpperCase();
+    if (!sym) return;
+    try {
+        const spotInfo = await instrumentMaster.getSpotToken(sym);
+        if (spotInfo && spotInfo.token) {
+            const isIndex = spotInfo.exchSeg === "BSE" || sym.includes("NIFTY") || sym === "SENSEX" || sym === "BANKEX";
+            tokenMeta.set(spotInfo.token, { kind: isIndex ? "index" : "stock", underlying: sym });
+            const exch = spotInfo.exch === "BSE_CM" || spotInfo.exchSeg === "BSE" ? EXCHANGE.BSE_CM : EXCHANGE.NSE_CM;
+            ws.subscribe(MODE.QUOTE, exch, [spotInfo.token]);
+        }
+
+        const future = await instrumentMaster.getNearestFuture(sym);
+        if (future) {
+            tokenMeta.set(future.token, {
+                kind: "future",
+                underlying: sym,
+                expiry: future.expiry,
+                lotSize: future.lotSize,
+            });
+            const futExch = future.exchSeg === "BFO" ? EXCHANGE.BSE_FO : EXCHANGE.NSE_FO;
+            ws.subscribe(MODE.QUOTE, futExch, [future.token]);
+        }
+
+        const knownSpot = spot.get(sym);
+        if (knownSpot) {
+            await subscribeOptionsFor(sym, knownSpot);
+        }
+    } catch (err) {
+        workerLogger.error(`Dynamic subscribe failed for ${sym}: ${err.message}`);
     }
 }
 
@@ -233,21 +269,10 @@ ws.on("tick", (tick) => {
     dirtyTokens.add(tick.token);
 
     const { date, time } = istParts(ts);
-    // "YYYY-MM-DD HH:MM" — every tick within the same minute maps to the
-    // same key, so comparing against the last-persisted key is exactly
-    // "have we already saved a row for this minute" without needing a
-    // separate timer or rounding trick.
     const minuteKey = `${date} ${time.slice(0, 5)}`;
 
-    if (meta.kind === "index") {
+    if (meta.kind === "index" || meta.kind === "stock") {
         spot.set(meta.underlying, tick.ltp);
-        // Tier 1: one row per minute, the FIRST tick seen once the minute
-        // rolls over — not every tick (was: every single tick, which at
-        // Angel One's real feed rate meant many rows per minute and was a
-        // real driver of the DB's disk growth). Deliberately keeps
-        // whichever tick happens to arrive first in the new minute rather
-        // than the tick closest to :00 seconds — "first data for the
-        // minute", matching what was asked for, not a synthetic sample.
         if (lastPersistedIndexMinute.get(meta.underlying) !== minuteKey) {
             lastPersistedIndexMinute.set(meta.underlying, minuteKey);
             buffer.push(
@@ -256,16 +281,11 @@ ws.on("tick", (tick) => {
                 [meta.underlying, date, time, tick.ltp, entry.open, entry.high, entry.low, entry.close, entry.volume, ts]
             );
         }
-        // First sight of a spot price unlocks the option-chain subscription
+        // Spot price triggers/updates option-chain subscription
         subscribeOptionsFor(meta.underlying, tick.ltp);
     } else if (meta.kind === "vix" || meta.kind === "future") {
-        // Cached in `latest` (above) + sent over IPC (sendTickSummary) only —
-        // no persistence tier for these yet, same as the option-chain header
-        // display doesn't need history for them.
+        // Cached in `latest` (above) + sent over IPC (sendTickSummary) only
     } else {
-        // Tier 2: same "first tick of the minute" rule as the index tier
-        // above — was "at most every 2s per token" (a fixed-interval
-        // throttle, not minute-aligned, and still up to 30 rows/min/token).
         if (entry.lastPersistedMinute !== minuteKey) {
             entry.lastPersistedMinute = minuteKey;
             buffer.push(
@@ -437,8 +457,12 @@ async function shutdown(origin) {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("message", (msg) => {
-    if (msg && msg.type === "shutdown") shutdown("IPC shutdown message");
+process.on("message", async (msg) => {
+    if (!msg || typeof msg !== "object") return;
+    if (msg.type === "shutdown") shutdown("IPC shutdown message");
+    if (msg.type === "worker:subscribe_symbol" && msg.symbol) {
+        await subscribeSymbol(msg.symbol);
+    }
 });
 process.on("uncaughtException", (err) => {
     workerLogger.error(`Uncaught exception: ${err.stack || err.message}`);
@@ -463,7 +487,7 @@ async function main() {
         workerLogger.error(`Instrument master load failed (will retry on demand): ${err.message}`);
     }
 
-    subscribeIndices(); // remembered; actually sent once the socket opens
+    await subscribeIndices(); // remembered; actually sent once the socket opens
     subscribeVix();
     await subscribeFutures();
     await ws.connect(); // login failures inside are logged + retried with backoff

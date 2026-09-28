@@ -1,3 +1,4 @@
+import React from "react";
 // components/landing/DashboardMockup.jsx — hand-authored placeholder for
 // the product screenshot the spec calls for ("I'll provide the actual
 // screenshot/mockup"). Same "no fabricated visuals" convention ToolIcon.jsx/

@@ -1,3 +1,4 @@
+import React from "react";
 import { formatOi } from "../utils/format";
 
 // Inline horizontal bar behind the OI figure, sized relative to the max OI

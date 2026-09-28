@@ -1,3 +1,4 @@
+import React from "react";
 // pages/Pricing.jsx — real plan catalog fetched from the server
 // (GET /api/subscription/plans, public/no-auth) rather than hardcoded here,
 // so the price shown always matches what Razorpay will actually charge (see

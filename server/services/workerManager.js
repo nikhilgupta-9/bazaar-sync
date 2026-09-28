@@ -127,4 +127,13 @@ function stop(reason = "manual") {
     });
 }
 
-module.exports = { start, stop, isRunning };
+function subscribeSymbol(symbol) {
+    if (!isRunning() || !symbol) return;
+    try {
+        child.send({ type: "worker:subscribe_symbol", symbol: String(symbol).toUpperCase() });
+    } catch (err) {
+        workerLogger.error(`Failed to send subscribe message to worker for ${symbol}: ${err.message}`);
+    }
+}
+
+module.exports = { start, stop, isRunning, subscribeSymbol };

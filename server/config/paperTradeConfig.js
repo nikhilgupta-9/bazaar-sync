@@ -13,7 +13,7 @@ const PRO_DURATION_DAYS = 30;
 // subscriptionService.js's purchasePro for the same note.
 module.exports = {
     TRIAL_DURATION_DAYS: 2,
-    TRIAL_BALANCE: 50000,
+    TRIAL_BALANCE: 100000, // ₹1,00,000 for 2 days trial
 
     PRO_PRICE_PAISE,
     PRO_DURATION_DAYS,

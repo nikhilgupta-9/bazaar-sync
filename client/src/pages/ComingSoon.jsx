@@ -1,3 +1,4 @@
+import React from "react";
 export default function ComingSoon({ title }) {
     return (
         <div className="mx-auto max-w-[1400px] px-4 py-16 text-center">

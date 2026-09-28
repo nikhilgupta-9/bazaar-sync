@@ -36,10 +36,14 @@ const CACHE_MAX_AGE_MS = 20 * 60 * 60 * 1000; // refresh daily (20h to be safe)
 // live spot/VIX data ever silently stops updating again, check whether Angel
 // One has changed the series again before assuming something else broke.
 const INDEX_TOKENS = {
-    NIFTY: process.env.ANGEL_TOKEN_NIFTY || "99926000",
-    BANKNIFTY: process.env.ANGEL_TOKEN_BANKNIFTY || "99926009",
-    FINNIFTY: process.env.ANGEL_TOKEN_FINNIFTY || "99926037",
-    INDIAVIX: process.env.ANGEL_TOKEN_INDIAVIX || "99926017",
+    NIFTY: { token: process.env.ANGEL_TOKEN_NIFTY || "99926000", exch: "NSE_CM", exchSeg: "NSE" },
+    BANKNIFTY: { token: process.env.ANGEL_TOKEN_BANKNIFTY || "99926009", exch: "NSE_CM", exchSeg: "NSE" },
+    FINNIFTY: { token: process.env.ANGEL_TOKEN_FINNIFTY || "99926037", exch: "NSE_CM", exchSeg: "NSE" },
+    MIDCPNIFTY: { token: process.env.ANGEL_TOKEN_MIDCPNIFTY || "99926074", exch: "NSE_CM", exchSeg: "NSE" },
+    NIFTYNXT50: { token: process.env.ANGEL_TOKEN_NIFTYNXT50 || "99926013", exch: "NSE_CM", exchSeg: "NSE" },
+    SENSEX: { token: process.env.ANGEL_TOKEN_SENSEX || "99919000", exch: "BSE_CM", exchSeg: "BSE" },
+    BANKEX: { token: process.env.ANGEL_TOKEN_BANKEX || "99919012", exch: "BSE_CM", exchSeg: "BSE" },
+    INDIAVIX: { token: process.env.ANGEL_TOKEN_INDIAVIX || "99926017", exch: "NSE_CM", exchSeg: "NSE" },
 };
 
 const MONTHS = { JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06", JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12" };
@@ -61,7 +65,7 @@ function todayIst() {
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
-let parsed = null; // { loadedAt, options: Map<underlying, contracts[]> }
+let parsed = null; // { loadedAt, options: Map<underlying, contracts[]>, futures, spotTokens, lotSizeByUnderlying }
 
 const DOWNLOAD_TIMEOUT_MS = 10000; // fail fast instead of hanging the request that triggered this
 
@@ -96,18 +100,6 @@ async function loadRaw() {
     }
 }
 
-const OPTION_UNDERLYINGS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY"]);
-
-// Every F&O underlying's lot size (indices AND the ~200+ stocks), keyed by
-// symbol name — unlike `options`/`futures` above (full per-contract chain
-// data, kept only for the 3 index underlyings we actually build option
-// chains for), this is a single number per underlying and costs nothing
-// extra to collect from the same scrip-master pass, for every NFO row
-// regardless of underlying. Lot size doesn't vary by strike/expiry at a
-// point in time, so one row per underlying is enough. This is what makes
-// lot size available even when the live worker/marketCache has nothing for
-// a symbol (market closed, worker stopped, or a stock that's never been
-// live-subscribed at all — see optionChainController.js's withMarketExtras).
 const LOT_SIZE_TYPES = new Set(["OPTIDX", "OPTSTK", "FUTIDX", "FUTSTK"]);
 
 async function ensureLoaded({ force = false } = {}) {
@@ -118,28 +110,51 @@ async function ensureLoaded({ force = false } = {}) {
 
     const options = new Map();
     const futures = new Map();
+    const spotTokens = new Map();
     const lotSizeByUnderlying = new Map();
-    for (const u of OPTION_UNDERLYINGS) {
-        options.set(u, []);
-        futures.set(u, []);
+
+    // Populate index spot tokens first
+    for (const [sym, info] of Object.entries(INDEX_TOKENS)) {
+        spotTokens.set(sym, info);
     }
 
     for (const row of all) {
-        if (row.exch_seg !== "NFO") continue;
         const name = (row.name || "").toUpperCase();
+        if (!name) continue;
 
-        if (name && LOT_SIZE_TYPES.has(row.instrumenttype)) {
-            const lotSize = Number(row.lotsize);
-            if (lotSize > 0 && !lotSizeByUnderlying.has(name)) lotSizeByUnderlying.set(name, lotSize);
+        // Spot token map for equity (cash market)
+        if (row.exch_seg === "NSE" && (row.symbol || "").endsWith("-EQ")) {
+            if (!spotTokens.has(name)) {
+                spotTokens.set(name, {
+                    token: String(row.token),
+                    exch: "NSE_CM",
+                    exchSeg: "NSE",
+                    name,
+                    symbol: row.symbol,
+                });
+            }
         }
 
-        if (!OPTION_UNDERLYINGS.has(name)) continue;
+        const isNfo = row.exch_seg === "NFO";
+        const isBfo = row.exch_seg === "BFO";
+        if (!isNfo && !isBfo) continue;
 
-        if (row.instrumenttype === "OPTIDX") {
-            const expirySql = expiryToSql(row.expiry);
-            if (!expirySql) continue;
+        if (LOT_SIZE_TYPES.has(row.instrumenttype) || isBfo) {
+            const lotSize = Number(row.lotsize);
+            if (lotSize > 0 && !lotSizeByUnderlying.has(name)) {
+                lotSizeByUnderlying.set(name, lotSize);
+            }
+        }
 
-            // strike arrives multiplied by 100 (e.g. "2400000.000000" = 24000)
+        const isOpt = row.instrumenttype === "OPTIDX" || row.instrumenttype === "OPTSTK" || (isBfo && ((row.symbol || "").endsWith("CE") || (row.symbol || "").endsWith("PE")));
+        const isFut = row.instrumenttype === "FUTIDX" || row.instrumenttype === "FUTSTK" || (isBfo && (row.symbol || "").endsWith("FUT"));
+
+        if (!isOpt && !isFut) continue;
+
+        const expirySql = expiryToSql(row.expiry);
+        if (!expirySql) continue;
+
+        if (isOpt) {
             const strike = Number(row.strike) / 100;
             if (!Number.isFinite(strike) || strike <= 0) continue;
 
@@ -147,20 +162,21 @@ async function ensureLoaded({ force = false } = {}) {
             const right = sym.endsWith("CE") ? "CE" : sym.endsWith("PE") ? "PE" : null;
             if (!right) continue;
 
+            if (!options.has(name)) options.set(name, []);
             options.get(name).push({
                 token: String(row.token),
+                exchSeg: row.exch_seg,
                 underlying: name,
                 strike,
                 right,
                 expiry: expirySql,
                 lotSize: Number(row.lotsize) || null,
             });
-        } else if (row.instrumenttype === "FUTIDX") {
-            const expirySql = expiryToSql(row.expiry);
-            if (!expirySql) continue;
-
+        } else if (isFut) {
+            if (!futures.has(name)) futures.set(name, []);
             futures.get(name).push({
                 token: String(row.token),
+                exchSeg: row.exch_seg,
                 underlying: name,
                 expiry: expirySql,
                 lotSize: Number(row.lotsize) || null,
@@ -168,23 +184,20 @@ async function ensureLoaded({ force = false } = {}) {
         }
     }
 
-    for (const [name, list] of options) {
-        workerLogger.info(`Scrip master: ${list.length} index option contracts for ${name}`);
-    }
-    for (const [name, list] of futures) {
+    for (const [, list] of futures) {
         list.sort((a, b) => a.expiry.localeCompare(b.expiry));
-        workerLogger.info(`Scrip master: ${list.length} index future contracts for ${name}`);
     }
-    parsed = { loadedAt: Date.now(), options, futures, lotSizeByUnderlying };
+
+    workerLogger.info(`Scrip master: indexed ${options.size} option underlyings and ${spotTokens.size} spot tokens`);
+    parsed = { loadedAt: Date.now(), options, futures, spotTokens, lotSizeByUnderlying };
     return parsed;
 }
 
 /**
- * Lot size for ANY NSE F&O underlying (index or stock), from the scrip
+ * Lot size for ANY NSE/BSE F&O underlying (index or stock), from the scrip
  * master alone — works regardless of whether the live worker has ever
  * subscribed this symbol. Returns null only if the underlying has no F&O
- * contracts in the current scrip master at all (e.g. a symbol that's been
- * delisted from F&O, or a typo).
+ * contracts in the current scrip master at all.
  */
 async function getLotSize(underlying) {
     const { lotSizeByUnderlying } = await ensureLoaded();
@@ -196,7 +209,7 @@ async function getExpiries(underlying) {
     const { options } = await ensureLoaded();
     const today = todayIst();
     const set = new Set();
-    for (const c of options.get(underlying.toUpperCase()) || []) {
+    for (const c of options.get((underlying || "").toUpperCase()) || []) {
         if (c.expiry >= today) set.add(c.expiry);
     }
     return [...set].sort();
@@ -209,9 +222,9 @@ async function getExpiries(underlying) {
  */
 async function getOptionContracts(underlying, expirySql, { centerPrice = null, strikesPerSide = null } = {}) {
     const { options } = await ensureLoaded();
-    let contracts = (options.get(underlying.toUpperCase()) || []).filter((c) => c.expiry === expirySql);
+    let contracts = (options.get((underlying || "").toUpperCase()) || []).filter((c) => c.expiry === expirySql);
 
-    if (centerPrice != null && strikesPerSide != null) {
+    if (centerPrice != null && strikesPerSide != null && strikesPerSide > 0) {
         const strikes = [...new Set(contracts.map((c) => c.strike))].sort((a, b) => a - b);
         const atmIdx = strikes.reduce(
             (best, s, i) => (Math.abs(s - centerPrice) < Math.abs(strikes[best] - centerPrice) ? i : best),
@@ -225,18 +238,41 @@ async function getOptionContracts(underlying, expirySql, { centerPrice = null, s
 }
 
 function getIndexToken(underlying) {
-    return INDEX_TOKENS[underlying.toUpperCase()] || null;
+    const entry = INDEX_TOKENS[(underlying || "").toUpperCase()];
+    if (!entry) return null;
+    return typeof entry === "object" ? entry.token : entry;
 }
 
 function getVixToken() {
-    return INDEX_TOKENS.INDIAVIX;
+    const entry = INDEX_TOKENS.INDIAVIX;
+    return typeof entry === "object" ? entry.token : entry;
+}
+
+/**
+ * Get spot instrument info { token, exch, exchSeg } for any index or stock.
+ */
+async function getSpotToken(underlying) {
+    const { spotTokens } = await ensureLoaded();
+    const sym = (underlying || "").toUpperCase();
+    return spotTokens.get(sym) || INDEX_TOKENS[sym] || null;
+}
+
+async function hasOptions(underlying) {
+    const { options } = await ensureLoaded();
+    const list = options.get((underlying || "").toUpperCase());
+    return Boolean(list && list.length > 0);
+}
+
+async function getAllSymbols() {
+    const { options } = await ensureLoaded();
+    return [...options.keys()].sort();
 }
 
 /** Nearest (front-month) future contract for an underlying, or null. */
 async function getNearestFuture(underlying) {
     const { futures } = await ensureLoaded();
     const today = todayIst();
-    const list = (futures.get(underlying.toUpperCase()) || []).filter((f) => f.expiry >= today);
+    const list = (futures.get((underlying || "").toUpperCase()) || []).filter((f) => f.expiry >= today);
     return list[0] || null;
 }
 
@@ -246,6 +282,9 @@ module.exports = {
     getOptionContracts,
     getIndexToken,
     getVixToken,
+    getSpotToken,
+    hasOptions,
+    getAllSymbols,
     getNearestFuture,
     getLotSize,
     expiryToSql,

@@ -1,3 +1,4 @@
+import React from "react";
 // components/LoadingSpinner.jsx
 
 export default function LoadingSpinner({ size = 'md', className = '' }) {

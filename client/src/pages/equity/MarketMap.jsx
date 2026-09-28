@@ -1,3 +1,4 @@
+import React from "react";
 // pages/equity/MarketMap.jsx — Interactive Sector Heatmap / Treemap with real-time Upstox ticks
 import { useEffect, useState, useMemo } from "react";
 import { fetchMarketMap } from "../../services/equityApi";
@@ -80,7 +81,7 @@ export default function MarketMap() {
                         Market Heatmap
                     </h2>
                     <p className="text-xs text-gray-500 dark:text-gray-400 sm:text-sm">
-                        Real-time visualization of market breadth and sector performance powered by Upstox.
+                        Real-time visualization of market breadth and sector performance.
                     </p>
                 </div>
 

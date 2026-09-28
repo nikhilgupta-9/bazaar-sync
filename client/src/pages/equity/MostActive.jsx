@@ -1,3 +1,4 @@
+import React from "react";
 // pages/equity/MostActive.jsx — Most Active Equities & Indices (7 Indices + 210 F&O Stocks)
 import { useEffect, useState, useMemo } from "react";
 import { fetchMostActive } from "../../services/equityApi";

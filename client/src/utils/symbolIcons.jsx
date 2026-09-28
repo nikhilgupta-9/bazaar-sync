@@ -1,3 +1,4 @@
+import React from "react";
 // utils/symbolIcons.jsx — Stock & Index Logos / Color Badges for StockMojo-standard UI
 
 // Brand colors and initials for major Indian Indices & F&O stocks

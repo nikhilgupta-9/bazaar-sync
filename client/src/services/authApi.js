@@ -31,6 +31,37 @@ export async function fetchMe(token) {
     return handle(res);
 }
 
+export async function fetchUserProfile(token) {
+    const res = await fetch(`${API_URL}/api/auth/profile`, {
+        headers: { Authorization: `Bearer ${token}` },
+    });
+    return handle(res);
+}
+
+export async function updateUserProfile(token, data) {
+    const res = await fetch(`${API_URL}/api/auth/profile`, {
+        method: "PUT",
+        headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(data),
+    });
+    return handle(res);
+}
+
+export async function changePassword(token, data) {
+    const res = await fetch(`${API_URL}/api/auth/change-password`, {
+        method: "PUT",
+        headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(data),
+    });
+    return handle(res);
+}
+
 export async function forgotPassword(email) {
     const res = await fetch(`${API_URL}/api/auth/forgot-password`, {
         method: "POST",

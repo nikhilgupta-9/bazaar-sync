@@ -1,3 +1,4 @@
+import React from "react";
 // components/PageShell.jsx — the standard width/padding for simple,
 // single-column content pages (Terms, Events, the Equity Data placeholders,
 // and the still-to-build About Us / Contact Us / Plans pages — see

@@ -1,3 +1,4 @@
+import React from "react";
 // components/ContractChartModal.jsx — Ultra-Smooth Strike Option Candlestick Terminal
 // Responsive modal with multi-timeframe aggregation (1m, 3m, 5m, 15m), technical indicators,
 // complete drawing tools, Heikin Ashi smoothing, volume/OI histogram, and instant leg actions.

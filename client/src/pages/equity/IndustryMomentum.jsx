@@ -1,3 +1,4 @@
+import React from "react";
 // pages/equity/IndustryMomentum.jsx — Industry and Sector Momentum Leaderboard
 import { useEffect, useState, useMemo } from "react";
 import { fetchIndustryMomentum } from "../../services/equityApi";

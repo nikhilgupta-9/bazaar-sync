@@ -1,3 +1,4 @@
+import React from "react";
 // components/AuthBackground.jsx
 //
 // Full-page decorative backdrop for the login/register screen — the user

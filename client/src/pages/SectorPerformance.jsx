@@ -1,3 +1,4 @@
+import React from "react";
 // pages/SectorPerformance.jsx
 // Sector-wise performance board with Live Upstox Real-Time Index Quotes & historical base
 import { useEffect, useMemo, useState } from "react";
@@ -118,7 +119,7 @@ export default function SectorPerformance() {
                         </span>
                     </div>
                     <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 sm:text-sm">
-                        Sector-wise index returns across timeframes with Upstox live feed integration.
+                        Sector-wise index returns across timeframes with real-time market data.
                     </p>
                 </div>
 

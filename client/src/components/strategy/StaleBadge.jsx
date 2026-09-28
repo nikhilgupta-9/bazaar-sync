@@ -11,6 +11,7 @@
 //   - Simulator (historical): scrubbing to a minute that has no stored row
 //     for this strike/field — Simulator carries the last good value forward
 //     instead of showing a blank gap.
+import React from "react";
 import { FiAlertTriangle } from "react-icons/fi";
 
 const DEFAULT_LABEL =

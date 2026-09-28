@@ -1,3 +1,4 @@
+import React from "react";
 // components/strategy/SquareOffAlertBanner.jsx
 //
 // Amber "SL/TG hit — square off" banner, shared by Simulator (fires when

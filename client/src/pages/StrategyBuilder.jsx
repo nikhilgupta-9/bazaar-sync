@@ -1,3 +1,4 @@
+import React from "react";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useOptionChain, contractStaleness } from "../hooks/useOptionChain";
 import StaleBadge from "../components/strategy/StaleBadge";

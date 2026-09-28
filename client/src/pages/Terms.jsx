@@ -1,3 +1,4 @@
+import React from "react";
 // pages/Terms.jsx — public T&C page, content managed via admin/src/pages/Terms.jsx
 // (its MarkdownEditor). Content is markdown text, rendered here through the same
 // renderMarkdown() the admin's live Preview uses (see utils/markdown.js's header

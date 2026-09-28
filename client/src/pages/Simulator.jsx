@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   fetchSimulatorDates,
@@ -388,6 +388,11 @@ function legFromRow(row, right, action, expiry, lotSize, time) {
     time, // the historical trade_time this leg's LTP/Greeks snapshot came from — shown in Upcoming Positions
     active: true, // unchecked in the Positions table = kept but excluded from payoff/metrics
   };
+}
+
+function isLegUpcoming(leg, currTime) {
+  if (!leg || !leg.time || !currTime) return false;
+  return currTime < leg.time;
 }
 
 // `embeddedSymbol` / `hideChrome` are set only when Simulator is rendered
@@ -895,6 +900,22 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     ? replayData.series[cursor]?.time
     : liveChain?.selectedTime || chainData?.selectedTime;
 
+  // Legs partitioned by the current simulated minute:
+  // - enteredLegs: legs entered at or before currentTime (in-market)
+  // - upcomingLegs: legs scheduled for a time after currentTime (upcoming)
+  const enteredLegs = useMemo(
+    () => legs.filter((l) => !isLegUpcoming(l, currentTime)),
+    [legs, currentTime],
+  );
+  const upcomingLegs = useMemo(
+    () => legs.filter((l) => isLegUpcoming(l, currentTime)),
+    [legs, currentTime],
+  );
+
+  // Legs the Positions table checkbox has left checked — the payoff curve,
+  // Greeks, POP, and max-profit/loss below are recalculated from only these.
+  const activeLegs = useMemo(() => enteredLegs.filter((l) => l.active !== false), [enteredLegs]);
+
   function scrubToTime(time) {
     if (!time || !chainData) return;
     if (replayData) {
@@ -1100,18 +1121,29 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   // payoff/replay), unlike StrategyBuilder's purely cosmetic selection, so
   // this reuses that same `active` flag rather than adding a second,
   // meaningless checkbox column.
-  const allLegsActive = legs.length > 0 && legs.every((l) => l.active !== false);
+  const allLegsActive = enteredLegs.length > 0 && enteredLegs.every((l) => l.active !== false);
   function toggleSelectAllLegs() {
-    if (replayData) return;
+    if (replayData || !enteredLegs.length) return;
     const shouldInclude = !allLegsActive;
-    setLegs((prev) => prev.map((l) => ({ ...l, active: shouldInclude })));
+    const enteredIds = new Set(enteredLegs.map((l) => l.id));
+    setLegs((prev) => prev.map((l) => (enteredIds.has(l.id) ? { ...l, active: shouldInclude } : l)));
+  }
+
+  function enterLegNow(id) {
+    if (!currentTime) return;
+    setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, time: currentTime } : l)));
+  }
+
+  function enterAllUpcomingNow() {
+    if (!currentTime) return;
+    setLegs((prev) => prev.map((l) => (isLegUpcoming(l, currentTime) ? { ...l, time: currentTime } : l)));
   }
 
   // Chain-row inline position display, same pattern as StrategyBuilder.jsx —
   // which leg(s) match this exact strike/right in the currently displayed
   // expiry, plus signed net lots (buy=+qty, sell=-qty) shown as a badge.
   function legsAt(strike, right) {
-    return legs.filter((l) => l.strike === strike && l.type === right && l.expiry === chainData?.selectedExpiry);
+    return enteredLegs.filter((l) => l.strike === strike && l.type === right && l.expiry === chainData?.selectedExpiry);
   }
   function netPositionAt(strike, right) {
     const matches = legsAt(strike, right);
@@ -1410,11 +1442,6 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     return diff * legMultiplier(leg);
   }, [displayRows]);
 
-  // Legs the Positions table checkbox has left checked — the payoff curve,
-  // Greeks, POP, and max-profit/loss below are recalculated from only these,
-  // so unchecking a leg removes it from every metric without deleting the
-  // row (see toggleLegActive).
-  const activeLegs = useMemo(() => legs.filter((l) => l.active !== false), [legs]);
 
   // The exact leg shape the replay endpoint wants (same mapping runSimulation
   // does), memoised so the auto-preview effect below only re-fires when the
@@ -1473,22 +1500,21 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replayData, chartTab, previewLegKey, selectedDate, chainData?.selectedExpiry, symbol, currentTime]);
 
-  // Positions toolbar — same pattern as StrategyBuilder.jsx: reorder toggle,
-  // a lots stepper that scales every leg at once, and a combined live P&L
-  // readout across all legs.
-  const orderedLegs = useMemo(() => (legsTopFirst ? legs : [...legs].reverse()), [legs, legsTopFirst]);
-  const commonLots = legs.length && legs.every((l) => l.qty === legs[0].qty) ? legs[0].qty : null;
-  const totalLots = legs.reduce((sum, l) => sum + l.qty, 0);
+  // Positions toolbar:
+  const orderedLegs = useMemo(() => (legsTopFirst ? enteredLegs : [...enteredLegs].reverse()), [enteredLegs, legsTopFirst]);
+  const commonLots = enteredLegs.length && enteredLegs.every((l) => l.qty === enteredLegs[0].qty) ? enteredLegs[0].qty : null;
+  const totalLots = enteredLegs.reduce((sum, l) => sum + l.qty, 0);
   const totalLivePnl = useMemo(() => {
-    if (!legs.length) return null;
+    if (!enteredLegs.length) return 0;
     let sum = 0;
-    for (const leg of legs) {
+    for (const leg of enteredLegs) {
+      if (leg.active === false) continue;
       const v = legLivePnl(leg);
       if (v == null) return null;
       sum += v;
     }
     return sum;
-  }, [legs, legLivePnl]);
+  }, [enteredLegs, legLivePnl]);
 
   // Theoretical payoff at expiry — same math/pattern as Strategy Builder,
   // just priced "as of" the historical instant being viewed instead of now.
@@ -2026,8 +2052,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
             )}
             {!dates.length && datesLoaded && !chainError && (
               <div className="mt-2.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
-                No stored option data for {symbol} yet — try a different symbol, or run one of the Phase 7 backfill
-                scripts (NSE Bhavcopy / Angel One / Breeze) for this symbol first.
+                No stored option data for {symbol} yet — try a different symbol or date.
               </div>
             )}
           </div>
@@ -2644,7 +2669,9 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   <div>
                     <div className="text-[11px] font-semibold text-gray-400 font-sans">Max Profit</div>
                     <div className="text-xs font-bold tabular-nums text-emerald-600 dark:text-emerald-400 mt-0.5">
-                      {typeof maxProfit === "number"
+                      {activeLegs.length === 0
+                        ? "—"
+                        : typeof maxProfit === "number"
                         ? `+${formatPrice(maxProfit)} (${((marginDetails?.fundsRequired || estMargin) ? ((maxProfit / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2) : "0.00")}%)`
                         : (maxProfit || "Unlimited")}
                     </div>
@@ -2652,7 +2679,9 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   <div>
                     <div className="text-[11px] font-semibold text-gray-400 font-sans">Max Loss</div>
                     <div className="text-xs font-bold tabular-nums text-rose-600 dark:text-rose-400 mt-0.5">
-                      {typeof maxLoss === "number"
+                      {activeLegs.length === 0
+                        ? "—"
+                        : typeof maxLoss === "number"
                         ? `${formatPrice(maxLoss)} (${((marginDetails?.fundsRequired || estMargin) ? ((maxLoss / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2) : "0.00")}%)`
                         : (maxLoss || "Unlimited")}
                     </div>
@@ -2747,6 +2776,32 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         atmIv={atmIv}
                         yearsRemaining={yearsRemaining}
                       />
+                    ) : upcomingLegs.length > 0 ? (
+                      <div className="py-16 text-center text-xs text-gray-500 dark:text-gray-400">
+                        <div className="mb-2 text-3xl">⏳</div>
+                        <p className="text-sm font-bold text-gray-800 dark:text-gray-200">
+                          Positions Scheduled for {upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "Later"}
+                        </p>
+                        <p className="mt-1 text-gray-500 dark:text-gray-400 max-w-sm mx-auto">
+                          Current simulated time is {currentTime}. Step forward to {upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "entry time"} or enter now to view the payoff chart.
+                        </p>
+                        <div className="mt-4 flex items-center justify-center gap-2">
+                          {upcomingLegs[0]?.time && (
+                            <button
+                              onClick={() => scrubToTime(upcomingLegs[0].time)}
+                              className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 transition shadow-xs"
+                            >
+                              ▶ Step to {String(upcomingLegs[0].time).slice(0, 5)}
+                            </button>
+                          )}
+                          <button
+                            onClick={enterAllUpcomingNow}
+                            className="rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-xs font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition"
+                          >
+                            Enter All Now @ {currentTime?.slice(0, 5)}
+                          </button>
+                        </div>
+                      </div>
                     ) : (
                       <PresetStrategies
                         data={liveChain || chainData}
@@ -2787,7 +2842,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   onClick={() => setTab("positions")}
                   className={`shrink-0 px-4 sm:px-6 py-3 transition-colors ${tab === "positions" ? "border-b-2 border-emerald-600 text-emerald-600 dark:text-emerald-400 bg-white dark:bg-gray-900" : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"}`}
                 >
-                  Positions
+                  Positions{enteredLegs.length > 0 ? ` (${enteredLegs.length})` : ""}
                 </button>
                 <button
                   onClick={() => setTab("greeks")}
@@ -2799,7 +2854,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   onClick={() => setTab("upcoming")}
                   className={`shrink-0 px-4 sm:px-6 py-3 transition-colors ${tab === "upcoming" ? "border-b-2 border-emerald-600 text-emerald-600 dark:text-emerald-400 bg-white dark:bg-gray-900" : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"}`}
                 >
-                  Upcoming Positions{upcomingPositions.length > 0 ? ` (${upcomingPositions.length})` : ""}
+                  Upcoming Positions{(upcomingLegs.length + upcomingPositions.length) > 0 ? ` (${upcomingLegs.length + upcomingPositions.length})` : ""}
                 </button>
               </div>
 
@@ -2910,7 +2965,47 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100 dark:divide-gray-800 font-medium">
-                      {orderedLegs.map((leg) => {
+                      {orderedLegs.length === 0 ? (
+                        <tr>
+                          <td colSpan={11} className="px-4 py-8 text-center text-xs text-gray-400 dark:text-gray-500">
+                            {upcomingLegs.length > 0 ? (
+                              <div className="flex flex-col items-center justify-center gap-2.5">
+                                <p className="font-semibold text-gray-700 dark:text-gray-300">
+                                  No active positions at {currentTime}.
+                                  <span className="ml-1 text-gray-500 font-normal">
+                                    {upcomingLegs.length} position{upcomingLegs.length > 1 ? "s are" : " is"} scheduled to enter at {upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "a later time"}.
+                                  </span>
+                                </p>
+                                <div className="flex flex-wrap items-center justify-center gap-2">
+                                  {upcomingLegs[0]?.time && (
+                                    <button
+                                      onClick={() => scrubToTime(upcomingLegs[0].time)}
+                                      className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-bold text-white hover:bg-blue-700 transition shadow-2xs"
+                                    >
+                                      ▶ Step to {String(upcomingLegs[0].time).slice(0, 5)}
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={enterAllUpcomingNow}
+                                    className="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1 text-xs font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition"
+                                  >
+                                    Enter All Now @ {currentTime?.slice(0, 5)}
+                                  </button>
+                                  <button
+                                    onClick={() => setTab("upcoming")}
+                                    className="rounded-lg px-2 py-1 text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline transition"
+                                  >
+                                    View Upcoming Positions →
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              "No positions added yet. Click Buy (B) or Sell (S) in the Option Chain above."
+                            )}
+                          </td>
+                        </tr>
+                      ) : (
+                        orderedLegs.map((leg) => {
                         const row = displayRows.find(
                           (r) => r.strike === leg.strike,
                         );
@@ -3077,7 +3172,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             </td>
                           </tr>
                         );
-                      })}
+                      }))}
                     </tbody>
                   </table>
                   </div>
@@ -3086,96 +3181,179 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   <PortfolioGreeksTable legs={legs} netGreeks={netGreeks} />
                 ) : (
                   <div>
-                    {upcomingPositions.length > 0 && (
-                      <div className="flex items-center justify-end border-b border-gray-100 dark:border-gray-800 bg-gray-50/40 dark:bg-gray-800/40 px-4 py-2.5 text-[11px]">
-                        <button
-                          onClick={resetWorkspace}
-                          className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition"
-                        >
-                          Reset Workspace
-                        </button>
-                      </div>
-                    )}
-                    <div className="divide-y divide-gray-100 dark:divide-gray-800">
-                    {upcomingPositions.length === 0 ? (
-                      <div className="px-4 py-10 text-center text-xs text-gray-400 dark:text-gray-400">
-                        Positions you build get archived here when you click Archive — nothing archived yet.
-                      </div>
-                    ) : (
-                      upcomingPositions.map((entry) => {
-                        const netCost = entry.legs.reduce(
-                          (sum, leg) => sum + (leg.action === "buy" ? -1 : 1) * leg.premium * legMultiplier(leg),
-                          0
-                        );
-                        const orderedEntryLegs = [
-                          ...entry.legs.filter((leg) => leg.action === "buy"),
-                          ...entry.legs.filter((leg) => leg.action === "sell"),
-                        ];
-                        return (
-                          <div key={entry.id}>
-                            <div className="flex flex-wrap items-center justify-between gap-2 bg-gray-50/60 dark:bg-gray-800/60 px-4 py-2 text-[11px]">
-                              <div className="font-bold text-gray-800 dark:text-gray-200">
-                                {entry.date}
-                                <span className="ml-2 font-normal text-gray-400 dark:text-gray-400">
-                                  {entry.legs.length} leg{entry.legs.length > 1 ? "s" : ""}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-3">
-                                <div>
-                                  <span className="text-gray-400 dark:text-gray-400 font-medium">Net {netCost >= 0 ? "Credit" : "Debit"}: </span>
-                                  <span className={`font-black tabular-nums ${netCost >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
-                                    {formatPrice(Math.abs(netCost))}
-                                  </span>
-                                </div>
+                    {/* Scheduled Active Legs (time > currentTime) */}
+                    {upcomingLegs.length > 0 && (
+                      <div className="border-b border-gray-100 dark:border-gray-800">
+                        <div className="flex flex-wrap items-center justify-between gap-2 bg-blue-50/50 dark:bg-blue-950/30 px-4 py-2.5 text-[11px] border-b border-blue-100/60 dark:border-blue-900/40">
+                          <div>
+                            <span className="font-bold text-blue-900 dark:text-blue-200">
+                              Scheduled Positions ({upcomingLegs.length})
+                            </span>
+                            <span className="ml-2 text-gray-500 dark:text-gray-400">
+                              (Will activate at scheduled time. Simulated time: {currentTime})
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={enterAllUpcomingNow}
+                              className="rounded-lg bg-blue-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-blue-700 transition shadow-2xs"
+                            >
+                              Enter All Now @ {currentTime?.slice(0, 5)}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                          {upcomingLegs.map((leg) => (
+                            <div key={leg.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5 text-[11px] hover:bg-gray-50/50 dark:hover:bg-gray-800/50 transition">
+                              <span
+                                className={`w-11 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-black text-white shadow-xs ${
+                                  leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"
+                                }`}
+                              >
+                                {leg.action === "buy" ? "BUY" : "SELL"}
+                              </span>
+                              <span
+                                className={`w-8 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-extrabold ${
+                                  leg.type === "CE" ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300" : "bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300"
+                                }`}
+                              >
+                                {leg.type}
+                              </span>
+                              <span className="font-bold tabular-nums text-gray-900 dark:text-gray-100 font-mono">{leg.strike}</span>
+                              <span className="text-gray-400 dark:text-gray-400 font-medium">×{leg.qty} lot{leg.qty > 1 ? "s" : ""}</span>
+                              <span className="text-gray-500 dark:text-gray-400 font-mono">
+                                Entry: {formatPrice(leg.premium)}
+                              </span>
+                              <span className="rounded-md bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-[10px] font-bold font-mono">
+                                ⏳ Scheduled @ {leg.time ? String(leg.time).slice(0, 5) : "—"}
+                              </span>
+                              <div className="ml-auto flex items-center gap-2">
+                                {leg.time && (
+                                  <button
+                                    onClick={() => scrubToTime(leg.time)}
+                                    title={`Step time forward to ${leg.time}`}
+                                    className="rounded border border-gray-200 dark:border-gray-700 px-2 py-0.5 text-[11px] font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition"
+                                  >
+                                    ▶ Step to {String(leg.time).slice(0, 5)}
+                                  </button>
+                                )}
                                 <button
-                                  onClick={() => removeUpcomingPosition(entry.id)}
-                                  title="Remove this entry"
-                                  className="rounded-lg p-1 text-gray-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 hover:text-rose-600 transition"
+                                  onClick={() => enterLegNow(leg.id)}
+                                  title={`Activate position right now at ${currentTime}`}
+                                  className="rounded bg-blue-600 px-2 py-0.5 text-[11px] font-bold text-white hover:bg-blue-700 transition"
+                                >
+                                  Enter Now
+                                </button>
+                                <button
+                                  onClick={() => removeLeg(leg.id)}
+                                  title="Remove leg"
+                                  className="rounded p-1 text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 transition"
                                 >
                                   <FiTrash2 size={13} />
                                 </button>
                               </div>
                             </div>
-                            <div className="divide-y divide-gray-100 dark:divide-gray-800/60">
-                              {orderedEntryLegs.map((leg) => (
-                                <div key={leg.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-[11px]">
-                                  <span
-                                    className={`w-11 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-black text-white shadow-xs ${
-                                      leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"
-                                    }`}
-                                  >
-                                    {leg.action === "buy" ? "BUY" : "SELL"}
-                                  </span>
-                                  <span
-                                    className={`w-8 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-extrabold ${
-                                      leg.type === "CE" ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300" : "bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300"
-                                    }`}
-                                  >
-                                    {leg.type}
-                                  </span>
-                                  <span className="font-bold tabular-nums text-gray-900 dark:text-gray-100 font-mono">{leg.strike}</span>
-                                  <span className="text-gray-400 dark:text-gray-400 font-medium">×{leg.qty} lot{leg.qty > 1 ? "s" : ""}</span>
-                                  <span className="ml-auto tabular-nums text-gray-700 dark:text-gray-300 font-mono">
-                                    LTP {formatPrice(leg.premium)}
-                                  </span>
-                                  <span className="tabular-nums text-gray-400 dark:text-gray-400">
-                                    @ {leg.time ? String(leg.time).slice(0, 5) : "—"}
-                                  </span>
-                                  <button
-                                    onClick={() => removeUpcomingLeg(entry.id, leg.id)}
-                                    title="Remove this leg"
-                                    className="rounded p-1 text-gray-300 hover:bg-rose-50 dark:hover:bg-rose-950/50 hover:text-rose-600 transition"
-                                  >
-                                    <FiTrash2 size={12} />
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        );
-                      })
+                          ))}
+                        </div>
+                      </div>
                     )}
-                    </div>
+
+                    {/* Archived Strategy Snapshots */}
+                    {upcomingPositions.length > 0 && (
+                      <div>
+                        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 bg-gray-50/40 dark:bg-gray-800/40 px-4 py-2 text-[11px]">
+                          <span className="font-bold text-gray-700 dark:text-gray-300">
+                            Archived Strategy Snapshots ({upcomingPositions.length})
+                          </span>
+                          <button
+                            onClick={resetWorkspace}
+                            className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-0.5 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition text-[10px]"
+                          >
+                            Reset Workspace
+                          </button>
+                        </div>
+                        <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                          {upcomingPositions.map((entry) => {
+                            const netCost = entry.legs.reduce(
+                              (sum, leg) => sum + (leg.action === "buy" ? -1 : 1) * leg.premium * legMultiplier(leg),
+                              0
+                            );
+                            const orderedEntryLegs = [
+                              ...entry.legs.filter((leg) => leg.action === "buy"),
+                              ...entry.legs.filter((leg) => leg.action === "sell"),
+                            ];
+                            return (
+                              <div key={entry.id}>
+                                <div className="flex flex-wrap items-center justify-between gap-2 bg-gray-50/60 dark:bg-gray-800/60 px-4 py-2 text-[11px]">
+                                  <div className="font-bold text-gray-800 dark:text-gray-200">
+                                    {entry.date}
+                                    <span className="ml-2 font-normal text-gray-400 dark:text-gray-400">
+                                      {entry.legs.length} leg{entry.legs.length > 1 ? "s" : ""}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-3">
+                                    <div>
+                                      <span className="text-gray-400 dark:text-gray-400 font-medium">Net {netCost >= 0 ? "Credit" : "Debit"}: </span>
+                                      <span className={`font-black tabular-nums ${netCost >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                        {formatPrice(Math.abs(netCost))}
+                                      </span>
+                                    </div>
+                                    <button
+                                      onClick={() => removeUpcomingPosition(entry.id)}
+                                      title="Remove this entry"
+                                      className="rounded-lg p-1 text-gray-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 hover:text-rose-600 transition"
+                                    >
+                                      <FiTrash2 size={13} />
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className="divide-y divide-gray-100 dark:divide-gray-800/60">
+                                  {orderedEntryLegs.map((leg) => (
+                                    <div key={leg.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-[11px]">
+                                      <span
+                                        className={`w-11 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-black text-white shadow-xs ${
+                                          leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"
+                                        }`}
+                                      >
+                                        {leg.action === "buy" ? "BUY" : "SELL"}
+                                      </span>
+                                      <span
+                                        className={`w-8 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-extrabold ${
+                                          leg.type === "CE" ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300" : "bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300"
+                                        }`}
+                                      >
+                                        {leg.type}
+                                      </span>
+                                      <span className="font-bold tabular-nums text-gray-900 dark:text-gray-100 font-mono">{leg.strike}</span>
+                                      <span className="text-gray-400 dark:text-gray-400 font-medium">×{leg.qty} lot{leg.qty > 1 ? "s" : ""}</span>
+                                      <span className="ml-auto tabular-nums text-gray-700 dark:text-gray-300 font-mono">
+                                        LTP {formatPrice(leg.premium)}
+                                      </span>
+                                      <span className="tabular-nums text-gray-400 dark:text-gray-400">
+                                        @ {leg.time ? String(leg.time).slice(0, 5) : "—"}
+                                      </span>
+                                      <button
+                                        onClick={() => removeUpcomingLeg(entry.id, leg.id)}
+                                        title="Remove this leg"
+                                        className="rounded p-1 text-gray-300 hover:bg-rose-50 dark:hover:bg-rose-950/50 hover:text-rose-600 transition"
+                                      >
+                                        <FiTrash2 size={12} />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {upcomingLegs.length === 0 && upcomingPositions.length === 0 && (
+                      <div className="px-4 py-10 text-center text-xs text-gray-400 dark:text-gray-400">
+                        No upcoming or archived positions. Positions scheduled for later in the day will appear here.
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

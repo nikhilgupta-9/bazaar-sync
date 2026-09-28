@@ -1,3 +1,4 @@
+import React from "react";
 // components/landing/FeatureCarousel.jsx — horizontal feature card row
 // (Embla carousel), numbered progress indicator top-left, circular
 // prev/next arrows. Reuses the existing ToolIcon.jsx shapes as the icon

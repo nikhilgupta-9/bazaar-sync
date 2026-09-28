@@ -1,3 +1,4 @@
+import React from "react";
 // components/landing/FloatingBadge.jsx — small rounded pill (icon + label)
 // that fades/slides in via IntersectionObserver + a CSS transition (see
 // theme.css's .float-badge) when its wrapping card scrolls into view.

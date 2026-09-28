@@ -1,3 +1,4 @@
+import React from "react";
 // components/landing/Hero.jsx — 3D Glassmorphic Hero with high-impact visual depth and responsive metrics
 import { Link } from "react-router-dom";
 import SectionVisual from "./SectionVisual";
@@ -56,7 +57,7 @@ export default function Hero({ eyebrow, headline, headlineMuted, subtext, ctaLab
                 {/* Floating 3D Micro-Badges */}
                 <FloatingBadge
                     icon="⚡"
-                    label="Live Upstox & Angel Feed"
+                    label="Real-Time Market Stream"
                     className="-left-3 sm:-left-6 top-8 hidden sm:flex border border-emerald-500/20 bg-white/90 dark:bg-gray-900/90 text-xs shadow-xl"
                     delayMs={200}
                 />

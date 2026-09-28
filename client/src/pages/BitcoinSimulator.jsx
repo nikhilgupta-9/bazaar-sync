@@ -1,3 +1,4 @@
+import React from "react";
 // pages/BitcoinSimulator.jsx — animated "coming soon" teaser for the crypto
 // side of the Simulator (header dropdown: Simulator -> Bitcoin).
 //

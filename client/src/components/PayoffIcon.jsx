@@ -1,3 +1,4 @@
+import React from "react";
 // Small hand-authored payoff-shape previews for the Ready-Made Strategies
 // cards — approximate curve shapes (green = profit zone, red = loss zone),
 // not computed from real data. Mirrors stockmojo's strategy picker icons.

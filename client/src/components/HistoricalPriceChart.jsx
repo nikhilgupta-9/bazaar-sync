@@ -1,3 +1,4 @@
+import React from "react";
 // components/HistoricalPriceChart.jsx — High-Performance TradingView & Dhan-Grade Charting Engine
 // Powered 100% by Bazaar Sync's stored MySQL database (ohlcv_data).
 // Features:

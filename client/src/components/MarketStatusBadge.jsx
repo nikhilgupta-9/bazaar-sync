@@ -1,3 +1,4 @@
+import React from "react";
 // components/MarketStatusBadge.jsx
 import { formatDateTime } from '../utils/format';
 

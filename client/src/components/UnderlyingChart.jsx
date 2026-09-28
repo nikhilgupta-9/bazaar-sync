@@ -1,3 +1,4 @@
+import React from "react";
 // components/UnderlyingChart.jsx
 import { useEffect, useRef, useState } from "react";
 import { createChart, CandlestickSeries } from "lightweight-charts";

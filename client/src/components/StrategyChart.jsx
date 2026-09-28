@@ -1,3 +1,4 @@
+import React from "react";
 // components/StrategyChart.jsx
 //
 // TradingView-style chart for Simulator's "Strategy Chart" tab — charts the

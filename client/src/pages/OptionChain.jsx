@@ -1,3 +1,4 @@
+import React from "react";
 // pages/OptionChain.jsx — Premier StockMojo-parity Real-Time Option Chain Matrix
 // Responsive on Desktop, Tablet, and Mobile with ATM strike filtering, Greeks,
 // visual OI bars, heatmaps, candlestick contract charts, and mobile tabbed views.

@@ -44,9 +44,9 @@ function getStatus() {
 }
 
 function getSpot(underlying) {
-    const sym = underlying.toUpperCase();
+    const sym = (underlying || "").toUpperCase();
     for (const [, e] of cache) {
-        if (e.kind === "index" && e.underlying === sym) return e;
+        if ((e.kind === "index" || e.kind === "stock" || e.kind === "spot") && e.underlying === sym) return e;
     }
     return null;
 }

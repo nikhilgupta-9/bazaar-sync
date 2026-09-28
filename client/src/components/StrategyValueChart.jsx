@@ -1,3 +1,4 @@
+import React from "react";
 // components/StrategyValueChart.jsx
 import { useEffect, useRef, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer } from "recharts";

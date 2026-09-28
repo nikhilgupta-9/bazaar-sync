@@ -19,34 +19,16 @@ const path = require("path");
 const bs = require("../utils/blackScholes");
 const db = require("../config/db");
 const marketCache = require("./marketCache");
+const workerManager = require("./workerManager");
+const instrumentMaster = require("./instrumentMaster");
 const { marketHours } = require("../utils/marketUtils");
 const { syntheticSpot, yearsBetween } = require("../utils/syntheticSpot");
 
-// `SELECT DISTINCT symbol FROM option_chain_history` is a ~65ms loose-index
-// scan warm, but a few seconds cold (empty buffer pool right after a server
-// restart) — and the in-process cache below is lost on every restart. Mirror
-// simulatorController.listDates: also persist to disk and serve
-// stale-while-revalidate, so a page load never waits on it.
 const SYMBOL_LIST_CACHE_FILE = path.join(__dirname, "..", "data", "symbol-list-cache.json");
 
-// The market worker only ever subscribes these 3 (see instrumentMaster.js) —
-// everything else in option_chain_history (the other NSE/BSE indices, the
-// 200+ F&O stocks from Bhavcopy/Breeze) has no live path and is ALWAYS
-// served from history, live market hours or not. Historical-only is a
-// legitimate, correct mode for those symbols, not a fallback/error.
-const LIVE_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY"]);
-// Every index symbol that can show up in option_chain_history, across both
-// NSE bhavcopy (services/nseBhavcopy.js NSE_INDEX_SYMBOLS) and BSE bhavcopy
-// (services/bseBhavcopy.js BSE_INDEX_SYMBOLS) — kept as a flat list here
-// (rather than importing both) since this is purely a display-grouping
-// concern for the symbol picker, not a data-source decision.
+const LIVE_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"]);
 const INDEX_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX", "SENSEX50"]);
 const HISTORICAL_CACHE_TTL_MS = 60 * 1000;
-// Symbol list only changes when a backfill script adds a new symbol
-// (infrequent) — but `SELECT DISTINCT symbol` against option_chain_history
-// (17M+ rows as Phase 7 backfills grow) is expensive to re-run on every
-// page load, which is what listSymbols() was doing. Cache it like
-// historicalCache above.
 const SYMBOL_LIST_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h — served stale-while-revalidate
 
 // Plain-string date helpers (CLAUDE.md Gotcha #12 — no local-timezone Date math)
@@ -88,27 +70,34 @@ class OptionChainService {
             throw new Error("symbol is required");
         }
 
-        if (LIVE_SYMBOLS.has(displaySymbol) && (this.isMarketOpen() || forceLive)) {
+        // Forward subscription to worker so ticks start streaming if not already active
+        workerManager.subscribeSymbol(displaySymbol);
+
+        const hasOptionsInMaster = await instrumentMaster.hasOptions(displaySymbol).catch(() => false);
+        const isLiveCandidate = LIVE_SYMBOLS.has(displaySymbol) || hasOptionsInMaster;
+
+        if (isLiveCandidate && (this.isMarketOpen() || forceLive)) {
             const live = await this.getLiveOptionChain(displaySymbol, expiry);
             if (live) return live;
             // Worker down / cache stale / requested expiry not subscribed —
-            // fall through to historical rather than failing.
+            // fall through to historical or scrip master fallback rather than failing.
         }
         return this.getHistoricalOptionChain(displaySymbol, expiry);
     }
 
     /**
-     * Every symbol that has data in option_chain_history OR ohlcv_data, split into
-     * indices vs stocks — powers the Option Chain, Simulator, and Strategy Builder
-     * dropdowns with the complete 270+ universe.
+     * Every symbol that has data in option_chain_history OR ohlcv_data OR scrip master,
+     * split into indices vs stocks — powers all dropdowns.
      */
     async computeSymbolList() {
         const optRows = await db.query(`SELECT DISTINCT symbol FROM option_chain_history`).catch(() => []);
         const ohlcvRows = await db.query(`SELECT DISTINCT symbol FROM ohlcv_data`).catch(() => []);
+        const masterSymbols = await instrumentMaster.getAllSymbols().catch(() => []);
         const unionSet = new Set([
             ...optRows.map((r) => r.symbol),
             ...ohlcvRows.map((r) => r.symbol),
-            "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX",
+            ...masterSymbols,
+            "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX",
         ]);
         const all = [...unionSet].filter(Boolean).sort();
         const indices = all.filter((s) => INDEX_SYMBOLS.has(s));
@@ -360,26 +349,26 @@ class OptionChainService {
             const latestRows = await db.query(
                 `SELECT trade_date, trade_time, underlying_price
                  FROM option_chain_history
-                 WHERE symbol = ? AND underlying_price IS NOT NULL
+                 WHERE symbol = ? AND underlying_price IS NOT NULL AND underlying_price > 0
                  ORDER BY trade_date DESC, trade_time DESC
                  LIMIT 1`,
                 [displaySymbol]
             );
             if (!latestRows || latestRows.length === 0) {
-                return await this.getFallbackHistoricalData(displaySymbol);
+                return await this.buildScripMasterChain(displaySymbol, expiry);
             }
             const { trade_date, trade_time, underlying_price } = latestRows[0];
 
             const expiryRows = await db.query(
                 `SELECT DISTINCT expiry FROM option_chain_history
-                 WHERE symbol = ? AND trade_date = ?
+                 WHERE symbol = ? AND trade_date = ? AND expiry IS NOT NULL
                  ORDER BY expiry ASC`,
                 [displaySymbol, trade_date]
             );
-            const expiries = (expiryRows || []).map((r) => r.expiry);
+            const expiries = (expiryRows || []).map((r) => r.expiry).filter(Boolean);
             const selectedExpiry = expiry && expiries.includes(expiry) ? expiry : expiries[0] || null;
-            if (!selectedExpiry) {
-                return await this.getFallbackHistoricalData(displaySymbol);
+            if (!selectedExpiry || !expiries.length) {
+                return await this.buildScripMasterChain(displaySymbol, expiry);
             }
 
             let rows = await db.query(
@@ -453,7 +442,7 @@ class OptionChainService {
             const rows = await db.query(fallbackSQL, [displaySymbol]);
 
             if (!rows || rows.length === 0) {
-                return this.createEmptyPayload(displaySymbol);
+                return await this.buildScripMasterChain(displaySymbol);
             }
 
             // Latest row per strike
@@ -468,6 +457,61 @@ class OptionChainService {
             return payload;
         } catch (err) {
             console.error("[Fallback] Error:", err);
+            return await this.buildScripMasterChain(displaySymbol);
+        }
+    }
+
+    async buildScripMasterChain(displaySymbol, requestedExpiry = null) {
+        try {
+            const expiries = await instrumentMaster.getExpiries(displaySymbol);
+            if (!expiries || !expiries.length) return this.createEmptyPayload(displaySymbol);
+            const selectedExpiry = requestedExpiry && expiries.includes(requestedExpiry) ? requestedExpiry : expiries[0];
+
+            const spotEntry = marketCache.getSpot(displaySymbol);
+            let spotPrice = spotEntry ? spotEntry.ltp : (await this.getPreviousDayClose(displaySymbol, todayIstStr())) || 0;
+
+            const contracts = await instrumentMaster.getOptionContracts(displaySymbol, selectedExpiry, {
+                centerPrice: spotPrice || null,
+                strikesPerSide: 25,
+            });
+            if (!contracts || !contracts.length) return this.createEmptyPayload(displaySymbol);
+
+            const byStrike = new Map();
+            for (const c of contracts) {
+                let r = byStrike.get(c.strike);
+                if (!r) {
+                    r = {
+                        strike: c.strike,
+                        iv: null,
+                        ce: { ltp: null, changePercent: null, oi: 0, oiChange: 0, oiChangePercent: null, volume: 0, iv: null, ivChangePercent: null, delta: null, gamma: null, theta: null, vega: null, buildup: null },
+                        pe: { ltp: null, changePercent: null, oi: 0, oiChange: 0, oiChangePercent: null, volume: 0, iv: null, ivChangePercent: null, delta: null, gamma: null, theta: null, vega: null, buildup: null },
+                    };
+                    byStrike.set(c.strike, r);
+                }
+            }
+
+            const mappedRows = [...byStrike.values()].sort((a, b) => a.strike - b.strike);
+            const atmStrike = spotPrice > 0 ? this.computeAtmStrike(mappedRows.map((r) => r.strike), spotPrice) : (mappedRows[Math.floor(mappedRows.length / 2)]?.strike || 0);
+
+            return {
+                symbol: displaySymbol,
+                spotPrice,
+                spotStored: spotPrice || null,
+                spotSource: spotEntry ? "live" : "eod",
+                atmStrike,
+                maxPainStrike: atmStrike,
+                pcr: 1,
+                expiries,
+                selectedExpiry,
+                daysToExpiry: daysToExpiry(selectedExpiry, todayIstStr()),
+                rows: mappedRows,
+                isHistorical: !spotEntry,
+                timestamp: new Date().toISOString(),
+                tradeDate: todayIstStr(),
+                tradeTime: null,
+            };
+        } catch (err) {
+            console.error("[ScripMasterChain] Error:", err);
             return this.createEmptyPayload(displaySymbol);
         }
     }

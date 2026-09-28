@@ -1,3 +1,4 @@
+import React from "react";
 // components/strategy/SlTgModal.jsx
 //
 // Per-leg Stop-Loss / Target editor, shared by Strategy Builder and

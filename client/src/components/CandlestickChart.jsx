@@ -1,3 +1,4 @@
+import React from "react";
 // components/CandlestickChart.jsx
 //
 // Real candlestick chart for the Simulator's "NIFTY Chart" / "Strategy Chart
