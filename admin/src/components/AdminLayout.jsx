@@ -27,12 +27,12 @@ export default function AdminLayout() {
     }
 
     return (
-        <div className="flex min-h-screen w-full bg-[#08080b] text-gray-200 antialiased">
-            {/* Sidebar for Desktop & Mobile Overlay */}
+        <div className="flex h-screen w-screen overflow-hidden bg-[#08080b] text-gray-200 antialiased">
+            {/* Sticky Sidebar with Independent Scroll */}
             <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-            {/* Main Application Area */}
-            <div className="flex min-h-screen flex-1 flex-col w-full min-w-0 max-w-full overflow-x-hidden">
+            {/* Main Application Area with Independent Page Scroll */}
+            <div className="flex h-screen flex-1 flex-col w-full min-w-0 max-w-full overflow-y-auto overflow-x-hidden custom-scrollbar">
                 <AppHeader onToggleSidebar={() => setSidebarOpen((v) => !v)} />
                 <main className="flex-1 w-full min-w-0 max-w-full">
                     <Outlet />

@@ -24,6 +24,7 @@ const MANAGEMENT_LINKS = [
 
 const DATA_LINKS = [
     { to: "/data-gdrive-archive", label: "GDrive Cloud Archival", icon: FiCloud, badge: "Auto" },
+    { to: "/data-bitcoin", label: "Crypto & Bitcoin 3Y", icon: FiTrendingUp, badge: "BTC/ETH/SOL" },
     { to: "/data-extraction", label: "Extraction Pipelines", icon: FiDownloadCloud, badge: "Live" },
     { to: "/data-import", label: "Import CSV", icon: FiUploadCloud },
     { to: "/data-export-prune", label: "Export & Disk Space", icon: FiDatabase },
@@ -85,7 +86,7 @@ export default function Sidebar({ open = false, onClose }) {
                 />
             )}
             <aside
-                className={`fixed inset-y-0 left-0 z-50 flex h-screen w-64 shrink-0 flex-col overflow-y-auto border-r border-white/10 bg-[#0b0b0f] p-4 transition-transform lg:sticky lg:top-0 lg:translate-x-0 ${
+                className={`fixed inset-y-0 left-0 z-50 flex h-screen w-64 shrink-0 flex-col overflow-y-auto custom-scrollbar border-r border-white/10 bg-[#0b0b0f] p-4 transition-transform lg:static lg:translate-x-0 ${
                     open ? "translate-x-0" : "-translate-x-full"
                 }`}
             >

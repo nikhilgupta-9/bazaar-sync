@@ -23,6 +23,14 @@ const DATA_TABS = [
         desc: "Automated 2023-2024 Option Chain Google Drive backup & Mac disk auto-pruning",
     },
     {
+        to: "/data-bitcoin",
+        label: "Crypto & Bitcoin 3Y",
+        icon: FiShield,
+        badge: "BTC / ETH / SOL",
+        badgeColor: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+        desc: "Binance 1-minute historical data extractor for BTC, ETH, SOL & any USDT crypto pairs with GDrive auto-push",
+    },
+    {
         to: "/data-extraction",
         label: "Extraction Jobs",
         icon: FiDownloadCloud,

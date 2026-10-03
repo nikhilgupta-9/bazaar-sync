@@ -365,6 +365,68 @@ async function importFromGDrive(req, res) {
     }
 }
 
+/**
+ * Start Multi-Crypto Historical Pipeline (BTC, ETH, SOL, etc.)
+ */
+async function startBitcoinPipeline(req, res) {
+    try {
+        const cryptoService = require("../services/bitcoinDataService");
+        const { symbols, symbol, years, startYear, endYear } = req.body || {};
+        
+        let targetSymbols = ["BTCUSDT"];
+        if (Array.isArray(symbols) && symbols.length > 0) {
+            targetSymbols = symbols;
+        } else if (symbol) {
+            targetSymbols = [symbol];
+        }
+
+        let targetYears = [2023, 2024, 2025, 2026];
+        if (Array.isArray(years) && years.length > 0) {
+            targetYears = years.map(Number);
+        } else if (startYear && endYear) {
+            const s = Math.min(Number(startYear), Number(endYear));
+            const e = Math.max(Number(startYear), Number(endYear));
+            targetYears = [];
+            for (let y = s; y <= e; y++) targetYears.push(y);
+        }
+
+        const result = await cryptoService.startCryptoPipeline({
+            symbols: targetSymbols,
+            years: targetYears,
+        });
+        res.json(result);
+    } catch (err) {
+        sendError(res, err, "failed to start Crypto pipeline");
+    }
+}
+
+/**
+ * Stop Crypto Pipeline
+ */
+async function stopBitcoinPipeline(req, res) {
+    try {
+        const cryptoService = require("../services/bitcoinDataService");
+        const result = cryptoService.stopCryptoPipeline();
+        res.json(result);
+    } catch (err) {
+        sendError(res, err, "failed to stop Crypto pipeline");
+    }
+}
+
+/**
+ * Get Crypto Pipeline Status
+ */
+async function getBitcoinStatus(req, res) {
+    try {
+        const cryptoService = require("../services/bitcoinDataService");
+        const status = cryptoService.getCryptoPipelineStatus();
+        const archives = await cryptoService.getCryptoArchiveStatus();
+        res.json({ ...status, archives });
+    } catch (err) {
+        sendError(res, err, "failed to get Crypto pipeline status");
+    }
+}
+
 module.exports = {
     getGDriveStatus,
     testGDriveConnection,
@@ -384,4 +446,7 @@ module.exports = {
     updateCronSettings,
     listGDriveFiles,
     importFromGDrive,
+    startBitcoinPipeline,
+    stopBitcoinPipeline,
+    getBitcoinStatus,
 };

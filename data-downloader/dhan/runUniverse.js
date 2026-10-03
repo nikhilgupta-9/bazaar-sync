@@ -166,6 +166,19 @@ async function main() {
                 await processSymbolYear(symbol, year);
                 consecutiveAuthFailures = 0;
                 consecutiveOtherFailures = 0;
+
+                // Automatic Google Drive Upload & Disk Prune (unless explicitly disabled with --skip-gdrive)
+                if (!flags["skip-gdrive"]) {
+                    try {
+                        const archival = require(path.join(__dirname, "..", "..", "server", "services", "archivalPipelineService"));
+                        console.log(`\n[dhan-universe] 🚀 Auto-archiving ${symbol} (${year}) to Google Drive...`);
+                        await archival.processBatch({ dataType: "option_chain", symbol, year: String(year), autoPrune: true });
+                        await archival.processBatch({ dataType: "futures", symbol, year: String(year), autoPrune: true });
+                        await archival.processBatch({ dataType: "ohlcv", symbol, year: String(year), autoPrune: true });
+                    } catch (gdriveErr) {
+                        console.warn(`[dhan-universe] GDrive auto-archive notice for ${symbol} (${year}):`, gdriveErr.message);
+                    }
+                }
             } catch (err) {
                 if (isAuthError(err)) {
                     consecutiveAuthFailures += 1;

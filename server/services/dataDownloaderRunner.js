@@ -329,6 +329,31 @@ async function startJob(params) {
             }
         }
 
+        // Automatic Google Drive Archival & Local Disk Prune on completion
+        if (status === "completed" && params.autoGdrive !== false) {
+            try {
+                const archival = require("./archivalPipelineService");
+                logStream.write(`\n[AutoGDrive] 🚀 Extraction finished! Auto-uploading to Google Drive & freeing local MySQL disk space...\n`);
+                const y = params.year ? Number(params.year) : new Date().getFullYear();
+                const syms = symbolList.length ? symbolList : ["NIFTY", "BANKNIFTY"];
+
+                for (const sym of syms) {
+                    if (params.dataType === "option_chain") {
+                        await archival.archiveAndPruneSymbolYear("option_chain", sym, y, true).catch(() => {});
+                        await archival.archiveAndPruneSymbolYear("futures", sym, y, true).catch(() => {});
+                        await archival.archiveAndPruneSymbolYear("ohlcv", sym, y, true).catch(() => {});
+                    } else if (params.dataType === "futures") {
+                        await archival.archiveAndPruneSymbolYear("futures", sym, y, true).catch(() => {});
+                    } else if (params.dataType === "vix" || params.dataType === "india_vix") {
+                        await archival.archiveAndPruneSymbolYear("india_vix", "INDIAVIX", y, true).catch(() => {});
+                    }
+                }
+                logStream.write(`[AutoGDrive] ✅ Google Drive Upload Complete & Local Disk Space Reclaimed!\n`);
+            } catch (gdriveErr) {
+                logStream.write(`[AutoGDrive] ⚠ Archival notice: ${gdriveErr.message}\n`);
+            }
+        }
+
         logStream.end();
         try {
             await pool.query(
@@ -337,6 +362,30 @@ async function startJob(params) {
             );
         } catch (err) {
             console.error(`[dataDownloaderRunner] failed to record completion for job ${jobId}: ${err.message}`);
+        }
+
+        // Watchdog Supervisor: Auto-Restart on unexpected failure/disconnect
+        const retryCount = Number(params._retryCount || 0);
+        const MAX_RETRIES = 5;
+        if (status === "failed" && params.autoRestart !== false && retryCount < MAX_RETRIES) {
+            try {
+                const [curr] = await pool.query(`SELECT status FROM data_extraction_jobs WHERE id=?`, [jobId]);
+                if (curr[0]?.status !== "cancelled") {
+                    const delay = Math.min(30000, 5000 * (retryCount + 1));
+                    console.log(`[Watchdog] 🔄 Auto-Restarting extraction job #${jobId} in ${delay / 1000}s (Attempt ${retryCount + 1}/${MAX_RETRIES})...`);
+                    setTimeout(() => {
+                        startJob({
+                            ...params,
+                            _retryCount: retryCount + 1,
+                            requestedBy: params.requestedBy || "watchdog-supervisor",
+                        }).catch((e) => {
+                            console.error("[Watchdog] Failed to auto-restart job:", e.message);
+                        });
+                    }, delay);
+                }
+            } catch (wErr) {
+                console.warn("[Watchdog] Error checking auto-restart:", wErr.message);
+            }
         }
     });
 

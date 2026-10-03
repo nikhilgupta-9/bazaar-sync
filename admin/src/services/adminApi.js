@@ -446,4 +446,26 @@ export async function importDataFromGDrive(token, { fileId, driveUrl, table }) {
     }));
 }
 
+// --- Bitcoin 3-Year Downloader & GDrive Archival ---
+
+export async function fetchBitcoinStatus(token) {
+    return handle(await fetch(`${API_URL}/api/admin/data/bitcoin/status`, authed(token)));
+}
+
+export async function startBitcoinPipeline(token, payload = {}) {
+    return handle(await fetch(`${API_URL}/api/admin/data/bitcoin/start`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    }));
+}
+
+export async function stopBitcoinPipeline(token) {
+    return handle(await fetch(`${API_URL}/api/admin/data/bitcoin/stop`, {
+        method: "POST",
+        ...authed(token),
+    }));
+}
+
+
 

@@ -21,6 +21,7 @@ import DataImport from "./pages/DataImport";
 import DataExportPrune from "./pages/DataExportPrune";
 import DataSettings from "./pages/DataSettings";
 import GoogleDriveArchive from "./pages/GoogleDriveArchive";
+import BitcoinDownloader from "./pages/BitcoinDownloader";
 
 export default function App() {
     return (
@@ -40,6 +41,7 @@ export default function App() {
                 <Route path="/seo" element={<Seo />} />
                 <Route path="/lot-size-history" element={<LotSizeHistory />} />
                 <Route path="/data-gdrive-archive" element={<GoogleDriveArchive />} />
+                <Route path="/data-bitcoin" element={<BitcoinDownloader />} />
                 <Route path="/data-extraction" element={<DataExtraction />} />
                 <Route path="/data-coverage" element={<DataCoverage />} />
                 <Route path="/expiry-status" element={<ExpiryStatus />} />

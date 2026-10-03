@@ -27,6 +27,12 @@ import {
     FiCheck,
     FiLogOut,
     FiInfo,
+    FiChevronLeft,
+    FiChevronRight,
+    FiFilter,
+    FiUploadCloud,
+    FiZap,
+    FiCheckSquare,
 } from "react-icons/fi";
 import { useAdminAuth } from "../context/AdminAuthContext";
 import DataNavHeader from "../components/DataNavHeader";
@@ -127,11 +133,21 @@ export default function GoogleDriveArchive() {
     // Pipeline Execution State
     const [pipelineStatus, setPipelineStatus] = useState(null);
     const [selectedCategories, setSelectedCategories] = useState(["option_chain", "futures", "india_vix", "bitcoin"]);
-    const [selectedYears, setSelectedYears] = useState(["2023", "2024"]);
-    const [selectedSymbols, setSelectedSymbols] = useState(["NIFTY", "BANKNIFTY", "ZYDUSLIFE"]);
+    const [selectedYears, setSelectedYears] = useState(["2023", "2024", "2025", "2026"]);
+    const [selectedSymbols, setSelectedSymbols] = useState(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "ZYDUSLIFE"]);
     const [autoPrune, setAutoPrune] = useState(true);
     const [startingPipeline, setStartingPipeline] = useState(false);
     const [singleBatchLoading, setSingleBatchLoading] = useState({});
+
+    // Target Symbols selector filter states
+    const [symbolSearch, setSymbolSearch] = useState("");
+    const [symbolFilterTab, setSymbolFilterTab] = useState("all"); // "all" | "with_data" | "indices" | "stocks"
+
+    // Matrix Table Filter & Pagination States
+    const [matrixPage, setMatrixPage] = useState(1);
+    const [matrixPageSize, setMatrixPageSize] = useState(25); // 25, 50, 100, "all"
+    const [matrixOnlyWithData, setMatrixOnlyWithData] = useState(false);
+    const [matrixStatusFilter, setMatrixStatusFilter] = useState("all"); // "all" | "gdrive" | "local_db" | "pending"
 
     // Cron Automation State
     const [cronStatus, setCronStatus] = useState(null);
@@ -444,15 +460,138 @@ export default function GoogleDriveArchive() {
         }
     };
 
+    // Dynamic symbols list from database with fallback
+    const availableSymbolsList = useMemo(() => {
+        if (coverageData?.availableSymbols?.length) {
+            return coverageData.availableSymbols;
+        }
+        return ALL_SYMBOLS.map((s) => ({
+            symbol: s.symbol,
+            name: s.name,
+            type: s.type,
+            hasLocalData: true,
+            categories: ["option_chain", "futures"],
+        }));
+    }, [coverageData?.availableSymbols]);
+
+    // Symbols available for the Target Symbols selector with search and tabs
+    const filteredTargetSymbols = useMemo(() => {
+        return availableSymbolsList.filter((item) => {
+            const matchesSearch =
+                !symbolSearch.trim() ||
+                item.symbol.toLowerCase().includes(symbolSearch.toLowerCase()) ||
+                (item.name && item.name.toLowerCase().includes(symbolSearch.toLowerCase()));
+            if (!matchesSearch) return false;
+            if (symbolFilterTab === "with_data") return item.hasLocalData;
+            if (symbolFilterTab === "indices") return item.type === "index";
+            if (symbolFilterTab === "stocks") return item.type === "stock";
+            return true;
+        });
+    }, [availableSymbolsList, symbolSearch, symbolFilterTab]);
+
+    // Summary status statistics across all assets in the matrix
+    const matrixStats = useMemo(() => {
+        if (!coverageData?.matrix) return { total: 0, gdrive: 0, localDb: 0, pending: 0 };
+        let gdrive = 0;
+        let localDb = 0;
+        let pending = 0;
+        coverageData.matrix.forEach((item) => {
+            const hasArchived = Object.values(item.years || {}).some(
+                (y) => y.status === "gdrive_archived" || (y.cloudRecords && y.cloudRecords > 0)
+            );
+            const hasLocal = Object.values(item.years || {}).some(
+                (y) => y.status === "local_db" || (y.localCount && y.localCount > 0)
+            );
+            if (hasArchived) gdrive++;
+            if (hasLocal) localDb++;
+            if (!hasArchived && !hasLocal) pending++;
+        });
+        return {
+            total: coverageData.matrix.length,
+            gdrive,
+            localDb,
+            pending,
+        };
+    }, [coverageData?.matrix]);
+
     // Filter matrix assets
     const filteredMatrix = useMemo(() => {
         if (!coverageData?.matrix) return [];
         return coverageData.matrix.filter((item) => {
-            const matchesQuery = item.symbol.toLowerCase().includes(searchQuery.toLowerCase()) || item.name.toLowerCase().includes(searchQuery.toLowerCase());
+            const matchesQuery =
+                !searchQuery.trim() ||
+                item.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                (item.name && item.name.toLowerCase().includes(searchQuery.toLowerCase()));
             const matchesCategory = activeCategoryTab === "all" || item.category === activeCategoryTab;
+            
+            if (matrixOnlyWithData) {
+                const hasAnyData = Object.values(item.years || {}).some(
+                    (y) => (y.localCount && y.localCount > 0) || (y.cloudRecords && y.cloudRecords > 0) || y.status === "gdrive_archived"
+                );
+                if (!hasAnyData) return false;
+            }
+
+            if (matrixStatusFilter === "gdrive") {
+                const hasArchived = Object.values(item.years || {}).some(
+                    (y) => y.status === "gdrive_archived" || (y.cloudRecords && y.cloudRecords > 0)
+                );
+                if (!hasArchived) return false;
+            } else if (matrixStatusFilter === "local_db") {
+                const hasLocal = Object.values(item.years || {}).some(
+                    (y) => y.status === "local_db" || (y.localCount && y.localCount > 0)
+                );
+                if (!hasLocal) return false;
+            } else if (matrixStatusFilter === "pending") {
+                const hasArchived = Object.values(item.years || {}).some(
+                    (y) => y.status === "gdrive_archived" || (y.cloudRecords && y.cloudRecords > 0)
+                );
+                const hasLocal = Object.values(item.years || {}).some(
+                    (y) => y.status === "local_db" || (y.localCount && y.localCount > 0)
+                );
+                if (hasArchived || hasLocal) return false;
+            }
+
             return matchesQuery && matchesCategory;
         });
-    }, [coverageData?.matrix, searchQuery, activeCategoryTab]);
+    }, [coverageData?.matrix, searchQuery, activeCategoryTab, matrixOnlyWithData, matrixStatusFilter]);
+
+    const totalMatrixPages = useMemo(() => {
+        if (matrixPageSize === "all") return 1;
+        return Math.max(1, Math.ceil(filteredMatrix.length / Number(matrixPageSize)));
+    }, [filteredMatrix.length, matrixPageSize]);
+
+    const paginatedMatrix = useMemo(() => {
+        if (matrixPageSize === "all") return filteredMatrix;
+        const size = Number(matrixPageSize);
+        const start = (matrixPage - 1) * size;
+        return filteredMatrix.slice(start, start + size);
+    }, [filteredMatrix, matrixPage, matrixPageSize]);
+
+    // 1-Click Push All Local DB Data to GDrive
+    const handlePushAllLocalData = async () => {
+        if (!token || startingPipeline) return;
+        const symbolsWithData = availableSymbolsList.filter((s) => s.hasLocalData).map((s) => s.symbol);
+        const targetSyms = symbolsWithData.length > 0 ? symbolsWithData : availableSymbolsList.map((s) => s.symbol);
+        setSelectedSymbols(targetSyms);
+        setSelectedCategories(["option_chain", "futures", "india_vix", "bitcoin"]);
+        setSelectedYears(["2023", "2024", "2025", "2026"]);
+
+        setStartingPipeline(true);
+        try {
+            await startGDrivePipeline(token, {
+                dataTypes: ["option_chain", "futures", "india_vix", "bitcoin"],
+                targetYears: ["2023", "2024", "2025", "2026"],
+                symbols: targetSyms,
+                autoPrune,
+            });
+            setPipelineStatus((prev) => ({ ...prev, isRunning: true, logs: [`Archiving all ${targetSyms.length} symbols with local DB data to Google Drive...`] }));
+            setBannerMessage({ type: "success", text: `Pipeline launched for all ${targetSyms.length} symbols! Archiving & pushing to Google Drive.` });
+        } catch (err) {
+            setBannerMessage({ type: "error", text: "Pipeline failed: " + err.message });
+        } finally {
+            setStartingPipeline(false);
+        }
+    };
 
     // Compute Totals
     const stats = useMemo(() => {
@@ -740,6 +879,34 @@ export default function GoogleDriveArchive() {
                             </div>
                         </div>
 
+                        {/* 1-Click Push All DB Data Banner */}
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-gradient-to-r from-violet-950/40 via-purple-900/30 to-indigo-950/40 border border-violet-500/30">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 rounded-lg bg-violet-600/30 border border-violet-500/40 text-violet-300">
+                                    <FiUploadCloud size={18} />
+                                </div>
+                                <div>
+                                    <div className="text-xs font-bold text-white flex items-center gap-2">
+                                        <span>One-Click Cloud Sync ({availableSymbolsList.filter((s) => s.hasLocalData).length} Assets in DB)</span>
+                                        <span className="text-[10px] font-black uppercase px-2 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                            Ready to Sync
+                                        </span>
+                                    </div>
+                                    <p className="text-[11px] text-gray-400 mt-0.5">
+                                        Auto-selects all {availableSymbolsList.filter((s) => s.hasLocalData).length} symbols with staged MySQL records and archives them into Google Drive.
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={handlePushAllLocalData}
+                                disabled={startingPipeline || pipelineStatus?.isRunning}
+                                className="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-bold text-xs shadow-lg shadow-violet-600/30 transition active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5 whitespace-nowrap"
+                            >
+                                <FiZap size={13} className={startingPipeline ? "animate-spin" : ""} />
+                                <span>Sync All DB Data to GDrive</span>
+                            </button>
+                        </div>
+
                         {/* Category Selector */}
                         <div className="space-y-1.5">
                             <label className="text-xs font-bold text-gray-300">Target Categories</label>
@@ -807,54 +974,133 @@ export default function GoogleDriveArchive() {
                                 </div>
                             </div>
 
-                            {/* Symbols Universe */}
-                            <div className="space-y-1.5 sm:col-span-2">
-                                <div className="flex items-center justify-between">
-                                    <label className="text-xs font-bold text-gray-300">Target Symbols ({selectedSymbols.length} Selected)</label>
-                                    <div className="flex items-center gap-2 text-[10px]">
+                            {/* Symbols Universe (Dynamic 271+ DB Symbols) */}
+                            <div className="space-y-2 sm:col-span-2">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="flex items-center gap-1.5">
+                                        <label className="text-xs font-bold text-gray-300">
+                                            Target Symbols
+                                        </label>
+                                        <span className="px-2 py-0.5 rounded-full bg-violet-600/30 text-violet-300 text-[11px] font-extrabold border border-violet-500/40">
+                                            {selectedSymbols.length} / {availableSymbolsList.length} Selected
+                                        </span>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                const withData = availableSymbolsList.filter((s) => s.hasLocalData).map((s) => s.symbol);
+                                                setSelectedSymbols(withData.length > 0 ? withData : availableSymbolsList.map((s) => s.symbol));
+                                            }}
+                                            className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 border border-emerald-500/30 font-bold transition flex items-center gap-1"
+                                            title="Select only symbols that currently have records in local MySQL DB"
+                                        >
+                                            <FiZap size={10} />
+                                            <span>With DB Data ({availableSymbolsList.filter((s) => s.hasLocalData).length})</span>
+                                        </button>
                                         <button
                                             type="button"
                                             onClick={() => setSelectedSymbols(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"])}
-                                            className="text-violet-400 hover:underline font-bold"
+                                            className="px-2 py-0.5 rounded bg-white/5 text-violet-300 hover:bg-violet-600/20 border border-white/10 font-bold transition"
                                         >
-                                            Indices Only
+                                            Indices (5)
                                         </button>
-                                        <span>•</span>
                                         <button
                                             type="button"
-                                            onClick={() => setSelectedSymbols(ALL_SYMBOLS.map((s) => s.symbol))}
-                                            className="text-violet-400 hover:underline font-bold"
+                                            onClick={() => setSelectedSymbols(availableSymbolsList.map((s) => s.symbol))}
+                                            className="px-2 py-0.5 rounded bg-white/5 text-violet-300 hover:bg-violet-600/20 border border-white/10 font-bold transition"
                                         >
-                                            Select All
+                                            All ({availableSymbolsList.length})
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setSelectedSymbols([])}
+                                            className="px-2 py-0.5 rounded bg-white/5 text-gray-400 hover:bg-red-500/20 hover:text-red-300 border border-white/10 font-bold transition"
+                                        >
+                                            Clear
                                         </button>
                                     </div>
                                 </div>
-                                <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto custom-scrollbar p-1.5 rounded-lg bg-black/40 border border-white/5">
-                                    {ALL_SYMBOLS.map((item) => {
-                                        const isSelected = selectedSymbols.includes(item.symbol);
-                                        return (
+
+                                {/* Symbol Search & Filter Tabs */}
+                                <div className="flex items-center gap-2">
+                                    <div className="relative flex-1">
+                                        <FiSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" size={12} />
+                                        <input
+                                            type="text"
+                                            placeholder="Search from 271+ DB symbols (e.g. RELIANCE, NIFTY)..."
+                                            value={symbolSearch}
+                                            onChange={(e) => setSymbolSearch(e.target.value)}
+                                            className="w-full pl-7 pr-2.5 py-1 rounded-lg bg-black/50 border border-white/10 text-xs text-white placeholder-gray-500 focus:border-violet-500 focus:outline-none"
+                                        />
+                                        {symbolSearch && (
                                             <button
-                                                key={item.symbol}
                                                 type="button"
-                                                onClick={() => {
-                                                    if (isSelected) {
-                                                        if (selectedSymbols.length > 1) {
-                                                            setSelectedSymbols(selectedSymbols.filter((s) => s !== item.symbol));
-                                                        }
-                                                    } else {
-                                                        setSelectedSymbols([...selectedSymbols, item.symbol]);
-                                                    }
-                                                }}
-                                                className={`px-2 py-0.5 rounded text-[11px] font-bold border transition ${
-                                                    isSelected
-                                                        ? "bg-violet-600/30 border-violet-500/50 text-violet-200"
-                                                        : "bg-white/5 border-transparent text-gray-400 hover:bg-white/10"
+                                                onClick={() => setSymbolSearch("")}
+                                                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xs font-bold"
+                                            >
+                                                ✕
+                                            </button>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center rounded-lg bg-white/5 p-0.5 border border-white/10 text-[10px]">
+                                        {[
+                                            { key: "all", label: "All" },
+                                            { key: "with_data", label: "In DB" },
+                                            { key: "indices", label: "Indices" },
+                                            { key: "stocks", label: "Stocks" },
+                                        ].map((tab) => (
+                                            <button
+                                                key={tab.key}
+                                                type="button"
+                                                onClick={() => setSymbolFilterTab(tab.key)}
+                                                className={`px-2 py-0.5 rounded font-bold transition ${
+                                                    symbolFilterTab === tab.key
+                                                        ? "bg-violet-600 text-white shadow-sm"
+                                                        : "text-gray-400 hover:text-gray-200"
                                                 }`}
                                             >
-                                                {item.symbol}
+                                                {tab.label}
                                             </button>
-                                        );
-                                    })}
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* Symbol Chips Grid */}
+                                <div className="flex flex-wrap gap-1 max-h-28 overflow-y-auto custom-scrollbar p-2 rounded-xl bg-black/40 border border-white/10">
+                                    {filteredTargetSymbols.length === 0 ? (
+                                        <div className="w-full text-center py-3 text-xs text-gray-500 italic">
+                                            No symbols match filter "{symbolSearch}"
+                                        </div>
+                                    ) : (
+                                        filteredTargetSymbols.map((item) => {
+                                            const isSelected = selectedSymbols.includes(item.symbol);
+                                            return (
+                                                <button
+                                                    key={item.symbol}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        if (isSelected) {
+                                                            setSelectedSymbols(selectedSymbols.filter((s) => s !== item.symbol));
+                                                        } else {
+                                                            setSelectedSymbols([...selectedSymbols, item.symbol]);
+                                                        }
+                                                    }}
+                                                    className={`px-2 py-0.5 rounded text-[11px] font-bold border transition flex items-center gap-1 ${
+                                                        isSelected
+                                                            ? "bg-violet-600/40 border-violet-400 text-white shadow-sm"
+                                                            : "bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-gray-200"
+                                                    }`}
+                                                    title={`${item.name || item.symbol} ${item.hasLocalData ? "• (Has Local DB Data)" : ""}`}
+                                                >
+                                                    <span>{item.symbol}</span>
+                                                    {item.hasLocalData && (
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" title="Has Local DB Records" />
+                                                    )}
+                                                </button>
+                                            );
+                                        })
+                                    )}
                                 </div>
                             </div>
                         </div>
@@ -1080,19 +1326,23 @@ export default function GoogleDriveArchive() {
                             </p>
                         </div>
 
-                        {/* Search & Category Tabs */}
+                        {/* Search, Filter & Pagination Controls */}
                         <div className="flex flex-wrap items-center gap-2.5">
                             <div className="relative">
                                 <FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={13} />
                                 <input
                                     type="text"
-                                    placeholder="Search symbol/asset..."
+                                    placeholder="Search 271+ assets..."
                                     value={searchQuery}
-                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    onChange={(e) => {
+                                        setSearchQuery(e.target.value);
+                                        setMatrixPage(1);
+                                    }}
                                     className="pl-8 pr-3 py-1.5 rounded-xl bg-black/50 border border-white/10 text-xs text-white placeholder-gray-500 focus:border-violet-500 w-36 sm:w-48"
                                 />
                             </div>
 
+                            {/* Category Filter Tabs */}
                             <div className="flex items-center rounded-xl bg-white/5 p-0.5 border border-white/5">
                                 {[
                                     { key: "all", label: "All Assets" },
@@ -1103,8 +1353,11 @@ export default function GoogleDriveArchive() {
                                 ].map((tab) => (
                                     <button
                                         key={tab.key}
-                                        onClick={() => setActiveCategoryTab(tab.key)}
-                                        className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                                        onClick={() => {
+                                            setActiveCategoryTab(tab.key);
+                                            setMatrixPage(1);
+                                        }}
+                                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition ${
                                             activeCategoryTab === tab.key
                                                 ? "bg-violet-600 text-white shadow-sm"
                                                 : "text-gray-400 hover:text-gray-200"
@@ -1113,6 +1366,49 @@ export default function GoogleDriveArchive() {
                                         {tab.label}
                                     </button>
                                 ))}
+                            </div>
+
+                            {/* Status Filter Tabs (Drive vs Local DB vs Pending) */}
+                            <div className="flex items-center rounded-xl bg-black/40 p-0.5 border border-white/10 text-xs">
+                                {[
+                                    { key: "all", label: `All (${matrixStats.total})`, activeColor: "bg-white/20 text-white" },
+                                    { key: "gdrive", label: `🟢 In Drive (${matrixStats.gdrive})`, activeColor: "bg-emerald-600 text-white" },
+                                    { key: "local_db", label: `🟡 Local DB (${matrixStats.localDb})`, activeColor: "bg-amber-600 text-white" },
+                                    { key: "pending", label: `⚪ Pending (${matrixStats.pending})`, activeColor: "bg-gray-700 text-gray-200" },
+                                ].map((tab) => (
+                                    <button
+                                        key={tab.key}
+                                        onClick={() => {
+                                            setMatrixStatusFilter(tab.key);
+                                            setMatrixPage(1);
+                                        }}
+                                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition ${
+                                            matrixStatusFilter === tab.key
+                                                ? `${tab.activeColor} shadow-sm`
+                                                : "text-gray-400 hover:text-gray-200"
+                                        }`}
+                                    >
+                                        {tab.label}
+                                    </button>
+                                ))}
+                            </div>
+
+                            {/* Page Size Selector */}
+                            <div className="flex items-center gap-1.5 bg-black/40 border border-white/10 rounded-xl px-2.5 py-1 text-xs text-gray-400">
+                                <span>Show:</span>
+                                <select
+                                    value={matrixPageSize}
+                                    onChange={(e) => {
+                                        setMatrixPageSize(e.target.value === "all" ? "all" : Number(e.target.value));
+                                        setMatrixPage(1);
+                                    }}
+                                    className="bg-transparent text-white font-bold text-xs focus:outline-none cursor-pointer"
+                                >
+                                    <option value={25} className="bg-[#0d0d14] text-white">25</option>
+                                    <option value={50} className="bg-[#0d0d14] text-white">50</option>
+                                    <option value={100} className="bg-[#0d0d14] text-white">100</option>
+                                    <option value="all" className="bg-[#0d0d14] text-white">All ({filteredMatrix.length})</option>
+                                </select>
                             </div>
 
                             <button
@@ -1124,6 +1420,23 @@ export default function GoogleDriveArchive() {
                                 <FiRefreshCw size={14} className={coverageLoading ? "animate-spin" : ""} />
                             </button>
                         </div>
+                    </div>
+
+                    {/* Matrix Status & Count Bar */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-400 px-1">
+                        <div className="flex items-center gap-2">
+                            <span>Showing <strong className="text-white">{paginatedMatrix.length}</strong> of <strong className="text-white">{filteredMatrix.length}</strong> assets</span>
+                            {coverageData?.totalSymbols && (
+                                <span className="text-[11px] text-gray-500">
+                                    (Total {coverageData.totalSymbols} universe symbols in DB)
+                                </span>
+                            )}
+                        </div>
+                        {totalMatrixPages > 1 && (
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-gray-400">
+                                <span>Page {matrixPage} of {totalMatrixPages}</span>
+                            </div>
+                        )}
                     </div>
 
                     {/* Table Matrix */}
@@ -1141,110 +1454,170 @@ export default function GoogleDriveArchive() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-white/5 text-xs">
-                                {filteredMatrix.map((item) => {
-                                    return (
-                                        <tr key={`${item.category}_${item.symbol}`} className="hover:bg-white/[0.02] transition">
-                                            <td className="py-3.5 px-4">
-                                                <div className="flex items-center gap-2.5">
-                                                    <div className="p-2 rounded-lg bg-white/5 border border-white/5 text-gray-300">
-                                                        <FiFolder size={14} className="text-violet-400" />
-                                                    </div>
-                                                    <div>
-                                                        <div className="flex items-center gap-2">
-                                                            <span className="font-black text-white">{item.symbol}</span>
-                                                            <span className="text-[10px] text-violet-300 uppercase px-1.5 py-0.2 rounded bg-violet-500/10 border border-violet-500/20">
-                                                                {item.categoryName}
-                                                            </span>
+                                {paginatedMatrix.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={6} className="py-8 text-center text-gray-500 italic">
+                                            No assets match the selected filter or search query.
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    paginatedMatrix.map((item) => {
+                                        return (
+                                            <tr key={`${item.category}_${item.symbol}`} className="hover:bg-white/[0.02] transition">
+                                                <td className="py-3.5 px-4">
+                                                    <div className="flex items-center gap-2.5">
+                                                        <div className="p-2 rounded-lg bg-white/5 border border-white/5 text-gray-300">
+                                                            <FiFolder size={14} className="text-violet-400" />
                                                         </div>
-                                                        <div className="text-[11px] text-gray-400 mt-0.5">{item.name}</div>
+                                                        <div>
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="font-black text-white">{item.symbol}</span>
+                                                                <span className="text-[10px] text-violet-300 uppercase px-1.5 py-0.2 rounded bg-violet-500/10 border border-violet-500/20">
+                                                                    {item.categoryName}
+                                                                </span>
+                                                            </div>
+                                                            <div className="text-[11px] text-gray-400 mt-0.5">{item.name}</div>
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            </td>
+                                                </td>
 
-                                            {["2023", "2024", "2025", "2026"].map((yr) => {
-                                                const cell = item.years?.[yr] || { status: "pending" };
-                                                const isArchived = cell.status === "gdrive_archived";
-                                                const isLocal = cell.status === "local_db";
-                                                const isSingleLoading = singleBatchLoading[`${item.category}_${item.symbol}_${yr}`];
+                                                {["2023", "2024", "2025", "2026"].map((yr) => {
+                                                    const cell = item.years?.[yr] || { status: "pending" };
+                                                    const isArchived = cell.status === "gdrive_archived";
+                                                    const isLocal = cell.status === "local_db";
+                                                    const isSingleLoading = singleBatchLoading[`${item.category}_${item.symbol}_${yr}`];
 
-                                                return (
-                                                    <td key={yr} className="py-3.5 px-4 text-center">
-                                                        {isArchived ? (
-                                                            <div className="inline-flex flex-col items-center gap-1 p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 w-full">
-                                                                <div className="flex items-center gap-1.5 font-bold text-xs">
-                                                                    <FiCheckCircle size={13} className="text-emerald-400" />
-                                                                    <span>GDrive Archived</span>
+                                                    return (
+                                                        <td key={yr} className="py-3.5 px-4 text-center">
+                                                            {isArchived ? (
+                                                                <div className="inline-flex flex-col items-center gap-1 p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 w-full">
+                                                                    <div className="flex items-center gap-1.5 font-bold text-xs">
+                                                                        <FiCheckCircle size={13} className="text-emerald-400" />
+                                                                        <span>GDrive Archived</span>
+                                                                    </div>
+                                                                    <div className="flex items-center justify-between w-full text-[10px] opacity-80 px-1 pt-1 border-t border-emerald-500/20">
+                                                                        <span>{formatBytes(cell.cloudSizeBytes)}</span>
+                                                                        <span>{formatNumber(cell.cloudRecords)} rows</span>
+                                                                    </div>
+                                                                    {cell.cloudWebLink && (
+                                                                        <a
+                                                                            href={cell.cloudWebLink}
+                                                                            target="_blank"
+                                                                            rel="noreferrer"
+                                                                            className="text-[10px] text-emerald-400 hover:underline flex items-center gap-1 font-semibold mt-0.5"
+                                                                        >
+                                                                            <span>Open on Drive</span>
+                                                                            <FiExternalLink size={10} />
+                                                                        </a>
+                                                                    )}
                                                                 </div>
-                                                                <div className="flex items-center justify-between w-full text-[10px] opacity-80 px-1 pt-1 border-t border-emerald-500/20">
-                                                                    <span>{formatBytes(cell.cloudSizeBytes)}</span>
-                                                                    <span>{formatNumber(cell.cloudRecords)} rows</span>
-                                                                </div>
-                                                                {cell.cloudWebLink && (
-                                                                    <a
-                                                                        href={cell.cloudWebLink}
-                                                                        target="_blank"
-                                                                        rel="noreferrer"
-                                                                        className="text-[10px] text-emerald-400 hover:underline flex items-center gap-1 font-semibold mt-0.5"
+                                                            ) : isLocal ? (
+                                                                <div className="inline-flex flex-col items-center gap-1 p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 w-full">
+                                                                    <div className="flex items-center gap-1.5 font-bold text-xs">
+                                                                        <FiHardDrive size={13} className="text-amber-400" />
+                                                                        <span>Local DB Staged</span>
+                                                                    </div>
+                                                                    <div className="text-[10px] opacity-80">
+                                                                        {formatNumber(cell.localCount)} rows in DB
+                                                                    </div>
+                                                                    <button
+                                                                        onClick={() => handleManualBatchArchive(item.category, item.symbol, yr)}
+                                                                        disabled={isSingleLoading}
+                                                                        className="mt-1 px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-[10px] font-bold transition flex items-center gap-1"
                                                                     >
-                                                                        <span>Open on Drive</span>
-                                                                        <FiExternalLink size={10} />
-                                                                    </a>
-                                                                )}
-                                                            </div>
-                                                        ) : isLocal ? (
-                                                            <div className="inline-flex flex-col items-center gap-1 p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 w-full">
-                                                                <div className="flex items-center gap-1.5 font-bold text-xs">
-                                                                    <FiHardDrive size={13} className="text-amber-400" />
-                                                                    <span>Local DB Staged</span>
+                                                                        <FiCloud size={11} className={isSingleLoading ? "animate-spin" : ""} />
+                                                                        <span>{isSingleLoading ? "Syncing..." : "Sync & Free Space"}</span>
+                                                                    </button>
                                                                 </div>
-                                                                <div className="text-[10px] opacity-80">
-                                                                    {formatNumber(cell.localCount)} rows in DB
+                                                            ) : (
+                                                                <div className="inline-flex flex-col items-center gap-1 p-2 rounded-xl bg-white/[0.02] border border-white/5 text-gray-500 w-full">
+                                                                    <span className="text-[11px] font-medium italic">Pending / Not in DB</span>
+                                                                    <button
+                                                                        onClick={() => handleManualBatchArchive(item.category, item.symbol, yr)}
+                                                                        disabled={isSingleLoading}
+                                                                        className="mt-0.5 px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-gray-400 hover:text-gray-200 text-[10px] font-bold transition"
+                                                                    >
+                                                                        {isSingleLoading ? "Extracting..." : "Extract & Sync"}
+                                                                    </button>
                                                                 </div>
-                                                                <button
-                                                                    onClick={() => handleManualBatchArchive(item.category, item.symbol, yr)}
-                                                                    disabled={isSingleLoading}
-                                                                    className="mt-1 px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-[10px] font-bold transition flex items-center gap-1"
-                                                                >
-                                                                    <FiCloud size={11} className={isSingleLoading ? "animate-spin" : ""} />
-                                                                    <span>{isSingleLoading ? "Syncing..." : "Sync & Free Space"}</span>
-                                                                </button>
-                                                            </div>
-                                                        ) : (
-                                                            <div className="inline-flex flex-col items-center gap-1 p-2 rounded-xl bg-white/[0.02] border border-white/5 text-gray-500 w-full">
-                                                                <span className="text-[11px] font-medium italic">Pending / Not in DB</span>
-                                                                <button
-                                                                    onClick={() => handleManualBatchArchive(item.category, item.symbol, yr)}
-                                                                    disabled={isSingleLoading}
-                                                                    className="mt-0.5 px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-gray-400 hover:text-gray-200 text-[10px] font-bold transition"
-                                                                >
-                                                                    {isSingleLoading ? "Extracting..." : "Extract & Sync"}
-                                                                </button>
-                                                            </div>
-                                                        )}
-                                                    </td>
-                                                );
-                                            })}
+                                                            )}
+                                                        </td>
+                                                    );
+                                                })}
 
-                                            <td className="py-3.5 px-4 text-right">
-                                                <button
-                                                    onClick={() => {
-                                                        setSelectedCategories([item.category]);
-                                                        if (item.symbol !== "INDIAVIX" && item.symbol !== "BTCUSDT") {
-                                                            setSelectedSymbols([item.symbol]);
-                                                        }
-                                                        window.scrollTo({ top: 0, behavior: "smooth" });
-                                                    }}
-                                                    className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-violet-600/20 border border-white/5 hover:border-violet-500/30 text-gray-300 hover:text-violet-300 text-xs font-bold transition"
-                                                >
-                                                    Select
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
+                                                <td className="py-3.5 px-4 text-right">
+                                                    <button
+                                                        onClick={() => {
+                                                            setSelectedCategories([item.category]);
+                                                            if (item.symbol !== "INDIAVIX" && item.symbol !== "BTCUSDT") {
+                                                                setSelectedSymbols([item.symbol]);
+                                                            }
+                                                            window.scrollTo({ top: 0, behavior: "smooth" });
+                                                        }}
+                                                        className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-violet-600/20 border border-white/5 hover:border-violet-500/30 text-gray-300 hover:text-violet-300 text-xs font-bold transition"
+                                                    >
+                                                        Select
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })
+                                )}
                             </tbody>
                         </table>
                     </div>
+
+                    {/* Pagination Footer */}
+                    {totalMatrixPages > 1 && (
+                        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-white/5">
+                            <span className="text-xs text-gray-400">
+                                Page <strong className="text-white">{matrixPage}</strong> of <strong className="text-white">{totalMatrixPages}</strong> ({filteredMatrix.length} total matching assets)
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                                <button
+                                    onClick={() => setMatrixPage((p) => Math.max(1, p - 1))}
+                                    disabled={matrixPage === 1}
+                                    className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed text-xs font-bold flex items-center gap-1"
+                                >
+                                    <FiChevronLeft size={14} />
+                                    <span>Prev</span>
+                                </button>
+                                {Array.from({ length: Math.min(5, totalMatrixPages) }, (_, i) => {
+                                    let pageNum;
+                                    if (totalMatrixPages <= 5) {
+                                        pageNum = i + 1;
+                                    } else if (matrixPage <= 3) {
+                                        pageNum = i + 1;
+                                    } else if (matrixPage >= totalMatrixPages - 2) {
+                                        pageNum = totalMatrixPages - 4 + i;
+                                    } else {
+                                        pageNum = matrixPage - 2 + i;
+                                    }
+                                    return (
+                                        <button
+                                            key={pageNum}
+                                            onClick={() => setMatrixPage(pageNum)}
+                                            className={`w-8 h-8 rounded-lg text-xs font-bold transition ${
+                                                matrixPage === pageNum
+                                                    ? "bg-violet-600 text-white shadow"
+                                                    : "bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white"
+                                            }`}
+                                        >
+                                            {pageNum}
+                                        </button>
+                                    );
+                                })}
+                                <button
+                                    onClick={() => setMatrixPage((p) => Math.min(totalMatrixPages, p + 1))}
+                                    disabled={matrixPage === totalMatrixPages}
+                                    className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed text-xs font-bold flex items-center gap-1"
+                                >
+                                    <span>Next</span>
+                                    <FiChevronRight size={14} />
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </main>
 

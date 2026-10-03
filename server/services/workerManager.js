@@ -128,12 +128,38 @@ function stop(reason = "manual") {
 }
 
 function subscribeSymbol(symbol) {
-    if (!isRunning() || !symbol) return;
-    try {
-        child.send({ type: "worker:subscribe_symbol", symbol: String(symbol).toUpperCase() });
-    } catch (err) {
-        workerLogger.error(`Failed to send subscribe message to worker for ${symbol}: ${err.message}`);
+    const sym = String(symbol || "").trim().toUpperCase();
+    if (!sym) return;
+
+    if (!isRunning()) {
+        if (marketHours.isTradingTime() || marketHours.isExtendedHours() || process.env.FORCE_LIVE_FEED === "true") {
+            start(`on-demand client subscribe: ${sym}`);
+            setTimeout(() => {
+                if (isRunning() && child) {
+                    try {
+                        child.send({ type: "worker:subscribe_symbol", symbol: sym });
+                    } catch (_) {}
+                }
+            }, 1500);
+            return;
+        }
+    }
+
+    if (isRunning() && child) {
+        try {
+            child.send({ type: "worker:subscribe_symbol", symbol: sym });
+        } catch (err) {
+            workerLogger.error(`Failed to send subscribe message to worker for ${sym}: ${err.message}`);
+        }
     }
 }
+
+// Watchdog: ensures market worker stays alive automatically during trading hours
+setInterval(() => {
+    if ((marketHours.isTradingTime() || marketHours.isExtendedHours()) && !isRunning() && !stopping) {
+        workerLogger.info("Watchdog detected worker stopped during trading hours. Starting market worker...");
+        start("market-hours watchdog");
+    }
+}, 10000);
 
 module.exports = { start, stop, isRunning, subscribeSymbol };

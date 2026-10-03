@@ -10,9 +10,10 @@ const TOKEN_EXPIRY = "7d";
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 function signToken(user) {
+    const secret = process.env.JWT_SECRET || "bazaar_sync_jwt_secret_dev_key_2026";
     return jwt.sign(
         { sub: user.id, email: user.email, tier: user.tier },
-        process.env.JWT_SECRET,
+        secret,
         { expiresIn: TOKEN_EXPIRY }
     );
 }

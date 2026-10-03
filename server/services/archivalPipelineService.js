@@ -99,29 +99,32 @@ async function exportToGzipCsv(dataType, symbol, year) {
     let rowsParams = [];
     let csvHeader = "";
 
+    const startDate = `${year}-01-01`;
+    const endDate = `${year}-12-31`;
+
     if (dataType === "option_chain") {
-        countSql = `SELECT COUNT(*) as total FROM option_chain_history WHERE symbol = ? AND YEAR(trade_date) = ?`;
-        countParams = [symbol, year];
+        countSql = `SELECT COUNT(*) as total FROM option_chain_history WHERE symbol = ? AND trade_date >= ? AND trade_date <= ?`;
+        countParams = [symbol, startDate, endDate];
         rowsSql = `
             SELECT id, symbol, DATE_FORMAT(trade_date, '%Y-%m-%d') as trade_date, trade_time,
                    DATE_FORMAT(expiry, '%Y-%m-%d') as expiry, strike, underlying_price,
                    ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume, ce_delta, ce_gamma, ce_theta, ce_vega,
                    pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume, pe_delta, pe_gamma, pe_theta, pe_vega
             FROM option_chain_history
-            WHERE symbol = ? AND YEAR(trade_date) = ?
+            WHERE symbol = ? AND trade_date >= ? AND trade_date <= ?
             ORDER BY trade_date ASC, trade_time ASC, strike ASC
             LIMIT ? OFFSET ?
         `;
         csvHeader = "id,symbol,trade_date,trade_time,expiry,strike,underlying_price,ce_ltp,ce_oi,ce_oi_change,ce_iv,ce_volume,ce_delta,ce_gamma,ce_theta,ce_vega,pe_ltp,pe_oi,pe_oi_change,pe_iv,pe_volume,pe_delta,pe_gamma,pe_theta,pe_vega\n";
     } else if (dataType === "futures") {
-        countSql = `SELECT COUNT(*) as total FROM futures_history WHERE symbol = ? AND YEAR(trade_date) = ?`;
-        countParams = [symbol, year];
+        countSql = `SELECT COUNT(*) as total FROM futures_history WHERE symbol = ? AND trade_date >= ? AND trade_date <= ?`;
+        countParams = [symbol, startDate, endDate];
         rowsSql = `
             SELECT id, symbol, DATE_FORMAT(expiry, '%Y-%m-%d') as expiry,
                    DATE_FORMAT(trade_date, '%Y-%m-%d') as trade_date, trade_time,
                    open, high, low, close, volume, oi, oi_change, underlying_price
             FROM futures_history
-            WHERE symbol = ? AND YEAR(trade_date) = ?
+            WHERE symbol = ? AND trade_date >= ? AND trade_date <= ?
             ORDER BY trade_date ASC, trade_time ASC
             LIMIT ? OFFSET ?
         `;
@@ -129,14 +132,14 @@ async function exportToGzipCsv(dataType, symbol, year) {
     } else if (dataType === "india_vix") {
         countSql = `
             SELECT COUNT(*) as total FROM ohlcv_data 
-            WHERE symbol IN ('INDIA VIX', 'INDIAVIX', 'INDIA_VIX', 'VIX') AND YEAR(trade_date) = ?
+            WHERE symbol IN ('INDIA VIX', 'INDIAVIX', 'INDIA_VIX', 'VIX') AND trade_date >= ? AND trade_date <= ?
         `;
-        countParams = [year];
+        countParams = [startDate, endDate];
         rowsSql = `
             SELECT id, symbol, DATE_FORMAT(trade_date, '%Y-%m-%d') as trade_date, trade_time,
                    open, high, low, close, volume
             FROM ohlcv_data
-            WHERE symbol IN ('INDIA VIX', 'INDIAVIX', 'INDIA_VIX', 'VIX') AND YEAR(trade_date) = ?
+            WHERE symbol IN ('INDIA VIX', 'INDIAVIX', 'INDIA_VIX', 'VIX') AND trade_date >= ? AND trade_date <= ?
             ORDER BY trade_date ASC, trade_time ASC
             LIMIT ? OFFSET ?
         `;
@@ -144,14 +147,26 @@ async function exportToGzipCsv(dataType, symbol, year) {
     } else if (dataType === "bitcoin") {
         countSql = `
             SELECT COUNT(*) as total FROM ohlcv_data 
-            WHERE symbol IN ('BTCUSDT', 'BTC', 'BITCOIN', 'BTC/USDT') AND YEAR(trade_date) = ?
+            WHERE symbol IN ('BTCUSDT', 'BTC', 'BITCOIN', 'BTC/USDT') AND trade_date >= ? AND trade_date <= ?
         `;
-        countParams = [year];
+        countParams = [startDate, endDate];
         rowsSql = `
             SELECT id, symbol, DATE_FORMAT(trade_date, '%Y-%m-%d') as trade_date, trade_time,
                    open, high, low, close, volume
             FROM ohlcv_data
-            WHERE symbol IN ('BTCUSDT', 'BTC', 'BITCOIN', 'BTC/USDT') AND YEAR(trade_date) = ?
+            WHERE symbol IN ('BTCUSDT', 'BTC', 'BITCOIN', 'BTC/USDT') AND trade_date >= ? AND trade_date <= ?
+            ORDER BY trade_date ASC, trade_time ASC
+            LIMIT ? OFFSET ?
+        `;
+        csvHeader = "id,symbol,trade_date,trade_time,open,high,low,close,volume\n";
+    } else if (dataType === "ohlcv" || dataType === "stock_ohlcv") {
+        countSql = `SELECT COUNT(*) as total FROM ohlcv_data WHERE symbol = ? AND trade_date >= ? AND trade_date <= ?`;
+        countParams = [symbol, startDate, endDate];
+        rowsSql = `
+            SELECT id, symbol, DATE_FORMAT(trade_date, '%Y-%m-%d') as trade_date, trade_time,
+                   open, high, low, close, volume
+            FROM ohlcv_data
+            WHERE symbol = ? AND trade_date >= ? AND trade_date <= ?
             ORDER BY trade_date ASC, trade_time ASC
             LIMIT ? OFFSET ?
         `;
@@ -171,7 +186,12 @@ async function exportToGzipCsv(dataType, symbol, year) {
 
     const gzip = zlib.createGzip({ level: 9 });
     const writeStream = fs.createWriteStream(outputPath);
+    
+    let streamError = null;
+    gzip.on("error", (err) => { streamError = err; });
+    writeStream.on("error", (err) => { streamError = err; });
     gzip.pipe(writeStream);
+
     gzip.write(csvHeader);
 
     // Stream query in chunks of 15,000 rows
@@ -179,9 +199,11 @@ async function exportToGzipCsv(dataType, symbol, year) {
     let offset = 0;
 
     while (offset < totalRecords) {
+        if (streamError) throw streamError;
+
         const queryParams = dataType === "india_vix" || dataType === "bitcoin" 
-            ? [year, chunkSize, offset]
-            : [symbol, year, chunkSize, offset];
+            ? [startDate, endDate, chunkSize, offset]
+            : [symbol, startDate, endDate, chunkSize, offset];
 
         const rows = await db.query(rowsSql, queryParams);
         if (!rows || rows.length === 0) break;
@@ -204,7 +226,11 @@ async function exportToGzipCsv(dataType, symbol, year) {
     gzip.end();
 
     await new Promise((resolve, reject) => {
-        writeStream.on("finish", resolve);
+        if (streamError) return reject(streamError);
+        writeStream.on("finish", () => {
+            if (streamError) reject(streamError);
+            else resolve();
+        });
         writeStream.on("error", reject);
     });
 
@@ -224,34 +250,36 @@ async function exportToGzipCsv(dataType, symbol, year) {
  */
 async function pruneLocalDb(dataType, symbol, year) {
     appendLog(`Reclaiming Mac disk space: Pruning ${symbol || dataType} (${year}) [${dataType}] from local DB...`);
+    const startDate = `${year}-01-01`;
+    const endDate = `${year}-12-31`;
     let deleteSql = "";
     let deleteParams = [];
     let tableName = "";
 
     if (dataType === "option_chain") {
         tableName = "option_chain_history";
-        deleteSql = `DELETE FROM option_chain_history WHERE symbol = ? AND YEAR(trade_date) = ?`;
-        deleteParams = [symbol, year];
+        deleteSql = `DELETE FROM option_chain_history WHERE symbol = ? AND trade_date >= ? AND trade_date <= ?`;
+        deleteParams = [symbol, startDate, endDate];
     } else if (dataType === "futures") {
         tableName = "futures_history";
-        deleteSql = `DELETE FROM futures_history WHERE symbol = ? AND YEAR(trade_date) = ?`;
-        deleteParams = [symbol, year];
+        deleteSql = `DELETE FROM futures_history WHERE symbol = ? AND trade_date >= ? AND trade_date <= ?`;
+        deleteParams = [symbol, startDate, endDate];
     } else if (dataType === "india_vix") {
         tableName = "ohlcv_data";
-        deleteSql = `DELETE FROM ohlcv_data WHERE symbol IN ('INDIA VIX', 'INDIAVIX', 'INDIA_VIX', 'VIX') AND YEAR(trade_date) = ?`;
-        deleteParams = [year];
+        deleteSql = `DELETE FROM ohlcv_data WHERE symbol IN ('INDIA VIX', 'INDIAVIX', 'INDIA_VIX', 'VIX') AND trade_date >= ? AND trade_date <= ?`;
+        deleteParams = [startDate, endDate];
     } else if (dataType === "bitcoin") {
         tableName = "ohlcv_data";
-        deleteSql = `DELETE FROM ohlcv_data WHERE symbol IN ('BTCUSDT', 'BTC', 'BITCOIN', 'BTC/USDT') AND YEAR(trade_date) = ?`;
-        deleteParams = [year];
+        deleteSql = `DELETE FROM ohlcv_data WHERE symbol IN ('BTCUSDT', 'BTC', 'BITCOIN', 'BTC/USDT') AND trade_date >= ? AND trade_date <= ?`;
+        deleteParams = [startDate, endDate];
+    } else if (dataType === "ohlcv" || dataType === "stock_ohlcv") {
+        tableName = "ohlcv_data";
+        deleteSql = `DELETE FROM ohlcv_data WHERE symbol = ? AND trade_date >= ? AND trade_date <= ?`;
+        deleteParams = [symbol, startDate, endDate];
     }
 
     const deleteRes = await db.query(deleteSql, deleteParams);
     const deletedCount = deleteRes?.affectedRows || 0;
-
-    try {
-        await db.query(`OPTIMIZE TABLE ${tableName}`);
-    } catch (_) {}
 
     appendLog(`✅ Pruned ${deletedCount.toLocaleString()} local DB rows for ${symbol || dataType} (${year}). Disk space reclaimed.`);
     return deletedCount;
@@ -329,6 +357,8 @@ async function processBatch({ dataType = "option_chain", symbol, year, folderId 
     if (fs.existsSync(exportResult.outputPath)) {
         fs.unlinkSync(exportResult.outputPath);
     }
+
+    invalidateMatrixCache();
 
     return {
         status: "success",
@@ -466,11 +496,21 @@ function getPipelineStatus() {
     return { ...activePipeline };
 }
 
+let cachedCoverageMatrix = null;
+let matrixCacheExpiresAt = 0;
+let isRefreshingMatrix = false;
+const MATRIX_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes cache
+
+function invalidateMatrixCache() {
+    cachedCoverageMatrix = null;
+    matrixCacheExpiresAt = 0;
+}
+
 /**
- * Returns multi-asset Year-wise Cloud Archive & Local DB Matrix
+ * Computes the coverage matrix from summary tables & records
  */
-async function getCloudCoverageMatrix(selectedCategory = "all") {
-    // 1. Fetch Google Drive Archive records
+async function computeCoverageMatrix() {
+    // 1. Fetch Google Drive Archive records (fast)
     const gdriveRows = await db.query(`
         SELECT symbol, year, data_type, record_count, file_name, file_size_bytes, gdrive_file_id, gdrive_web_link, status, checksum_sha256, uploaded_at, pruned_at
         FROM gdrive_archive_records
@@ -490,64 +530,222 @@ async function getCloudCoverageMatrix(selectedCategory = "all") {
         });
     });
 
-    // 2. Fetch local DB counts
-    const optRows = await db.query(`
-        SELECT symbol, YEAR(trade_date) as year, COUNT(*) as count
-        FROM option_chain_history GROUP BY symbol, YEAR(trade_date)
+    // 2. Fetch local DB counts using ultra-fast pre-aggregated summary tables
+    let optRows = await db.query(`
+        SELECT symbol, YEAR(trade_date) as year, SUM(row_count) as count
+        FROM option_chain_coverage_summary 
+        WHERE trade_date >= '2023-01-01'
+        GROUP BY symbol, YEAR(trade_date)
     `).catch(() => []);
 
-    const futRows = await db.query(`
-        SELECT symbol, YEAR(trade_date) as year, COUNT(*) as count
-        FROM futures_history GROUP BY symbol, YEAR(trade_date)
+    if (!optRows || optRows.length === 0) {
+        optRows = await db.query(`
+            SELECT symbol, YEAR(trade_date) as year, COUNT(*) as count
+            FROM option_chain_history 
+            WHERE trade_date >= '2023-01-01'
+            GROUP BY symbol, YEAR(trade_date)
+        `).catch(() => []);
+    }
+
+    let ohlcvRows = await db.query(`
+        SELECT symbol, YEAR(trade_date) as year, SUM(row_count) as count
+        FROM ohlcv_coverage_summary 
+        WHERE trade_date >= '2023-01-01'
+        GROUP BY symbol, YEAR(trade_date)
     `).catch(() => []);
 
-    const ohlcvRows = await db.query(`
-        SELECT symbol, YEAR(trade_date) as year, COUNT(*) as count
-        FROM ohlcv_data GROUP BY symbol, YEAR(trade_date)
+    if (!ohlcvRows || ohlcvRows.length === 0) {
+        ohlcvRows = await db.query(`
+            SELECT symbol, YEAR(trade_date) as year, COUNT(*) as count
+            FROM ohlcv_data 
+            WHERE trade_date >= '2023-01-01'
+            GROUP BY symbol, YEAR(trade_date)
+        `).catch(() => []);
+    }
+
+    let futRows = await db.query(`
+        SELECT symbol, year, count
+        FROM futures_year_coverage
     `).catch(() => []);
+
+    const futDistinct = (!futRows || futRows.length === 0) ? await db.query(`
+        SELECT DISTINCT symbol FROM futures_history
+    `).catch(() => []) : [];
 
     const dbMap = new Map();
-    optRows.forEach((r) => dbMap.set(`option_chain_${r.symbol}_${r.year}`, Number(r.count)));
-    futRows.forEach((r) => dbMap.set(`futures_${r.symbol}_${r.year}`, Number(r.count)));
+    const allSymbolStats = new Map();
+
+    function recordSymbolStat(sym, cat, count, isCloud = false) {
+        if (!sym) return;
+        const s = String(sym).toUpperCase().trim();
+        if (!allSymbolStats.has(s)) {
+            const isIndex = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"].includes(s);
+            const isVol = ["INDIAVIX", "INDIA VIX", "INDIA_VIX", "VIX"].includes(s);
+            const isCrypto = ["BTCUSDT", "BTC", "BITCOIN", "BTC/USDT"].includes(s);
+            const type = isIndex ? "index" : isVol ? "volatility" : isCrypto ? "crypto" : "stock";
+            allSymbolStats.set(s, {
+                symbol: s,
+                name: s,
+                type,
+                categories: new Set(),
+                localTotal: 0,
+                cloudTotal: 0,
+            });
+        }
+        const st = allSymbolStats.get(s);
+        st.categories.add(cat);
+        if (isCloud) st.cloudTotal += count;
+        else st.localTotal += count;
+    }
+
+    optRows.forEach((r) => {
+        dbMap.set(`option_chain_${r.symbol}_${r.year}`, Number(r.count));
+        recordSymbolStat(r.symbol, "option_chain", Number(r.count), false);
+    });
+
+    futRows.forEach((r) => {
+        dbMap.set(`futures_${r.symbol}_${r.year}`, Number(r.count));
+        recordSymbolStat(r.symbol, "futures", Number(r.count), false);
+    });
+
+    if (futDistinct && futDistinct.length > 0) {
+        futDistinct.forEach((r) => {
+            const sym = r.symbol.toUpperCase();
+            [2023, 2024, 2025, 2026].forEach((yr) => {
+                if (!dbMap.has(`futures_${sym}_${yr}`)) {
+                    dbMap.set(`futures_${sym}_${yr}`, 1);
+                }
+            });
+            recordSymbolStat(sym, "futures", 1, false);
+        });
+    }
+
     ohlcvRows.forEach((r) => {
-        if (['INDIA VIX', 'INDIAVIX', 'INDIA_VIX', 'VIX'].includes(r.symbol)) {
+        const s = String(r.symbol).toUpperCase();
+        if (['INDIA VIX', 'INDIAVIX', 'INDIA_VIX', 'VIX'].includes(s)) {
             const current = dbMap.get(`india_vix_INDIAVIX_${r.year}`) || 0;
             dbMap.set(`india_vix_INDIAVIX_${r.year}`, current + Number(r.count));
-        } else if (['BTCUSDT', 'BTC', 'BITCOIN', 'BTC/USDT'].includes(r.symbol)) {
+            recordSymbolStat("INDIAVIX", "india_vix", Number(r.count), false);
+        } else if (['BTCUSDT', 'BTC', 'BITCOIN', 'BTC/USDT'].includes(s)) {
             const current = dbMap.get(`bitcoin_BTCUSDT_${r.year}`) || 0;
             dbMap.set(`bitcoin_BTCUSDT_${r.year}`, current + Number(r.count));
+            recordSymbolStat("BTCUSDT", "bitcoin", Number(r.count), false);
+        } else {
+            const current = dbMap.get(`ohlcv_${s}_${r.year}`) || 0;
+            dbMap.set(`ohlcv_${s}_${r.year}`, current + Number(r.count));
+            recordSymbolStat(s, "ohlcv", Number(r.count), false);
         }
     });
 
+    gdriveRows.forEach((r) => {
+        recordSymbolStat(r.symbol, r.data_type, Number(r.record_count || 0), true);
+    });
+
+    const CORE_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"];
+    CORE_INDICES.forEach((idx) => {
+        if (!allSymbolStats.has(idx)) {
+            allSymbolStats.set(idx, {
+                symbol: idx,
+                name: idx,
+                type: "index",
+                categories: new Set(["option_chain", "futures", "ohlcv"]),
+                localTotal: 0,
+                cloudTotal: 0,
+            });
+        }
+    });
+
+    // Build allAssets list dynamically across all available categories
+    const allAssets = [];
+
+    // 1. Option Chain Assets
+    const optionSymbols = new Set([...CORE_INDICES]);
+    optRows.forEach(r => optionSymbols.add(r.symbol.toUpperCase()));
+    gdriveRows.filter(r => r.data_type === "option_chain").forEach(r => optionSymbols.add(r.symbol.toUpperCase()));
+
+    Array.from(optionSymbols).sort((a, b) => {
+        const aIdx = CORE_INDICES.includes(a);
+        const bIdx = CORE_INDICES.includes(b);
+        if (aIdx && !bIdx) return -1;
+        if (!aIdx && bIdx) return 1;
+        return a.localeCompare(b);
+    }).forEach((sym) => {
+        allAssets.push({
+            category: "option_chain",
+            categoryName: "Option Chain",
+            symbol: sym,
+            name: `${sym} Option Chain`,
+            type: CORE_INDICES.includes(sym) ? "index" : "stock",
+        });
+    });
+
+    // 2. Futures Assets (all 271+ from futRows, futDistinct & CORE_INDICES)
+    const futuresSymbols = new Set([...CORE_INDICES]);
+    futRows.forEach(r => futuresSymbols.add(r.symbol.toUpperCase()));
+    if (futDistinct) futDistinct.forEach(r => futuresSymbols.add(r.symbol.toUpperCase()));
+    gdriveRows.filter(r => r.data_type === "futures").forEach(r => futuresSymbols.add(r.symbol.toUpperCase()));
+
+    Array.from(futuresSymbols).sort((a, b) => {
+        const aIdx = CORE_INDICES.includes(a);
+        const bIdx = CORE_INDICES.includes(b);
+        if (aIdx && !bIdx) return -1;
+        if (!aIdx && bIdx) return 1;
+        return a.localeCompare(b);
+    }).forEach((sym) => {
+        allAssets.push({
+            category: "futures",
+            categoryName: "Futures",
+            symbol: sym,
+            name: `${sym} Futures`,
+            type: CORE_INDICES.includes(sym) ? "index" : "futures",
+        });
+    });
+
+    // 3. Stocks OHLCV Assets
+    const ohlcvSymbols = new Set([...CORE_INDICES]);
+    ohlcvRows.forEach(r => {
+        const s = r.symbol.toUpperCase();
+        if (!['INDIA VIX', 'INDIAVIX', 'INDIA_VIX', 'VIX', 'BTCUSDT', 'BTC', 'BITCOIN', 'BTC/USDT'].includes(s)) {
+            ohlcvSymbols.add(s);
+        }
+    });
+    gdriveRows.filter(r => r.data_type === "ohlcv" || r.data_type === "stock_ohlcv").forEach(r => ohlcvSymbols.add(r.symbol.toUpperCase()));
+
+    Array.from(ohlcvSymbols).sort((a, b) => {
+        const aIdx = CORE_INDICES.includes(a);
+        const bIdx = CORE_INDICES.includes(b);
+        if (aIdx && !bIdx) return -1;
+        if (!aIdx && bIdx) return 1;
+        return a.localeCompare(b);
+    }).forEach((sym) => {
+        allAssets.push({
+            category: "ohlcv",
+            categoryName: "Stocks OHLCV",
+            symbol: sym,
+            name: `${sym} 1-Min OHLCV`,
+            type: CORE_INDICES.includes(sym) ? "index" : "stock",
+        });
+    });
+
+    // 4. India VIX
+    allAssets.push({
+        category: "india_vix",
+        categoryName: "India VIX",
+        symbol: "INDIAVIX",
+        name: "India Volatility Index",
+        type: "volatility",
+    });
+
+    // 5. Bitcoin
+    allAssets.push({
+        category: "bitcoin",
+        categoryName: "Bitcoin",
+        symbol: "BTCUSDT",
+        name: "Bitcoin / USDT",
+        type: "crypto",
+    });
+
     const years = [2023, 2024, 2025, 2026];
-
-    // Master list of assets across categories
-    const allAssets = [
-        // Category 1: Option Chain
-        { category: "option_chain", categoryName: "Option Chain", symbol: "NIFTY", name: "NIFTY 50", type: "index" },
-        { category: "option_chain", categoryName: "Option Chain", symbol: "BANKNIFTY", name: "NIFTY BANK", type: "index" },
-        { category: "option_chain", categoryName: "Option Chain", symbol: "FINNIFTY", name: "NIFTY FIN SERVICE", type: "index" },
-        { category: "option_chain", categoryName: "Option Chain", symbol: "MIDCPNIFTY", name: "NIFTY MIDCAP", type: "index" },
-        { category: "option_chain", categoryName: "Option Chain", symbol: "SENSEX", name: "BSE SENSEX", type: "index" },
-        { category: "option_chain", categoryName: "Option Chain", symbol: "ZYDUSLIFE", name: "Zydus Lifesciences", type: "stock" },
-        { category: "option_chain", categoryName: "Option Chain", symbol: "RELIANCE", name: "Reliance Industries", type: "stock" },
-        { category: "option_chain", categoryName: "Option Chain", symbol: "HDFCBANK", name: "HDFC Bank", type: "stock" },
-        { category: "option_chain", categoryName: "Option Chain", symbol: "TCS", name: "Tata Consultancy Services", type: "stock" },
-        { category: "option_chain", categoryName: "Option Chain", symbol: "INFY", name: "Infosys", type: "stock" },
-
-        // Category 2: Futures
-        { category: "futures", categoryName: "Futures", symbol: "NIFTY", name: "NIFTY Futures", type: "futures" },
-        { category: "futures", categoryName: "Futures", symbol: "BANKNIFTY", name: "BANKNIFTY Futures", type: "futures" },
-        { category: "futures", categoryName: "Futures", symbol: "FINNIFTY", name: "FINNIFTY Futures", type: "futures" },
-        { category: "futures", categoryName: "Futures", symbol: "ZYDUSLIFE", name: "ZYDUSLIFE Futures", type: "futures" },
-        { category: "futures", categoryName: "Futures", symbol: "RELIANCE", name: "RELIANCE Futures", type: "futures" },
-
-        // Category 3: India VIX
-        { category: "india_vix", categoryName: "India VIX", symbol: "INDIAVIX", name: "India Volatility Index", type: "volatility" },
-
-        // Category 4: Bitcoin
-        { category: "bitcoin", categoryName: "Bitcoin", symbol: "BTCUSDT", name: "Bitcoin / USDT", type: "crypto" },
-    ];
 
     const matrix = allAssets.map((asset) => {
         const yearData = {};
@@ -585,18 +783,74 @@ async function getCloudCoverageMatrix(selectedCategory = "all") {
         };
     });
 
-    return {
+    // Available symbols list for UI filter & selection
+    const availableSymbols = Array.from(allSymbolStats.values()).map(st => ({
+        symbol: st.symbol,
+        name: st.name,
+        type: st.type,
+        categories: Array.from(st.categories),
+        hasLocalData: st.localTotal > 0,
+        hasCloudData: st.cloudTotal > 0,
+        localTotal: st.localTotal,
+        cloudTotal: st.cloudTotal,
+    })).sort((a, b) => {
+        const aIdx = CORE_INDICES.includes(a.symbol);
+        const bIdx = CORE_INDICES.includes(b.symbol);
+        if (aIdx && !bIdx) return -1;
+        if (!aIdx && bIdx) return 1;
+        if (a.hasLocalData && !b.hasLocalData) return -1;
+        if (!a.hasLocalData && b.hasLocalData) return 1;
+        return a.symbol.localeCompare(b.symbol);
+    });
+
+    const result = {
         timestamp: new Date().toISOString(),
         categories: [
             { key: "option_chain", name: "Option Chain", folder: "Option Chain" },
             { key: "futures", name: "Futures", folder: "Futures" },
+            { key: "ohlcv", name: "Stocks OHLCV", folder: "Stocks OHLCV" },
             { key: "india_vix", name: "India VIX", folder: "India VIX" },
             { key: "bitcoin", name: "Bitcoin", folder: "Bitcoin" },
         ],
         years,
+        availableSymbols,
         matrix,
     };
+
+    cachedCoverageMatrix = result;
+    matrixCacheExpiresAt = Date.now() + MATRIX_CACHE_TTL_MS;
+    return result;
 }
+
+/**
+ * Returns multi-asset Year-wise Cloud Archive & Local DB Matrix instantly from memory cache
+ */
+async function getCloudCoverageMatrix(selectedCategory = "all", forceRefresh = false) {
+    if (cachedCoverageMatrix && !forceRefresh) {
+        // Stale-while-revalidate: if cache is expired, trigger background recalculation
+        if (Date.now() >= matrixCacheExpiresAt && !isRefreshingMatrix) {
+            isRefreshingMatrix = true;
+            computeCoverageMatrix()
+                .catch((e) => console.error("[CoverageMatrix] Background refresh error:", e.message))
+                .finally(() => { isRefreshingMatrix = false; });
+        }
+        return cachedCoverageMatrix;
+    }
+
+    // First cold run or forceRefresh
+    isRefreshingMatrix = true;
+    try {
+        const res = await computeCoverageMatrix();
+        return res;
+    } finally {
+        isRefreshingMatrix = false;
+    }
+}
+
+// Background eager pre-warm
+setTimeout(() => {
+    computeCoverageMatrix().catch((e) => console.log("[CoverageMatrix] Pre-warm notice:", e.message));
+}, 1500);
 
 async function archiveAndPruneSymbolYear(dataType, symbol, year, autoPrune = true) {
     try {

@@ -25,7 +25,9 @@
 //   pcr_snapshots          per symbol, every 60 s
 //   oi_summary_snapshots   per symbol+strike, every 60 s
 
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+require("dotenv").config({ path: path.join(__dirname, "..", "..", ".env") });
 
 const { getSession, logout } = require("./login");
 const { AngelOneWebSocket, MODE, EXCHANGE } = require("./websocket");

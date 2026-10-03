@@ -401,6 +401,8 @@ const CATEGORY_NAMES = {
     futures: "Futures",
     india_vix: "India VIX",
     bitcoin: "Bitcoin",
+    ohlcv: "Stocks OHLCV",
+    stock_ohlcv: "Stocks OHLCV",
 };
 
 /**

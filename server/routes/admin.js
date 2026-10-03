@@ -81,6 +81,7 @@ const {
     initDriveFolders, manualArchiveBatch, getCronStatus, updateCronSettings,
     getOAuthUrl, handleOAuthCallback, saveOAuthCredentials, disconnectOAuth, updateRootFolder,
     listGDriveFiles, importFromGDrive,
+    startBitcoinPipeline, stopBitcoinPipeline, getBitcoinStatus,
 } = require("../controllers/gdriveArchivalController");
 
 router.get("/data/gdrive/status", getGDriveStatus);
@@ -101,6 +102,11 @@ router.get("/data/gdrive/cron", getCronStatus);
 router.post("/data/gdrive/cron", updateCronSettings);
 router.get("/data/gdrive/files", listGDriveFiles);
 router.post("/data/gdrive/import", importFromGDrive);
+
+// Bitcoin 3-year historical downloader routes
+router.post("/data/bitcoin/start", startBitcoinPipeline);
+router.post("/data/bitcoin/stop", stopBitcoinPipeline);
+router.get("/data/bitcoin/status", getBitcoinStatus);
 
 router.get("/data/export/preview", previewExport);
 router.get("/data/export/download", downloadExport);

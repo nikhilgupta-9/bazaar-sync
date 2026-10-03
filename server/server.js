@@ -18,7 +18,8 @@ const express = require("express");
 const http = require("http");
 const path = require("path");
 const cors = require("cors");
-require("dotenv").config();
+require("dotenv").config({ path: path.join(__dirname, ".env") });
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
 const { checkConnection } = require("./config/db");
 const cronService = require("./services/cron");
@@ -181,6 +182,13 @@ server.listen(PORT, () => {
     // Market worker lifecycle crons (08:45 fork / 15:35 graceful stop, IST)
     marketStart.schedule();
     marketStop.schedule();
+
+    // Start background continuous Google Drive Auto-Upload Daemon
+    try {
+        require("./services/autoUploadDaemon").start();
+    } catch (daemonErr) {
+        console.error("[server] failed to start autoUploadDaemon:", daemonErr.message);
+    }
 
     // Mid-day Express restart: bring the live feed back immediately instead
     // of waiting for the next 08:45 cron.
