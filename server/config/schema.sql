@@ -1,576 +1,541 @@
--- Bazaar Sync — MySQL schema
--- MySQL is the only database (MongoDB/Redis dropped, 2026-07-02).
--- Run: mysql -u root bazaar_sync < server/config/schema.sql
+-- Bazaar Sync Complete Database Schema
+-- Exported: 2026-10-04T11:42:55.929Z
 
-CREATE TABLE IF NOT EXISTS option_chain_history (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  symbol VARCHAR(20) NOT NULL,          -- NIFTY, BANKNIFTY, FINNIFTY, or F&O stock symbol
-  trade_date DATE NOT NULL,
-  trade_time TIME NOT NULL,
-  expiry DATE NOT NULL,
-  strike DECIMAL(10,2) NOT NULL,
-  underlying_price DECIMAL(10,2),
-  ce_ltp DECIMAL(10,2), ce_oi BIGINT, ce_oi_change BIGINT, ce_iv DECIMAL(6,2), ce_volume BIGINT,
-  ce_delta DECIMAL(6,4), ce_gamma DECIMAL(8,6), ce_theta DECIMAL(8,4), ce_vega DECIMAL(8,4),
-  pe_ltp DECIMAL(10,2), pe_oi BIGINT, pe_oi_change BIGINT, pe_iv DECIMAL(6,2), pe_volume BIGINT,
-  pe_delta DECIMAL(6,4), pe_gamma DECIMAL(8,6), pe_theta DECIMAL(8,4), pe_vega DECIMAL(8,4),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_snapshot (symbol, expiry, strike, trade_date, trade_time),
-  KEY idx_backtest_range (symbol, expiry, trade_date, trade_time),
-  -- Added Phase 7.1 (2026-08-06): simulatorController.js's listDates
-  -- (GROUP BY trade_date, COUNT(DISTINCT trade_time) over every row for a
-  -- symbol) and getChainAtTime's expiry-discovery query (WHERE symbol=? AND
-  -- trade_date=?, no expiry known yet) both filter/group by trade_date
-  -- BEFORE expiry is known — idx_backtest_range can't help since expiry
-  -- sits between symbol and trade_date there, forcing a full scan of every
-  -- row for the symbol (NIFTY alone is 5M+ rows after Phase 7's
-  -- Bhavcopy/Breeze backfills: 6.8s measured for listDates, 1.2s for the
-  -- expiry lookup — most of the Simulator page's ~15s load). Verified live
-  -- against the real dev DB (2026-08-06): this index alone (no wider
-  -- variant needed — a (symbol, trade_date, expiry, trade_time) index was
-  -- tried first and was slower, since MySQL couldn't avoid a filesort with
-  -- expiry sitting in the middle) took listDates to ~1.5s and the expiry
-  -- lookup to ~0.04s. Existing databases need
-  -- `ALTER TABLE option_chain_history ADD INDEX idx_symbol_date_time
-  -- (symbol, trade_date, trade_time);` run by hand — schema.sql's
-  -- CREATE TABLE IF NOT EXISTS does not retrofit already-created tables.
-  KEY idx_symbol_date_time (symbol, trade_date, trade_time),
-  -- Added 2026-09-06: getChainAtTime's expiry-discovery query
-  -- (SELECT DISTINCT expiry WHERE symbol=? AND trade_date=?) runs on every
-  -- Simulator page load AND every date/expiry navigation. Despite the
-  -- earlier note above, the optimizer had since stopped picking
-  -- idx_symbol_date_time for it and fell back to scanning every row for the
-  -- symbol via uniq_snapshot (~2.4s measured on the real dev DB, NIFTY).
-  -- This 3-column covering index is exactly ordered for that WHERE + DISTINCT
-  -- and takes it to ~40ms. (The middle note's "(symbol, trade_date, expiry,
-  -- trade_time) was tried and was slower" was a DIFFERENT, 4-column index —
-  -- the trailing trade_time forced a filesort for listDates' GROUP BY; this
-  -- 3-column variant carries no trade_time and is only used for expiry
-  -- discovery, not the GROUP BY.) Existing DBs need it by hand:
-  -- `ALTER TABLE option_chain_history ADD INDEX idx_sym_date_expiry
-  -- (symbol, trade_date, expiry);`
-  KEY idx_sym_date_expiry (symbol, trade_date, expiry)
-) ENGINE=InnoDB;
+SET FOREIGN_KEY_CHECKS = 0;
 
-CREATE TABLE IF NOT EXISTS ohlcv_data (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  symbol VARCHAR(20) NOT NULL,
-  trade_date DATE NOT NULL,
-  trade_time TIME NOT NULL,
-  open DECIMAL(10,2), high DECIMAL(10,2), low DECIMAL(10,2), close DECIMAL(10,2),
-  volume BIGINT,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_candle (symbol, trade_date, trade_time),
-  KEY idx_symbol_date (symbol, trade_date)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `backtest_results` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint(20) unsigned NOT NULL,
+  `strategy_id` bigint(20) unsigned DEFAULT NULL,
+  `underlying` varchar(20) NOT NULL,
+  `expiry_type` enum('weekly','monthly') NOT NULL,
+  `start_date` date NOT NULL,
+  `end_date` date NOT NULL,
+  `params` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`params`)),
+  `net_pnl` decimal(14,2) DEFAULT NULL,
+  `win_rate` decimal(5,2) DEFAULT NULL,
+  `total_trades` int(11) DEFAULT NULL,
+  `max_drawdown` decimal(14,2) DEFAULT NULL,
+  `sharpe_ratio` decimal(6,3) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  KEY `strategy_id` (`strategy_id`),
+  CONSTRAINT `backtest_results_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `backtest_results_ibfk_2` FOREIGN KEY (`strategy_id`) REFERENCES `strategies` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Futures ("future chain") — the FUTIDX/FUTSTK counterpart to
--- option_chain_history. One row per (underlying, expiry) per minute:
--- OHLC + volume + OI + OI-change, no strike / no CE-PE / no Greeks.
--- Filled two ways, exactly mirroring the options tables:
---   * historical (2023+): data-downloader/futures/run.js — NSE/BSE bhavcopy
---     for contract+expiry discovery, then ICICI Breeze for 1-minute candles
---   * forward (recent): server/services/cron.js nightly + scripts/backfillFutures.js,
---     both via Angel One (getCandleData / getOIData on the FUTIDX/FUTSTK token)
--- `symbol` is the underlying (NIFTY, RELIANCE, SENSEX, ...), NOT the
--- contract name. underlying_price is the cash/spot price where a source
--- provides it (bhavcopy's UndrlygPric), else NULL. Same
--- ON DUPLICATE KEY UPDATE / no-duplicate-rows guarantee as
--- option_chain_history (uniq below). Existing DBs just need this
--- CREATE TABLE run once (it's IF NOT EXISTS-safe).
-CREATE TABLE IF NOT EXISTS futures_history (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  symbol VARCHAR(20) NOT NULL,
-  expiry DATE NOT NULL,
-  trade_date DATE NOT NULL,
-  trade_time TIME NOT NULL,
-  open DECIMAL(12,2), high DECIMAL(12,2), low DECIMAL(12,2), close DECIMAL(12,2),
-  volume BIGINT,
-  oi BIGINT,
-  oi_change BIGINT,
-  underlying_price DECIMAL(12,2),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_fut_snapshot (symbol, expiry, trade_date, trade_time),
-  KEY idx_fut_backtest_range (symbol, expiry, trade_date, trade_time),
-  KEY idx_fut_symbol_date_time (symbol, trade_date, trade_time)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `backtest_trades` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `backtest_result_id` bigint(20) unsigned NOT NULL,
+  `leg_index` int(11) DEFAULT NULL,
+  `entry_time` datetime NOT NULL,
+  `exit_time` datetime DEFAULT NULL,
+  `entry_price` decimal(10,2) DEFAULT NULL,
+  `exit_price` decimal(10,2) DEFAULT NULL,
+  `quantity` int(11) DEFAULT NULL,
+  `pnl` decimal(12,2) DEFAULT NULL,
+  `exit_reason` varchar(30) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_backtest` (`backtest_result_id`),
+  CONSTRAINT `backtest_trades_ibfk_1` FOREIGN KEY (`backtest_result_id`) REFERENCES `backtest_results` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=15 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- role powers the admin panel (Phase 9): 'admin' unlocks GET /api/admin/*
--- (requireAdmin.js). No self-service admin signup — the first admin is
--- always set by hand: UPDATE users SET role='admin' WHERE email='...';
--- Existing DBs created before the admin panel need:
---   ALTER TABLE users ADD COLUMN role ENUM('user','admin') NOT NULL DEFAULT 'user';
-CREATE TABLE IF NOT EXISTS users (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  name VARCHAR(100) NOT NULL,
-  email VARCHAR(150) NOT NULL UNIQUE,
-  password_hash VARCHAR(255),          -- null when the account only uses Google OAuth
-  google_id VARCHAR(100) UNIQUE,
-  tier ENUM('free','pro') NOT NULL DEFAULT 'free',
-  pro_expires_at DATETIME,
-  role ENUM('user','admin') NOT NULL DEFAULT 'user',
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `coupon_redemptions` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `coupon_id` bigint(20) unsigned NOT NULL,
+  `user_id` bigint(20) unsigned NOT NULL,
+  `razorpay_payment_id` varchar(64) NOT NULL,
+  `discount_paise` int(11) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `razorpay_payment_id` (`razorpay_payment_id`),
+  KEY `coupon_id` (`coupon_id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `coupon_redemptions_ibfk_1` FOREIGN KEY (`coupon_id`) REFERENCES `coupons` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `coupon_redemptions_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Forgot-password flow (Phase 12). Only the SHA-256 hash of the reset token
--- is stored, never the raw token — the raw token only ever exists in the
--- emailed link and briefly in the request body of the reset call, same
--- "never store the secret itself" instinct as password_hash above. A token
--- is single-use (used_at) and short-lived (expires_at, set by
--- authController.js — 1 hour). One user can have multiple outstanding
--- tokens (e.g. they requested twice); all of them are invalidated the
--- moment any one of them is successfully used, see resetPassword.
-CREATE TABLE IF NOT EXISTS password_reset_tokens (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  user_id BIGINT UNSIGNED NOT NULL,
-  token_hash CHAR(64) NOT NULL UNIQUE,  -- SHA-256 hex digest of the raw token
-  expires_at DATETIME NOT NULL,
-  used_at DATETIME,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `coupons` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `code` varchar(30) NOT NULL,
+  `discount_type` enum('percent','flat') NOT NULL,
+  `discount_value` decimal(10,2) NOT NULL,
+  `max_redemptions` int(11) DEFAULT NULL,
+  `redemption_count` int(11) NOT NULL DEFAULT 0,
+  `active` tinyint(1) NOT NULL DEFAULT 1,
+  `expires_at` datetime DEFAULT NULL,
+  `created_by` bigint(20) unsigned DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `code` (`code`),
+  KEY `created_by` (`created_by`),
+  CONSTRAINT `coupons_ibfk_1` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE IF NOT EXISTS strategies (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  user_id BIGINT UNSIGNED NOT NULL,
-  name VARCHAR(150) NOT NULL,
-  underlying VARCHAR(20) NOT NULL,
-  legs JSON NOT NULL,                  -- [{action, type, strike, expiry, lots}, ...] up to 6 legs
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `data_extraction_jobs` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `source` enum('angelone','upstox','icici_breeze','kotak','bhavcopy','dhan') NOT NULL,
+  `data_type` enum('option_chain','futures','vix') NOT NULL,
+  `year` int(11) DEFAULT NULL,
+  `from_month` tinyint(4) DEFAULT NULL,
+  `to_month` tinyint(4) DEFAULT NULL,
+  `symbols` varchar(1000) DEFAULT NULL,
+  `extra_args` varchar(255) DEFAULT NULL,
+  `command` text DEFAULT NULL,
+  `status` enum('queued','running','completed','failed','cancelled') NOT NULL DEFAULT 'queued',
+  `pid` int(11) DEFAULT NULL,
+  `exit_code` int(11) DEFAULT NULL,
+  `log_path` varchar(500) DEFAULT NULL,
+  `summary` text DEFAULT NULL,
+  `requested_by` bigint(20) unsigned DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `started_at` datetime DEFAULT NULL,
+  `finished_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `requested_by` (`requested_by`),
+  KEY `idx_status` (`status`),
+  KEY `idx_created` (`created_at`),
+  CONSTRAINT `data_extraction_jobs_ibfk_1` FOREIGN KEY (`requested_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB AUTO_INCREMENT=41 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE IF NOT EXISTS backtest_results (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  user_id BIGINT UNSIGNED NOT NULL,
-  strategy_id BIGINT UNSIGNED,
-  underlying VARCHAR(20) NOT NULL,
-  expiry_type ENUM('weekly','monthly') NOT NULL,
-  start_date DATE NOT NULL,
-  end_date DATE NOT NULL,
-  params JSON NOT NULL,                -- entry_time, dte, stop_loss_pct, target_pct, expiry_exit
-  net_pnl DECIMAL(14,2),
-  win_rate DECIMAL(5,2),
-  total_trades INT,
-  max_drawdown DECIMAL(14,2),
-  sharpe_ratio DECIMAL(6,3),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  FOREIGN KEY (strategy_id) REFERENCES strategies(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `events` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `title` varchar(200) NOT NULL,
+  `description` text DEFAULT NULL,
+  `event_date` date NOT NULL,
+  `event_time` time DEFAULT NULL,
+  `link` varchar(500) DEFAULT NULL,
+  `is_published` tinyint(1) NOT NULL DEFAULT 1,
+  `created_by` bigint(20) unsigned DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `created_by` (`created_by`),
+  KEY `idx_published_date` (`is_published`,`event_date`),
+  CONSTRAINT `events_ibfk_1` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB AUTO_INCREMENT=11 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- ---------------------------------------------------------------------------
--- Phase 6: live market-data tiers (written ONLY by the market worker's bulk
--- inserts — workers/databaseWriter.js). option_chain_history above stays the
--- backtest source, fed by the nightly historical cron; these tables are the
--- intraday live record at graduated resolutions:
---   live_index_ticks       every index tick
---   live_option_ticks      per option contract, at most every 2 seconds
---   live_greeks_snapshots  per option contract, every 5 seconds
---   pcr_snapshots          per symbol, every minute
---   oi_summary_snapshots   per symbol+strike, every minute
--- Indexed for the dashboard's two query patterns: latest-by-symbol and
--- range-by-time.
--- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `futures_coverage_summary` (
+  `symbol` varchar(50) NOT NULL,
+  `trade_date` date NOT NULL,
+  `row_count` int(11) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`symbol`,`trade_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE IF NOT EXISTS live_index_ticks (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  symbol VARCHAR(20) NOT NULL,
-  tick_date DATE NOT NULL,
-  tick_time TIME NOT NULL,
-  ltp DECIMAL(10,2) NOT NULL,
-  open DECIMAL(10,2), high DECIMAL(10,2), low DECIMAL(10,2), close DECIMAL(10,2),
-  volume BIGINT,
-  exchange_ts BIGINT,                   -- raw exchange timestamp (epoch ms)
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  KEY idx_symbol_time (symbol, tick_date, tick_time)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `futures_history` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `symbol` varchar(20) NOT NULL,
+  `expiry` date NOT NULL,
+  `trade_date` date NOT NULL,
+  `trade_time` time NOT NULL,
+  `open` decimal(12,2) DEFAULT NULL,
+  `high` decimal(12,2) DEFAULT NULL,
+  `low` decimal(12,2) DEFAULT NULL,
+  `close` decimal(12,2) DEFAULT NULL,
+  `volume` bigint(20) DEFAULT NULL,
+  `oi` bigint(20) DEFAULT NULL,
+  `oi_change` bigint(20) DEFAULT NULL,
+  `underlying_price` decimal(12,2) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_fut_snapshot` (`symbol`,`expiry`,`trade_date`,`trade_time`),
+  KEY `idx_fut_backtest_range` (`symbol`,`expiry`,`trade_date`,`trade_time`),
+  KEY `idx_fut_symbol_date_time` (`symbol`,`trade_date`,`trade_time`)
+) ENGINE=InnoDB AUTO_INCREMENT=96726956 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE IF NOT EXISTS live_option_ticks (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  underlying VARCHAR(20) NOT NULL,
-  expiry DATE NOT NULL,
-  strike DECIMAL(10,2) NOT NULL,
-  opt_right ENUM('CE','PE') NOT NULL,
-  tick_date DATE NOT NULL,
-  tick_time TIME NOT NULL,
-  ltp DECIMAL(10,2) NOT NULL,
-  volume BIGINT,
-  oi BIGINT,
-  oi_change_percent DECIMAL(8,4),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  KEY idx_contract_time (underlying, expiry, strike, opt_right, tick_date, tick_time),
-  KEY idx_underlying_time (underlying, tick_date, tick_time)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `futures_year_coverage` (
+  `symbol` varchar(50) NOT NULL,
+  `year` int(11) NOT NULL,
+  `count` int(11) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`symbol`,`year`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE IF NOT EXISTS live_greeks_snapshots (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  underlying VARCHAR(20) NOT NULL,
-  expiry DATE NOT NULL,
-  strike DECIMAL(10,2) NOT NULL,
-  opt_right ENUM('CE','PE') NOT NULL,
-  snap_date DATE NOT NULL,
-  snap_time TIME NOT NULL,
-  ltp DECIMAL(10,2),
-  spot DECIMAL(10,2),
-  iv DECIMAL(6,2),                      -- percent, e.g. 14.25
-  delta DECIMAL(6,4), gamma DECIMAL(8,6), theta DECIMAL(8,4), vega DECIMAL(8,4),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  KEY idx_contract_time (underlying, expiry, strike, opt_right, snap_date, snap_time),
-  KEY idx_underlying_time (underlying, snap_date, snap_time)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `gdrive_archive_records` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `symbol` varchar(32) NOT NULL,
+  `year` int(11) NOT NULL,
+  `month` int(11) DEFAULT NULL,
+  `data_type` varchar(32) NOT NULL DEFAULT 'option_chain',
+  `record_count` bigint(20) DEFAULT 0,
+  `file_name` varchar(255) NOT NULL,
+  `file_size_bytes` bigint(20) DEFAULT 0,
+  `gdrive_file_id` varchar(128) DEFAULT NULL,
+  `gdrive_web_link` text DEFAULT NULL,
+  `gdrive_folder_id` varchar(128) DEFAULT NULL,
+  `status` enum('pending','uploading','archived','pruned','error') DEFAULT 'pending',
+  `checksum_sha256` varchar(64) DEFAULT NULL,
+  `extracted_at` datetime DEFAULT current_timestamp(),
+  `uploaded_at` datetime DEFAULT NULL,
+  `pruned_at` datetime DEFAULT NULL,
+  `error_message` text DEFAULT NULL,
+  `created_at` datetime DEFAULT current_timestamp(),
+  `updated_at` datetime DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_sym_yr_type_mo` (`symbol`,`year`,`data_type`,`month`)
+) ENGINE=InnoDB AUTO_INCREMENT=965 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Also unlocks the previously-skipped IV Percentile Rank feature: this is the
--- persisted historical IV time series CLAUDE.md said we didn't have.
-CREATE TABLE IF NOT EXISTS pcr_snapshots (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  symbol VARCHAR(20) NOT NULL,
-  snap_date DATE NOT NULL,
-  snap_time TIME NOT NULL,
-  pcr DECIMAL(8,4),
-  total_ce_oi BIGINT,
-  total_pe_oi BIGINT,
-  spot DECIMAL(10,2),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  KEY idx_symbol_time (symbol, snap_date, snap_time)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `gdrive_sync_settings` (
+  `setting_key` varchar(64) NOT NULL,
+  `setting_value` text NOT NULL,
+  `updated_at` datetime DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`setting_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE IF NOT EXISTS oi_summary_snapshots (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  symbol VARCHAR(20) NOT NULL,
-  expiry DATE NOT NULL,
-  strike DECIMAL(10,2) NOT NULL,
-  snap_date DATE NOT NULL,
-  snap_time TIME NOT NULL,
-  ce_oi BIGINT, pe_oi BIGINT,
-  ce_ltp DECIMAL(10,2), pe_ltp DECIMAL(10,2),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  KEY idx_symbol_time (symbol, snap_date, snap_time),
-  KEY idx_symbol_strike (symbol, expiry, strike, snap_date)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `institute_ip_allowlist` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `ip_or_cidr` varchar(45) NOT NULL,
+  `label` varchar(150) DEFAULT NULL,
+  `created_by` bigint(20) unsigned DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `ip_or_cidr` (`ip_or_cidr`),
+  KEY `created_by` (`created_by`),
+  CONSTRAINT `institute_ip_allowlist_ibfk_1` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE IF NOT EXISTS backtest_trades (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  backtest_result_id BIGINT UNSIGNED NOT NULL,
-  leg_index INT,
-  entry_time DATETIME NOT NULL,
-  exit_time DATETIME,
-  entry_price DECIMAL(10,2),
-  exit_price DECIMAL(10,2),
-  quantity INT,
-  pnl DECIMAL(12,2),
-  exit_reason VARCHAR(30),             -- stop_loss, target, expiry
-  FOREIGN KEY (backtest_result_id) REFERENCES backtest_results(id) ON DELETE CASCADE,
-  KEY idx_backtest (backtest_result_id)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `live_greeks_snapshots` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `underlying` varchar(20) NOT NULL,
+  `expiry` date NOT NULL,
+  `strike` decimal(10,2) NOT NULL,
+  `opt_right` enum('CE','PE') NOT NULL,
+  `snap_date` date NOT NULL,
+  `snap_time` time NOT NULL,
+  `ltp` decimal(10,2) DEFAULT NULL,
+  `spot` decimal(10,2) DEFAULT NULL,
+  `iv` decimal(6,2) DEFAULT NULL,
+  `delta` decimal(6,4) DEFAULT NULL,
+  `gamma` decimal(8,6) DEFAULT NULL,
+  `theta` decimal(8,4) DEFAULT NULL,
+  `vega` decimal(8,4) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_contract_time` (`underlying`,`expiry`,`strike`,`opt_right`,`snap_date`,`snap_time`),
+  KEY `idx_underlying_time` (`underlying`,`snap_date`,`snap_time`)
+) ENGINE=InnoDB AUTO_INCREMENT=5573954 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- ---------------------------------------------------------------------------
--- Phase 8.2: Paper Trade wallet. Pro-ness itself still lives on users.tier/
--- pro_expires_at (unchanged) — buying/renewing Pro also grants paper capital
--- here, it's the same ₹499/mo subscription, not a second product. These two
--- tables only track the trial window and the running paper balance.
--- Phase 8.3 added the trade_debit/trade_credit ledger types below plus
--- paper_positions (the actual order-placement engine) — see CLAUDE.md.
--- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `live_index_ticks` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `symbol` varchar(20) NOT NULL,
+  `tick_date` date NOT NULL,
+  `tick_time` time NOT NULL,
+  `ltp` decimal(10,2) NOT NULL,
+  `open` decimal(10,2) DEFAULT NULL,
+  `high` decimal(10,2) DEFAULT NULL,
+  `low` decimal(10,2) DEFAULT NULL,
+  `close` decimal(10,2) DEFAULT NULL,
+  `volume` bigint(20) DEFAULT NULL,
+  `exchange_ts` bigint(20) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_symbol_time` (`symbol`,`tick_date`,`tick_time`)
+) ENGINE=InnoDB AUTO_INCREMENT=11570 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE IF NOT EXISTS paper_wallets (
-  user_id BIGINT UNSIGNED PRIMARY KEY,
-  balance DECIMAL(14,2) NOT NULL DEFAULT 0,
-  trial_started_at DATETIME,
-  trial_expires_at DATETIME,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `live_option_ticks` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `underlying` varchar(20) NOT NULL,
+  `expiry` date NOT NULL,
+  `strike` decimal(10,2) NOT NULL,
+  `opt_right` enum('CE','PE') NOT NULL,
+  `tick_date` date NOT NULL,
+  `tick_time` time NOT NULL,
+  `ltp` decimal(10,2) NOT NULL,
+  `volume` bigint(20) DEFAULT NULL,
+  `oi` bigint(20) DEFAULT NULL,
+  `oi_change_percent` decimal(8,4) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_contract_time` (`underlying`,`expiry`,`strike`,`opt_right`,`tick_date`,`tick_time`),
+  KEY `idx_underlying_time` (`underlying`,`tick_date`,`tick_time`)
+) ENGINE=InnoDB AUTO_INCREMENT=596648 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- amount is a SIGNED balance delta (positive = credit, negative = debit).
--- trial_grant/pro_purchase_grant/refill_purchase are always positive;
--- trade_debit (opening a position) is negative, trade_credit (closing one)
--- is positive. Existing DBs created before Phase 8.3 need:
---   ALTER TABLE paper_wallet_ledger MODIFY type ENUM('trial_grant',
---   'pro_purchase_grant','refill_purchase','trade_debit','trade_credit') NOT NULL;
--- (schema.sql's CREATE TABLE IF NOT EXISTS does not retrofit existing tables —
--- same caveat as idx_symbol_date_time on option_chain_history above.)
-CREATE TABLE IF NOT EXISTS paper_wallet_ledger (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  user_id BIGINT UNSIGNED NOT NULL,
-  type ENUM('trial_grant','pro_purchase_grant','refill_purchase','trade_debit','trade_credit') NOT NULL,
-  amount DECIMAL(14,2) NOT NULL,
-  balance_after DECIMAL(14,2) NOT NULL,
-  razorpay_order_id VARCHAR(64),
-  razorpay_payment_id VARCHAR(64) UNIQUE,   -- NULL-safe unique; blocks double-credit on retry
-  note VARCHAR(255),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  KEY idx_user_time (user_id, created_at)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `lot_size_history` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `symbol` varchar(20) NOT NULL,
+  `lot_size` int(11) NOT NULL,
+  `effective_from` date NOT NULL,
+  `effective_to` date DEFAULT NULL,
+  `created_by` bigint(20) unsigned DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_symbol_effective` (`symbol`,`effective_from`)
+) ENGINE=InnoDB AUTO_INCREMENT=260 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Phase 8.3: the actual paper-trading positions (BUY/long only at first).
--- Phase 8.4 added `side`/`margin_blocked` for SELL/short (writing) —
--- margin is a flat-percentage-of-notional approximation
--- (MARGIN_PERCENT_OF_NOTIONAL in paperTradeConfig.js), not real SPAN, and
--- there is NO intraday margin monitoring/auto square-off (deliberate v1
--- limitation — see CLAUDE.md Phase 8.4). Each Buy/Sell creates its own row
--- (no averaging into an existing position at the same contract); close is
--- all-or-nothing (no partial close) — both deliberate v1 choices.
--- Existing DBs (created before Phase 8.4) need:
---   ALTER TABLE paper_positions
---     ADD COLUMN side ENUM('long','short') NOT NULL DEFAULT 'long' AFTER opt_right,
---     ADD COLUMN margin_blocked DECIMAL(14,2) NULL AFTER entry_price;
--- ---------------------------------------------------------------------------
--- Phase 11: remaining admin-panel sections (Institute Access, Plans &
--- Coupons, Events, T&C, SEO Tool) — see CLAUDE.md. All management is
--- requireAuth+requireAdmin; only events/site_content/seo_meta have a public
--- read side (published content, current T&C text, per-page meta tags).
--- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `ohlcv_coverage_summary` (
+  `symbol` varchar(20) NOT NULL,
+  `trade_date` date NOT NULL,
+  `row_count` int(10) unsigned NOT NULL DEFAULT 0,
+  `minute_rows` int(10) unsigned NOT NULL DEFAULT 0,
+  `first_time` time DEFAULT NULL,
+  `last_time` time DEFAULT NULL,
+  `last_updated` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`symbol`,`trade_date`),
+  KEY `idx_trade_date` (`trade_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Institute free access: an allowlisted IP or CIDR range (e.g.
--- '203.0.113.0/24') grants a logged-in user Pro-equivalent access for
--- requests from that network — see services/instituteAccessService.js. Not
--- MAC-based (browsers don't expose device MAC addresses to a website).
-CREATE TABLE IF NOT EXISTS institute_ip_allowlist (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  ip_or_cidr VARCHAR(45) NOT NULL UNIQUE,   -- IPv4 exact ('203.0.113.5') or CIDR ('203.0.113.0/24'); IPv6 exact-match only
-  label VARCHAR(150),                       -- e.g. institute/college name, admin-facing only
-  created_by BIGINT UNSIGNED,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `ohlcv_data` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `symbol` varchar(20) NOT NULL,
+  `trade_date` date NOT NULL,
+  `trade_time` time NOT NULL,
+  `open` decimal(10,2) DEFAULT NULL,
+  `high` decimal(10,2) DEFAULT NULL,
+  `low` decimal(10,2) DEFAULT NULL,
+  `close` decimal(10,2) DEFAULT NULL,
+  `volume` bigint(20) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_candle` (`symbol`,`trade_date`,`trade_time`),
+  KEY `idx_symbol_date` (`symbol`,`trade_date`)
+) ENGINE=InnoDB AUTO_INCREMENT=4757954 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- The Pricing page's plan catalog (added 2026-09-13, replacing the fixed
--- PRO_PLANS constant in paperTradeConfig.js — see services/proPlanService.js).
--- `id` is a short admin-chosen slug ('1m', '6m', '12m', or anything new) —
--- it's what gets stashed in a Razorpay order's notes.planId and read back at
--- verify time (subscriptionController.js), so it must stay stable once a
--- plan has live orders against it; delete only a plan with no pending
--- checkouts in flight. `days` drives how long a purchase extends
--- pro_expires_at (subscriptionService.js) — independent of duration_label,
--- which is display text only. Seeded below with the original 3 plans so an
--- existing DB's Pricing page looks identical until an admin changes
--- something. Existing DBs: run this CREATE TABLE + the INSERT block that
--- follows it by hand.
-CREATE TABLE IF NOT EXISTS pro_plans (
-  id VARCHAR(20) PRIMARY KEY,
-  name VARCHAR(50) NOT NULL,
-  duration_label VARCHAR(30) NOT NULL,   -- display text, e.g. "1 Month"
-  days INT UNSIGNED NOT NULL,            -- actual pro_expires_at extension
-  price_in_paise INT UNSIGNED NOT NULL,
-  badge VARCHAR(30),                     -- e.g. "Trending"; NULL = no badge
-  sort_order INT NOT NULL DEFAULT 0,
-  active BOOLEAN NOT NULL DEFAULT TRUE,  -- inactive plans are hidden from /api/subscription/plans but keep working for existing orders/history
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `oi_summary_snapshots` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `symbol` varchar(20) NOT NULL,
+  `expiry` date NOT NULL,
+  `strike` decimal(10,2) NOT NULL,
+  `snap_date` date NOT NULL,
+  `snap_time` time NOT NULL,
+  `ce_oi` bigint(20) DEFAULT NULL,
+  `pe_oi` bigint(20) DEFAULT NULL,
+  `ce_ltp` decimal(10,2) DEFAULT NULL,
+  `pe_ltp` decimal(10,2) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_symbol_time` (`symbol`,`snap_date`,`snap_time`),
+  KEY `idx_symbol_strike` (`symbol`,`expiry`,`strike`,`snap_date`)
+) ENGINE=InnoDB AUTO_INCREMENT=689165 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-INSERT IGNORE INTO pro_plans (id, name, duration_label, days, price_in_paise, badge, sort_order) VALUES
-  ('1m', 'Starter', '1 Month', 30, 49900, NULL, 1),
-  ('6m', 'Pro Trader', '6 Months', 180, 289900, 'Trending', 2),
-  ('12m', 'Elite', '1 Year', 365, 549900, NULL, 3);
+CREATE TABLE IF NOT EXISTS `option_chain_cache` (
+  `cache_key` varchar(100) NOT NULL,
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`payload`)),
+  `expires_at` datetime NOT NULL,
+  `cached_at` datetime DEFAULT current_timestamp(),
+  PRIMARY KEY (`cache_key`),
+  KEY `idx_expires_at` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Coupon codes against the pro_plans catalog below. Originally (2026-08-20)
--- plans were a fixed in-code constant and this table only discounted them at
--- checkout; superseded 2026-09-13 when the user asked for the Pricing page's
--- plans themselves to be admin-controlled too — see pro_plans below and
--- services/couponService.js.
-CREATE TABLE IF NOT EXISTS coupons (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  code VARCHAR(30) NOT NULL UNIQUE,
-  discount_type ENUM('percent','flat') NOT NULL,
-  discount_value DECIMAL(10,2) NOT NULL,    -- percent: 0-100; flat: rupees
-  max_redemptions INT,                      -- NULL = unlimited
-  redemption_count INT NOT NULL DEFAULT 0,
-  active BOOLEAN NOT NULL DEFAULT TRUE,
-  expires_at DATETIME,
-  created_by BIGINT UNSIGNED,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `option_chain_coverage_summary` (
+  `symbol` varchar(20) NOT NULL,
+  `expiry_date` date NOT NULL,
+  `trade_date` date NOT NULL,
+  `row_count` int(10) unsigned NOT NULL DEFAULT 0,
+  `minute_rows` int(10) unsigned NOT NULL DEFAULT 0,
+  `last_updated` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`symbol`,`expiry_date`,`trade_date`),
+  KEY `idx_symbol_trade_date` (`symbol`,`trade_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- One row per successful redemption. razorpay_payment_id is UNIQUE — same
--- idempotency guard convention as paper_wallet_ledger, so a retried verify
--- call can never double-count a redemption against max_redemptions.
-CREATE TABLE IF NOT EXISTS coupon_redemptions (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  coupon_id BIGINT UNSIGNED NOT NULL,
-  user_id BIGINT UNSIGNED NOT NULL,
-  razorpay_payment_id VARCHAR(64) NOT NULL UNIQUE,
-  discount_paise INT NOT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (coupon_id) REFERENCES coupons(id) ON DELETE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `option_chain_history` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `symbol` varchar(20) NOT NULL,
+  `trade_date` date NOT NULL,
+  `trade_time` time NOT NULL,
+  `expiry` date NOT NULL,
+  `strike` decimal(10,2) NOT NULL,
+  `underlying_price` decimal(10,2) DEFAULT NULL,
+  `ce_ltp` decimal(10,2) DEFAULT NULL,
+  `ce_oi` bigint(20) DEFAULT NULL,
+  `ce_oi_change` bigint(20) DEFAULT NULL,
+  `ce_iv` decimal(6,2) DEFAULT NULL,
+  `ce_volume` bigint(20) DEFAULT NULL,
+  `ce_delta` decimal(6,4) DEFAULT NULL,
+  `ce_gamma` decimal(8,6) DEFAULT NULL,
+  `ce_theta` decimal(8,4) DEFAULT NULL,
+  `ce_vega` decimal(8,4) DEFAULT NULL,
+  `pe_ltp` decimal(10,2) DEFAULT NULL,
+  `pe_oi` bigint(20) DEFAULT NULL,
+  `pe_oi_change` bigint(20) DEFAULT NULL,
+  `pe_iv` decimal(6,2) DEFAULT NULL,
+  `pe_volume` bigint(20) DEFAULT NULL,
+  `pe_delta` decimal(6,4) DEFAULT NULL,
+  `pe_gamma` decimal(8,6) DEFAULT NULL,
+  `pe_theta` decimal(8,4) DEFAULT NULL,
+  `pe_vega` decimal(8,4) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_snapshot` (`symbol`,`expiry`,`strike`,`trade_date`,`trade_time`),
+  KEY `idx_backtest_range` (`symbol`,`expiry`,`trade_date`,`trade_time`),
+  KEY `idx_symbol_date_time` (`symbol`,`trade_date`,`trade_time`),
+  KEY `idx_sym_date_expiry` (`symbol`,`trade_date`,`expiry`)
+) ENGINE=InnoDB AUTO_INCREMENT=39280752 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Simple announcement/webinar listing, admin-managed, shown on the public
--- /events page — no registration/ticketing.
-CREATE TABLE IF NOT EXISTS events (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  title VARCHAR(200) NOT NULL,
-  description TEXT,
-  event_date DATE NOT NULL,
-  event_time TIME,
-  link VARCHAR(500),
-  is_published BOOLEAN NOT NULL DEFAULT TRUE,
-  created_by BIGINT UNSIGNED,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
-  KEY idx_published_date (is_published, event_date)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `option_chain_snapshots` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `symbol` varchar(20) NOT NULL,
+  `snapshot_time` datetime NOT NULL,
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`payload`)),
+  PRIMARY KEY (`id`),
+  KEY `idx_symbol_time` (`symbol`,`snapshot_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Generic slug->content store. Only 'terms' is used today (T&C editor); the
--- shape generalizes to other legal/static pages later without a new table.
-CREATE TABLE IF NOT EXISTS site_content (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  slug VARCHAR(50) NOT NULL UNIQUE,
-  title VARCHAR(150),
-  content LONGTEXT,
-  updated_by BIGINT UNSIGNED,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `paper_positions` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint(20) unsigned NOT NULL,
+  `symbol` varchar(20) NOT NULL,
+  `expiry` date NOT NULL,
+  `strike` decimal(10,2) NOT NULL,
+  `opt_right` enum('CE','PE') NOT NULL,
+  `side` enum('long','short') NOT NULL DEFAULT 'long',
+  `lots` int(11) NOT NULL,
+  `lot_size` int(11) NOT NULL,
+  `entry_price` decimal(10,2) NOT NULL,
+  `margin_blocked` decimal(14,2) DEFAULT NULL,
+  `strategy_name` varchar(100) DEFAULT NULL,
+  `entry_time` datetime NOT NULL,
+  `status` enum('open','closed') NOT NULL DEFAULT 'open',
+  `exit_price` decimal(10,2) DEFAULT NULL,
+  `exit_time` datetime DEFAULT NULL,
+  `realized_pnl` decimal(14,2) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_user_status` (`user_id`,`status`),
+  CONSTRAINT `paper_positions_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Per-page meta tags (SEO Tool). `path` is a client route like '/', '/pricing',
--- '/events' — client/src/hooks/usePageSeo.js fetches by current path and sets
--- document.title + <meta description>/<meta og:image> on route change. This
--- is a client-side-only SPA, no server-side rendering — so these tags help
--- JS-executing crawlers (Googlebot) but not simpler ones; stated honestly,
--- not oversold as full SSR-grade SEO.
-CREATE TABLE IF NOT EXISTS seo_meta (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  path VARCHAR(255) NOT NULL UNIQUE,
-  title VARCHAR(200),
-  description VARCHAR(500),
-  og_image VARCHAR(500),
-  updated_by BIGINT UNSIGNED,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `paper_wallet_ledger` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint(20) unsigned NOT NULL,
+  `type` enum('trial_grant','pro_purchase_grant','refill_purchase','trade_debit','trade_credit') NOT NULL,
+  `amount` decimal(14,2) NOT NULL,
+  `balance_after` decimal(14,2) NOT NULL,
+  `razorpay_order_id` varchar(64) DEFAULT NULL,
+  `razorpay_payment_id` varchar(64) DEFAULT NULL,
+  `note` varchar(255) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `razorpay_payment_id` (`razorpay_payment_id`),
+  KEY `idx_user_time` (`user_id`,`created_at`),
+  CONSTRAINT `paper_wallet_ledger_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=19 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Real historical lot sizes, effective-dated — NSE revises F&O lot sizes
--- periodically (SEBI-driven review, roughly every 6 months), so a multi-
--- year Simulator replay or Backtest run must use the lot size that was
--- actually in effect on the historical trade date, not today's. Neither
--- Bhavcopy/Breeze/Upstox (services/nseBhavcopy.js etc.) nor Angel One's
--- scrip master carry historical lot-size-by-date — only today's value —
--- so this is admin-seeded from NSE's own published lot-size-revision
--- circulars (admin/src/pages/LotSizeHistory.jsx), deliberately NOT
--- auto-populated or guessed (see services/lotSizeHistoryService.js's own
--- header comment). effective_to NULL = still in effect.
-CREATE TABLE IF NOT EXISTS lot_size_history (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  symbol VARCHAR(20) NOT NULL,
-  lot_size INT NOT NULL,
-  effective_from DATE NOT NULL,
-  effective_to DATE,
-  created_by BIGINT UNSIGNED,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
-  KEY idx_symbol_effective (symbol, effective_from)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `paper_wallets` (
+  `user_id` bigint(20) unsigned NOT NULL,
+  `balance` decimal(14,2) NOT NULL DEFAULT 0.00,
+  `trial_started_at` datetime DEFAULT NULL,
+  `trial_expires_at` datetime DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`user_id`),
+  CONSTRAINT `paper_wallets_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE IF NOT EXISTS paper_positions (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  user_id BIGINT UNSIGNED NOT NULL,
-  symbol VARCHAR(20) NOT NULL,
-  expiry DATE NOT NULL,
-  strike DECIMAL(10,2) NOT NULL,
-  opt_right ENUM('CE','PE') NOT NULL,
-  side ENUM('long','short') NOT NULL DEFAULT 'long',
-  lots INT NOT NULL,
-  lot_size INT NOT NULL,               -- snapshot at entry
-  entry_price DECIMAL(10,2) NOT NULL,
-  margin_blocked DECIMAL(14,2),        -- short positions only; blocked at entry, never recalculated
-  entry_time DATETIME NOT NULL,
-  status ENUM('open','closed') NOT NULL DEFAULT 'open',
-  exit_price DECIMAL(10,2),
-  exit_time DATETIME,
-  realized_pnl DECIMAL(14,2),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  KEY idx_user_status (user_id, status)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `password_reset_tokens` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint(20) unsigned NOT NULL,
+  `token_hash` char(64) NOT NULL,
+  `expires_at` datetime NOT NULL,
+  `used_at` datetime DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `token_hash` (`token_hash`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `password_reset_tokens_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- ---------------------------------------------------------------------------
--- Admin "Data" section (2026-09-13): request/track historical-data
--- extraction jobs from the admin panel. The jobs themselves run as spawned
--- node processes inside the standalone data-downloader/ app (or server/
--- scripts for the Angel One forward-fill case) — this table is just the
--- job queue/history record; see server/services/dataDownloaderRunner.js.
--- Nothing here stores credentials — those stay in .env files, managed via
--- server/services/envSettingsService.js.
--- ---------------------------------------------------------------------------
--- Existing DBs (created before the 'dhan' source existed, 2026-09-14) need:
---   ALTER TABLE data_extraction_jobs MODIFY source ENUM('angelone','upstox','icici_breeze','kotak','bhavcopy','dhan') NOT NULL;
--- CREATE TABLE IF NOT EXISTS does not retrofit an already-created table's ENUM.
-CREATE TABLE IF NOT EXISTS data_extraction_jobs (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  source ENUM('angelone','upstox','icici_breeze','kotak','bhavcopy','dhan') NOT NULL,
-  data_type ENUM('option_chain','futures','vix') NOT NULL,
-  year INT,
-  from_month TINYINT,
-  to_month TINYINT,
-  symbols VARCHAR(1000),          -- comma-separated, NULL = every symbol known so far
-  extra_args VARCHAR(255),        -- e.g. strikes-per-side, days-back for Angel One
-  command TEXT,                   -- the actual argv run, for audit/debugging
-  status ENUM('queued','running','completed','failed','cancelled') NOT NULL DEFAULT 'queued',
-  pid INT,
-  exit_code INT,
-  log_path VARCHAR(500),
-  summary TEXT,                   -- last few lines of output, shown in the job list without opening the full log
-  requested_by BIGINT UNSIGNED,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  started_at DATETIME,
-  finished_at DATETIME,
-  FOREIGN KEY (requested_by) REFERENCES users(id) ON DELETE SET NULL,
-  KEY idx_status (status),
-  KEY idx_created (created_at)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `pcr_snapshots` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `symbol` varchar(20) NOT NULL,
+  `snap_date` date NOT NULL,
+  `snap_time` time NOT NULL,
+  `pcr` decimal(8,4) DEFAULT NULL,
+  `total_ce_oi` bigint(20) DEFAULT NULL,
+  `total_pe_oi` bigint(20) DEFAULT NULL,
+  `spot` decimal(10,2) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_symbol_time` (`symbol`,`snap_date`,`snap_time`)
+) ENGINE=InnoDB AUTO_INCREMENT=22284 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- ---------------------------------------------------------------------------
--- Coverage summary (2026-09-13): pre-aggregated row counts for the admin
--- Data Coverage page, so it never has to GROUP BY the raw 478M-row
--- option_chain_history table again (see services/dataCoverageService.js's
--- header comment for the incident this replaces — the old page ran a live
--- aggregate over the full table, ~30 min / disk-exhausting on bad shapes).
--- One row per (symbol, expiry, trade_date) actually present in
--- option_chain_history — updated incrementally by
--- services/coverageSummaryService.js right after every ingestion path
--- (cron.js, backfill*.js, kotak/repo.js, dataImportService.js) writes into
--- option_chain_history, never by re-scanning the raw table on read.
--- ~215 symbols x ~700 trading days x ~4-5 live expiries at any time is on
--- the order of a few hundred thousand rows, not hundreds of millions.
--- minute_rows mirrors the existing coverage UI's "SUM(trade_time <>
--- '15:30:00')" stat (rows that are real intraday minutes, not an EOD-only
--- Bhavcopy snapshot) — kept here so the controller doesn't need a second
--- source for it.
-CREATE TABLE IF NOT EXISTS option_chain_coverage_summary (
-  symbol VARCHAR(20) NOT NULL,
-  expiry_date DATE NOT NULL,
-  trade_date DATE NOT NULL,
-  row_count INT UNSIGNED NOT NULL DEFAULT 0,
-  minute_rows INT UNSIGNED NOT NULL DEFAULT 0,
-  last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (symbol, expiry_date, trade_date),
-  -- Serves getExpiryStatus's "MAX(trade_date)/MIN(expiry) GROUP BY symbol"
-  -- style reads straight off this table instead of the raw one.
-  KEY idx_symbol_trade_date (symbol, trade_date)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `pro_plans` (
+  `id` varchar(20) NOT NULL,
+  `name` varchar(50) NOT NULL,
+  `duration_label` varchar(30) NOT NULL,
+  `days` int(10) unsigned NOT NULL,
+  `price_in_paise` int(10) unsigned NOT NULL,
+  `badge` varchar(30) DEFAULT NULL,
+  `sort_order` int(11) NOT NULL DEFAULT 0,
+  `active` tinyint(1) NOT NULL DEFAULT 1,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Pre-aggregated daily coverage for ohlcv_data. The raw table contains
--- minute candles for indices, stocks, VIX, and futures aliases; admin
--- coverage reads this small table instead of grouping the raw candles.
--- Existing databases need to run this CREATE TABLE statement manually.
-CREATE TABLE IF NOT EXISTS ohlcv_coverage_summary (
-  symbol VARCHAR(20) NOT NULL,
-  trade_date DATE NOT NULL,
-  row_count INT UNSIGNED NOT NULL DEFAULT 0,
-  minute_rows INT UNSIGNED NOT NULL DEFAULT 0,
-  first_time TIME,
-  last_time TIME,
-  last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (symbol, trade_date),
-  KEY idx_trade_date (trade_date)
-) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS `seo_meta` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `path` varchar(255) NOT NULL,
+  `title` varchar(200) DEFAULT NULL,
+  `description` varchar(500) DEFAULT NULL,
+  `og_image` varchar(500) DEFAULT NULL,
+  `updated_by` bigint(20) unsigned DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `path` (`path`),
+  KEY `updated_by` (`updated_by`),
+  CONSTRAINT `seo_meta_ibfk_1` FOREIGN KEY (`updated_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `site_content` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `slug` varchar(50) NOT NULL,
+  `title` varchar(150) DEFAULT NULL,
+  `content` longtext DEFAULT NULL,
+  `updated_by` bigint(20) unsigned DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `slug` (`slug`),
+  KEY `updated_by` (`updated_by`),
+  CONSTRAINT `site_content_ibfk_1` FOREIGN KEY (`updated_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `strategies` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint(20) unsigned NOT NULL,
+  `name` varchar(150) NOT NULL,
+  `underlying` varchar(20) NOT NULL,
+  `legs` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`legs`)),
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `strategies_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `users` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `name` varchar(100) NOT NULL,
+  `email` varchar(150) NOT NULL,
+  `password_hash` varchar(255) DEFAULT NULL,
+  `google_id` varchar(100) DEFAULT NULL,
+  `tier` enum('free','pro') NOT NULL DEFAULT 'free',
+  `pro_expires_at` datetime DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `role` enum('user','admin') NOT NULL DEFAULT 'user',
+  `current_session_id` varchar(64) DEFAULT NULL,
+  `avatar_url` varchar(255) DEFAULT NULL,
+  `last_login_at` datetime DEFAULT NULL,
+  `last_login_ip` varchar(45) DEFAULT NULL,
+  `phone` varchar(20) DEFAULT NULL,
+  `address` text DEFAULT NULL,
+  `city` varchar(100) DEFAULT NULL,
+  `state` varchar(100) DEFAULT NULL,
+  `pincode` varchar(20) DEFAULT NULL,
+  `country` varchar(100) DEFAULT 'India',
+  `trading_style` varchar(50) DEFAULT 'Options Buyer',
+  `preferred_indices` varchar(255) DEFAULT 'NIFTY, BANKNIFTY',
+  `trading_experience` varchar(50) DEFAULT '1-3 Years',
+  `capital_range` varchar(50) DEFAULT '₹1L - ₹5L',
+  `default_risk_pct` decimal(5,2) DEFAULT 2.00,
+  `default_stoploss_pct` decimal(5,2) DEFAULT 10.00,
+  `default_target_pct` decimal(5,2) DEFAULT 20.00,
+  `primary_broker` varchar(50) DEFAULT 'Angel One',
+  `default_timeframe` varchar(20) DEFAULT '5m',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `email` (`email`),
+  UNIQUE KEY `google_id` (`google_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+SET FOREIGN_KEY_CHECKS = 1;
