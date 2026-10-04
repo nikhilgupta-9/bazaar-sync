@@ -5,21 +5,26 @@ const { pool } = require("../config/db");
 const { isInstituteIp } = require("../services/instituteAccessService");
 const { sendPasswordResetEmail } = require("../services/emailService");
 
+const { OAuth2Client } = require("google-auth-library");
+const axios = require("axios");
+
 const SALT_ROUNDS = 12;
 const TOKEN_EXPIRY = "7d";
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "379208993355-7rpn8k1g5bg4h5k3ie5crm4dmmu11ccf.apps.googleusercontent.com";
+const googleOAuthClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
-function signToken(user) {
+function signToken(user, sessionId) {
     const secret = process.env.JWT_SECRET || "bazaar_sync_jwt_secret_dev_key_2026";
     return jwt.sign(
-        { sub: user.id, email: user.email, tier: user.tier },
+        { sub: user.id, email: user.email, tier: user.tier, role: user.role, sid: sessionId },
         secret,
         { expiresIn: TOKEN_EXPIRY }
     );
 }
 
 function sanitize(user) {
-    const { password_hash, ...safe } = user;
+    const { password_hash, current_session_id, ...safe } = user;
     return safe;
 }
 
@@ -33,19 +38,20 @@ async function register(req, res) {
             return res.status(400).json({ error: "password must be at least 8 characters" });
         }
 
-        const [existing] = await pool.query("SELECT id FROM users WHERE email = ?", [email]);
+        const [existing] = await pool.query("SELECT id FROM users WHERE email = ?", [email.trim().toLowerCase()]);
         if (existing.length) {
             return res.status(409).json({ error: "an account with this email already exists" });
         }
 
+        const sessionId = crypto.randomUUID();
         const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
         const [result] = await pool.query(
-            "INSERT INTO users (name, email, password_hash, tier) VALUES (?, ?, ?, 'free')",
-            [name, email, passwordHash]
+            "INSERT INTO users (name, email, password_hash, tier, current_session_id, last_login_at, last_login_ip) VALUES (?, ?, ?, 'free', ?, NOW(), ?)",
+            [name.trim(), email.trim().toLowerCase(), passwordHash, sessionId, req.ip]
         );
 
         const [[user]] = await pool.query("SELECT * FROM users WHERE id = ?", [result.insertId]);
-        const token = signToken(user);
+        const token = signToken(user, sessionId);
         res.status(201).json({ token, user: sanitize(user), instituteAccess: await isInstituteIp(req.ip) });
     } catch (err) {
         console.error("[auth:register]", err);
@@ -60,9 +66,7 @@ async function login(req, res) {
             return res.status(400).json({ error: "email and password are required" });
         }
 
-        const [[user]] = await pool.query("SELECT * FROM users WHERE email = ?", [email]);
-        // Same generic error whether the email doesn't exist or the password is
-        // wrong — don't reveal which, that's a user-enumeration leak.
+        const [[user]] = await pool.query("SELECT * FROM users WHERE email = ?", [email.trim().toLowerCase()]);
         if (!user || !user.password_hash) {
             return res.status(401).json({ error: "invalid email or password" });
         }
@@ -72,11 +76,134 @@ async function login(req, res) {
             return res.status(401).json({ error: "invalid email or password" });
         }
 
-        const token = signToken(user);
+        // Single-device security: generate a new unique session_id, invalidating any previous session
+        const sessionId = crypto.randomUUID();
+        await pool.query(
+            "UPDATE users SET current_session_id = ?, last_login_at = NOW(), last_login_ip = ? WHERE id = ?",
+            [sessionId, req.ip, user.id]
+        );
+
+        const token = signToken(user, sessionId);
         res.json({ token, user: sanitize(user), instituteAccess: await isInstituteIp(req.ip) });
     } catch (err) {
         console.error("[auth:login]", err);
         res.status(500).json({ error: "login failed" });
+    }
+}
+
+/**
+ * Sign in or Register with Google OAuth (ID Token or Access Token)
+ */
+async function googleAuth(req, res) {
+    try {
+        const { credential, accessToken } = req.body;
+        if (!credential && !accessToken) {
+            return res.status(400).json({ error: "Google credential token or accessToken is required." });
+        }
+
+        let googleUser = null;
+
+        // Method 1: Verify Google ID Token (Google Identity Services)
+        if (credential) {
+            try {
+                const ticket = await googleOAuthClient.verifyIdToken({
+                    idToken: credential,
+                    audience: GOOGLE_CLIENT_ID,
+                });
+                const payload = ticket.getPayload();
+                if (payload && payload.email) {
+                    googleUser = {
+                        sub: payload.sub,
+                        email: payload.email.toLowerCase(),
+                        name: payload.name || payload.given_name || payload.email.split("@")[0],
+                        picture: payload.picture || null,
+                    };
+                }
+            } catch (vErr) {
+                console.warn("[auth:googleAuth] ID Token verify fallback to tokeninfo:", vErr.message);
+                // Fallback tokeninfo verification
+                const { data } = await axios.get(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+                if (data && data.email) {
+                    googleUser = {
+                        sub: data.sub,
+                        email: data.email.toLowerCase(),
+                        name: data.name || data.email.split("@")[0],
+                        picture: data.picture || null,
+                    };
+                }
+            }
+        }
+
+        // Method 2: Verify Google Access Token
+        if (!googleUser && accessToken) {
+            const { data } = await axios.get("https://www.googleapis.com/oauth2/v3/userinfo", {
+                headers: { Authorization: `Bearer ${accessToken}` },
+            });
+            if (data && data.email) {
+                googleUser = {
+                    sub: data.sub,
+                    email: data.email.toLowerCase(),
+                    name: data.name || data.given_name || data.email.split("@")[0],
+                    picture: data.picture || null,
+                };
+            }
+        }
+
+        if (!googleUser || !googleUser.email) {
+            return res.status(401).json({ error: "Google authentication failed. Invalid token." });
+        }
+
+        // Check if user exists by email or google_id
+        const [[existingUser]] = await pool.query(
+            "SELECT * FROM users WHERE email = ? OR (google_id IS NOT NULL AND google_id = ?)",
+            [googleUser.email, googleUser.sub]
+        );
+
+        const sessionId = crypto.randomUUID();
+        let targetUser = null;
+
+        if (existingUser) {
+            // Update Google ID, avatar, and single-session tracking
+            await pool.query(
+                "UPDATE users SET google_id = COALESCE(google_id, ?), avatar_url = COALESCE(avatar_url, ?), current_session_id = ?, last_login_at = NOW(), last_login_ip = ? WHERE id = ?",
+                [googleUser.sub, googleUser.picture, sessionId, req.ip, existingUser.id]
+            );
+            const [[refreshed]] = await pool.query("SELECT * FROM users WHERE id = ?", [existingUser.id]);
+            targetUser = refreshed;
+        } else {
+            // Register new user via Google
+            const [insertRes] = await pool.query(
+                "INSERT INTO users (name, email, google_id, avatar_url, tier, role, current_session_id, last_login_at, last_login_ip) VALUES (?, ?, ?, ?, 'free', 'user', ?, NOW(), ?)",
+                [googleUser.name, googleUser.email, googleUser.sub, googleUser.picture, sessionId, req.ip]
+            );
+            const [[newUser]] = await pool.query("SELECT * FROM users WHERE id = ?", [insertRes.insertId]);
+            targetUser = newUser;
+        }
+
+        const token = signToken(targetUser, sessionId);
+        res.json({
+            token,
+            user: sanitize(targetUser),
+            instituteAccess: await isInstituteIp(req.ip),
+        });
+    } catch (err) {
+        console.error("[auth:googleAuth]", err);
+        res.status(500).json({ error: err.message || "Google authentication failed" });
+    }
+}
+
+/**
+ * Logout and invalidate current session
+ */
+async function logout(req, res) {
+    try {
+        if (req.user && req.user.sub) {
+            await pool.query("UPDATE users SET current_session_id = NULL WHERE id = ?", [req.user.sub]);
+        }
+        res.json({ success: true, message: "Logged out successfully" });
+    } catch (err) {
+        console.error("[auth:logout]", err);
+        res.status(500).json({ error: "Logout failed" });
     }
 }
 
@@ -271,12 +398,72 @@ async function getUserProfile(req, res) {
 async function updateUserProfile(req, res) {
     try {
         const userId = req.user.sub;
-        const { name } = req.body;
-        if (!name || !name.trim()) {
-            return res.status(400).json({ error: "name is required" });
+        const {
+            name,
+            avatar_url,
+            phone,
+            address,
+            city,
+            state,
+            pincode,
+            country,
+            trading_style,
+            preferred_indices,
+            trading_experience,
+            capital_range,
+            default_risk_pct,
+            default_stoploss_pct,
+            default_target_pct,
+            primary_broker,
+            default_timeframe,
+        } = req.body;
+
+        if (name !== undefined && !name.trim()) {
+            return res.status(400).json({ error: "Name cannot be empty" });
         }
 
-        await pool.query("UPDATE users SET name = ? WHERE id = ?", [name.trim(), userId]);
+        await pool.query(
+            `UPDATE users SET
+                name = COALESCE(?, name),
+                avatar_url = COALESCE(?, avatar_url),
+                phone = COALESCE(?, phone),
+                address = COALESCE(?, address),
+                city = COALESCE(?, city),
+                state = COALESCE(?, state),
+                pincode = COALESCE(?, pincode),
+                country = COALESCE(?, country),
+                trading_style = COALESCE(?, trading_style),
+                preferred_indices = COALESCE(?, preferred_indices),
+                trading_experience = COALESCE(?, trading_experience),
+                capital_range = COALESCE(?, capital_range),
+                default_risk_pct = COALESCE(?, default_risk_pct),
+                default_stoploss_pct = COALESCE(?, default_stoploss_pct),
+                default_target_pct = COALESCE(?, default_target_pct),
+                primary_broker = COALESCE(?, primary_broker),
+                default_timeframe = COALESCE(?, default_timeframe)
+             WHERE id = ?`,
+            [
+                name !== undefined ? name.trim() : null,
+                avatar_url !== undefined ? avatar_url : null,
+                phone !== undefined ? phone.trim() : null,
+                address !== undefined ? address.trim() : null,
+                city !== undefined ? city.trim() : null,
+                state !== undefined ? state.trim() : null,
+                pincode !== undefined ? pincode.trim() : null,
+                country !== undefined ? country.trim() : null,
+                trading_style !== undefined ? trading_style : null,
+                preferred_indices !== undefined ? preferred_indices : null,
+                trading_experience !== undefined ? trading_experience : null,
+                capital_range !== undefined ? capital_range : null,
+                default_risk_pct !== undefined && default_risk_pct !== "" ? Number(default_risk_pct) : null,
+                default_stoploss_pct !== undefined && default_stoploss_pct !== "" ? Number(default_stoploss_pct) : null,
+                default_target_pct !== undefined && default_target_pct !== "" ? Number(default_target_pct) : null,
+                primary_broker !== undefined ? primary_broker : null,
+                default_timeframe !== undefined ? default_timeframe : null,
+                userId,
+            ]
+        );
+
         const [[user]] = await pool.query("SELECT * FROM users WHERE id = ?", [userId]);
         res.json({ success: true, message: "Profile updated successfully", user: sanitize(user) });
     } catch (err) {
@@ -318,6 +505,8 @@ async function changePassword(req, res) {
 module.exports = {
     register,
     login,
+    googleAuth,
+    logout,
     me,
     forgotPassword,
     resetPassword,

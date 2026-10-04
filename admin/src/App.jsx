@@ -10,6 +10,8 @@ import InstituteAccess from "./pages/InstituteAccess";
 import Plans from "./pages/Plans";
 import Events from "./pages/Events";
 import Terms from "./pages/Terms";
+import PrivacyPolicy from "./pages/PrivacyPolicy";
+import SocialLinks from "./pages/SocialLinks";
 import Seo from "./pages/Seo";
 import HomePage from "./pages/HomePage";
 import LotSizeHistory from "./pages/LotSizeHistory";
@@ -38,6 +40,8 @@ export default function App() {
                 <Route path="/plans" element={<Plans />} />
                 <Route path="/events" element={<Events />} />
                 <Route path="/terms" element={<Terms />} />
+                <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+                <Route path="/social-links" element={<SocialLinks />} />
                 <Route path="/seo" element={<Seo />} />
                 <Route path="/lot-size-history" element={<LotSizeHistory />} />
                 <Route path="/data-gdrive-archive" element={<GoogleDriveArchive />} />

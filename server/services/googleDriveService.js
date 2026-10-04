@@ -249,12 +249,18 @@ async function saveOAuthCredentials({ clientId, clientSecret, refreshToken, root
     oauth2Client.setCredentials({ refresh_token: refreshToken });
 
     // Test token validity & retrieve user info
-    const oauth2 = google.oauth2({ version: "v2", auth: oauth2Client });
     let userInfo = {};
     try {
+        const { token: accessToken } = await oauth2Client.getAccessToken();
+        if (!accessToken) {
+            throw new Error("Unable to obtain access token from Google using this refresh token.");
+        }
+        const oauth2 = google.oauth2({ version: "v2", auth: oauth2Client });
         const userRes = await oauth2.userinfo.get();
         userInfo = userRes.data || {};
-    } catch (_) {}
+    } catch (err) {
+        throw new Error(`Google rejected the credentials (${err.message || "invalid_grant"}). Please generate a fresh Refresh Token.`);
+    }
 
     const configData = {
         auth_type: "oauth2",

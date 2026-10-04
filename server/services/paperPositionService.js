@@ -342,6 +342,82 @@ async function listClosedPositions(userId, limit = 100) {
     return rows;
 }
 
+/**
+ * Get Paper Trading Leaderboard ranking users by Realized P&L, Win Rate, and Total Trades.
+ */
+async function getLeaderboard(currentUserId = null) {
+    const [rows] = await pool.query(`
+        SELECT 
+            u.id AS user_id,
+            u.name,
+            u.email,
+            u.avatar_url,
+            u.trading_style,
+            u.role,
+            COALESCE(w.balance, 500000) AS current_balance,
+            COUNT(CASE WHEN p.status = 'closed' THEN 1 END) AS total_closed_trades,
+            COUNT(CASE WHEN p.status = 'open' THEN 1 END) AS total_open_trades,
+            COALESCE(SUM(CASE WHEN p.status = 'closed' THEN p.realized_pnl ELSE 0 END), 0) AS total_realized_pnl,
+            COUNT(CASE WHEN p.status = 'closed' AND p.realized_pnl > 0 THEN 1 END) AS winning_trades,
+            COUNT(CASE WHEN p.status = 'closed' AND p.realized_pnl < 0 THEN 1 END) AS losing_trades,
+            MAX(CASE WHEN p.status = 'closed' THEN p.realized_pnl END) AS best_trade_pnl,
+            MAX(p.entry_time) AS last_active_at
+        FROM users u
+        LEFT JOIN paper_wallets w ON w.user_id = u.id
+        LEFT JOIN paper_positions p ON p.user_id = u.id
+        GROUP BY u.id, u.name, u.email, u.avatar_url, u.trading_style, u.role, w.balance
+        ORDER BY total_realized_pnl DESC, total_closed_trades DESC, u.id ASC
+    `);
+
+    let myRankInfo = null;
+    const rankedList = rows.map((r, index) => {
+        const closedTrades = Number(r.total_closed_trades) || 0;
+        const openTrades = Number(r.total_open_trades) || 0;
+        const totalTrades = closedTrades + openTrades;
+        const wins = Number(r.winning_trades) || 0;
+        const winRate = closedTrades > 0 ? Number(((wins / closedTrades) * 100).toFixed(1)) : 0;
+        const netPnl = Number(Number(r.total_realized_pnl).toFixed(2));
+        const balance = Number(Number(r.current_balance).toFixed(2));
+        const rank = index + 1;
+
+        let badge = "Novice Trader";
+        if (rank === 1 && netPnl > 0) badge = "🏆 Champion Trader";
+        else if (rank <= 3 && netPnl > 0) badge = "⚡ Elite Scalper";
+        else if (winRate >= 70 && closedTrades >= 2) badge = "🎯 Precision Pro";
+        else if (totalTrades >= 5) badge = "🛡️ Active Risk Manager";
+        else if (netPnl > 0) badge = "📈 Alpha Generator";
+
+        const item = {
+            rank,
+            userId: r.user_id,
+            name: r.name || "Anonymous Trader",
+            email: r.email,
+            avatarUrl: r.avatar_url,
+            tradingStyle: r.trading_style || "Options Buyer",
+            role: r.role,
+            balance,
+            totalTrades,
+            closedTrades,
+            openTrades,
+            winningTrades: wins,
+            losingTrades: Number(r.losing_trades) || 0,
+            winRate,
+            netPnl,
+            bestTradePnl: r.best_trade_pnl != null ? Number(Number(r.best_trade_pnl).toFixed(2)) : null,
+            lastActiveAt: r.last_active_at,
+            badge,
+        };
+
+        if (currentUserId && Number(currentUserId) === Number(r.user_id)) {
+            myRankInfo = item;
+        }
+
+        return item;
+    });
+
+    return { leaderboard: rankedList, myRank: myRankInfo };
+}
+
 module.exports = {
     openPosition,
     openStrategyPositions,
@@ -350,4 +426,5 @@ module.exports = {
     listOpenPositions,
     listClosedPositions,
     getLiveContractPrice,
+    getLeaderboard,
 };

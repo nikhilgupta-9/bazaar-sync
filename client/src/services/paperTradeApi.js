@@ -71,3 +71,10 @@ export async function closeAllPositions(token, symbol = null) {
     });
     return handle(res);
 }
+
+export async function fetchPaperLeaderboard(token) {
+    const res = await fetch(`${API_URL}/api/paper-trade/leaderboard`, {
+        headers: { Authorization: `Bearer ${token}` },
+    });
+    return handle(res);
+}

@@ -190,6 +190,13 @@ server.listen(PORT, () => {
         console.error("[server] failed to start autoUploadDaemon:", daemonErr.message);
     }
 
+    // Start automated 7-Day Rolling Minute Data Retention & Fallback Loop
+    try {
+        require("./services/sevenDayRollingDataService").start();
+    } catch (rollErr) {
+        console.error("[server] failed to start sevenDayRollingDataService:", rollErr.message);
+    }
+
     // Mid-day Express restart: bring the live feed back immediately instead
     // of waiting for the next 08:45 cron.
     if (marketHours.isTradingTime() || marketHours.isExtendedHours()) {

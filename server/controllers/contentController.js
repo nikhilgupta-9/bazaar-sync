@@ -7,7 +7,7 @@
 // page, never a blank section.
 const { pool } = require("../config/db");
 
-const ALLOWED_SLUGS = ["terms", "home"];
+const ALLOWED_SLUGS = ["terms", "home", "privacy-policy", "privacy", "social-links", "social_links", "footer"];
 
 // Public — returns null fields (not 404) when nothing's been written yet,
 // so the client page can show "not published yet" instead of erroring.

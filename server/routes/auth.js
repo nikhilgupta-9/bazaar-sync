@@ -2,6 +2,8 @@ const express = require("express");
 const {
     register,
     login,
+    googleAuth,
+    logout,
     me,
     forgotPassword,
     resetPassword,
@@ -15,6 +17,8 @@ const router = express.Router();
 
 router.post("/register", register);
 router.post("/login", login);
+router.post("/google", googleAuth);
+router.post("/logout", requireAuth, logout);
 router.get("/me", requireAuth, me);
 router.get("/profile", requireAuth, getUserProfile);
 router.put("/profile", requireAuth, updateUserProfile);

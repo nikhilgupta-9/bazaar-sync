@@ -44,15 +44,24 @@ export default function PremiumFeaturesModal({ onClose }) {
                     </ul>
 
                     {user ? (
-                        <div className="rounded-md border border-gray-100 bg-gray-50 px-3 py-2 text-[10px] text-gray-400">
-                            Self-serve upgrade isn't live yet — contact support to go Pro.
-                        </div>
+                        <button
+                            onClick={() => {
+                                onClose();
+                                navigate("/pricing");
+                            }}
+                            className="w-full rounded-lg bg-emerald-600 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md shadow-emerald-600/20"
+                        >
+                            View Pro Plans & Subscribe
+                        </button>
                     ) : (
                         <button
-                            onClick={() => navigate("/login")}
-                            className="w-full rounded-lg bg-blue-600 py-2 text-xs font-bold text-white hover:bg-blue-700"
+                            onClick={() => {
+                                onClose();
+                                navigate("/login");
+                            }}
+                            className="w-full rounded-lg bg-blue-600 py-2 text-xs font-bold text-white hover:bg-blue-700 shadow-md shadow-blue-600/20"
                         >
-                            Log In
+                            Log In to Subscribe
                         </button>
                     )}
                 </div>

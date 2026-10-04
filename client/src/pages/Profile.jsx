@@ -1,4 +1,4 @@
-// pages/Profile.jsx — Complete User Profile, Subscription Plans & Trading Dashboard
+// pages/Profile.jsx — Complete User Profile, Trader Preferences, Backtesting Settings & Subscription
 import React, { useState, useEffect, useCallback } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
@@ -33,13 +33,78 @@ import {
     FiLayers,
     FiKey,
     FiSave,
+    FiPhone,
+    FiMapPin,
+    FiSliders,
+    FiBriefcase,
+    FiTarget,
+    FiPercent,
+    FiMonitor,
 } from "react-icons/fi";
 
 const TABS = [
     { id: "overview", label: "Overview & Plans", icon: FiAward },
+    { id: "trader_profile", label: "Trader & Backtest Settings", icon: FiSliders },
+    { id: "personal_info", label: "Personal & Contact Info", icon: FiUser },
     { id: "trading", label: "Trading Analytics", icon: FiActivity },
     { id: "billing", label: "Payment History", icon: FiCreditCard },
-    { id: "security", label: "Account Settings", icon: FiShield },
+    { id: "security", label: "Security & Sessions", icon: FiShield },
+];
+
+const TRADING_STYLES = [
+    "Options Buyer",
+    "Options Seller",
+    "Intraday Scalper",
+    "Positional / Swing Trader",
+    "Algo / Quantitative Trader",
+    "Hedging & Arbitrage",
+];
+
+const INDICES_OPTIONS = [
+    "NIFTY",
+    "BANKNIFTY",
+    "FINNIFTY",
+    "MIDCPNIFTY",
+    "SENSEX",
+    "BANKEX",
+    "NIFTYNXT50",
+    "F&O Stocks",
+];
+
+const EXPERIENCE_LEVELS = [
+    "Beginner (< 1 Year)",
+    "Intermediate (1 - 3 Years)",
+    "Advanced (3 - 5 Years)",
+    "Professional / Full-time (5+ Years)",
+];
+
+const CAPITAL_RANGES = [
+    "< ₹1 Lakh",
+    "₹1 Lakh - ₹5 Lakhs",
+    "₹5 Lakhs - ₹25 Lakhs",
+    "₹25 Lakhs - ₹1 Crore",
+    "₹1 Crore+",
+];
+
+const BROKERS = [
+    "Angel One",
+    "Dhan",
+    "Zerodha",
+    "Groww",
+    "Upstox",
+    "Fyers",
+    "ICICI Direct",
+    "Kotak Neo",
+    "Other",
+];
+
+const TIMEFRAMES = [
+    { value: "1m", label: "1 Minute (Ultra-fast Scalping)" },
+    { value: "3m", label: "3 Minutes (Intraday Momentum)" },
+    { value: "5m", label: "5 Minutes (Standard Intraday)" },
+    { value: "15m", label: "15 Minutes (Breakouts / Trends)" },
+    { value: "1h", label: "1 Hour (Positional / Swing)" },
+    { value: "1D", label: "Daily (EOD Analysis)" },
 ];
 
 export default function Profile() {
@@ -49,15 +114,32 @@ export default function Profile() {
     const [activeTab, setActiveTab] = useState("overview");
     const [profileData, setProfileData] = useState(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(null);
     const [actionFeedback, setActionFeedback] = useState(null);
 
-    // Edit Profile Modal
-    const [editNameOpen, setEditNameOpen] = useState(false);
-    const [newName, setNewName] = useState("");
+    // Form States
+    const [formData, setFormData] = useState({
+        name: "",
+        avatar_url: "",
+        phone: "",
+        address: "",
+        city: "",
+        state: "",
+        pincode: "",
+        country: "India",
+        trading_style: "Options Buyer",
+        preferred_indices: ["NIFTY", "BANKNIFTY"],
+        trading_experience: "Intermediate (1 - 3 Years)",
+        capital_range: "₹1 Lakh - ₹5 Lakhs",
+        default_risk_pct: 2,
+        default_stoploss_pct: 10,
+        default_target_pct: 20,
+        primary_broker: "Angel One",
+        default_timeframe: "5m",
+    });
+
     const [savingProfile, setSavingProfile] = useState(false);
 
-    // Change Password Form
+    // Password Form
     const [currentPassword, setCurrentPassword] = useState("");
     const [newPassword, setNewPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
@@ -75,11 +157,39 @@ export default function Profile() {
         try {
             const data = await fetchUserProfile(token);
             setProfileData(data);
-            setNewName(data?.user?.name || "");
-            setError(null);
+            const u = data?.user || {};
+
+            let parsedIndices = ["NIFTY", "BANKNIFTY"];
+            if (u.preferred_indices) {
+                if (Array.isArray(u.preferred_indices)) {
+                    parsedIndices = u.preferred_indices;
+                } else if (typeof u.preferred_indices === "string") {
+                    parsedIndices = u.preferred_indices.split(",").map((s) => s.trim()).filter(Boolean);
+                }
+            }
+
+            setFormData({
+                name: u.name || "",
+                avatar_url: u.avatar_url || "",
+                phone: u.phone || "",
+                address: u.address || "",
+                city: u.city || "",
+                state: u.state || "",
+                pincode: u.pincode || "",
+                country: u.country || "India",
+                trading_style: u.trading_style || "Options Buyer",
+                preferred_indices: parsedIndices.length ? parsedIndices : ["NIFTY", "BANKNIFTY"],
+                trading_experience: u.trading_experience || "Intermediate (1 - 3 Years)",
+                capital_range: u.capital_range || "₹1 Lakh - ₹5 Lakhs",
+                default_risk_pct: u.default_risk_pct != null ? u.default_risk_pct : 2,
+                default_stoploss_pct: u.default_stoploss_pct != null ? u.default_stoploss_pct : 10,
+                default_target_pct: u.default_target_pct != null ? u.default_target_pct : 20,
+                primary_broker: u.primary_broker || "Angel One",
+                default_timeframe: u.default_timeframe || "5m",
+            });
         } catch (err) {
             console.error("[Profile] fetch failed:", err);
-            setError(err.message || "Failed to load profile");
+            setActionFeedback({ type: "error", message: err.message || "Failed to load profile" });
         } finally {
             setLoading(false);
         }
@@ -93,7 +203,49 @@ export default function Profile() {
         loadProfile();
     }, [token, loadProfile, navigate]);
 
-    // Handle Pro Membership Upgrade / Renewal via Razorpay
+    // Handle Form Value Changes
+    const handleFieldChange = (field, value) => {
+        setFormData((prev) => ({ ...prev, [field]: value }));
+    };
+
+    // Toggle Preferred Indices
+    const toggleIndex = (idx) => {
+        setFormData((prev) => {
+            const exists = prev.preferred_indices.includes(idx);
+            let updated;
+            if (exists) {
+                updated = prev.preferred_indices.filter((i) => i !== idx);
+                if (updated.length === 0) updated = [idx]; // at least one
+            } else {
+                updated = [...prev.preferred_indices, idx];
+            }
+            return { ...prev, preferred_indices: updated };
+        });
+    };
+
+    // Save All Profile & Backtesting Details
+    const handleSaveProfile = async (e) => {
+        if (e) e.preventDefault();
+        setSavingProfile(true);
+        try {
+            const payload = {
+                ...formData,
+                preferred_indices: Array.isArray(formData.preferred_indices)
+                    ? formData.preferred_indices.join(", ")
+                    : formData.preferred_indices,
+            };
+            const res = await updateUserProfile(token, payload);
+            setActionFeedback({ type: "success", message: "✅ Profile & Backtesting settings saved successfully!" });
+            if (refreshUser) await refreshUser();
+            await loadProfile();
+        } catch (err) {
+            setActionFeedback({ type: "error", message: err.message || "Failed to update profile" });
+        } finally {
+            setSavingProfile(false);
+        }
+    };
+
+    // Handle Pro Membership Upgrade
     const handleUpgradePro = async (planId = "pro_1m", amountPaise = 49900) => {
         if (!token) return;
         setPaymentLoading(true);
@@ -110,6 +262,7 @@ export default function Profile() {
                 prefill: {
                     name: profileData?.user?.name || user?.name || "",
                     email: profileData?.user?.email || user?.email || "",
+                    contact: formData.phone || "",
                 },
                 theme: { color: "#10b981" },
                 handler: async (response) => {
@@ -141,7 +294,7 @@ export default function Profile() {
         }
     };
 
-    // Handle Virtual Balance Refill (+₹5 Lakhs for ₹100)
+    // Handle Capital Refill
     const handleRefillCapital = async () => {
         if (!token) return;
         setPaymentLoading(true);
@@ -158,6 +311,7 @@ export default function Profile() {
                 prefill: {
                     name: profileData?.user?.name || user?.name || "",
                     email: profileData?.user?.email || user?.email || "",
+                    contact: formData.phone || "",
                 },
                 theme: { color: "#10b981" },
                 handler: async (response) => {
@@ -188,24 +342,6 @@ export default function Profile() {
         }
     };
 
-    // Handle Profile Name Update
-    const handleSaveProfile = async (e) => {
-        e.preventDefault();
-        if (!newName.trim()) return;
-        setSavingProfile(true);
-        try {
-            await updateUserProfile(token, { name: newName.trim() });
-            setActionFeedback({ type: "success", message: "Profile name updated successfully!" });
-            setEditNameOpen(false);
-            await refreshUser();
-            await loadProfile();
-        } catch (err) {
-            setActionFeedback({ type: "error", message: err.message || "Failed to update profile" });
-        } finally {
-            setSavingProfile(false);
-        }
-    };
-
     // Handle Password Change
     const handleChangePassword = async (e) => {
         e.preventDefault();
@@ -231,6 +367,17 @@ export default function Profile() {
         }
     };
 
+    // Calculate Profile Completion Score
+    const calculateCompletion = () => {
+        let score = 20; // base (name + email)
+        if (formData.phone) score += 20;
+        if (formData.address && formData.city) score += 20;
+        if (formData.trading_style) score += 15;
+        if (formData.primary_broker) score += 15;
+        if (formData.preferred_indices?.length) score += 10;
+        return Math.min(score, 100);
+    };
+
     if (loading) {
         return (
             <div className="min-h-[70vh] flex flex-col items-center justify-center p-6 text-gray-500">
@@ -247,6 +394,7 @@ export default function Profile() {
     const proDaysRemaining = u?.proDaysLeft || 0;
     const isTrialActive = w?.isTrialActive;
     const trialDaysRemaining = w?.daysLeft || 0;
+    const completionScore = calculateCompletion();
 
     return (
         <div className="min-h-screen bg-gray-50/60 pb-16 dark:bg-[#0b1420]">
@@ -255,8 +403,8 @@ export default function Profile() {
                 <div
                     className={`fixed top-4 right-4 z-50 flex items-center gap-3 px-4 py-3 rounded-xl border shadow-xl backdrop-blur-md transition-all ${
                         actionFeedback.type === "success"
-                            ? "bg-emerald-500/90 text-white border-emerald-400"
-                            : "bg-rose-600/90 text-white border-rose-500"
+                            ? "bg-emerald-600/95 text-white border-emerald-400"
+                            : "bg-rose-600/95 text-white border-rose-500"
                     }`}
                 >
                     {actionFeedback.type === "success" ? <FiCheckCircle size={18} /> : <FiAlertCircle size={18} />}
@@ -278,11 +426,21 @@ export default function Profile() {
 
                     <div className="relative flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
                         <div className="flex items-center gap-4">
-                            <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-400 text-white font-black text-2xl shadow-md ring-4 ring-emerald-500/20">
-                                {u?.name ? u.name.charAt(0).toUpperCase() : "U"}
+                            <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-400 text-white font-black text-2xl shadow-md ring-4 ring-emerald-500/20 overflow-hidden shrink-0">
+                                {formData.avatar_url || u?.avatar_url ? (
+                                    <img
+                                        src={formData.avatar_url || u?.avatar_url}
+                                        alt="Profile"
+                                        className="h-full w-full object-cover rounded-2xl"
+                                        referrerPolicy="no-referrer"
+                                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                                    />
+                                ) : (
+                                    formData.name ? formData.name.charAt(0).toUpperCase() : (u?.name ? u.name.charAt(0).toUpperCase() : "T")
+                                )}
                                 {isProUser && (
                                     <span
-                                        className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-amber-400 text-amber-950 ring-2 ring-white dark:ring-gray-900 text-[10px] font-black shadow-xs"
+                                        className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-amber-400 text-amber-950 ring-2 ring-white dark:ring-gray-900 text-[10px] font-black shadow-xs z-10"
                                         title="Pro Member"
                                     >
                                         ★
@@ -293,15 +451,8 @@ export default function Profile() {
                             <div>
                                 <div className="flex items-center gap-2 flex-wrap">
                                     <h1 className="text-xl sm:text-2xl font-black tracking-tight text-gray-900 dark:text-white">
-                                        {u?.name || "Trader"}
+                                        {formData.name || u?.name || "Trader Profile"}
                                     </h1>
-                                    <button
-                                        onClick={() => setEditNameOpen(true)}
-                                        className="p-1 text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition"
-                                        title="Edit Name"
-                                    >
-                                        <FiEdit2 size={14} />
-                                    </button>
 
                                     {isProUser ? (
                                         <span className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-amber-500/15 to-orange-500/15 px-3 py-0.5 text-xs font-black text-amber-700 dark:text-amber-300 border border-amber-500/30">
@@ -320,12 +471,30 @@ export default function Profile() {
                                     )}
                                 </div>
 
-                                <div className="mt-1 flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400 flex-wrap">
+                                <div className="mt-1.5 flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400 flex-wrap">
                                     <span>{u?.email}</span>
+                                    {formData.phone && (
+                                        <>
+                                            <span>•</span>
+                                            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold">
+                                                <FiPhone size={11} /> {formData.phone}
+                                            </span>
+                                        </>
+                                    )}
                                     <span>•</span>
-                                    <span className="flex items-center gap-1">
-                                        <FiCalendar size={12} />
-                                        Member since {u?.created_at ? new Date(u.created_at).toLocaleDateString("en-IN", { month: "short", year: "numeric" }) : "2026"}
+                                    <span>{formData.trading_style}</span>
+                                </div>
+
+                                {/* Profile Strength Progress Bar */}
+                                <div className="mt-2 flex items-center gap-2 max-w-xs">
+                                    <div className="h-1.5 flex-1 rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden">
+                                        <div
+                                            className="h-full rounded-full bg-emerald-500 transition-all duration-500"
+                                            style={{ width: `${completionScore}%` }}
+                                        />
+                                    </div>
+                                    <span className="text-[10px] font-bold text-gray-500">
+                                        Profile {completionScore}% Complete
                                     </span>
                                 </div>
                             </div>
@@ -473,139 +642,46 @@ export default function Profile() {
                             </div>
                         </div>
 
-                        {/* Active Subscription Details Card */}
-                        <div className="rounded-2xl border border-gray-200/80 bg-white p-6 shadow-xs dark:border-gray-800 dark:bg-gray-900/90">
-                            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 pb-6 border-b border-gray-100 dark:border-gray-800">
+                        {/* Backtest & Profile Summary Card */}
+                        <div className="rounded-2xl border border-gray-200/80 bg-white p-6 shadow-xs dark:border-gray-800 dark:bg-gray-900">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-gray-100 dark:border-gray-800">
                                 <div>
-                                    <div className="flex items-center gap-2">
-                                        <h2 className="text-lg font-black text-gray-900 dark:text-white">
-                                            {isProUser
-                                                ? "Pro Membership Subscription"
-                                                : isTrialActive
-                                                ? "Free 2-Day Trial Access"
-                                                : "Subscription Plan (Expired)"}
-                                        </h2>
-                                        <span className="rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-2.5 py-0.5 text-xs font-bold">
-                                            {isProUser ? "Active" : isTrialActive ? "Trial" : "Action Required"}
-                                        </span>
-                                    </div>
-                                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                        {isProUser
-                                            ? "Your Pro membership gives you full platform tools, 7 live indices, and ₹5,00,000 continuous paper money."
-                                            : "New joiners receive 2 days free trial with ₹1,00,000 virtual trading cash. Upgrade to Pro for ₹5 Lakhs & uninterrupted access."}
+                                    <h3 className="text-base font-bold text-gray-900 dark:text-white">
+                                        Backtester & Trading Setup Summary
+                                    </h3>
+                                    <p className="text-xs text-gray-500">
+                                        Your customized parameters used for risk management and strategy simulations
                                     </p>
                                 </div>
-
-                                <div className="flex items-center gap-3">
-                                    {isProUser ? (
-                                        <button
-                                            onClick={() => handleUpgradePro("pro_1m", 49900)}
-                                            disabled={paymentLoading}
-                                            className="rounded-xl border border-emerald-500/40 bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 transition"
-                                        >
-                                            Extend Plan (+30 Days)
-                                        </button>
-                                    ) : (
-                                        <button
-                                            onClick={() => handleUpgradePro("pro_1m", 49900)}
-                                            disabled={paymentLoading}
-                                            className="rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 px-5 py-2.5 text-xs font-black text-white shadow-md hover:from-emerald-700 hover:to-teal-600 transition"
-                                        >
-                                            Upgrade to Pro (₹499 / mo)
-                                        </button>
-                                    )}
-                                </div>
+                                <button
+                                    onClick={() => setActiveTab("trader_profile")}
+                                    className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-600 dark:text-emerald-400 hover:underline"
+                                >
+                                    <FiEdit2 size={13} /> Edit Preferences
+                                </button>
                             </div>
 
-                            {/* Plan Features Checklist */}
-                            <div className="pt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
-                                <div className="flex items-start gap-3">
-                                    <div className="mt-0.5 rounded-full bg-emerald-500/15 p-1 text-emerald-600 dark:text-emerald-400">
-                                        <FiCheck size={12} />
-                                    </div>
-                                    <div>
-                                        <div className="font-bold text-gray-900 dark:text-white">
-                                            ₹5,00,000 Virtual Trading Grant
-                                        </div>
-                                        <div className="text-gray-500 text-[11px]">
-                                            Included automatically upon Pro membership activation
-                                        </div>
-                                    </div>
+                            <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+                                <div className="p-3 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-100 dark:border-gray-800">
+                                    <div className="text-gray-400 font-semibold text-[11px]">Trading Style</div>
+                                    <div className="mt-1 font-bold text-gray-900 dark:text-white">{formData.trading_style}</div>
                                 </div>
-
-                                <div className="flex items-start gap-3">
-                                    <div className="mt-0.5 rounded-full bg-emerald-500/15 p-1 text-emerald-600 dark:text-emerald-400">
-                                        <FiCheck size={12} />
-                                    </div>
-                                    <div>
-                                        <div className="font-bold text-gray-900 dark:text-white">
-                                            Live Market WebSocket Stream
-                                        </div>
-                                        <div className="text-gray-500 text-[11px]">
-                                            Real-time ticks across all 7 indices & 210+ F&O stocks
-                                        </div>
-                                    </div>
+                                <div className="p-3 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-100 dark:border-gray-800">
+                                    <div className="text-gray-400 font-semibold text-[11px]">Primary Broker</div>
+                                    <div className="mt-1 font-bold text-gray-900 dark:text-white">{formData.primary_broker}</div>
                                 </div>
-
-                                <div className="flex items-start gap-3">
-                                    <div className="mt-0.5 rounded-full bg-emerald-500/15 p-1 text-emerald-600 dark:text-emerald-400">
-                                        <FiCheck size={12} />
-                                    </div>
-                                    <div>
-                                        <div className="font-bold text-gray-900 dark:text-white">
-                                            Capital Refill Option (+₹5L for ₹100)
-                                        </div>
-                                        <div className="text-gray-500 text-[11px]">
-                                            Top up virtual capital anytime balance drops low
-                                        </div>
-                                    </div>
+                                <div className="p-3 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-100 dark:border-gray-800">
+                                    <div className="text-gray-400 font-semibold text-[11px]">Default Risk / Trade</div>
+                                    <div className="mt-1 font-bold text-emerald-600 dark:text-emerald-400">{formData.default_risk_pct}%</div>
                                 </div>
-
-                                <div className="flex items-start gap-3">
-                                    <div className="mt-0.5 rounded-full bg-emerald-500/15 p-1 text-emerald-600 dark:text-emerald-400">
-                                        <FiCheck size={12} />
-                                    </div>
-                                    <div>
-                                        <div className="font-bold text-gray-900 dark:text-white">
-                                            Live Multi-Leg Strategy Builder
-                                        </div>
-                                        <div className="text-gray-500 text-[11px]">
-                                            1-Click Spreads, Iron Condors & Payoff Simulation
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="flex items-start gap-3">
-                                    <div className="mt-0.5 rounded-full bg-emerald-500/15 p-1 text-emerald-600 dark:text-emerald-400">
-                                        <FiCheck size={12} />
-                                    </div>
-                                    <div>
-                                        <div className="font-bold text-gray-900 dark:text-white">
-                                            StockMojo Payoff & Greeks
-                                        </div>
-                                        <div className="text-gray-500 text-[11px]">
-                                            Real-time Delta, Gamma, Theta, Vega & Hedge margins
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="flex items-start gap-3">
-                                    <div className="mt-0.5 rounded-full bg-emerald-500/15 p-1 text-emerald-600 dark:text-emerald-400">
-                                        <FiCheck size={12} />
-                                    </div>
-                                    <div>
-                                        <div className="font-bold text-gray-900 dark:text-white">
-                                            Historical Backtesting & Simulator
-                                        </div>
-                                        <div className="text-gray-500 text-[11px]">
-                                            Tick-by-tick simulation with past expiry playbacks
-                                        </div>
-                                    </div>
+                                <div className="p-3 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-100 dark:border-gray-800">
+                                    <div className="text-gray-400 font-semibold text-[11px]">Default Timeframe</div>
+                                    <div className="mt-1 font-bold text-gray-900 dark:text-white">{formData.default_timeframe.toUpperCase()}</div>
                                 </div>
                             </div>
                         </div>
 
-                        {/* Commercial Pricing Plans Grid */}
+                        {/* Available Plans */}
                         <div>
                             <div className="flex items-center justify-between mb-4">
                                 <h3 className="text-base font-black text-gray-900 dark:text-white">
@@ -715,7 +791,472 @@ export default function Profile() {
                 )}
 
                 {/* ========================================================= */}
-                {/* TAB 2: TRADING ANALYTICS & PERFORMANCE */}
+                {/* TAB 2: TRADER & BACKTEST SETTINGS (Most Important For Backtester) */}
+                {/* ========================================================= */}
+                {activeTab === "trader_profile" && (
+                    <form onSubmit={handleSaveProfile} className="space-y-6">
+                        {/* 1. Trading Style & Experience */}
+                        <div className="rounded-2xl border border-gray-200/80 bg-white p-6 shadow-xs dark:border-gray-800 dark:bg-gray-900">
+                            <div className="flex items-center gap-2.5 mb-1">
+                                <FiBriefcase className="text-emerald-500" size={20} />
+                                <h3 className="text-base font-black text-gray-900 dark:text-white">
+                                    Trading Style & Market Expertise
+                                </h3>
+                            </div>
+                            <p className="text-xs text-gray-500 mb-5">
+                                Helps the platform tailor Strategy Builder suggestions, Greeks calculations, and default strike spreads.
+                            </p>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Primary Trading Style
+                                    </label>
+                                    <select
+                                        value={formData.trading_style}
+                                        onChange={(e) => handleFieldChange("trading_style", e.target.value)}
+                                        className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                    >
+                                        {TRADING_STYLES.map((style) => (
+                                            <option key={style} value={style}>
+                                                {style}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Trading Experience
+                                    </label>
+                                    <select
+                                        value={formData.trading_experience}
+                                        onChange={(e) => handleFieldChange("trading_experience", e.target.value)}
+                                        className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                    >
+                                        {EXPERIENCE_LEVELS.map((lvl) => (
+                                            <option key={lvl} value={lvl}>
+                                                {lvl}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Default Trading Capital
+                                    </label>
+                                    <select
+                                        value={formData.capital_range}
+                                        onChange={(e) => handleFieldChange("capital_range", e.target.value)}
+                                        className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                    >
+                                        {CAPITAL_RANGES.map((cap) => (
+                                            <option key={cap} value={cap}>
+                                                {cap}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
+
+                            {/* Preferred Indices Multi-Select Chips */}
+                            <div className="mt-6 pt-5 border-t border-gray-100 dark:border-gray-800">
+                                <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-2">
+                                    Preferred Backtesting Indices & Segments (Click to toggle)
+                                </label>
+                                <div className="flex flex-wrap gap-2">
+                                    {INDICES_OPTIONS.map((idx) => {
+                                        const selected = formData.preferred_indices.includes(idx);
+                                        return (
+                                            <button
+                                                type="button"
+                                                key={idx}
+                                                onClick={() => toggleIndex(idx)}
+                                                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                                                    selected
+                                                        ? "bg-emerald-600 text-white shadow-xs"
+                                                        : "bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700"
+                                                }`}
+                                            >
+                                                {selected ? <FiCheck size={12} /> : "+"} {idx}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 2. Risk Management & Simulator Defaults */}
+                        <div className="rounded-2xl border border-gray-200/80 bg-white p-6 shadow-xs dark:border-gray-800 dark:bg-gray-900">
+                            <div className="flex items-center gap-2.5 mb-1">
+                                <FiTarget className="text-emerald-500" size={20} />
+                                <h3 className="text-base font-black text-gray-900 dark:text-white">
+                                    Risk Rules & Default Backtest Multipliers
+                                </h3>
+                            </div>
+                            <p className="text-xs text-gray-500 mb-5">
+                                Preset parameters automatically applied when building new payoff strategies or starting paper trades.
+                            </p>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Max Risk Per Trade (%)
+                                    </label>
+                                    <div className="relative">
+                                        <input
+                                            type="number"
+                                            step="0.5"
+                                            min="0.5"
+                                            max="100"
+                                            value={formData.default_risk_pct}
+                                            onChange={(e) => handleFieldChange("default_risk_pct", e.target.value)}
+                                            className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                        />
+                                        <span className="absolute right-3.5 top-2.5 text-xs text-gray-400 font-bold">%</span>
+                                    </div>
+                                    <span className="text-[10px] text-gray-400 mt-1 block">Recommended: 1% to 3%</span>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Default Stop Loss (%)
+                                    </label>
+                                    <div className="relative">
+                                        <input
+                                            type="number"
+                                            step="1"
+                                            min="1"
+                                            max="100"
+                                            value={formData.default_stoploss_pct}
+                                            onChange={(e) => handleFieldChange("default_stoploss_pct", e.target.value)}
+                                            className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                        />
+                                        <span className="absolute right-3.5 top-2.5 text-xs text-gray-400 font-bold">%</span>
+                                    </div>
+                                    <span className="text-[10px] text-gray-400 mt-1 block">Used for SL triggers in simulator</span>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Default Target / Profit (%)
+                                    </label>
+                                    <div className="relative">
+                                        <input
+                                            type="number"
+                                            step="1"
+                                            min="1"
+                                            max="500"
+                                            value={formData.default_target_pct}
+                                            onChange={(e) => handleFieldChange("default_target_pct", e.target.value)}
+                                            className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                        />
+                                        <span className="absolute right-3.5 top-2.5 text-xs text-gray-400 font-bold">%</span>
+                                    </div>
+                                    <span className="text-[10px] text-gray-400 mt-1 block">Target exit in strategy payoff</span>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Default Timeframe
+                                    </label>
+                                    <select
+                                        value={formData.default_timeframe}
+                                        onChange={(e) => handleFieldChange("default_timeframe", e.target.value)}
+                                        className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                    >
+                                        {TIMEFRAMES.map((tf) => (
+                                            <option key={tf.value} value={tf.value}>
+                                                {tf.label}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <span className="text-[10px] text-gray-400 mt-1 block">For Historical Charts & Replay</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 3. Primary Demat / Broker */}
+                        <div className="rounded-2xl border border-gray-200/80 bg-white p-6 shadow-xs dark:border-gray-800 dark:bg-gray-900">
+                            <div className="flex items-center gap-2.5 mb-1">
+                                <FiActivity className="text-emerald-500" size={20} />
+                                <h3 className="text-base font-black text-gray-900 dark:text-white">
+                                    Primary Demat / Broker Integration
+                                </h3>
+                            </div>
+                            <p className="text-xs text-gray-500 mb-4">
+                                Select your current brokerage account used for live executions.
+                            </p>
+
+                            <div className="max-w-md">
+                                <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                    Active Broker
+                                </label>
+                                <select
+                                    value={formData.primary_broker}
+                                    onChange={(e) => handleFieldChange("primary_broker", e.target.value)}
+                                    className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                >
+                                    {BROKERS.map((broker) => (
+                                        <option key={broker} value={broker}>
+                                            {broker}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
+
+                        {/* Save Action */}
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button
+                                type="submit"
+                                disabled={savingProfile}
+                                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-xs font-black text-white hover:bg-emerald-700 shadow-md transition disabled:opacity-50"
+                            >
+                                <FiSave size={15} />
+                                {savingProfile ? "Saving Preferences..." : "Save Trader & Backtest Settings"}
+                            </button>
+                        </div>
+                    </form>
+                )}
+
+                {/* ========================================================= */}
+                {/* TAB 3: PERSONAL & CONTACT INFORMATION */}
+                {/* ========================================================= */}
+                {activeTab === "personal_info" && (
+                    <form onSubmit={handleSaveProfile} className="space-y-6">
+                        <div className="rounded-2xl border border-gray-200/80 bg-white p-6 shadow-xs dark:border-gray-800 dark:bg-gray-900">
+                            <div className="flex items-center gap-2.5 mb-1">
+                                <FiUser className="text-emerald-500" size={20} />
+                                <h3 className="text-base font-black text-gray-900 dark:text-white">
+                                    Personal & Contact Details
+                                </h3>
+                            </div>
+                            {/* Profile Photo / Avatar Section */}
+                            <div className="mb-6 p-4 rounded-2xl bg-gray-50 dark:bg-gray-800/60 border border-gray-100 dark:border-gray-800">
+                                <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-2">
+                                    Profile Picture / Avatar
+                                </label>
+                                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                                    <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-400 text-white font-black text-2xl shadow-md ring-4 ring-emerald-500/20 overflow-hidden shrink-0">
+                                        {formData.avatar_url ? (
+                                            <img
+                                                src={formData.avatar_url}
+                                                alt="Avatar"
+                                                className="h-full w-full object-cover"
+                                                referrerPolicy="no-referrer"
+                                                onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                                            />
+                                        ) : (
+                                            formData.name ? formData.name.charAt(0).toUpperCase() : "T"
+                                        )}
+                                    </div>
+
+                                    <div className="flex-1 space-y-2 w-full">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <label className="cursor-pointer inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 shadow-xs transition">
+                                                <span>Upload Photo</span>
+                                                <input
+                                                    type="file"
+                                                    accept="image/*"
+                                                    className="hidden"
+                                                    onChange={(e) => {
+                                                        const file = e.target.files?.[0];
+                                                        if (file) {
+                                                            if (file.size > 2 * 1024 * 1024) {
+                                                                setActionFeedback({ type: "error", message: "Image size should be under 2MB" });
+                                                                return;
+                                                            }
+                                                            const reader = new FileReader();
+                                                            reader.onload = () => {
+                                                                handleFieldChange("avatar_url", reader.result);
+                                                            };
+                                                            reader.readAsDataURL(file);
+                                                        }
+                                                    }}
+                                                />
+                                            </label>
+
+                                            {formData.avatar_url && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleFieldChange("avatar_url", "")}
+                                                    className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-400 transition"
+                                                >
+                                                    Remove Photo
+                                                </button>
+                                            )}
+                                        </div>
+
+                                        <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                                            <span className="text-[11px] text-gray-400">Or choose quick avatar:</span>
+                                            {[
+                                                { label: "🐂 Bull", url: "https://api.dicebear.com/7.x/bottts/svg?seed=BullTrader" },
+                                                { label: "🐻 Bear", url: "https://api.dicebear.com/7.x/bottts/svg?seed=BearTrader" },
+                                                { label: "🚀 Rocket", url: "https://api.dicebear.com/7.x/bottts/svg?seed=RocketProfit" },
+                                                { label: "👑 Pro", url: "https://api.dicebear.com/7.x/bottts/svg?seed=ProMaster" },
+                                                { label: "💎 Quant", url: "https://api.dicebear.com/7.x/bottts/svg?seed=QuantAlgo" },
+                                            ].map((preset) => (
+                                                <button
+                                                    type="button"
+                                                    key={preset.label}
+                                                    onClick={() => handleFieldChange("avatar_url", preset.url)}
+                                                    className="px-2 py-0.5 rounded-lg bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200 hover:bg-emerald-100 dark:hover:bg-emerald-950/60 text-xs font-semibold transition"
+                                                >
+                                                    {preset.label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Full Name *
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={formData.name}
+                                        onChange={(e) => handleFieldChange("name", e.target.value)}
+                                        required
+                                        placeholder="e.g. Rahul Sharma"
+                                        className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Email Address (Linked Account)
+                                    </label>
+                                    <input
+                                        type="email"
+                                        value={u?.email || ""}
+                                        disabled
+                                        className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3.5 py-2.5 text-xs text-gray-500 cursor-not-allowed dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-400"
+                                    />
+                                    <span className="text-[10px] text-gray-400 mt-1 block">
+                                        Email is verified and permanently linked to your account.
+                                    </span>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Mobile Number *
+                                    </label>
+                                    <div className="relative">
+                                        <span className="absolute left-3.5 top-2.5 text-xs text-gray-500 font-bold">+91</span>
+                                        <input
+                                            type="tel"
+                                            value={formData.phone.replace(/^\+91\s*/, "")}
+                                            onChange={(e) => handleFieldChange("phone", e.target.value)}
+                                            placeholder="9876543210"
+                                            className="w-full rounded-xl border border-gray-200 bg-gray-50 pl-12 pr-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                        />
+                                    </div>
+                                    <span className="text-[10px] text-gray-400 mt-1 block">
+                                        Used for trade alerts, margin calls, and Razorpay invoices.
+                                    </span>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Country
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={formData.country}
+                                        onChange={(e) => handleFieldChange("country", e.target.value)}
+                                        className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Address Details */}
+                            <div className="mt-6 pt-5 border-t border-gray-100 dark:border-gray-800">
+                                <div className="flex items-center gap-2 mb-4">
+                                    <FiMapPin className="text-emerald-500" size={16} />
+                                    <h4 className="text-sm font-bold text-gray-900 dark:text-white">
+                                        Billing & Residential Address
+                                    </h4>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                            Street Address / Apartment / Flat No.
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={formData.address}
+                                            onChange={(e) => handleFieldChange("address", e.target.value)}
+                                            placeholder="e.g. Flat 402, Sunshine Heights, MG Road"
+                                            className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                                City / Town
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={formData.city}
+                                                onChange={(e) => handleFieldChange("city", e.target.value)}
+                                                placeholder="e.g. Mumbai"
+                                                className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                                State / Province
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={formData.state}
+                                                onChange={(e) => handleFieldChange("state", e.target.value)}
+                                                placeholder="e.g. Maharashtra"
+                                                className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+                                                Postal / Pincode
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={formData.pincode}
+                                                onChange={(e) => handleFieldChange("pincode", e.target.value)}
+                                                placeholder="e.g. 400001"
+                                                className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Save Action */}
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button
+                                type="submit"
+                                disabled={savingProfile}
+                                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-xs font-black text-white hover:bg-emerald-700 shadow-md transition disabled:opacity-50"
+                            >
+                                <FiSave size={15} />
+                                {savingProfile ? "Saving Information..." : "Save Personal Details"}
+                            </button>
+                        </div>
+                    </form>
+                )}
+
+                {/* ========================================================= */}
+                {/* TAB 4: TRADING ANALYTICS & PERFORMANCE */}
                 {/* ========================================================= */}
                 {activeTab === "trading" && (
                     <div className="space-y-6">
@@ -845,7 +1386,7 @@ export default function Profile() {
                                                                     : isProfit
                                                                     ? "text-emerald-600 dark:text-emerald-400"
                                                                     : "text-rose-600 dark:text-rose-400"
-                                                            }`}
+                                                                }`}
                                                         >
                                                             {t.status === "open" ? "In Position" : `${isProfit ? "+" : ""}₹${formatPrice(pnl)}`}
                                                         </td>
@@ -875,7 +1416,7 @@ export default function Profile() {
                 )}
 
                 {/* ========================================================= */}
-                {/* TAB 3: BILLING & PAYMENT HISTORY */}
+                {/* TAB 5: BILLING & PAYMENT HISTORY */}
                 {/* ========================================================= */}
                 {activeTab === "billing" && (
                     <div className="space-y-6">
@@ -962,65 +1503,14 @@ export default function Profile() {
                 )}
 
                 {/* ========================================================= */}
-                {/* TAB 4: ACCOUNT SETTINGS & SECURITY */}
+                {/* TAB 6: SECURITY & ACTIVE SESSIONS */}
                 {/* ========================================================= */}
                 {activeTab === "security" && (
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        {/* Profile Info Details */}
-                        <div className="rounded-2xl border border-gray-200/80 bg-white p-6 shadow-xs dark:border-gray-800 dark:bg-gray-900">
-                            <h3 className="text-base font-black text-gray-900 dark:text-white mb-1">
-                                Profile Information
-                            </h3>
-                            <p className="text-xs text-gray-500 mb-6">
-                                Update your personal details and display name
-                            </p>
-
-                            <form onSubmit={handleSaveProfile} className="space-y-4">
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
-                                        Full Name
-                                    </label>
-                                    <input
-                                        type="text"
-                                        value={newName}
-                                        onChange={(e) => setNewName(e.target.value)}
-                                        required
-                                        className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
-                                    />
-                                </div>
-
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
-                                        Email Address
-                                    </label>
-                                    <input
-                                        type="email"
-                                        value={u?.email || ""}
-                                        disabled
-                                        className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3.5 py-2.5 text-xs text-gray-500 cursor-not-allowed dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-400"
-                                    />
-                                    <span className="text-[10px] text-gray-400 mt-1 block">
-                                        Email is tied to your account and cannot be modified directly.
-                                    </span>
-                                </div>
-
-                                <div className="pt-2">
-                                    <button
-                                        type="submit"
-                                        disabled={savingProfile}
-                                        className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-emerald-700 shadow-sm transition disabled:opacity-50"
-                                    >
-                                        <FiSave size={14} />
-                                        {savingProfile ? "Saving Changes..." : "Save Profile Details"}
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
-
                         {/* Security & Password */}
                         <div className="rounded-2xl border border-gray-200/80 bg-white p-6 shadow-xs dark:border-gray-800 dark:bg-gray-900">
                             <h3 className="text-base font-black text-gray-900 dark:text-white mb-1">
-                                Password & Security
+                                Password & Credentials
                             </h3>
                             <p className="text-xs text-gray-500 mb-6">
                                 Change your password to keep your trading account secure
@@ -1083,58 +1573,67 @@ export default function Profile() {
                                 </div>
                             </form>
                         </div>
+
+                        {/* Active Session & Device Security */}
+                        <div className="rounded-2xl border border-gray-200/80 bg-white p-6 shadow-xs dark:border-gray-800 dark:bg-gray-900">
+                            <h3 className="text-base font-black text-gray-900 dark:text-white mb-1">
+                                Device & Session Protection
+                            </h3>
+                            <p className="text-xs text-gray-500 mb-6">
+                                Single-device concurrent login protection is permanently enabled.
+                            </p>
+
+                            <div className="space-y-4 text-xs">
+                                <div className="p-4 rounded-xl border border-emerald-500/20 bg-emerald-50/50 dark:bg-emerald-950/20 flex items-start gap-3">
+                                    <FiShield className="text-emerald-600 dark:text-emerald-400 mt-0.5 shrink-0" size={18} />
+                                    <div>
+                                        <div className="font-bold text-emerald-800 dark:text-emerald-300">
+                                            Single-Device Security Active
+                                        </div>
+                                        <div className="text-emerald-700/80 dark:text-emerald-400/80 text-[11px] mt-0.5">
+                                            Your account is restricted to 1 active device at a time. If anyone logs into your account elsewhere, this session will immediately terminate.
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="p-4 rounded-xl border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+                                    <div className="flex items-center justify-between text-gray-500 text-[11px] mb-2">
+                                        <span className="font-semibold uppercase tracking-wider">Current Session Info</span>
+                                        <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-bold">
+                                            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" /> Active
+                                        </span>
+                                    </div>
+
+                                    <div className="space-y-1.5 text-xs text-gray-700 dark:text-gray-300 font-medium">
+                                        <div className="flex justify-between">
+                                            <span className="text-gray-400">IP Address:</span>
+                                            <span className="font-mono">{u?.last_login_ip || "Current Client IP"}</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span className="text-gray-400">Last Sign-in:</span>
+                                            <span>{u?.last_login_at ? formatDateTime(u.last_login_at) : "Just now"}</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span className="text-gray-400">Account ID:</span>
+                                            <span className="font-mono text-[11px]">#{u?.id}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="pt-2">
+                                    <button
+                                        onClick={logout}
+                                        className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-400 dark:hover:bg-rose-900/50 transition"
+                                    >
+                                        <FiLogOut size={14} />
+                                        Sign Out From This Device
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 )}
             </div>
-
-            {/* Edit Name Modal */}
-            {editNameOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-                    <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl dark:border-gray-800 dark:bg-gray-900">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-base font-black text-gray-900 dark:text-white">
-                                Edit Display Name
-                            </h3>
-                            <button
-                                onClick={() => setEditNameOpen(false)}
-                                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                            >
-                                ✕
-                            </button>
-                        </div>
-                        <form onSubmit={handleSaveProfile} className="space-y-4">
-                            <div>
-                                <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
-                                    Full Name
-                                </label>
-                                <input
-                                    type="text"
-                                    value={newName}
-                                    onChange={(e) => setNewName(e.target.value)}
-                                    required
-                                    className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-xs text-gray-900 focus:border-emerald-500 focus:bg-white focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
-                                />
-                            </div>
-                            <div className="flex items-center justify-end gap-2 pt-2">
-                                <button
-                                    type="button"
-                                    onClick={() => setEditNameOpen(false)}
-                                    className="rounded-xl border border-gray-200 px-4 py-2 text-xs font-bold text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="submit"
-                                    disabled={savingProfile}
-                                    className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-sm transition disabled:opacity-50"
-                                >
-                                    {savingProfile ? "Saving..." : "Save Name"}
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            )}
         </div>
     );
 }

@@ -2,7 +2,7 @@ import { NavLink } from "react-router-dom";
 import {
     FiGrid, FiUsers, FiCreditCard, FiTrendingUp, FiFileText,
     FiMapPin, FiTag, FiCalendar, FiBook, FiSearch, FiX, FiLayout, FiLayers,
-    FiDownloadCloud, FiPieChart, FiClock, FiActivity, FiUploadCloud, FiKey, FiDatabase, FiCloud,
+    FiDownloadCloud, FiPieChart, FiClock, FiActivity, FiUploadCloud, FiKey, FiDatabase, FiCloud, FiShield, FiShare2,
 } from "react-icons/fi";
 
 const LIVE_LINKS = [
@@ -15,10 +15,12 @@ const LIVE_LINKS = [
 
 const MANAGEMENT_LINKS = [
     { to: "/home-page", label: "Home Page", icon: FiLayout },
+    { to: "/social-links", label: "Social Links", icon: FiShare2 },
     { to: "/institute-access", label: "Institute Access", icon: FiMapPin },
     { to: "/plans", label: "Plans & Coupons", icon: FiTag },
     { to: "/events", label: "Events", icon: FiCalendar },
     { to: "/terms", label: "T&C", icon: FiBook },
+    { to: "/privacy-policy", label: "Privacy Policy", icon: FiShield },
     { to: "/seo", label: "SEO Tool", icon: FiSearch },
 ];
 

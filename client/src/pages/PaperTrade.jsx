@@ -4,7 +4,7 @@
 // Live WebSocket Tick Streaming across 7 Indices & 210+ Stocks, instant Hedging with margin discounts.
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useOptionChain } from "../hooks/useOptionChain";
 import {
@@ -15,6 +15,7 @@ import {
     openStrategyTrade,
     closePosition,
     closeAllPositions,
+    fetchPaperLeaderboard,
 } from "../services/paperTradeApi";
 import { createProOrder, verifyProPayment } from "../services/subscriptionApi";
 import { loadRazorpayCheckout } from "../utils/loadRazorpayCheckout";
@@ -120,6 +121,7 @@ let legIdCounter = Date.now();
 
 export default function PaperTrade() {
     const { token, user, isPro, refreshUser } = useAuth();
+    const navigate = useNavigate();
 
     // 1. Live Option Chain with WebSocket Streaming
     const {
@@ -139,11 +141,13 @@ export default function PaperTrade() {
     const [searchOpen, setSearchOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
     const [strikeRange, setStrikeRange] = useState(15);
-    const [activeTab, setActiveTab] = useState("trade"); // 'trade' | 'positions' | 'history'
+    const [activeTab, setActiveTab] = useState("trade"); // 'trade' | 'positions' | 'history' | 'leaderboard'
     const [mobileSide, setMobileSide] = useState("both"); // 'both' | 'calls' | 'puts'
     const [mobileTradeTab, setMobileTradeTab] = useState("chain"); // 'chain' | 'payoff' (for mobile screen toggle)
     const [basketViewMode, setBasketViewMode] = useState("split"); // 'split' | 'chart' | 'legs'
     const [showPositionsPayoff, setShowPositionsPayoff] = useState(false);
+    const [leaderboardData, setLeaderboardData] = useState(null);
+    const [leaderboardLoading, setLeaderboardLoading] = useState(false);
 
     // Modals
     const [refillModalOpen, setRefillModalOpen] = useState(false);
@@ -245,14 +249,25 @@ export default function PaperTrade() {
         loadPositions();
     }, [token, loadWallet, loadPositions]);
 
-    // Live MTM poll every 5s
+    // Load Leaderboard Data
+    const loadLeaderboard = useCallback(async () => {
+        if (!token) return;
+        setLeaderboardLoading(true);
+        try {
+            const res = await fetchPaperLeaderboard(token);
+            setLeaderboardData(res);
+        } catch (err) {
+            console.error("[PaperTrade] loadLeaderboard failed:", err);
+        } finally {
+            setLeaderboardLoading(false);
+        }
+    }, [token]);
+
     useEffect(() => {
-        const timer = setInterval(() => {
-            loadPositions();
-            loadWallet();
-        }, 5000);
-        return () => clearInterval(timer);
-    }, [loadPositions, loadWallet]);
+        if (activeTab === "leaderboard") {
+            loadLeaderboard();
+        }
+    }, [activeTab, loadLeaderboard]);
 
     // Derived Market Values
     const spotPrice = chainData?.spotPrice ? Number(chainData.spotPrice) : null;
@@ -838,9 +853,9 @@ export default function PaperTrade() {
 
     // Razorpay Pro Membership Flow (₹499/month -> ₹5L + Full Access)
     async function handleBuyPro() {
-        if (!token) {
-            setFeedback({ type: "error", text: "Please create a free account or log in to subscribe to Pro." });
+        if (!token || !user) {
             setProModalOpen(false);
+            navigate("/login");
             return;
         }
 
@@ -1031,6 +1046,15 @@ export default function PaperTrade() {
                             }`}
                         >
                             History ({closedPositions.length})
+                        </button>
+                        <button
+                            onClick={() => setActiveTab("leaderboard")}
+                            className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                                activeTab === "leaderboard" ? "bg-white dark:bg-gray-900 text-emerald-600 dark:text-emerald-400 shadow-xs" : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                            }`}
+                        >
+                            <span>🏆</span>
+                            <span>Leaderboard</span>
                         </button>
                     </div>
                 </div>
@@ -1855,6 +1879,222 @@ export default function PaperTrade() {
                                 </table>
                             </div>
                         )}
+                    </div>
+                )}
+
+                {/* --------------------------------------------------------------------- */}
+                {/* 4. LEADERBOARD TAB */}
+                {/* --------------------------------------------------------------------- */}
+                {activeTab === "leaderboard" && (
+                    <div className="space-y-6 pb-8">
+                        {/* Header & Description */}
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-gray-200 dark:border-gray-800 pb-4">
+                            <div>
+                                <h2 className="text-xl font-black text-gray-900 dark:text-white flex items-center gap-2">
+                                    <span>🏆</span>
+                                    <span>Paper Trading Trader Leaderboard</span>
+                                </h2>
+                                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                    Real-time rankings based on Net Realized P&amp;L, Win Rate, and Strategy Consistency.
+                                </p>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={loadLeaderboard}
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#121c2b] px-3.5 py-1.5 text-xs font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-[#18263a] transition shadow-xs"
+                            >
+                                <FiRefreshCw size={12} className={leaderboardLoading ? "animate-spin" : ""} />
+                                <span>Refresh Ranking</span>
+                            </button>
+                        </div>
+
+                        {/* Logged in User's Current Rank Card */}
+                        {leaderboardData?.myRank && (
+                            <div className="relative overflow-hidden rounded-2xl border border-emerald-500/40 bg-gradient-to-r from-emerald-500/15 via-teal-500/10 to-transparent p-4 sm:p-5 dark:border-emerald-500/30 dark:from-emerald-950/40 dark:via-teal-950/20 shadow-sm">
+                                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-600 text-white font-black text-lg shadow-md shrink-0">
+                                            #{leaderboardData.myRank.rank}
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                                                Your Performance Status
+                                            </div>
+                                            <div className="text-base font-extrabold text-gray-900 dark:text-white">
+                                                {leaderboardData.myRank.name} ({leaderboardData.myRank.badge})
+                                            </div>
+                                            <div className="text-xs text-gray-500 dark:text-gray-400">
+                                                Ranked <strong>#{leaderboardData.myRank.rank}</strong> out of {leaderboardData.leaderboard?.length || 1} registered traders
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-6 sm:gap-8 self-end sm:self-center">
+                                        <div className="text-right">
+                                            <div className="text-[10px] uppercase font-bold text-gray-400">Win Rate</div>
+                                            <div className="text-base font-black text-gray-900 dark:text-white">
+                                                {leaderboardData.myRank.winRate}%
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="text-[10px] uppercase font-bold text-gray-400">Closed Trades</div>
+                                            <div className="text-base font-black text-gray-900 dark:text-white">
+                                                {leaderboardData.myRank.closedTrades}
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="text-[10px] uppercase font-bold text-gray-400">Realized P&amp;L</div>
+                                            <div className={`text-base font-black ${leaderboardData.myRank.netPnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                                {leaderboardData.myRank.netPnl >= 0 ? "+" : ""}{formatRupees(leaderboardData.myRank.netPnl)}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Top 3 Podium */}
+                        {leaderboardData?.leaderboard && leaderboardData.leaderboard.length >= 3 && (
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                {/* Rank 2 */}
+                                <div className="rounded-2xl border border-slate-300 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 p-5 text-center space-y-2 order-2 md:order-1 shadow-xs">
+                                    <span className="text-3xl">🥈</span>
+                                    <div className="text-[11px] font-black uppercase tracking-wider text-slate-600 dark:text-slate-400">Rank #2</div>
+                                    <div className="text-base font-bold text-gray-900 dark:text-white truncate">{leaderboardData.leaderboard[1].name}</div>
+                                    <div className={`text-xl font-black ${leaderboardData.leaderboard[1].netPnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                        {leaderboardData.leaderboard[1].netPnl >= 0 ? "+" : ""}{formatRupees(leaderboardData.leaderboard[1].netPnl)}
+                                    </div>
+                                    <div className="text-xs text-gray-500">
+                                        Win Rate: <strong>{leaderboardData.leaderboard[1].winRate}%</strong> ({leaderboardData.leaderboard[1].closedTrades} Trades)
+                                    </div>
+                                </div>
+
+                                {/* Rank 1 (Gold / Crown) */}
+                                <div className="rounded-2xl border border-amber-300 dark:border-amber-700/60 bg-gradient-to-b from-amber-100/60 to-amber-50 dark:from-amber-950/40 dark:to-amber-950/10 p-6 text-center space-y-2 order-1 md:order-2 shadow-md shadow-amber-500/5">
+                                    <span className="text-4xl">👑 🥇</span>
+                                    <div className="text-[11px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">Rank #1 Leader</div>
+                                    <div className="text-lg font-black text-gray-900 dark:text-white truncate">{leaderboardData.leaderboard[0].name}</div>
+                                    <div className={`text-2xl font-black ${leaderboardData.leaderboard[0].netPnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                        {leaderboardData.leaderboard[0].netPnl >= 0 ? "+" : ""}{formatRupees(leaderboardData.leaderboard[0].netPnl)}
+                                    </div>
+                                    <div className="text-xs text-amber-800 dark:text-amber-200 font-semibold">
+                                        Win Rate: <strong>{leaderboardData.leaderboard[0].winRate}%</strong> ({leaderboardData.leaderboard[0].closedTrades} Trades)
+                                    </div>
+                                    <div className="inline-block rounded-full bg-amber-500/20 px-3 py-0.5 text-[10px] font-bold text-amber-800 dark:text-amber-300">
+                                        {leaderboardData.leaderboard[0].badge}
+                                    </div>
+                                </div>
+
+                                {/* Rank 3 */}
+                                <div className="rounded-2xl border border-amber-300/60 dark:border-amber-900/60 bg-amber-50/50 dark:bg-amber-950/20 p-5 text-center space-y-2 order-3 shadow-xs">
+                                    <span className="text-3xl">🥉</span>
+                                    <div className="text-[11px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-400">Rank #3</div>
+                                    <div className="text-base font-bold text-gray-900 dark:text-white truncate">{leaderboardData.leaderboard[2].name}</div>
+                                    <div className={`text-xl font-black ${leaderboardData.leaderboard[2].netPnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                        {leaderboardData.leaderboard[2].netPnl >= 0 ? "+" : ""}{formatRupees(leaderboardData.leaderboard[2].netPnl)}
+                                    </div>
+                                    <div className="text-xs text-gray-500">
+                                        Win Rate: <strong>{leaderboardData.leaderboard[2].winRate}%</strong> ({leaderboardData.leaderboard[2].closedTrades} Trades)
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Leaderboard Table */}
+                        <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#121c2b] shadow-xs overflow-hidden">
+                            <div className="p-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+                                <span className="text-sm font-bold text-gray-900 dark:text-white">
+                                    Top Rated Options Traders
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                    {leaderboardData?.leaderboard?.length || 0} Ranked Traders
+                                </span>
+                            </div>
+
+                            {leaderboardLoading && !leaderboardData && (
+                                <div className="p-12 text-center text-xs text-gray-400 animate-pulse">
+                                    Loading real-time leaderboard…
+                                </div>
+                            )}
+
+                            {leaderboardData?.leaderboard && (
+                                <div className="overflow-x-auto custom-scrollbar">
+                                    <table className="w-full text-xs text-left border-collapse">
+                                        <thead>
+                                            <tr className="bg-gray-50/80 dark:bg-[#182333] border-b border-gray-200 dark:border-gray-800 text-gray-500 font-bold uppercase text-[10px]">
+                                                <th className="px-4 py-3">Rank</th>
+                                                <th className="px-4 py-3">Trader</th>
+                                                <th className="px-4 py-3">Badge / Style</th>
+                                                <th className="px-4 py-3 text-right">Trades (W/L)</th>
+                                                <th className="px-4 py-3 text-right">Win Rate</th>
+                                                <th className="px-4 py-3 text-right">Virtual Balance</th>
+                                                <th className="px-4 py-3 text-right">Realized Net P&amp;L</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                                            {leaderboardData.leaderboard.map((trader) => {
+                                                const isProfit = trader.netPnl >= 0;
+                                                const isMe = leaderboardData?.myRank?.userId === trader.userId;
+
+                                                return (
+                                                    <tr
+                                                        key={trader.userId}
+                                                        className={`hover:bg-gray-50/70 dark:hover:bg-[#18263a] transition ${
+                                                            isMe ? "bg-emerald-50/50 dark:bg-emerald-950/20 font-bold" : ""
+                                                        }`}
+                                                    >
+                                                        <td className="px-4 py-3.5 font-black text-sm">
+                                                            {trader.rank === 1 ? "🥇 #1" : trader.rank === 2 ? "🥈 #2" : trader.rank === 3 ? "🥉 #3" : `#${trader.rank}`}
+                                                        </td>
+                                                        <td className="px-4 py-3.5">
+                                                            <div className="flex items-center gap-2.5">
+                                                                <div className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-bold text-white overflow-hidden shrink-0">
+                                                                    {trader.avatarUrl ? (
+                                                                        <img src={trader.avatarUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                                                                    ) : (
+                                                                        trader.name.charAt(0).toUpperCase()
+                                                                    )}
+                                                                </div>
+                                                                <div className="min-w-0">
+                                                                    <div className="font-bold text-gray-900 dark:text-white truncate max-w-[150px]">
+                                                                        {trader.name} {isMe && <span className="text-[10px] text-emerald-600 font-bold">(You)</span>}
+                                                                    </div>
+                                                                    <div className="text-[10px] text-gray-400">
+                                                                        {trader.tradingStyle || "Options Buyer"}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                        <td className="px-4 py-3.5">
+                                                            <span className="inline-flex items-center rounded-lg bg-gray-100 dark:bg-gray-800 px-2.5 py-0.5 text-[10px] font-semibold text-gray-700 dark:text-gray-300">
+                                                                {trader.badge}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-4 py-3.5 text-right tabular-nums text-gray-600 dark:text-gray-300 font-semibold">
+                                                            {trader.closedTrades} ({trader.winningTrades}W / {trader.losingTrades}L)
+                                                        </td>
+                                                        <td className="px-4 py-3.5 text-right tabular-nums">
+                                                            <span className={`font-black ${trader.winRate >= 50 ? "text-emerald-600 dark:text-emerald-400" : "text-gray-500"}`}>
+                                                                {trader.winRate}%
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-4 py-3.5 text-right font-semibold text-gray-700 dark:text-gray-200 tabular-nums">
+                                                            {formatRupees(trader.balance)}
+                                                        </td>
+                                                        <td className={`px-4 py-3.5 text-right font-black tabular-nums text-sm ${
+                                                            isProfit ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
+                                                        }`}>
+                                                            {isProfit ? "+" : ""}{formatRupees(trader.netPnl)}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 )}
             </div>

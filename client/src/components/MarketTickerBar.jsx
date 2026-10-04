@@ -83,11 +83,6 @@ export default function MarketTickerBar() {
                 </div>
 
                 <div className="hidden lg:flex items-center gap-4 text-[11px] text-gray-400">
-                    <span className="flex items-center gap-1">
-                        <span className="text-gray-500">Live Feed:</span>
-                        <span className="text-emerald-400 font-medium">SmartAPI WS 2.0</span>
-                    </span>
-                    <span className="text-gray-700">|</span>
                     <Link to="/pricing" className="text-amber-400 hover:text-amber-300 font-medium">
                         ✦ Upgrade to Pro
                     </Link>

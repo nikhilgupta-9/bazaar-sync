@@ -20,9 +20,29 @@ export async function login(email, password) {
     return handle(res);
 }
 
+export async function googleAuth(credential, accessToken) {
+    const res = await fetch(`${API_URL}/api/auth/google`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential, accessToken }),
+    });
+    return handle(res);
+}
+
 export async function fetchMe(token) {
     const res = await fetch(`${API_URL}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token}` },
     });
     return handle(res);
 }
+
+export async function logoutApi(token) {
+    const res = await fetch(`${API_URL}/api/auth/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+    });
+    return handle(res);
+}
+
+
+

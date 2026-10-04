@@ -30,8 +30,9 @@ export async function fetchPayments(token) {
     return handle(await fetch(`${API_URL}/api/admin/payments`, authed(token)));
 }
 
-export async function fetchAllPositions(token) {
-    return handle(await fetch(`${API_URL}/api/admin/positions`, authed(token)));
+export async function fetchAllPositions(token, userId = null) {
+    const url = userId ? `${API_URL}/api/admin/positions?userId=${userId}` : `${API_URL}/api/admin/positions`;
+    return handle(await fetch(url, authed(token)));
 }
 
 export async function fetchAllStrategies(token) {

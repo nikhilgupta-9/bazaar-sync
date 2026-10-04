@@ -114,14 +114,42 @@ async function computeDatesPayload(symbol) {
          GROUP BY trade_date ORDER BY trade_date DESC`,
         [symbol]
     );
+    const [liveRows] = await pool.query(
+        `SELECT tick_date as trade_date, COUNT(DISTINCT tick_time) AS snapshotCount
+         FROM live_option_ticks
+         WHERE underlying = ?
+         GROUP BY tick_date ORDER BY tick_date DESC`,
+        [symbol]
+    ).catch(() => [[]]);
+
     const [ohlcvRows] = await pool.query(
         `SELECT trade_date, minute_rows AS snapshotCount
          FROM ohlcv_coverage_summary
          WHERE symbol = ? AND minute_rows > 0 ORDER BY trade_date DESC`,
         [symbol]
     );
+    const [liveOhlcvRows] = await pool.query(
+        `SELECT tick_date as trade_date, COUNT(DISTINCT tick_time) AS snapshotCount
+         FROM live_index_ticks
+         WHERE symbol = ?
+         GROUP BY tick_date ORDER BY tick_date DESC`,
+        [symbol]
+    ).catch(() => [[]]);
+
     const optionByDate = new Map(rows.map((r) => [r.trade_date, Number(r.snapshotCount)]));
+    for (const lr of liveRows) {
+        if (lr && lr.trade_date) {
+            optionByDate.set(lr.trade_date, Math.max(optionByDate.get(lr.trade_date) || 0, Number(lr.snapshotCount || 0)));
+        }
+    }
+
     const spotByDate = new Map(ohlcvRows.map((r) => [r.trade_date, Number(r.snapshotCount)]));
+    for (const lr of liveOhlcvRows) {
+        if (lr && lr.trade_date) {
+            spotByDate.set(lr.trade_date, Math.max(spotByDate.get(lr.trade_date) || 0, Number(lr.snapshotCount || 0)));
+        }
+    }
+
     const allDates = [...new Set([...optionByDate.keys(), ...spotByDate.keys()])].sort().reverse();
     const dateStatus = Object.fromEntries(allDates.map((date) => [date, {
         optionMinutes: optionByDate.get(date) || 0,
@@ -130,8 +158,8 @@ async function computeDatesPayload(symbol) {
         hasOhlcv: spotByDate.has(date),
         complete: optionByDate.has(date) && spotByDate.has(date),
     }]));
-    const dates = allDates.filter((date) => optionByDate.has(date) && spotByDate.has(date));
-    const sparseDates = dates.filter((date) => (optionByDate.get(date) || 0) <= 1 || (spotByDate.get(date) || 0) <= 1);
+    const dates = allDates.filter((date) => optionByDate.has(date));
+    const sparseDates = dates.filter((date) => (optionByDate.get(date) || 0) <= 1);
     return { symbol, dates, sparseDates, allDates, dateStatus };
 }
 
@@ -360,33 +388,77 @@ async function getChainAtTime(req, res) {
         const { date, expiry, time } = req.query;
         if (!date) return res.status(400).json({ error: "date is required (see /api/simulator/dates/:symbol)" });
 
-        const [expiryRows] = await pool.query(
+        let [expiryRows] = await pool.query(
             `SELECT DISTINCT expiry FROM option_chain_history USE INDEX (idx_sym_date_expiry) WHERE symbol = ? AND trade_date = ? ORDER BY expiry ASC`,
             [symbol, date]
-        );
-        const expiries = expiryRows.map((r) => r.expiry);
+        ).catch(() => [[]]);
+        let expiries = expiryRows.map((r) => r.expiry);
+        let isLiveSource = false;
+
+        if (!expiries.length) {
+            const [liveExpiryRows] = await pool.query(
+                `SELECT DISTINCT expiry FROM live_option_ticks WHERE underlying = ? AND tick_date = ? ORDER BY expiry ASC`,
+                [symbol, date]
+            ).catch(() => [[]]);
+            expiries = liveExpiryRows.map((r) => r.expiry);
+            if (expiries.length) isLiveSource = true;
+        }
+
         if (!expiries.length) {
             return res.status(404).json({ error: `No stored option data for ${symbol} on ${date}` });
         }
         const selectedExpiry = expiry && expiries.includes(expiry) ? expiry : expiries[0];
 
-        const [timeRows] = await pool.query(
-            `SELECT DISTINCT trade_time FROM option_chain_history USE INDEX (idx_backtest_range)
-             WHERE symbol = ? AND trade_date = ? AND expiry = ? ORDER BY trade_time ASC`,
-            [symbol, date, selectedExpiry]
-        );
-        const times = timeRows.map((r) => r.trade_time);
-        const selectedTime = time && times.includes(time) ? time : times[0];
+        let times = [];
+        let rawRows = [];
+        let selectedTime = null;
 
-        const [rawRows] = await pool.query(
-            `SELECT strike, underlying_price,
-                    ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume, ce_delta, ce_gamma, ce_theta, ce_vega,
-                    pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume, pe_delta, pe_gamma, pe_theta, pe_vega
-             FROM option_chain_history USE INDEX (idx_backtest_range)
-             WHERE symbol = ? AND trade_date = ? AND expiry = ? AND trade_time = ?
-             ORDER BY strike ASC`,
-            [symbol, date, selectedExpiry, selectedTime]
-        );
+        if (isLiveSource) {
+            const [timeRows] = await pool.query(
+                `SELECT DISTINCT tick_time FROM live_option_ticks
+                 WHERE underlying = ? AND tick_date = ? AND expiry = ? ORDER BY tick_time ASC`,
+                [symbol, date, selectedExpiry]
+            );
+            times = timeRows.map((r) => r.tick_time);
+            selectedTime = time && times.includes(time) ? time : times[0];
+
+            const [ticks] = await pool.query(
+                `SELECT strike,
+                        MAX(CASE WHEN opt_right = 'CE' THEN ltp END) AS ce_ltp,
+                        MAX(CASE WHEN opt_right = 'CE' THEN oi END) AS ce_oi,
+                        MAX(CASE WHEN opt_right = 'CE' THEN oi_change_percent END) AS ce_oi_change,
+                        MAX(CASE WHEN opt_right = 'CE' THEN volume END) AS ce_volume,
+                        MAX(CASE WHEN opt_right = 'PE' THEN ltp END) AS pe_ltp,
+                        MAX(CASE WHEN opt_right = 'PE' THEN oi END) AS pe_oi,
+                        MAX(CASE WHEN opt_right = 'PE' THEN oi_change_percent END) AS pe_oi_change,
+                        MAX(CASE WHEN opt_right = 'PE' THEN volume END) AS pe_volume
+                 FROM live_option_ticks
+                 WHERE underlying = ? AND tick_date = ? AND expiry = ? AND tick_time = ?
+                 GROUP BY strike
+                 ORDER BY strike ASC`,
+                [symbol, date, selectedExpiry, selectedTime]
+            );
+            rawRows = ticks;
+        } else {
+            const [timeRows] = await pool.query(
+                `SELECT DISTINCT trade_time FROM option_chain_history USE INDEX (idx_backtest_range)
+                 WHERE symbol = ? AND trade_date = ? AND expiry = ? ORDER BY trade_time ASC`,
+                [symbol, date, selectedExpiry]
+            );
+            times = timeRows.map((r) => r.trade_time);
+            selectedTime = time && times.includes(time) ? time : times[0];
+
+            const [historyRows] = await pool.query(
+                `SELECT strike, underlying_price,
+                        ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume, ce_delta, ce_gamma, ce_theta, ce_vega,
+                        pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume, pe_delta, pe_gamma, pe_theta, pe_vega
+                 FROM option_chain_history USE INDEX (idx_backtest_range)
+                 WHERE symbol = ? AND trade_date = ? AND expiry = ? AND trade_time = ?
+                 ORDER BY strike ASC`,
+                [symbol, date, selectedExpiry, selectedTime]
+            );
+            rawRows = historyRows;
+        }
 
         let lotSize = null;
         try {

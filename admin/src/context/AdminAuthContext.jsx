@@ -16,6 +16,7 @@ export function AdminAuthProvider({ children }) {
     // loading" / "not logged in" — the login screen uses this to show a
     // specific error instead of silently bouncing back to itself.
     const [notAdminError, setNotAdminError] = useState(false);
+    const [sessionRevokedError, setSessionRevokedError] = useState(null);
 
     useEffect(() => {
         if (!token) { setLoading(false); return; }
@@ -27,14 +28,23 @@ export function AdminAuthProvider({ children }) {
                     localStorage.removeItem(TOKEN_KEY);
                 } else {
                     setUser(r.user);
+                    setSessionRevokedError(null);
                 }
             })
-            .catch(() => { setToken(null); localStorage.removeItem(TOKEN_KEY); })
+            .catch((err) => { 
+                if (err.message && err.message.includes("SESSION_REVOKED")) {
+                    setSessionRevokedError("Your admin session was terminated because your account logged in on another device.");
+                }
+                setToken(null); 
+                localStorage.removeItem(TOKEN_KEY); 
+                setUser(null);
+            })
             .finally(() => setLoading(false));
     }, [token]);
 
     const login = useCallback(async (email, password) => {
         setNotAdminError(false);
+        setSessionRevokedError(null);
         const data = await authApi.login(email, password);
         if (data.user.role !== "admin") {
             setNotAdminError(true);
@@ -46,13 +56,16 @@ export function AdminAuthProvider({ children }) {
     }, []);
 
     const logout = useCallback(() => {
+        if (token) {
+            authApi.logoutApi(token).catch(() => {});
+        }
         localStorage.removeItem(TOKEN_KEY);
         setToken(null);
         setUser(null);
-    }, []);
+    }, [token]);
 
     return (
-        <AdminAuthContext.Provider value={{ token, user, loading, notAdminError, login, logout }}>
+        <AdminAuthContext.Provider value={{ token, user, loading, notAdminError, sessionRevokedError, setSessionRevokedError, login, logout }}>
             {children}
         </AdminAuthContext.Provider>
     );

@@ -28,12 +28,24 @@ export function AuthProvider({ children }) {
     const [user, setUser] = useState(null);
     const [instituteAccess, setInstituteAccess] = useState(false);
     const [loading, setLoading] = useState(true);
+    const [sessionRevokedError, setSessionRevokedError] = useState(null);
 
     useEffect(() => {
         if (!token) { setLoading(false); return; }
         authApi.fetchMe(token)
-            .then((r) => { setUser(r.user); setInstituteAccess(!!r.instituteAccess); })
-            .catch(() => { setToken(null); setStoredToken(null); })
+            .then((r) => { 
+                setUser(r.user); 
+                setInstituteAccess(!!r.instituteAccess); 
+                setSessionRevokedError(null);
+            })
+            .catch((err) => { 
+                if (err.message && err.message.includes("SESSION_REVOKED")) {
+                    setSessionRevokedError("Your account was logged in from another device. You have been logged out.");
+                }
+                setToken(null); 
+                setStoredToken(null); 
+                setUser(null);
+            })
             .finally(() => setLoading(false));
     }, [token]);
 
@@ -42,41 +54,72 @@ export function AuthProvider({ children }) {
         setToken(data.token);
         setUser(data.user);
         setInstituteAccess(!!data.instituteAccess);
+        setSessionRevokedError(null);
     }, []);
 
     const login = useCallback(async (email, password) => {
         const data = await authApi.login(email, password);
         applyAuth(data);
+        return data;
+    }, [applyAuth]);
+
+    const loginWithGoogle = useCallback(async (credential, accessToken) => {
+        const data = await authApi.googleAuth(credential, accessToken);
+        applyAuth(data);
+        return data;
     }, [applyAuth]);
 
     const register = useCallback(async (name, email, password) => {
         const data = await authApi.register(name, email, password);
         applyAuth(data);
+        return data;
     }, [applyAuth]);
 
-    const logout = useCallback(() => {
+    const logout = useCallback(async () => {
+        if (token) {
+            authApi.logoutApi(token).catch(() => {});
+        }
         setStoredToken(null);
         setToken(null);
         setUser(null);
-    }, []);
+    }, [token]);
 
     // Re-fetches /me so `user`/`isPro` reflect a just-completed purchase
     // (e.g. Pro subscription) without forcing a re-login.
     const refreshUser = useCallback(async () => {
         if (!token) return;
-        const r = await authApi.fetchMe(token);
-        setUser(r.user);
-        setInstituteAccess(!!r.instituteAccess);
+        try {
+            const r = await authApi.fetchMe(token);
+            setUser(r.user);
+            setInstituteAccess(!!r.instituteAccess);
+        } catch (err) {
+            if (err.message && err.message.includes("SESSION_REVOKED")) {
+                setSessionRevokedError("Your account was logged in from another device. You have been logged out.");
+                setToken(null);
+                setStoredToken(null);
+                setUser(null);
+            }
+        }
     }, [token]);
 
-    // instituteAccess (see instituteAccessService.js) grants Pro-equivalent
-    // access from an allowlisted network without ever touching user.tier —
-    // OR'd in here so the UI doesn't show "Get Pro" prompts to someone the
-    // backend would let through anyway.
+    // instituteAccess grants Pro-equivalent access
     const isPro = (user?.tier === "pro" && (!user.pro_expires_at || new Date(user.pro_expires_at) > new Date())) || instituteAccess;
 
     return (
-        <AuthContext.Provider value={{ token, user, loading, isPro, instituteAccess, login, register, logout, refreshUser }}>
+        <AuthContext.Provider value={{ 
+            token, 
+            user, 
+            loading, 
+            isPro, 
+            instituteAccess, 
+            sessionRevokedError,
+            setSessionRevokedError,
+            login, 
+            loginWithGoogle,
+            register, 
+            logout, 
+            refreshUser 
+        }}>
             {children}
         </AuthContext.Provider>
     );

@@ -5,7 +5,7 @@
 // "see everything" slice; management actions come in later admin-panel passes.
 const { pool } = require("../config/db");
 const { getRecentLedger } = require("../services/paperWalletService");
-const { listOpenPositions, listClosedPositions, getLiveContractPrice } = require("../services/paperPositionService");
+const { listOpenPositions, listClosedPositions, getLiveContractPrice, getLeaderboard } = require("../services/paperPositionService");
 const { PRO_PRICE_PAISE, REFILL_PRICE_PAISE } = require("../config/paperTradeConfig");
 const lotSizeHistoryService = require("../services/lotSizeHistoryService");
 const proPlanService = require("../services/proPlanService");
@@ -148,32 +148,73 @@ async function listPayments(req, res) {
 // most recent closed ones — the "Paper Trade oversight" section.
 async function listAllPositions(req, res) {
     try {
-        const [openRows] = await pool.query(
-            `SELECT p.*, u.name AS user_name, u.email AS user_email FROM paper_positions p
-             JOIN users u ON u.id = p.user_id
-             WHERE p.status = 'open' ORDER BY p.entry_time DESC`
-        );
-        const open = openRows.map((p) => {
+        const filterUserId = req.query.userId ? Number(req.query.userId) : null;
+        let openSql = `SELECT p.*, u.name AS user_name, u.email AS user_email, u.avatar_url FROM paper_positions p
+                       JOIN users u ON u.id = p.user_id WHERE p.status = 'open'`;
+        const openParams = [];
+        if (filterUserId) {
+            openSql += ` AND p.user_id = ?`;
+            openParams.push(filterUserId);
+        }
+        openSql += ` ORDER BY p.entry_time DESC`;
+
+        const [openRows] = await pool.query(openSql, openParams);
+        const open = [];
+        for (const p of openRows) {
             let livePrice = null;
             let unrealizedPnl = null;
             try {
-                livePrice = getLiveContractPrice(p.symbol, p.expiry, p.opt_right, p.strike).ltp;
+                const priceData = await getLiveContractPrice(p.symbol, p.expiry, p.opt_right, p.strike);
+                livePrice = priceData.ltp;
+                const entry = Number(p.entry_price);
                 unrealizedPnl = p.side === "long"
-                    ? (livePrice - Number(p.entry_price)) * p.lots * p.lot_size
-                    : (Number(p.entry_price) - livePrice) * p.lots * p.lot_size;
+                    ? (livePrice - entry) * p.lots * p.lot_size
+                    : (entry - livePrice) * p.lots * p.lot_size;
             } catch {
-                // leave null — expiry aged out of the live window, see paperPositionService.js
+                // leave null — market closed or contract not in cache
             }
-            return { ...p, livePrice, unrealizedPnl };
+            open.push({ ...p, livePrice, unrealizedPnl });
+        }
+
+        let closedSql = `SELECT p.*, u.name AS user_name, u.email AS user_email, u.avatar_url FROM paper_positions p
+                         JOIN users u ON u.id = p.user_id WHERE p.status = 'closed'`;
+        const closedParams = [];
+        if (filterUserId) {
+            closedSql += ` AND p.user_id = ?`;
+            closedParams.push(filterUserId);
+        }
+        closedSql += ` ORDER BY p.exit_time DESC LIMIT 500`;
+
+        const [closed] = await pool.query(closedSql, closedParams);
+
+        // Fetch Leaderboard
+        const leaderboardData = await getLeaderboard();
+
+        // Compute User Summaries
+        const [userSummaries] = await pool.query(`
+            SELECT 
+                u.id AS user_id,
+                u.name AS user_name,
+                u.email AS user_email,
+                u.avatar_url,
+                u.trading_style,
+                COALESCE(w.balance, 500000) AS balance,
+                COUNT(CASE WHEN p.status = 'open' THEN 1 END) AS open_count,
+                COUNT(CASE WHEN p.status = 'closed' THEN 1 END) AS closed_count,
+                COALESCE(SUM(CASE WHEN p.status = 'closed' THEN p.realized_pnl ELSE 0 END), 0) AS total_realized_pnl,
+                MAX(p.entry_time) AS last_trade_time
+            FROM users u
+            LEFT JOIN paper_wallets w ON w.user_id = u.id
+            JOIN paper_positions p ON p.user_id = u.id
+            GROUP BY u.id, u.name, u.email, u.avatar_url, u.trading_style, w.balance
+            ORDER BY open_count DESC, total_realized_pnl DESC
+        `);
+
+        res.json({
+            positions: { open, closed },
+            leaderboard: leaderboardData.leaderboard,
+            userSummaries,
         });
-
-        const [closed] = await pool.query(
-            `SELECT p.*, u.name AS user_name, u.email AS user_email FROM paper_positions p
-             JOIN users u ON u.id = p.user_id
-             WHERE p.status = 'closed' ORDER BY p.exit_time DESC LIMIT 200`
-        );
-
-        res.json({ positions: { open, closed } });
     } catch (err) {
         console.error("[admin:listAllPositions]", err);
         res.status(500).json({ error: "failed to load positions" });

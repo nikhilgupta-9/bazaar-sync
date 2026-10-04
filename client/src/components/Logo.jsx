@@ -10,23 +10,23 @@ import React from "react";
 export default function Logo({ size = "md", showTagline = false }) {
     const isSm = size === "sm";
     return (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5 select-none">
             <span
-                className={`flex items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-blue-700 text-white shadow-sm ${isSm ? "h-7 w-7" : "h-9 w-9"}`}
+                className={`flex items-center justify-center rounded-xl bg-gradient-to-tr from-emerald-600 via-emerald-500 to-teal-400 text-white shadow-md shadow-emerald-500/20 ring-1 ring-emerald-400/30 shrink-0 ${isSm ? "h-7 w-7" : "h-9 w-9"}`}
             >
                 <svg viewBox="0 0 24 24" className={isSm ? "h-4 w-4" : "h-5 w-5"} fill="none">
-                    <rect x="4" y="13" width="3.4" height="7" rx="0.8" fill="currentColor" opacity="0.65" />
-                    <rect x="10.3" y="8" width="3.4" height="12" rx="0.8" fill="currentColor" opacity="0.85" />
+                    <rect x="4" y="13" width="3.4" height="7" rx="0.8" fill="currentColor" opacity="0.75" />
+                    <rect x="10.3" y="8" width="3.4" height="12" rx="0.8" fill="currentColor" opacity="0.9" />
                     <rect x="16.6" y="4" width="3.4" height="16" rx="0.8" fill="currentColor" />
                 </svg>
             </span>
             <div className="leading-tight">
-                <div className={`flex items-center gap-1 font-bold ${isSm ? "text-sm" : "text-lg"}`}>
-                    <span className="text-blue-600">Bazaar</span>
-                    <span className="text-gray-900">Sync</span>
+                <div className={`flex items-center gap-1 font-black tracking-tight ${isSm ? "text-base" : "text-xl"}`}>
+                    <span className="text-emerald-600 dark:text-emerald-400">Bazaar</span>
+                    <span className="text-gray-900 dark:text-white">Sync</span>
                 </div>
                 {showTagline && (
-                    <div className="text-xs font-medium text-gray-400">NSE Options Analytics &amp; Backtesting</div>
+                    <div className="text-[11px] font-medium text-gray-500 dark:text-gray-400">NSE Options Analytics &amp; Backtesting</div>
                 )}
             </div>
         </div>

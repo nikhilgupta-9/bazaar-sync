@@ -23,11 +23,16 @@ function ThemeToggle() {
 }
 
 const links = [
-    { to: "/strategy-builder", label: "Strategy Builder" },
+    { dropdown: "strategy-builder", label: "Strategy Builder" },
     { dropdown: "simulator", label: "Option Backtesting" },
     { to: "/option-chain", label: "Option Chain" },
     { to: "/paper-trade", label: "Paper Trade" },
     { to: "/historical-chart", label: "Historical Chart" },
+];
+
+const STRATEGY_BUILDER_LINKS = [
+    { to: "/strategy-builder", label: "Indian Strategy Builder", end: true },
+    { to: "/strategy-builder/crypto", label: "Crypto / BTC Strategy Builder" },
 ];
 
 const SIMULATOR_LINKS = [
@@ -70,8 +75,8 @@ function NavDropdown({ label, basePath, items }) {
             </button>
             {open && (
                 <>
-                    <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-                    <div className="absolute left-0 top-full z-20 mt-2 w-56 rounded-xl border border-gray-200 bg-white py-1.5 shadow-xl dark:border-gray-700 dark:bg-gray-800">
+                    <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+                    <div className="absolute left-0 top-full z-50 mt-2 w-56 rounded-xl border border-gray-200 bg-white py-1.5 shadow-2xl dark:border-gray-700 dark:bg-gray-800 animate-in fade-in slide-in-from-top-1 duration-150">
                         {items.map((link) => (
                             <NavLink
                                 key={link.to}
@@ -96,6 +101,10 @@ function NavDropdown({ label, basePath, items }) {
     );
 }
 
+function StrategyBuilderMenu() {
+    return <NavDropdown label="Strategy Builder" basePath="/strategy-builder" items={STRATEGY_BUILDER_LINKS} />;
+}
+
 function SimulatorMenu() {
     return <NavDropdown label="Option Backtest" basePath="/simulator" items={SIMULATOR_LINKS} />;
 }
@@ -110,7 +119,7 @@ export default function TopNav() {
     const [mobileOpen, setMobileOpen] = useState(false);
 
     return (
-        <header className="border-b border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
+        <header className="sticky top-0 z-50 border-b border-gray-200 bg-white/95 dark:border-gray-800 dark:bg-gray-900/95 backdrop-blur-md">
             <MarketTickerBar />
             <div className="flex items-center justify-between px-4 py-3 sm:px-6">
                 <NavLink to="/" onClick={() => setMobileOpen(false)}>
@@ -121,7 +130,9 @@ export default function TopNav() {
                     (see mobile <nav> panel below for the collapsed equivalent). */}
                 <nav className="hidden items-center gap-6 text-sm font-medium text-gray-600 dark:text-gray-300 md:flex">
                     {links.map((link) =>
-                        link.dropdown === "simulator" ? (
+                        link.dropdown === "strategy-builder" ? (
+                            <StrategyBuilderMenu key="strategy-builder" />
+                        ) : link.dropdown === "simulator" ? (
                             <SimulatorMenu key="simulator" />
                         ) : (
                             <NavLink
@@ -150,8 +161,12 @@ export default function TopNav() {
                                 to="/profile"
                                 className="flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-bold text-gray-700 hover:border-emerald-500/50 hover:bg-white dark:border-gray-800 dark:bg-gray-800/80 dark:text-gray-200 dark:hover:bg-gray-800 transition"
                             >
-                                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-black text-white">
-                                    {user.name ? user.name.charAt(0).toUpperCase() : "U"}
+                                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-black text-white overflow-hidden shrink-0">
+                                    {user.avatar_url ? (
+                                        <img src={user.avatar_url} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                                    ) : (
+                                        user.name ? user.name.charAt(0).toUpperCase() : "U"
+                                    )}
                                 </span>
                                 <span className="hidden sm:inline max-w-[100px] truncate">{user.name}</span>
                                 <span className={`rounded px-1.5 py-0.2 text-[9px] font-black uppercase ${isPro ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300" : "bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"}`}>
@@ -189,7 +204,28 @@ export default function TopNav() {
             {mobileOpen && (
                 <nav className="flex flex-col border-t border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 md:hidden">
                     {links.map((link) =>
-                        link.dropdown === "simulator" ? (
+                        link.dropdown === "strategy-builder" ? (
+                            <div key="strategy-builder" className="border-t border-gray-100 py-1 dark:border-gray-800">
+                                <div className="px-2 py-1 text-xs font-bold uppercase tracking-wide text-gray-400">Strategy Builder</div>
+                                {STRATEGY_BUILDER_LINKS.map((sub) => (
+                                    <NavLink
+                                        key={sub.to}
+                                        to={sub.to}
+                                        end={sub.end}
+                                        onClick={() => setMobileOpen(false)}
+                                        className={({ isActive }) =>
+                                            `block rounded-md px-2 py-2 ${
+                                                isActive
+                                                    ? "bg-emerald-50 text-emerald-700 font-bold dark:bg-emerald-950/60 dark:text-emerald-300"
+                                                    : "hover:bg-gray-50 hover:text-gray-900 dark:hover:bg-gray-800 dark:hover:text-white"
+                                            }`
+                                        }
+                                    >
+                                        {sub.label}
+                                    </NavLink>
+                                ))}
+                            </div>
+                        ) : link.dropdown === "simulator" ? (
                             <div key="simulator" className="border-t border-gray-100 py-1 dark:border-gray-800">
                                 <div className="px-2 py-1 text-xs font-bold uppercase tracking-wide text-gray-400">Option Backtesting</div>
                                 {SIMULATOR_LINKS.map((sub) => (
@@ -254,8 +290,12 @@ export default function TopNav() {
                                 className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs font-bold text-gray-700 dark:bg-gray-800 dark:text-gray-200"
                             >
                                 <span className="flex items-center gap-2">
-                                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-black text-white">
-                                        {user.name ? user.name.charAt(0).toUpperCase() : "U"}
+                                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-black text-white overflow-hidden shrink-0">
+                                        {user.avatar_url ? (
+                                            <img src={user.avatar_url} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                                        ) : (
+                                            user.name ? user.name.charAt(0).toUpperCase() : "U"
+                                        )}
                                     </span>
                                     <span>My Profile ({user.name})</span>
                                 </span>

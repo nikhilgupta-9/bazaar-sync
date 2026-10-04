@@ -5,6 +5,7 @@ import Footer from "./components/Footer";
 import Home from "./pages/Home";
 import OptionChain from "./pages/OptionChain";
 import StrategyBuilder from "./pages/StrategyBuilder";
+import CryptoStrategyBuilder from "./pages/CryptoStrategyBuilder";
 import Simulator from "./pages/Simulator";
 import BitcoinSimulator from "./pages/BitcoinSimulator";
 import PaperTrade from "./pages/PaperTrade";
@@ -15,6 +16,7 @@ import SectorPerformance from "./pages/SectorPerformance";
 import Pricing from "./pages/Pricing";
 import EventsPage from "./pages/Events";
 import Terms from "./pages/Terms";
+import PrivacyPolicy from "./pages/PrivacyPolicy";
 import Auth from "./pages/Auth";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
@@ -33,8 +35,10 @@ function App() {
                     <Route path="/option-chain" element={<Navigate to="/option-chain/nifty" replace />} />
                     <Route path="/option-chain/:symbol" element={<OptionChain />} />
                     <Route path="/strategy-builder" element={<StrategyBuilder />} />
+                    <Route path="/strategy-builder/crypto" element={<CryptoStrategyBuilder />} />
                     <Route path="/simulator" element={<Simulator />} />
                     <Route path="/simulator/bitcoin" element={<BitcoinSimulator />} />
+                    <Route path="/simulator/crypto" element={<Navigate to="/simulator/bitcoin" replace />} />
                     <Route path="/paper-trade" element={<PaperTrade />} />
                     <Route path="/historical-chart" element={<HistoricalChart />} />
                     <Route path="/equity-data" element={<EquityData />} />
@@ -44,6 +48,8 @@ function App() {
                     <Route path="/pricing" element={<Pricing />} />
                     <Route path="/events" element={<EventsPage />} />
                     <Route path="/terms" element={<Terms />} />
+                    <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+                    <Route path="/privacy" element={<Navigate to="/privacy-policy" replace />} />
                     <Route path="/login" element={<Auth />} />
                     <Route path="/profile" element={<Profile />} />
                     <Route path="/forgot-password" element={<ForgotPassword />} />

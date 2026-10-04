@@ -78,4 +78,15 @@ async function listPositions(req, res) {
     }
 }
 
-module.exports = { openPosition, openStrategy, closePosition, closeAllPositions, listPositions };
+async function getLeaderboard(req, res) {
+    try {
+        const userId = req.user?.sub || null;
+        const data = await paperPositionService.getLeaderboard(userId);
+        res.json(data);
+    } catch (err) {
+        console.error("[paperTrade:getLeaderboard]", err);
+        res.status(500).json({ error: "failed to load leaderboard" });
+    }
+}
+
+module.exports = { openPosition, openStrategy, closePosition, closeAllPositions, listPositions, getLeaderboard };

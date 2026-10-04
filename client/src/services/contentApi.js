@@ -35,3 +35,13 @@ export function resolveImageUrl(path) {
     if (/^https?:\/\//i.test(path)) return path;
     return `${API_URL}${path.startsWith("/") ? "" : "/"}${path}`;
 }
+
+export async function fetchSocialLinks() {
+    const row = await fetchContent("social-links");
+    if (!row?.content) return null;
+    try {
+        return JSON.parse(row.content);
+    } catch {
+        return null;
+    }
+}
