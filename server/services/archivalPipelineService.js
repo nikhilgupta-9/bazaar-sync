@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
+const readline = require("readline");
 const { spawn } = require("child_process");
 const db = require("../config/db");
 const gdrive = require("./googleDriveService");
@@ -286,11 +287,259 @@ async function pruneLocalDb(dataType, symbol, year) {
 }
 
 /**
- * Runs a single Category + Symbol + Year Archival Unit
+ * Returns standard strike step for symbol or derives from sample strikes
+ */
+function getStrikeStepForSymbol(symbol, sampleStrikes = []) {
+    const sym = String(symbol || "").toUpperCase();
+    if (sym.includes("NIFTY") && !sym.includes("BANK") && !sym.includes("FIN") && !sym.includes("MID")) return 50;
+    if (sym.includes("BANKNIFTY") || sym.includes("BANKEX") || sym.includes("SENSEX")) return 100;
+    if (sym.includes("FINNIFTY")) return 50;
+    if (sym.includes("MIDCPNIFTY")) return 25;
+    if (sym.includes("BTC")) return 250;
+    if (sym.includes("ETH")) return 25;
+    if (sym.includes("SOL")) return 2;
+
+    if (sampleStrikes && sampleStrikes.length >= 2) {
+        const sorted = [...new Set(sampleStrikes)].map(Number).filter((n) => !isNaN(n)).sort((a, b) => a - b);
+        let minDiff = Infinity;
+        for (let i = 0; i < sorted.length - 1; i++) {
+            const diff = sorted[i + 1] - sorted[i];
+            if (diff > 0 && diff < minDiff) minDiff = diff;
+        }
+        if (minDiff !== Infinity && minDiff > 0) return minDiff;
+    }
+    return 10;
+}
+
+/**
+ * Parses a CSV or CSV.GZ file line by line into structured objects
+ */
+async function parseCsvGzipFile(filePath) {
+    if (!fs.existsSync(filePath)) return [];
+    const isGzip = filePath.endsWith(".gz");
+    const fileStream = fs.createReadStream(filePath);
+    const inputStream = isGzip ? fileStream.pipe(zlib.createGunzip()) : fileStream;
+    const rl = readline.createInterface({ input: inputStream, crlfDelay: Infinity });
+
+    const rows = [];
+    let headers = null;
+
+    for await (const line of rl) {
+        if (!line || !line.trim()) continue;
+        const parts = line.split(",").map((s) => s.trim());
+        if (!headers) {
+            headers = parts.map((h) => h.toLowerCase());
+            continue;
+        }
+        const obj = {};
+        for (let i = 0; i < headers.length; i++) {
+            obj[headers[i]] = parts[i] !== undefined ? parts[i] : "";
+        }
+        rows.push(obj);
+    }
+    return rows;
+}
+
+/**
+ * Smart Deduplication, ATM ±30 Polish, and Multi-Machine Cloud Merge Engine
+ */
+async function smartMergeAndPolishDataset({ dataType, symbol, year, localGzipPath, existingDriveFileId, targetFolderId }) {
+    const sym = String(symbol || "").toUpperCase();
+    appendLog(`[SmartMerge] Starting deduplication & ATM ±30 polish for [${dataType}] ${sym} (${year})...`);
+
+    // 1. Parse local newly exported rows
+    const localRows = await parseCsvGzipFile(localGzipPath);
+    appendLog(`[SmartMerge] Local DB batch has ${localRows.length.toLocaleString()} raw rows.`);
+
+    // 2. Download and parse existing cloud rows if file exists in Google Drive
+    let cloudRows = [];
+    let tempCloudDownloadPath = null;
+    if (existingDriveFileId) {
+        try {
+            tempCloudDownloadPath = path.join(STAGING_DIR, `temp_cloud_${existingDriveFileId}_${Date.now()}.csv.gz`);
+            appendLog(`[SmartMerge] Existing CSV found in Google Drive (ID: ${existingDriveFileId}). Downloading for smart merge...`);
+            await gdrive.downloadFile({
+                fileId: existingDriveFileId,
+                destinationPath: tempCloudDownloadPath,
+            });
+            cloudRows = await parseCsvGzipFile(tempCloudDownloadPath);
+            appendLog(`[SmartMerge] Downloaded ${cloudRows.length.toLocaleString()} existing cloud rows from Google Drive.`);
+        } catch (err) {
+            appendLog(`[SmartMerge] Notice: Could not download existing file (${err.message}). Proceeding with local dataset.`, "warn");
+        } finally {
+            if (tempCloudDownloadPath && fs.existsSync(tempCloudDownloadPath)) {
+                try { fs.unlinkSync(tempCloudDownloadPath); } catch (_) {}
+            }
+        }
+    }
+
+    // 3. Composite Key Deduplication & Field Merging
+    const recordMap = new Map();
+    let duplicatesMerged = 0;
+
+    function processRow(r) {
+        if (!r) return;
+        let key = "";
+        if (dataType === "option_chain") {
+            const cleanStrike = parseFloat(r.strike || 0).toFixed(2);
+            key = `${r.symbol || sym}_${r.trade_date}_${r.trade_time || "00:00:00"}_${r.expiry}_${cleanStrike}`;
+        } else if (dataType === "futures") {
+            key = `${r.symbol || sym}_${r.expiry}_${r.trade_date}_${r.trade_time || "00:00:00"}`;
+        } else {
+            key = `${r.symbol || sym}_${r.trade_date}_${r.trade_time || "00:00:00"}`;
+        }
+
+        if (recordMap.has(key)) {
+            duplicatesMerged++;
+            // Merge with existing: prioritize non-empty, non-zero values
+            const prev = recordMap.get(key);
+            const merged = { ...prev };
+            for (const [k, v] of Object.entries(r)) {
+                if (v !== "" && v !== "0" && v !== "null" && v !== undefined) {
+                    merged[k] = v;
+                }
+            }
+            recordMap.set(key, merged);
+        } else {
+            recordMap.set(key, { ...r, symbol: r.symbol || sym });
+        }
+    }
+
+    // Process cloud rows first, then local rows overlaying fresh values
+    cloudRows.forEach(processRow);
+    localRows.forEach(processRow);
+
+    const mergedRows = Array.from(recordMap.values());
+    appendLog(`[SmartMerge] Total combined unique records: ${mergedRows.length.toLocaleString()} (${duplicatesMerged.toLocaleString()} duplicate records merged/eliminated).`);
+
+    // 4. ATM ±30 Strike Polish Analysis (for Option Chain)
+    let polishStats = {
+        totalSnapshots: 0,
+        fullAtm30CoverageSnapshots: 0,
+        averageStrikesPerSnapshot: 0,
+    };
+
+    if (dataType === "option_chain" && mergedRows.length > 0) {
+        const sampleStrikes = mergedRows.slice(0, 500).map((r) => parseFloat(r.strike)).filter(Boolean);
+        const step = getStrikeStepForSymbol(sym, sampleStrikes);
+
+        // Group rows by snapshot: (trade_date, trade_time, expiry)
+        const snapshots = new Map();
+        mergedRows.forEach((r) => {
+            const snapKey = `${r.trade_date}_${r.trade_time || "00:00:00"}_${r.expiry}`;
+            if (!snapshots.has(snapKey)) snapshots.set(snapKey, []);
+            snapshots.get(snapKey).push(r);
+        });
+
+        polishStats.totalSnapshots = snapshots.size;
+        let totalStrikesAcrossSnaps = 0;
+
+        snapshots.forEach((snapRows) => {
+            totalStrikesAcrossSnaps += snapRows.length;
+            // Determine spot price
+            let spot = parseFloat(snapRows[0]?.underlying_price || 0);
+            if (!spot || isNaN(spot)) {
+                const sortedS = snapRows.map((r) => parseFloat(r.strike)).filter(Boolean).sort((a, b) => a - b);
+                spot = sortedS[Math.floor(sortedS.length / 2)] || 0;
+            }
+
+            if (spot > 0) {
+                const atmStrike = Math.round(spot / step) * step;
+                const minTargetStrike = atmStrike - 30 * step;
+                const maxTargetStrike = atmStrike + 30 * step;
+
+                const strikeSet = new Set(snapRows.map((r) => Math.round(parseFloat(r.strike))));
+                let targetStrikesPresent = 0;
+                for (let s = minTargetStrike; s <= maxTargetStrike; s += step) {
+                    if (strikeSet.has(s)) targetStrikesPresent++;
+                }
+
+                // If at least 50 out of 61 target strikes are present, consider full/high coverage
+                if (targetStrikesPresent >= 50) {
+                    polishStats.fullAtm30CoverageSnapshots++;
+                }
+            }
+        });
+
+        polishStats.averageStrikesPerSnapshot = Math.round(totalStrikesAcrossSnaps / (snapshots.size || 1));
+        appendLog(`[PolishEngine] ATM ±30 analysis on ${sym} (${year}): Step=${step}. Snapshots=${polishStats.totalSnapshots}, Avg Strikes/Snap=${polishStats.averageStrikesPerSnapshot}. Complete ATM ±30 snapshots: ${polishStats.fullAtm30CoverageSnapshots}/${polishStats.totalSnapshots}`);
+    }
+
+    // 5. Strict Sorting
+    mergedRows.sort((a, b) => {
+        const dComp = (a.trade_date || "").localeCompare(b.trade_date || "");
+        if (dComp !== 0) return dComp;
+        const tComp = (a.trade_time || "").localeCompare(b.trade_time || "");
+        if (tComp !== 0) return tComp;
+        if (a.expiry && b.expiry) {
+            const expComp = a.expiry.localeCompare(b.expiry);
+            if (expComp !== 0) return expComp;
+        }
+        if (a.strike !== undefined && b.strike !== undefined) {
+            return parseFloat(a.strike) - parseFloat(b.strike);
+        }
+        return 0;
+    });
+
+    // 6. Write out the Polished GZIP CSV file
+    const cleanSym = sym.replace(/[^A-Za-z0-9_]/g, "");
+    const finalFileName = `${cleanSym}_${year}_${dataType}.csv.gz`;
+    const finalGzipPath = path.join(STAGING_DIR, `polished_${finalFileName}`);
+
+    const gzip = zlib.createGzip({ level: 9 });
+    const writeStream = fs.createWriteStream(finalGzipPath);
+    gzip.pipe(writeStream);
+
+    let csvHeader = "";
+    if (dataType === "option_chain") {
+        csvHeader = "id,symbol,trade_date,trade_time,expiry,strike,underlying_price,ce_ltp,ce_oi,ce_oi_change,ce_iv,ce_volume,ce_delta,ce_gamma,ce_theta,ce_vega,pe_ltp,pe_oi,pe_oi_change,pe_iv,pe_volume,pe_delta,pe_gamma,pe_theta,pe_vega\n";
+    } else if (dataType === "futures") {
+        csvHeader = "id,symbol,expiry,trade_date,trade_time,open,high,low,close,volume,oi,oi_change,underlying_price\n";
+    } else {
+        csvHeader = "id,symbol,trade_date,trade_time,open,high,low,close,volume\n";
+    }
+
+    gzip.write(csvHeader);
+
+    for (let i = 0; i < mergedRows.length; i++) {
+        const r = mergedRows[i];
+        let line = "";
+        if (dataType === "option_chain") {
+            line = `${i + 1},${r.symbol || sym},${r.trade_date},${r.trade_time || ""},${r.expiry},${r.strike},${r.underlying_price || ""},${r.ce_ltp || ""},${r.ce_oi || ""},${r.ce_oi_change || ""},${r.ce_iv || ""},${r.ce_volume || ""},${r.ce_delta || ""},${r.ce_gamma || ""},${r.ce_theta || ""},${r.ce_vega || ""},${r.pe_ltp || ""},${r.pe_oi || ""},${r.pe_oi_change || ""},${r.pe_iv || ""},${r.pe_volume || ""},${r.pe_delta || ""},${r.pe_gamma || ""},${r.pe_theta || ""},${r.pe_vega || ""}\n`;
+        } else if (dataType === "futures") {
+            line = `${i + 1},${r.symbol || sym},${r.expiry || ""},${r.trade_date},${r.trade_time || ""},${r.open || 0},${r.high || 0},${r.low || 0},${r.close || 0},${r.volume || 0},${r.oi || 0},${r.oi_change || 0},${r.underlying_price || ""}\n`;
+        } else {
+            line = `${i + 1},${r.symbol || sym},${r.trade_date},${r.trade_time || ""},${r.open || 0},${r.high || 0},${r.low || 0},${r.close || 0},${r.volume || 0}\n`;
+        }
+        gzip.write(line);
+    }
+
+    gzip.end();
+
+    await new Promise((resolve, reject) => {
+        writeStream.on("finish", resolve);
+        writeStream.on("error", reject);
+    });
+
+    const fileSizeBytes = fs.statSync(finalGzipPath).size;
+    appendLog(`[SmartMerge] ✅ Successfully created polished GZIP: ${finalFileName} (${(fileSizeBytes / (1024 * 1024)).toFixed(2)} MB, ${mergedRows.length.toLocaleString()} clean rows)`);
+
+    return {
+        finalGzipPath,
+        finalFileName,
+        fileSizeBytes,
+        totalRecords: mergedRows.length,
+        duplicatesMerged,
+        polishStats,
+    };
+}
+
+/**
+ * Runs a single Category + Symbol + Year Archival Unit with Smart Cloud Merge & Duplicate Elimination
  */
 async function processBatch({ dataType = "option_chain", symbol, year, folderId = gdrive.DEFAULT_ROOT_FOLDER_ID, autoPrune = true }) {
     const sym = symbol || (dataType === "india_vix" ? "INDIAVIX" : dataType === "bitcoin" ? "BTCUSDT" : "ALL");
-    appendLog(`Starting archival batch: [${dataType.toUpperCase()}] ${sym} - Year ${year}...`);
+    appendLog(`Starting smart archival batch: [${dataType.toUpperCase()}] ${sym} - Year ${year}...`);
 
     // 1. Export from local DB to gzip CSV
     const exportResult = await exportToGzipCsv(dataType, sym, year);
@@ -304,17 +553,54 @@ async function processBatch({ dataType = "option_chain", symbol, year, folderId 
     appendLog(`Ensuring Google Drive folder hierarchy: ${dataType} / ${year} / ${sym}...`);
     const { targetFolderId } = await gdrive.ensureCategoryYearHierarchy(dataType, year, sym, folderId);
 
-    // 3. Upload to Google Drive
-    appendLog(`Uploading ${exportResult.fileName} to Google Drive...`);
-    const uploadRes = await gdrive.uploadFile({
-        filePath: exportResult.outputPath,
+    // 3. Search for existing file(s) in Google Drive with the same name to prevent duplicates
+    appendLog(`Checking Google Drive for existing files: ${exportResult.fileName}...`);
+    const existingCloudFiles = await gdrive.findFilesByName({
+        parentFolderId: targetFolderId,
         fileName: exportResult.fileName,
+    }).catch(() => []);
+
+    const existingFileId = existingCloudFiles.length > 0 ? existingCloudFiles[0].id : null;
+    if (existingCloudFiles.length > 0) {
+        appendLog(`Found ${existingCloudFiles.length} existing version(s) in Google Drive. Performing Smart Cloud Merge & ATM ±30 Polish...`);
+    } else {
+        appendLog(`No prior cloud file found. Performing local deduplication & ATM ±30 Polish...`);
+    }
+
+    // 4. Smart Merge & Polish: Combines Cloud Data + Local Data, removes duplicates, checks ATM ±30
+    const mergeResult = await smartMergeAndPolishDataset({
+        dataType,
+        symbol: sym,
+        year,
+        localGzipPath: exportResult.outputPath,
+        existingDriveFileId: existingFileId,
+        targetFolderId,
+    });
+
+    // 5. Upload newly polished & merged file to Google Drive
+    appendLog(`Uploading polished ${mergeResult.finalFileName} (${mergeResult.totalRecords.toLocaleString()} rows) to Google Drive...`);
+    const uploadRes = await gdrive.uploadFile({
+        filePath: mergeResult.finalGzipPath,
+        fileName: mergeResult.finalFileName,
         parentFolderId: targetFolderId,
     });
 
-    appendLog(`✅ Google Drive Upload Complete! File ID: ${uploadRes.fileId}`);
+    appendLog(`✅ Google Drive Upload Complete! New File ID: ${uploadRes.fileId}`);
 
-    // 4. Update Database Archive Registry
+    // 6. Delete all old duplicate file IDs in Google Drive for this file
+    if (existingCloudFiles.length > 0) {
+        appendLog(`Purging ${existingCloudFiles.length} older duplicate file(s) from Google Drive to maintain pristine storage...`);
+        for (const oldFile of existingCloudFiles) {
+            if (oldFile.id !== uploadRes.fileId) {
+                await gdrive.deleteFile({ fileId: oldFile.id }).catch((err) => {
+                    console.warn(`[ArchivalPipeline] Could not delete old file ${oldFile.id}:`, err.message);
+                });
+            }
+        }
+        appendLog(`✅ Google Drive duplicates purged successfully.`);
+    }
+
+    // 7. Update Database Archive Registry
     await db.query(`
         INSERT INTO gdrive_archive_records
         (symbol, year, data_type, record_count, file_name, file_size_bytes, gdrive_file_id, gdrive_web_link, gdrive_folder_id, status, checksum_sha256, uploaded_at)
@@ -334,8 +620,8 @@ async function processBatch({ dataType = "option_chain", symbol, year, folderId 
         sym,
         year,
         dataType,
-        exportResult.totalRecords,
-        exportResult.fileName,
+        mergeResult.totalRecords,
+        mergeResult.finalFileName,
         uploadRes.sizeBytes,
         uploadRes.fileId,
         uploadRes.webViewLink,
@@ -343,7 +629,7 @@ async function processBatch({ dataType = "option_chain", symbol, year, folderId 
         uploadRes.checksumSha256,
     ]);
 
-    // 5. Auto-Prune Local Database if enabled
+    // 8. Auto-Prune Local Database if enabled
     if (autoPrune) {
         await pruneLocalDb(dataType, sym, year);
         await db.query(`
@@ -353,9 +639,12 @@ async function processBatch({ dataType = "option_chain", symbol, year, folderId 
         `, [sym, year, dataType]);
     }
 
-    // Clean up temporary local staging file
+    // Clean up temporary local staging files
     if (fs.existsSync(exportResult.outputPath)) {
-        fs.unlinkSync(exportResult.outputPath);
+        try { fs.unlinkSync(exportResult.outputPath); } catch (_) {}
+    }
+    if (fs.existsSync(mergeResult.finalGzipPath)) {
+        try { fs.unlinkSync(mergeResult.finalGzipPath); } catch (_) {}
     }
 
     invalidateMatrixCache();
@@ -365,10 +654,12 @@ async function processBatch({ dataType = "option_chain", symbol, year, folderId 
         dataType,
         symbol: sym,
         year,
-        records: exportResult.totalRecords,
+        records: mergeResult.totalRecords,
+        duplicatesMerged: mergeResult.duplicatesMerged,
         fileSize: uploadRes.sizeBytes,
         gdriveFileId: uploadRes.fileId,
         webViewLink: uploadRes.webViewLink,
+        polishStats: mergeResult.polishStats,
         pruned: autoPrune,
     };
 }

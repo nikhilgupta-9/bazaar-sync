@@ -741,6 +741,64 @@ async function getDriveFileStream({ fileId }) {
     };
 }
 
+/**
+ * Find files with exact name in a specific Google Drive folder (non-trashed)
+ */
+async function findFilesByName({ parentFolderId, fileName }) {
+    if (!parentFolderId || !fileName) return [];
+    const drive = await getDriveClient();
+    const cleanName = fileName.replace(/'/g, "\\'");
+    const query = `'${parentFolderId}' in parents and name = '${cleanName}' and trashed = false`;
+
+    const res = await drive.files.list({
+        q: query,
+        fields: "files(id, name, size, modifiedTime, webViewLink, webContentLink, md5Checksum)",
+        spaces: "drive",
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+    });
+
+    return (res.data.files || []).map((f) => ({
+        id: f.id,
+        name: f.name,
+        sizeBytes: f.size ? Number(f.size) : 0,
+        modifiedTime: f.modifiedTime,
+        webViewLink: f.webViewLink,
+        webContentLink: f.webContentLink,
+        md5Checksum: f.md5Checksum,
+    }));
+}
+
+/**
+ * Permanently delete or trash a file in Google Drive
+ */
+async function deleteFile({ fileId }) {
+    if (!fileId) return { deleted: false };
+    const cleanId = extractDriveFileId(fileId);
+    const drive = await getDriveClient();
+
+    try {
+        await drive.files.delete({
+            fileId: cleanId,
+            supportsAllDrives: true,
+        });
+        return { deleted: true, fileId: cleanId };
+    } catch (err) {
+        // Fallback: Try moving to trash if delete fails
+        try {
+            await drive.files.update({
+                fileId: cleanId,
+                requestBody: { trashed: true },
+                supportsAllDrives: true,
+            });
+            return { trashed: true, fileId: cleanId };
+        } catch (trashErr) {
+            console.warn(`[GoogleDrive] Failed to delete file ${cleanId}:`, trashErr.message);
+            return { deleted: false, error: trashErr.message };
+        }
+    }
+}
+
 module.exports = {
     getDriveClient,
     testConnection,
@@ -756,6 +814,8 @@ module.exports = {
     ensureYearSymbolHierarchy,
     uploadFile,
     downloadFile,
+    findFilesByName,
+    deleteFile,
     listDriveFiles,
     getDriveFileStream,
     extractDriveFileId,
