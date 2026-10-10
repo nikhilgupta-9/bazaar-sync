@@ -56,7 +56,7 @@ const DAY_CONCURRENCY = Number(process.env.BHAVCOPY_DAY_CONCURRENCY || 5);
 // This still gets the whole point of the cache (avoiding re-parsing the same
 // day's CSV for the next few hundred symbols whose lookahead windows
 // overlap) without holding every day the entire multi-day job ever touched.
-const DAY_CACHE_MAX_SIZE = Number(process.env.BHAVCOPY_DAY_CACHE_MAX_SIZE || 500);
+const DAY_CACHE_MAX_SIZE = Number(process.env.BHAVCOPY_DAY_CACHE_MAX_SIZE || 100);
 const dayCache = new Map();
 function cacheDay(key, value) {
     dayCache.set(key, value);
@@ -81,7 +81,13 @@ async function loadDay(dateStr, includeBse) {
         const bySymbol = new Map();
         try {
             const nse = await nseBhavcopy.getDayRowsBySymbol(dateStr);
-            for (const [symbol, rows] of nse) bySymbol.set(symbol, rows);
+            for (const [symbol, rows] of nse) {
+                const expSet = new Set();
+                for (const r of rows) {
+                    if (r && r.expiry) expSet.add(r.expiry);
+                }
+                bySymbol.set(symbol, Array.from(expSet));
+            }
         } catch {
             // Holiday / weekend / archive gap — cache as "no data" and move on,
             // same non-fatal treatment monthDiscovery.js gives this.
@@ -92,8 +98,12 @@ async function loadDay(dateStr, includeBse) {
             try {
                 const bse = await bseBhavcopy.getDayRowsBySymbol(dateStr);
                 for (const [symbol, rows] of bse) {
-                    if (bySymbol.has(symbol)) bySymbol.get(symbol).push(...rows);
-                    else bySymbol.set(symbol, rows);
+                    const existing = bySymbol.get(symbol) || [];
+                    const expSet = new Set(existing);
+                    for (const r of rows) {
+                        if (r && r.expiry) expSet.add(r.expiry);
+                    }
+                    bySymbol.set(symbol, Array.from(expSet));
                 }
             } catch {
                 // BSE is an optional supplement; NSE data remains usable.
@@ -139,8 +149,8 @@ async function discoverExpiries(symbol, fromDate, toDate) {
 
     await asyncPool(DAY_CONCURRENCY, dates, async (d) => {
         const bySymbol = await loadDay(d, includeBse);
-        const rows = bySymbol ? bySymbol.get(symbol) : null;
-        if (rows) for (const r of rows) expiries.add(r.expiry);
+        const expList = bySymbol ? bySymbol.get(symbol) : null;
+        if (expList) for (const exp of expList) expiries.add(exp);
     });
 
     return [...expiries].sort();
