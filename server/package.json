@@ -10,6 +10,8 @@
     "kotak": "node kotak/poller.js",
     "kotak:once": "node scripts/kotakPollOnce.js",
     "kotak:test": "node scripts/kotakSelfTest.js",
+    "stockmojo:trace": "node services/stockmojoSessionTracer.js",
+    "stockmojo:login": "node services/stockmojoSessionTracer.js --interactive",
     "backfill": "node scripts/backfillHistory.js",
     "coverage:rebuild": "node scripts/rebuildCoverageSummaries.js"
   },
@@ -32,6 +34,7 @@
     "node-cron": "^4.5.0",
     "nodemailer": "^9.0.5",
     "otplib": "^12.0.1",
+    "puppeteer-core": "^25.13.0",
     "socket.io": "^4.8.3",
     "winston": "^3.19.0",
     "ws": "^8.19.0"

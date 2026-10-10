@@ -13,6 +13,7 @@ const axios = require('axios');
 const { pool } = require('../config/db');
 const bs = require('../utils/blackScholes');
 const coverageSummary = require('../services/coverageSummaryService');
+const sessionTracer = require('../services/stockmojoSessionTracer');
 
 const STOCKMOJO_DATA_URL = process.env.STOCKMOJO_DATA_URL || 'https://data.stockmojo.in';
 
@@ -23,7 +24,12 @@ const SYMBOL_TO_ID = {
     MIDCPNIFTY: 4,
     SENSEX: 5,
     BANKEX: 6,
-    NIFTYNXT50: 7
+    NIFTYNXT50: 7,
+    ADANIGREEN: 17,
+    ADANIENT: 16,
+    ADANIPORTS: 18,
+    ADANIENSOL: 15,
+    ADANIPOWER: 290
 };
 
 const INDEX_STEP_SIZES = {
@@ -33,7 +39,10 @@ const INDEX_STEP_SIZES = {
     MIDCPNIFTY: 25,
     SENSEX: 100,
     BANKEX: 100,
-    NIFTYNXT50: 100
+    NIFTYNXT50: 100,
+    ADANIGREEN: 20,
+    ADANIENT: 50,
+    ADANIPORTS: 20
 };
 
 const INSERT_BATCH_SIZE = 500;
@@ -42,17 +51,32 @@ function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const clientHeaders = {
+let clientHeaders = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
     'Origin': 'https://stockmojo.in',
     'Referer': 'https://stockmojo.in/simulator'
 };
 
-if (process.env.STOCKMOJO_HEADER_T) clientHeaders['T'] = process.env.STOCKMOJO_HEADER_T;
-if (process.env.STOCKMOJO_HEADER_J) clientHeaders['J'] = process.env.STOCKMOJO_HEADER_J;
-if (process.env.STOCKMOJO_SESSION_COOKIE) clientHeaders['Cookie'] = process.env.STOCKMOJO_SESSION_COOKIE;
-if (process.env.STOCKMOJO_AUTH_BEARER) clientHeaders['Authorization'] = process.env.STOCKMOJO_AUTH_BEARER;
+async function applySessionHeaders(forceRefresh = false) {
+    try {
+        const session = await sessionTracer.getValidSessionHeaders(forceRefresh);
+        if (session) {
+            if (session.T) clientHeaders['T'] = session.T;
+            if (session.J) clientHeaders['J'] = session.J;
+            if (session.Cookie) clientHeaders['Cookie'] = session.Cookie;
+            if (session.Authorization) clientHeaders['Authorization'] = session.Authorization;
+        }
+    } catch (e) {
+        // Fallback to env
+    }
+    if (process.env.STOCKMOJO_HEADER_T) clientHeaders['T'] = process.env.STOCKMOJO_HEADER_T;
+    if (process.env.STOCKMOJO_HEADER_J) clientHeaders['J'] = process.env.STOCKMOJO_HEADER_J;
+    if (process.env.STOCKMOJO_SESSION_COOKIE) clientHeaders['Cookie'] = process.env.STOCKMOJO_SESSION_COOKIE;
+    if (process.env.STOCKMOJO_AUTH_BEARER) clientHeaders['Authorization'] = process.env.STOCKMOJO_AUTH_BEARER;
+
+    client.defaults.headers = clientHeaders;
+}
 
 const client = axios.create({
     baseURL: STOCKMOJO_DATA_URL,
@@ -123,6 +147,11 @@ async function fetchOcaSnapshot(symbolId, timestampStr) {
             });
             return resp.data;
         } catch (err) {
+            if (err.response?.status === 403 && attempt === 1) {
+                console.warn(`[StockMojo] Auth 403 at ${timestampStr}. Triggering automated session refresh via tracer...`);
+                await applySessionHeaders(true);
+                continue;
+            }
             if (err.response?.status === 429) {
                 console.warn(`[StockMojo] Rate limit at ${timestampStr}. Sleeping 15s...`);
                 await sleep(15000);
@@ -313,6 +342,7 @@ async function runStockMojoExtractor() {
     console.log(`ATM Filter:       ±${strikesCount} strikes`);
     console.log(`======================================================\n`);
 
+    await applySessionHeaders(false);
     const allInstruments = await loadInstruments();
     const expiryMap = allInstruments[String(symbolId)] || {};
 
