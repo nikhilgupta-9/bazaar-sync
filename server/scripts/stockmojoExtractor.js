@@ -42,15 +42,22 @@ function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const clientHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Origin': 'https://stockmojo.in',
+    'Referer': 'https://stockmojo.in/simulator'
+};
+
+if (process.env.STOCKMOJO_HEADER_T) clientHeaders['T'] = process.env.STOCKMOJO_HEADER_T;
+if (process.env.STOCKMOJO_HEADER_J) clientHeaders['J'] = process.env.STOCKMOJO_HEADER_J;
+if (process.env.STOCKMOJO_SESSION_COOKIE) clientHeaders['Cookie'] = process.env.STOCKMOJO_SESSION_COOKIE;
+if (process.env.STOCKMOJO_AUTH_BEARER) clientHeaders['Authorization'] = process.env.STOCKMOJO_AUTH_BEARER;
+
 const client = axios.create({
     baseURL: STOCKMOJO_DATA_URL,
     timeout: 30000,
-    headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Origin': 'https://stockmojo.in',
-        'Referer': 'https://stockmojo.in/simulator'
-    }
+    headers: clientHeaders
 });
 
 let instrumentsMap = null;
