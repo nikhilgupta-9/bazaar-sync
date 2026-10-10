@@ -15,7 +15,8 @@ const { pool } = require('../config/db');
 const bs = require('../utils/blackScholes');
 const coverageSummary = require('../services/coverageSummaryService');
 
-const BASE_URL = process.env.STOCKMOJO_BASE_URL || 'https://stockmojo.in/api/historical-option-chain';
+const BASE_URL = process.env.STOCKMOJO_BASE_URL || 'https://user.stockmojo.in/v1/option-chain';
+const MARGIN_URL = process.env.STOCKMOJO_MARGIN_URL || 'https://user.stockmojo.in/v1/margin/calculate';
 const SESSION_COOKIE = process.env.STOCKMOJO_SESSION_COOKIE || '';
 const AUTH_BEARER = process.env.STOCKMOJO_AUTH_BEARER || '';
 const API_KEY = process.env.STOCKMOJO_API_KEY || '';
