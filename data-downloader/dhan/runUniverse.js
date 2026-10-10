@@ -208,6 +208,7 @@ async function main() {
     console.log(`\n[dhan-universe] universe complete: ${universe.length} symbols, ${fromYear}..${toYear}.`);
     clearProgress();
     await pool.end();
+    process.exit(0);
 }
 
 module.exports = { buildUniverse, processSymbolYear, countExistingYear };
