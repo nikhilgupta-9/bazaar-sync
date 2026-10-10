@@ -15,7 +15,6 @@ const fs = require('fs');
 const { pool } = require('../config/db');
 const gdrive = require('../services/googleDriveService');
 const archivalPipeline = require('../services/archivalPipelineService');
-const stockmojo = require('./stockmojoExtractor');
 const coverageSummary = require('../services/coverageSummaryService');
 
 const ALL_INDICES = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX', 'NIFTYNXT50'];
@@ -105,12 +104,26 @@ async function processSymbolYearOptionChain(symbol, year, dryRun = false) {
         const localRows = dbCheck?.cnt || 0;
 
         if (localRows === 0) {
-            console.log(`[Master Runner] No local data for ${symbol} (${year}). Fetching from source pipeline...`);
+            console.log(`[Master Runner] No local data for ${symbol} (${year}). Fetching via Dhan / ICICI Breeze pipeline...`);
+            let fetched = false;
             try {
                 const dhanRunner = require(path.join(__dirname, '../../data-downloader/dhan/run'));
                 await dhanRunner.runSymbolYear(symbol, Number(year), {});
+                fetched = true;
             } catch (fetchErr) {
                 console.warn(`[Master Runner] Dhan fetch notice for ${symbol} (${year}):`, fetchErr.message);
+            }
+
+            if (!fetched) {
+                try {
+                    console.log(`[Master Runner] Trying ICICI Breeze pipeline for ${symbol} (${year})...`);
+                    const { backfillSymbol } = require(path.join(__dirname, '../../data-downloader/breeze/enrich'));
+                    if (typeof backfillSymbol === 'function') {
+                        await backfillSymbol(symbol, Number(year));
+                    }
+                } catch (breezeErr) {
+                    console.warn(`[Master Runner] Breeze fetch notice for ${symbol} (${year}):`, breezeErr.message);
+                }
             }
         }
 

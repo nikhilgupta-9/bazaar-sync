@@ -24,7 +24,7 @@ const { cleanBeforeFetch, monthRange } = require("./extractionCleanupService");
 const { resyncRange, resyncOhlcvRange } = require("./coverageSummaryService");
 const { invalidateDatesCache } = require("../controllers/simulatorController");
 
-const YEAR_MODE_SOURCES = new Set(["icici_breeze", "bhavcopy", "upstox", "dhan", "stockmojo"]);
+const YEAR_MODE_SOURCES = new Set(["icici_breeze", "bhavcopy", "upstox", "dhan"]);
 
 const SERVER_DIR = path.join(__dirname, "..");
 const DATA_DOWNLOADER_DIR = process.env.DATA_DOWNLOADER_DIR || path.join(SERVER_DIR, "..", "data-downloader");
@@ -199,28 +199,6 @@ function buildCommand({ source, dataType, year, fromMonth, toMonth, date, symbol
         return { cwd: DATA_DOWNLOADER_DIR, cmd: "node", args: ["dhan/runUniverse.js", String(y), String(y), ...flags], notes: "Dhan: append-only resumable fetch. Existing option/OHLCV/futures rows are never deleted; complete minute-data months are skipped and incomplete months are enriched with fresh Dhan data. Bhavcopy is used only in memory for expiry discovery." };
     }
 
-    if (source === "stockmojo") {
-        const sym = singleSymbol();
-        const strikes = Number(extraArgs) || 30;
-        let fromDate, toDate;
-        if (date) {
-            fromDate = date;
-            toDate = date;
-        } else {
-            const y = requireYear();
-            const fm = fromMonth ? String(fromMonth).padStart(2, "0") : "01";
-            const tm = toMonth ? String(toMonth).padStart(2, "0") : "12";
-            fromDate = `${y}-${fm}-01`;
-            const lastDay = new Date(Number(y), Number(tm), 0).getDate();
-            toDate = `${y}-${tm}-${String(lastDay).padStart(2, "0")}`;
-        }
-        return {
-            cwd: SERVER_DIR,
-            cmd: "node",
-            args: ["scripts/stockmojoExtractor.js", sym, fromDate, toDate, String(strikes)],
-            notes: `StockMojo Data Cluster: Fetching minute option chain snapshots for ${sym} (${fromDate} to ${toDate}) with ATM ±${strikes} strikes.`,
-        };
-    }
 
     if (source === "kotak") {
         // Kotak has no historical API at all — this is a one-off snapshot
