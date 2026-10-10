@@ -27,10 +27,19 @@
 // same moment, burning all 5 retries in the confirmed real failure above
 // without ever actually spacing requests out.
 
+const https = require("https");
 const axios = require("axios");
 
+const httpsAgent = new https.Agent({
+    keepAlive: true,
+    keepAliveMsecs: 30000,
+    maxSockets: 50,
+    maxFreeSockets: 10,
+    timeout: 60000,
+});
+
 const BASE_URL = process.env.DHAN_BASE_URL || "https://api.dhan.co/v2";
-const MAX_RETRIES = Number(process.env.DHAN_MAX_RETRIES || 5);
+const MAX_RETRIES = Number(process.env.DHAN_MAX_RETRIES || 8);
 const MIN_COOLDOWN_MS = Number(process.env.DHAN_MIN_COOLDOWN_MS || 3000);
 const MAX_COOLDOWN_MS = Number(process.env.DHAN_MAX_COOLDOWN_MS || 60000);
 
@@ -155,11 +164,16 @@ async function post(path, body, { retries = MAX_RETRIES } = {}) {
         await throttle();
         let res;
         try {
-            res = await axios.post(`${BASE_URL}${path}`, body, { headers: headers(), validateStatus: () => true, timeout: 30000 });
+            res = await axios.post(`${BASE_URL}${path}`, body, {
+                headers: headers(),
+                httpsAgent,
+                validateStatus: () => true,
+                timeout: 45000
+            });
         } catch (err) {
             attempt += 1;
             if (attempt > retries) throw new Error(`${path}: network error after ${retries} retries: ${err.message}`);
-            const waitedMs = 500 * 2 ** attempt;
+            const waitedMs = Math.min(16000, 500 * 2 ** attempt);
             console.log(`[dhan-client] network error (attempt ${attempt}/${retries}) — retrying in ${waitedMs}ms: ${path}: ${err.message}`);
             await sleep(waitedMs);
             continue;
