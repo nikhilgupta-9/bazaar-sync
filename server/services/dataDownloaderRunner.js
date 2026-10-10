@@ -24,7 +24,7 @@ const { cleanBeforeFetch, monthRange } = require("./extractionCleanupService");
 const { resyncRange, resyncOhlcvRange } = require("./coverageSummaryService");
 const { invalidateDatesCache } = require("../controllers/simulatorController");
 
-const YEAR_MODE_SOURCES = new Set(["icici_breeze", "bhavcopy", "upstox", "dhan"]);
+const YEAR_MODE_SOURCES = new Set(["icici_breeze", "bhavcopy", "upstox", "dhan", "stockmojo"]);
 
 const SERVER_DIR = path.join(__dirname, "..");
 const DATA_DOWNLOADER_DIR = process.env.DATA_DOWNLOADER_DIR || path.join(SERVER_DIR, "..", "data-downloader");

@@ -75,8 +75,8 @@ CREATE TABLE IF NOT EXISTS `coupons` (
 
 CREATE TABLE IF NOT EXISTS `data_extraction_jobs` (
   `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-  `source` enum('angelone','upstox','icici_breeze','kotak','bhavcopy','dhan') NOT NULL,
-  `data_type` enum('option_chain','futures','vix') NOT NULL,
+  `source` varchar(32) NOT NULL,
+  `data_type` varchar(32) NOT NULL,
   `year` int(11) DEFAULT NULL,
   `from_month` tinyint(4) DEFAULT NULL,
   `to_month` tinyint(4) DEFAULT NULL,
