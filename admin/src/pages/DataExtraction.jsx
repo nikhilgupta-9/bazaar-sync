@@ -26,6 +26,7 @@ import Card from "../components/Card";
 import { SymbolLogo } from "../utils/symbolIcons";
 
 const SOURCES = {
+    stockmojo: { label: "StockMojo Cluster", dataTypes: ["option_chain"], mode: "year", note: "High-speed direct cluster: minute Option Chain snapshots with ATM ±30 strikes & Black-Scholes Greeks." },
     dhan: { label: "Dhan API v2", dataTypes: ["option_chain"], mode: "year", fullYearOnly: true, note: "Primary source: 2023+ minute option chain plus index/equity/VIX spot and daily futures. A full calendar year is fetched per symbol with auto-cloud upload & disk space cleanup." },
     icici_breeze: { label: "ICICI Breeze", dataTypes: ["option_chain", "futures", "vix"], mode: "year", note: "Deep 2023+ history. Needs a fresh daily session — see Credentials." },
     upstox: { label: "Upstox", dataTypes: ["option_chain", "futures"], mode: "year", note: "Recent window only (~6-11 months back, confirmed live) — no daily login needed." },
