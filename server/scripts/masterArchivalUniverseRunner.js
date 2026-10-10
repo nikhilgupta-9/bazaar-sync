@@ -94,20 +94,42 @@ async function processSymbolYearOptionChain(symbol, year, dryRun = false) {
     // 2. Fetch Option Chain Data with exact ATM ±30 strikes
     const startDate = `${year}-01-01`;
     const endDate = `${year}-12-31`;
-    console.log(`[Master Runner] 🚀 Fetching ATM ±30 Strikes Option Chain: ${symbol} (${startDate} -> ${endDate})...`);
+    console.log(`[Master Runner] 🚀 Checking / Fetching ATM ±30 Strikes Option Chain: ${symbol} (${startDate} -> ${endDate})...`);
 
-    // Use StockMojo cluster / Dhan / Breeze pipeline
     try {
-        const extractedCount = await archivalPipeline.triggerManualPipelineBatch({
+        // Check if data already exists in local DB
+        const [[dbCheck]] = await pool.query(
+            'SELECT COUNT(*) AS cnt FROM option_chain_history WHERE symbol = ? AND trade_date >= ? AND trade_date <= ?',
+            [symbol, startDate, endDate]
+        );
+        const localRows = dbCheck?.cnt || 0;
+
+        if (localRows === 0) {
+            console.log(`[Master Runner] No local data for ${symbol} (${year}). Fetching from source pipeline...`);
+            try {
+                const dhanRunner = require(path.join(__dirname, '../../data-downloader/dhan/run'));
+                await dhanRunner.runSymbolYear(symbol, Number(year), {});
+            } catch (fetchErr) {
+                console.warn(`[Master Runner] Dhan fetch notice for ${symbol} (${year}):`, fetchErr.message);
+            }
+        }
+
+        // Process archival, smart merge, ATM ±30 polish & auto-pruning to Google Drive
+        const batchRes = await archivalPipeline.processBatch({
             dataType: 'option_chain',
             symbol,
-            year,
+            year: Number(year),
             autoPrune: true
         });
 
+        // Also ensure continuous Futures and OHLCV are archived and pruned
+        await archivalPipeline.processBatch({ dataType: 'futures', symbol, year: Number(year), autoPrune: true }).catch(() => {});
+        await archivalPipeline.processBatch({ dataType: 'ohlcv', symbol, year: Number(year), autoPrune: true }).catch(() => {});
+
+        const recordCount = batchRes?.totalRecords || localRows;
         console.log(`[Master Runner] ✅ Completed & Archived [OPTION CHAIN] ${symbol} (${year}) to Google Drive!`);
-        console.log(`                Local DB pruned to keep disk 100% free.`);
-        return { status: 'archived', records: extractedCount };
+        console.log(`                Records: ${Number(recordCount).toLocaleString()} | Local DB pruned to keep disk 100% free.`);
+        return { status: 'archived', records: recordCount };
     } catch (err) {
         console.error(`[Master Runner] ❌ Archival failed for ${symbol} (${year}):`, err.message);
         return { status: 'error', error: err.message };
@@ -135,10 +157,43 @@ async function runMasterUniversePipeline() {
         symbols = await getUniverseSymbols(filterMode);
     }
 
+    // Alphabetical filter (e.g. --from-letter=R --to-letter=Z)
+    const fromLetterArg = args.find((a) => a.startsWith('--from-letter='));
+    const toLetterArg = args.find((a) => a.startsWith('--to-letter='));
+    if (fromLetterArg || toLetterArg) {
+        const fL = (fromLetterArg ? fromLetterArg.split('=')[1] : 'A').toUpperCase();
+        const tL = (toLetterArg ? toLetterArg.split('=')[1] : 'Z').toUpperCase();
+        symbols = symbols.filter((s) => {
+            const firstChar = s[0].toUpperCase();
+            return firstChar >= fL && firstChar <= tL;
+        });
+    }
+
+    // Start-After filter (e.g. --start-after=RELIANCE)
+    const startAfterArg = args.find((a) => a.startsWith('--start-after='));
+    if (startAfterArg) {
+        const startAfterSym = startAfterArg.split('=')[1].toUpperCase();
+        const foundIdx = symbols.findIndex((s) => s.toUpperCase() === startAfterSym);
+        if (foundIdx !== -1) {
+            symbols = symbols.slice(foundIdx + 1);
+        }
+    }
+
+    // Slot Splitting (e.g. --slot=1/3, --slot=2/3, --slot=3/3)
+    const slotArg = args.find((a) => a.startsWith('--slot='));
+    if (slotArg) {
+        const [slotNum, totalSlots] = slotArg.split('=')[1].split('/').map(Number);
+        if (slotNum && totalSlots) {
+            const chunkSize = Math.ceil(symbols.length / totalSlots);
+            const startIdx = (slotNum - 1) * chunkSize;
+            symbols = symbols.slice(startIdx, startIdx + chunkSize);
+        }
+    }
+
     console.log(`\n================================================================`);
     console.log(`🎯 [BAZAARSYNC MASTER UNIVERSE CLOUD ARCHIVAL ENGINE]`);
     console.log(`Years:            ${years.join(', ')} (Jan 2023 -> Dec 2024)`);
-    console.log(`Symbols Total:    ${symbols.length} (Indices: ${ALL_INDICES.length}, Stocks: ${symbols.length - ALL_INDICES.length})`);
+    console.log(`Target Symbols:   ${symbols.length} symbols (${symbols.slice(0, 5).join(', ')}${symbols.length > 5 ? '...' : ''})`);
     console.log(`Strike Filter:    Strictly ATM ±30 Strikes`);
     console.log(`Local Disk Mode:  Zero Footprint (Auto-Prune to GDrive)`);
     console.log(`Dry Run Mode:     ${dryRun}`);
