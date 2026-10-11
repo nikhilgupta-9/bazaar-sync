@@ -235,7 +235,10 @@ async function exportToGzipCsv(dataType, symbol, year) {
         writeStream.on("error", reject);
     });
 
-    const fileSizeBytes = fs.statSync(outputPath).size;
+    if (!fs.existsSync(outputPath)) {
+        await new Promise((r) => setTimeout(r, 200));
+    }
+    const fileSizeBytes = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
     appendLog(`Created ${fileName} (${(fileSizeBytes / (1024 * 1024)).toFixed(2)} MB compressed)`);
 
     return {
