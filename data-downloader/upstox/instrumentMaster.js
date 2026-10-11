@@ -123,10 +123,20 @@ async function getEquityInstrumentKeyMap({ force = false } = {}) {
     return map;
 }
 
+const SYMBOL_ALIASES = {
+    TATAMOTORS: "TMPV",
+    TATAMTRDVR: "TMPV",
+    MM: "M&M",
+    "M_M": "M&M",
+};
+
 /** Resolve one symbol to its Upstox instrument_key, or null if not found. */
 async function resolveInstrumentKey(symbol) {
+    const sym = symbol.toUpperCase();
     const map = await getEquityInstrumentKeyMap();
-    return map.get(symbol.toUpperCase()) || null;
+    if (map.has(sym)) return map.get(sym);
+    if (SYMBOL_ALIASES[sym] && map.has(SYMBOL_ALIASES[sym])) return map.get(SYMBOL_ALIASES[sym]);
+    return null;
 }
 
 module.exports = { downloadInstruments, getEquityInstrumentKeyMap, resolveInstrumentKey, CACHE_PATH };

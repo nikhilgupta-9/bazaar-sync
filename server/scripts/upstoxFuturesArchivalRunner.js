@@ -120,7 +120,7 @@ async function processSymbolFutures(symbol, fromDate, toDate, dryRun = false) {
             let storedRows = 0;
             for (const exp of targetExpiries) {
                 try {
-                    const count = await backfillExpiry(symbol, exp, underlyingKey);
+                    const count = await backfillExpiry(symbol, underlyingKey, exp);
                     storedRows += (count || 0);
                     await sleep(300); // polite rate limit
                 } catch (expErr) {
