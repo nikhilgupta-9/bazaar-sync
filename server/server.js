@@ -44,6 +44,7 @@ const contentRoutes = require("./routes/content");
 const seoRoutes = require("./routes/seo");
 const tvDatafeedRoutes = require("./routes/tvDatafeed");
 const equityRoutes = require("./routes/equity");
+const cryptoRoutes = require("./routes/cryptoRoutes");
 
 const app = express();
 
@@ -62,7 +63,7 @@ if (process.env.TRUST_PROXY === "true") {
 // (e.g. https://admin.bazaarsync.com) alongside the main site's origin.
 const CORS_ORIGINS = process.env.CORS_ORIGINS
     ? process.env.CORS_ORIGINS.split(",").map((s) => s.trim())
-    : ["http://localhost:3000", "http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:3000", "http://127.0.0.1:5173", "http://127.0.0.1:5174"];
+    : ["http://localhost:3000", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://127.0.0.1:3000", "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175"];
 
 app.use(
     cors({
@@ -123,6 +124,7 @@ app.use("/api/content", contentRoutes);
 app.use("/api/seo", seoRoutes);
 app.use("/api/tv", tvDatafeedRoutes);
 app.use("/api/equity", equityRoutes);
+app.use("/api/crypto", cryptoRoutes);
 
 // 404 handler
 app.use((req, res) => {
