@@ -270,7 +270,7 @@ export default function PayoffIcon({ shape }) {
             </defs>
 
             {/* Zero P&L Dashed Reference Line */}
-            <line x1="0" y1="30" x2="100" y2="30" stroke="#cbd5e1" strokeWidth="1" strokeDasharray="2 2" strokeOpacity="0.8" />
+            <line x1="0" y1="30" x2="100" y2="30" stroke="currentColor" className="text-gray-300 dark:text-gray-700" strokeWidth="1" strokeDasharray="2 2" strokeOpacity="0.8" />
 
             {/* Area Fills with soft gradient */}
             {segments.map((seg, i) => (
@@ -296,7 +296,7 @@ export default function PayoffIcon({ shape }) {
             ))}
 
             {/* ATM Spot Marker Point */}
-            <circle cx="50" cy="30" r="1.5" fill="#64748b" opacity="0.6" />
+            <circle cx="50" cy="30" r="1.5" className="fill-gray-400 dark:fill-gray-500" opacity="0.8" />
         </svg>
     );
 }

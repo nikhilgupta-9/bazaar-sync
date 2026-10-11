@@ -11,9 +11,18 @@ import {
     FiDatabase,
     FiShield,
     FiCloud,
+    FiZap,
 } from "react-icons/fi";
 
 const DATA_TABS = [
+    {
+        to: "/data-sample",
+        label: "Sample Test Data",
+        icon: FiZap,
+        badge: "1-Click Demo",
+        badgeColor: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+        desc: "Seed authentic realistic Options, India VIX, Index Futures & Crypto data into local database in 1 click",
+    },
     {
         to: "/data-gdrive-archive",
         label: "GDrive Cloud Archival",

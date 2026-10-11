@@ -24,6 +24,8 @@ import DataExportPrune from "./pages/DataExportPrune";
 import DataSettings from "./pages/DataSettings";
 import GoogleDriveArchive from "./pages/GoogleDriveArchive";
 import BitcoinDownloader from "./pages/BitcoinDownloader";
+import SampleDataImporter from "./pages/SampleDataImporter";
+import AdminSecurity from "./pages/AdminSecurity";
 
 export default function App() {
     return (
@@ -35,6 +37,7 @@ export default function App() {
                 <Route path="/payments" element={<Payments />} />
                 <Route path="/positions" element={<Positions />} />
                 <Route path="/strategies" element={<Strategies />} />
+                <Route path="/admin-security" element={<AdminSecurity />} />
                 <Route path="/home-page" element={<HomePage />} />
                 <Route path="/institute-access" element={<InstituteAccess />} />
                 <Route path="/plans" element={<Plans />} />
@@ -46,6 +49,7 @@ export default function App() {
                 <Route path="/lot-size-history" element={<LotSizeHistory />} />
                 <Route path="/data-gdrive-archive" element={<GoogleDriveArchive />} />
                 <Route path="/data-bitcoin" element={<BitcoinDownloader />} />
+                <Route path="/data-sample" element={<SampleDataImporter />} />
                 <Route path="/data-extraction" element={<DataExtraction />} />
                 <Route path="/data-coverage" element={<DataCoverage />} />
                 <Route path="/expiry-status" element={<ExpiryStatus />} />

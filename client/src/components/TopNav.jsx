@@ -37,7 +37,7 @@ const STRATEGY_BUILDER_LINKS = [
 
 const SIMULATOR_LINKS = [
     { to: "/simulator", label: "Indian Options Backtest", end: true },
-    { to: "/simulator/bitcoin", label: "Crypto / BTC Backtest" },
+    { to: "/simulator/crypto", label: "Crypto Options Backtest" },
 ];
 
 const EQUITY_DATA_LINKS = [

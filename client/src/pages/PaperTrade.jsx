@@ -2302,10 +2302,10 @@ export default function PaperTrade() {
             {/* --------------------------------------------------------------------- */}
             {showPresetsModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-6">
-                    <div className="w-full max-w-4xl max-h-[90vh] rounded-2xl bg-white dark:bg-[#121c2b] border border-gray-200 dark:border-gray-700 shadow-2xl p-4 sm:p-6 space-y-4 flex flex-col overflow-hidden">
-                        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-3">
+                    <div className="w-full max-w-4xl max-h-[90vh] rounded-2xl bg-white dark:bg-[#0b1420] border border-gray-200 dark:border-white/10 shadow-2xl p-4 sm:p-6 space-y-4 flex flex-col overflow-hidden">
+                        <div className="flex items-center justify-between border-b border-gray-100 dark:border-white/10 pb-3">
                             <div className="flex items-center gap-2.5">
-                                <span className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 font-black">
+                                <span className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 font-black border border-emerald-200 dark:border-emerald-800/60">
                                     ⚡
                                 </span>
                                 <div>
@@ -2319,7 +2319,7 @@ export default function PaperTrade() {
                             </div>
                             <button
                                 onClick={() => setShowPresetsModal(false)}
-                                className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800 cursor-pointer text-lg font-bold"
+                                className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/5 cursor-pointer text-lg font-bold transition"
                             >
                                 ✕
                             </button>

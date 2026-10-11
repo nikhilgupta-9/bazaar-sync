@@ -476,13 +476,13 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
     }
 
     return (
-        <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 sm:p-6 shadow-xs">
+        <div className="rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-4 sm:p-6 shadow-xs transition-colors">
             {/* Header Title & Search Bar */}
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-5">
                 <div>
-                    <h2 className="text-base sm:text-lg font-black text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                    <h2 className="text-base sm:text-lg font-black text-gray-900 dark:text-white flex items-center gap-2">
                         <span>Ready-Made Option Strategies</span>
-                        <span className="rounded-full bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 px-2.5 py-0.5 text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                        <span className="rounded-full bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800/80 px-2.5 py-0.5 text-xs font-bold text-emerald-700 dark:text-emerald-300">
                             {presets.length} Presets
                         </span>
                     </h2>
@@ -498,13 +498,13 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         placeholder="Search strategy or bias…"
-                        className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 py-1.5 pl-8 pr-3 text-xs text-gray-900 dark:text-gray-100 outline-none focus:border-emerald-500 focus:bg-white dark:focus:bg-gray-900 transition"
+                        className="w-full rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-[#070e17] py-1.5 pl-8 pr-3 text-xs text-gray-900 dark:text-white outline-none focus:border-emerald-500 focus:bg-white dark:focus:bg-[#070e17] transition placeholder:text-gray-400 dark:placeholder:text-gray-500"
                     />
                 </div>
             </div>
 
             {/* Category Filter Pills */}
-            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mb-5 border-b border-gray-100 dark:border-gray-800 pb-3">
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mb-5 border-b border-gray-100 dark:border-white/10 pb-3">
                 {CATEGORIES.map((c) => {
                     const isActive = selectedCategory === c;
                     return (
@@ -513,8 +513,8 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
                             onClick={() => setSelectedCategory(c)}
                             className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${
                                 isActive
-                                    ? "bg-emerald-600 dark:bg-emerald-500 text-white shadow-xs"
-                                    : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white"
+                                    ? "bg-emerald-600 text-white shadow-xs"
+                                    : "bg-gray-100 dark:bg-white/5 border border-gray-200/60 dark:border-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white"
                             }`}
                         >
                             {c === "Bullish" && <FiTrendingUp size={12} />}
@@ -524,7 +524,7 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
                             <span>{c}</span>
                             <span
                                 className={`rounded-full px-1.5 py-0.2 text-[10px] ${
-                                    isActive ? "bg-emerald-700 text-emerald-100" : "bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300"
+                                    isActive ? "bg-emerald-700 text-emerald-100" : "bg-gray-200 dark:bg-white/10 text-gray-700 dark:text-gray-300"
                                 }`}
                             >
                                 {counts[c] || 0}
@@ -552,21 +552,21 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
                         // Bias colors
                         const biasColor =
                             p.bias === "Bullish"
-                                ? "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800"
+                                ? "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60"
                                 : p.bias === "Bearish"
-                                ? "bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800"
+                                ? "bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-800/60"
                                 : p.bias === "Neutral"
-                                ? "bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800"
-                                : "bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800";
+                                ? "bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800/60"
+                                : "bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/60";
 
                         const riskColor = p.risk.startsWith("Defined")
-                            ? "bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700"
-                            : "bg-rose-50/70 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800";
+                            ? "bg-gray-50 dark:bg-white/5 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-white/10"
+                            : "bg-rose-50/70 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-900/50";
 
                         return (
                             <div
                                 key={p.name}
-                                className="group relative flex flex-col justify-between rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-850 p-3.5 shadow-xs transition-all hover:-translate-y-1 hover:border-emerald-500 dark:hover:border-emerald-500 hover:shadow-md"
+                                className="group relative flex flex-col justify-between rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] p-3.5 shadow-xs transition-all hover:-translate-y-1 hover:border-emerald-500 dark:hover:border-emerald-500 hover:shadow-md dark:hover:shadow-emerald-950/20"
                             >
                                 <div>
                                     {/* Top Metadata Badges */}
@@ -580,17 +580,17 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
                                     </div>
 
                                     {/* Payoff Diagram Visual Box */}
-                                    <div className="rounded-xl border border-gray-100 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-900/80 p-2.5 transition group-hover:bg-emerald-50/30 dark:group-hover:bg-emerald-950/20">
+                                    <div className="rounded-xl border border-gray-100 dark:border-white/10 bg-gray-50/70 dark:bg-[#0b1420] p-2.5 transition group-hover:bg-emerald-50/30 dark:group-hover:bg-emerald-950/20">
                                         <PayoffIcon shape={p.shape} />
                                     </div>
 
                                     {/* Strategy Info */}
                                     <div className="mt-3">
                                         <div className="flex items-baseline justify-between gap-1">
-                                            <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition">
+                                            <h3 className="text-sm font-bold text-gray-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition">
                                                 {p.name}
                                             </h3>
-                                            <span className="shrink-0 text-[11px] font-bold text-gray-400 dark:text-gray-400">
+                                            <span className="shrink-0 text-[11px] font-bold text-gray-400 dark:text-gray-500">
                                                 {legCount} {legCount === 1 ? "Leg" : "Legs"}
                                             </span>
                                         </div>
@@ -604,7 +604,7 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
                                 <button
                                     onClick={() => handleApply(p)}
                                     disabled={!legCount || isLoading}
-                                    className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-1.5 text-xs font-bold text-gray-700 dark:text-gray-200 transition group-hover:border-emerald-600 group-hover:bg-emerald-600 group-hover:text-white dark:group-hover:bg-emerald-600 dark:group-hover:border-emerald-600 dark:group-hover:text-white disabled:opacity-40"
+                                    className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 px-3 py-1.5 text-xs font-bold text-gray-700 dark:text-gray-200 transition group-hover:border-emerald-600 group-hover:bg-emerald-600 group-hover:text-white dark:group-hover:bg-emerald-600 dark:group-hover:border-emerald-600 dark:group-hover:text-white disabled:opacity-40"
                                 >
                                     <span>{isLoading ? "Building Strategy…" : "Build Strategy"}</span>
                                     {!isLoading && <FiArrowRight size={13} className="transition group-hover:translate-x-0.5" />}

@@ -20,6 +20,7 @@ import React from "react";
 // endpoint) — not approximated.
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from "react";
 import { createChart, CandlestickSeries, LineSeries, HistogramSeries, LineStyle } from "lightweight-charts";
+import { useTheme } from "../context/ThemeContext";
 
 const DRAWING_TOOLS = [
     { key: "trendline", label: "Trendline", icon: "╱" },
@@ -83,6 +84,8 @@ function buildCandles(series, toEpoch, inverted) {
 }
 
 const StrategyChart = forwardRef(function StrategyChart({ replayData, date, currentTime, height = 320, preview = false }, ref) {
+    const { theme } = useTheme();
+    const isDark = theme === "dark" || document.documentElement.classList.contains("dark");
     const containerRef = useRef(null);
     const chartRef = useRef(null);
     const candleSeriesRef = useRef(null);
@@ -126,10 +129,22 @@ const StrategyChart = forwardRef(function StrategyChart({ replayData, date, curr
         if (!candles || !candles.length || !containerRef.current) return;
 
         const chart = createChart(containerRef.current, {
-            layout: { background: { color: "#ffffff" }, textColor: "#374151" },
-            grid: { vertLines: { color: "#f3f4f6" }, horzLines: { color: "#f3f4f6" } },
-            timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#e5e7eb" },
-            rightPriceScale: { borderColor: "#e5e7eb" },
+            layout: {
+                background: { color: isDark ? "#0b1420" : "#ffffff" },
+                textColor: isDark ? "#9ca3af" : "#374151"
+            },
+            grid: {
+                vertLines: { color: isDark ? "rgba(255,255,255,0.05)" : "#f3f4f6" },
+                horzLines: { color: isDark ? "rgba(255,255,255,0.05)" : "#f3f4f6" }
+            },
+            timeScale: {
+                timeVisible: true,
+                secondsVisible: false,
+                borderColor: isDark ? "rgba(255,255,255,0.1)" : "#e5e7eb"
+            },
+            rightPriceScale: {
+                borderColor: isDark ? "rgba(255,255,255,0.1)" : "#e5e7eb"
+            },
             width: containerRef.current.clientWidth,
             height,
         });
@@ -301,28 +316,28 @@ const StrategyChart = forwardRef(function StrategyChart({ replayData, date, curr
 
     return (
         <div className="flex gap-2">
-            <div className="flex shrink-0 flex-col gap-1 border-r border-gray-100 dark:border-gray-800 pr-2">
+            <div className="flex shrink-0 flex-col gap-1 border-r border-gray-100 dark:border-white/10 pr-2">
                 {DRAWING_TOOLS.map((tool) => (
                     <button
                         key={tool.key}
                         onClick={() => setActiveTool((t) => (t === tool.key ? null : tool.key))}
                         title={tool.label}
-                        className={`w-9 rounded-md border px-1 py-1.5 text-[10px] font-bold transition ${
-                            activeTool === tool.key ? "border-purple-300 dark:border-purple-600 bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300" : "border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+                        className={`w-9 rounded-lg border px-1 py-1.5 text-[10px] font-bold transition ${
+                            activeTool === tool.key ? "border-emerald-500 dark:border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400" : "border-gray-200 dark:border-white/10 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/5"
                         }`}
                     >
                         {tool.icon}
                     </button>
                 ))}
-                <button onClick={clearDrawings} title="Clear drawings" className="w-9 rounded-md border border-gray-200 dark:border-gray-700 px-1 py-1.5 text-[10px] font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800">
+                <button onClick={clearDrawings} title="Clear drawings" className="w-9 rounded-lg border border-gray-200 dark:border-white/10 px-1 py-1.5 text-[10px] font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/5">
                     ✕
                 </button>
             </div>
 
             <div className="min-w-0 flex-1">
                 {preview && (
-                    <div className="mb-2 rounded-md bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 px-3 py-1.5 text-[11px] text-blue-700 dark:text-blue-300">
-                        Live preview of this strategy's P&L across the day — click <span className="font-semibold">Run Simulation</span> to scrub minute-by-minute and autoplay.
+                    <div className="mb-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/50 px-3 py-1.5 text-[11px] text-emerald-700 dark:text-emerald-300">
+                        Live preview of this strategy's P&L across the day — click <span className="font-semibold text-emerald-900 dark:text-emerald-200">Run Simulation</span> to scrub minute-by-minute and autoplay.
                     </div>
                 )}
                 <div className="mb-2 flex items-center justify-between gap-2">
@@ -331,33 +346,33 @@ const StrategyChart = forwardRef(function StrategyChart({ replayData, date, curr
                         <button
                             onClick={() => setInverted((v) => !v)}
                             title="Flip the P&L scale — useful for viewing a short/credit strategy the other way"
-                            className={`rounded-md border px-2 py-1 font-semibold transition ${
-                                inverted ? "border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300" : "border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                            className={`rounded-lg border px-2.5 py-1 font-semibold transition ${
+                                inverted ? "border-emerald-500 dark:border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300" : "border-gray-200 dark:border-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5"
                             }`}
                         >
                             Inverted price
                         </button>
                         <label className="flex cursor-pointer items-center gap-1 text-gray-600 dark:text-gray-300">
-                            <input type="checkbox" checked={showVolume} onChange={() => setShowVolume((v) => !v)} /> Volume
+                            <input type="checkbox" checked={showVolume} onChange={() => setShowVolume((v) => !v)} className="accent-emerald-600" /> Volume
                         </label>
                         <label className="flex cursor-pointer items-center gap-1 text-gray-600 dark:text-gray-300">
-                            <input type="checkbox" checked={showOi} onChange={() => setShowOi((v) => !v)} /> OI
+                            <input type="checkbox" checked={showOi} onChange={() => setShowOi((v) => !v)} className="accent-emerald-600" /> OI
                         </label>
                     </div>
 
                     <div className="relative">
-                        <button onClick={() => setIndicatorsOpen((v) => !v)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-[11px] font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">
+                        <button onClick={() => setIndicatorsOpen((v) => !v)} className="rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-2.5 py-1 text-[11px] font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 shadow-xs transition">
                             Indicators
                         </button>
                         {indicatorsOpen && (
                             <>
                                 <div className="fixed inset-0 z-10" onClick={() => setIndicatorsOpen(false)} />
-                                <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-2 shadow-xl text-xs text-gray-800 dark:text-gray-200">
-                                    <label className="flex cursor-pointer items-center gap-2 py-1 hover:bg-gray-50 dark:hover:bg-gray-800 px-1 rounded">
-                                        <input type="checkbox" checked={indicators.sma} onChange={() => setIndicators((s) => ({ ...s, sma: !s.sma }))} /> SMA (20)
+                                <div className="absolute right-0 z-20 mt-1 w-36 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-2.5 shadow-xl text-xs text-gray-800 dark:text-gray-200">
+                                    <label className="flex cursor-pointer items-center gap-2 py-1 hover:text-emerald-600 dark:hover:text-emerald-400 px-1 rounded">
+                                        <input type="checkbox" checked={indicators.sma} onChange={() => setIndicators((s) => ({ ...s, sma: !s.sma }))} className="accent-emerald-600" /> SMA (20)
                                     </label>
-                                    <label className="flex cursor-pointer items-center gap-2 py-1 hover:bg-gray-50 dark:hover:bg-gray-800 px-1 rounded">
-                                        <input type="checkbox" checked={indicators.ema} onChange={() => setIndicators((s) => ({ ...s, ema: !s.ema }))} /> EMA (20)
+                                    <label className="flex cursor-pointer items-center gap-2 py-1 hover:text-emerald-600 dark:hover:text-emerald-400 px-1 rounded">
+                                        <input type="checkbox" checked={indicators.ema} onChange={() => setIndicators((s) => ({ ...s, ema: !s.ema }))} className="accent-emerald-600" /> EMA (20)
                                     </label>
                                 </div>
                             </>

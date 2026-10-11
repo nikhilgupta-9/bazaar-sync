@@ -2,7 +2,7 @@ import { NavLink } from "react-router-dom";
 import {
     FiGrid, FiUsers, FiCreditCard, FiTrendingUp, FiFileText,
     FiMapPin, FiTag, FiCalendar, FiBook, FiSearch, FiX, FiLayout, FiLayers,
-    FiDownloadCloud, FiPieChart, FiClock, FiActivity, FiUploadCloud, FiKey, FiDatabase, FiCloud, FiShield, FiShare2,
+    FiDownloadCloud, FiPieChart, FiClock, FiActivity, FiUploadCloud, FiKey, FiDatabase, FiCloud, FiShield, FiShare2, FiZap, FiLock,
 } from "react-icons/fi";
 
 const LIVE_LINKS = [
@@ -14,6 +14,7 @@ const LIVE_LINKS = [
 ];
 
 const MANAGEMENT_LINKS = [
+    { to: "/admin-security", label: "Admin IP Security", icon: FiLock, badge: "IP Lock" },
     { to: "/home-page", label: "Home Page", icon: FiLayout },
     { to: "/social-links", label: "Social Links", icon: FiShare2 },
     { to: "/institute-access", label: "Institute Access", icon: FiMapPin },
@@ -25,6 +26,7 @@ const MANAGEMENT_LINKS = [
 ];
 
 const DATA_LINKS = [
+    { to: "/data-sample", label: "Sample Test Data", icon: FiZap, badge: "1-Click" },
     { to: "/data-gdrive-archive", label: "GDrive Cloud Archival", icon: FiCloud, badge: "Auto" },
     { to: "/data-bitcoin", label: "Crypto & Bitcoin 3Y", icon: FiTrendingUp, badge: "BTC/ETH/SOL" },
     { to: "/data-extraction", label: "Extraction Pipelines", icon: FiDownloadCloud, badge: "Live" },
@@ -46,7 +48,7 @@ function NavItem({ to, label, icon: Icon, badge, end, onNavigate }) {
             className={({ isActive }) =>
                 `group relative flex items-center justify-between rounded-xl px-3 py-2 text-xs font-semibold transition-all ${
                     isActive
-                        ? "bg-violet-600 text-white shadow-md shadow-violet-600/20"
+                        ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/25"
                         : "text-gray-400 hover:bg-white/5 hover:text-gray-200"
                 }`
             }
@@ -54,7 +56,7 @@ function NavItem({ to, label, icon: Icon, badge, end, onNavigate }) {
             {({ isActive }) => (
                 <>
                     <div className="flex items-center gap-2.5 min-w-0">
-                        <Icon className={`h-4 w-4 shrink-0 ${isActive ? "text-white" : "text-gray-400 group-hover:text-violet-400"}`} />
+                        <Icon className={`h-4 w-4 shrink-0 ${isActive ? "text-white" : "text-gray-400 group-hover:text-emerald-400"}`} />
                         <span className="truncate">{label}</span>
                     </div>
                     {badge && (
@@ -62,7 +64,7 @@ function NavItem({ to, label, icon: Icon, badge, end, onNavigate }) {
                             className={`rounded-full px-1.5 py-0.2 text-[9px] font-extrabold uppercase tracking-tight ${
                                 isActive
                                     ? "bg-white/20 text-white"
-                                    : "bg-violet-500/10 text-violet-300 border border-violet-500/20"
+                                    : "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
                             }`}
                         >
                             {badge}
@@ -93,11 +95,13 @@ export default function Sidebar({ open = false, onClose }) {
                 }`}
             >
                 <div className="mb-6 flex items-center justify-between px-1">
-                    <div className="flex items-center gap-2">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-600 text-sm font-bold text-white">B</div>
+                    <div className="flex items-center gap-2.5">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-tr from-emerald-600 to-teal-400 text-sm font-black text-white shadow-md shadow-emerald-950/40">B</div>
                         <div>
-                            <div className="text-sm font-bold text-white">Bazaar Sync</div>
-                            <div className="text-[10px] font-medium uppercase tracking-wider text-gray-500">Admin</div>
+                            <div className="text-sm font-bold text-white flex items-center gap-1.5">
+                                Bazaar Sync <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
+                            </div>
+                            <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400/80">Admin Console</div>
                         </div>
                     </div>
                     <button

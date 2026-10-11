@@ -284,6 +284,30 @@ function calculateRSI(closes, period = 14) {
     return rsi;
 }
 
+function calculateMACD(closes, fastPeriod = 12, slowPeriod = 26, signalPeriod = 9) {
+    const fastEma = ema(closes, fastPeriod);
+    const slowEma = ema(closes, slowPeriod);
+    const macdLine = new Array(closes.length).fill(null);
+    const validDiffs = [];
+    for (let i = 0; i < closes.length; i++) {
+        if (fastEma[i] != null && slowEma[i] != null) {
+            const diff = fastEma[i] - slowEma[i];
+            macdLine[i] = diff;
+            validDiffs.push(diff);
+        }
+    }
+    const signalEma = ema(validDiffs, signalPeriod);
+    const signalLine = new Array(closes.length).fill(null);
+    let vIdx = 0;
+    for (let i = 0; i < closes.length; i++) {
+        if (macdLine[i] != null) {
+            signalLine[i] = signalEma[vIdx++];
+        }
+    }
+    const histogram = macdLine.map((m, i) => (m != null && signalLine[i] != null ? m - signalLine[i] : null));
+    return { macdLine, signalLine, histogram };
+}
+
 function toHeikinAshi(points) {
     if (!points.length) return [];
     const ha = [];
@@ -326,7 +350,18 @@ function legendFromPoint(p) {
     };
 }
 
-export default function HistoricalPriceChart({ points = [], symbol = "", rangeLabel = "" }) {
+export default function HistoricalPriceChart({
+    points = [],
+    symbol = "",
+    rangeLabel = "",
+    externalChartType,
+    onChartTypeChange,
+    externalIndicators,
+    onIndicatorsChange,
+    externalShowVolume,
+    onShowVolumeChange,
+    hideTopBar = false,
+}) {
     const { isDark } = useTheme();
     const wrapperRef = useRef(null);
     const containerRef = useRef(null);
@@ -338,11 +373,14 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
     const indicatorsRef = useRef(null);
     const flyoutRef = useRef(null);
 
-    // Chart Options & Indicators
-    const [chartType, setChartType] = useState("candles");
+    // Chart Options & Indicators (controlled or internal state)
+    const [internalChartType, setInternalChartType] = useState("candles");
+    const chartType = externalChartType !== undefined ? externalChartType : internalChartType;
+    const setChartType = onChartTypeChange || setInternalChartType;
+
     const [chartTypeOpen, setChartTypeOpen] = useState(false);
     const [indicatorsOpen, setIndicatorsOpen] = useState(false);
-    const [indicators, setIndicators] = useState({
+    const [internalIndicators, setInternalIndicators] = useState({
         ema9: false,
         ema21: true,
         sma50: false,
@@ -350,8 +388,15 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
         bollinger: false,
         supertrend: false,
         rsi: false,
+        macd: false,
     });
-    const [showVolume, setShowVolume] = useState(true);
+    const indicators = externalIndicators !== undefined ? externalIndicators : internalIndicators;
+    const setIndicators = onIndicatorsChange || setInternalIndicators;
+
+    const [internalShowVolume, setInternalShowVolume] = useState(true);
+    const showVolume = externalShowVolume !== undefined ? externalShowVolume : internalShowVolume;
+    const setShowVolume = onShowVolumeChange || setInternalShowVolume;
+
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [hover, setHover] = useState(null);
 
@@ -596,6 +641,38 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                     .map((d, i) => ({ time: d.time, value: rsiVals[i] }))
                     .filter((p) => p.value != null && !isNaN(p.value))
             );
+        }
+
+        if (indicators.macd) {
+            const { macdLine, signalLine, histogram } = calculateMACD(closes, 12, 26, 9);
+            const macdSeries = chart.addSeries(LineSeries, {
+                color: "#3b82f6",
+                lineWidth: 1.5,
+                priceScaleId: "macd",
+                priceLineVisible: false,
+                lastValueVisible: true,
+            });
+            const sigSeries = chart.addSeries(LineSeries, {
+                color: "#f97316",
+                lineWidth: 1.5,
+                priceScaleId: "macd",
+                priceLineVisible: false,
+                lastValueVisible: true,
+            });
+            const histSeries = chart.addSeries(HistogramSeries, {
+                priceScaleId: "macd",
+                priceLineVisible: false,
+            });
+            chart.priceScale("macd").applyOptions({
+                scaleMargins: { top: 0.82, bottom: 0.02 },
+            });
+            macdSeries.setData(ohlc.map((d, i) => ({ time: d.time, value: macdLine[i] })).filter((p) => p.value != null));
+            sigSeries.setData(ohlc.map((d, i) => ({ time: d.time, value: signalLine[i] })).filter((p) => p.value != null));
+            histSeries.setData(ohlc.map((d, i) => ({
+                time: d.time,
+                value: histogram[i],
+                color: histogram[i] >= 0 ? "rgba(5, 150, 105, 0.6)" : "rgba(225, 29, 72, 0.6)",
+            })).filter((p) => p.value != null));
         }
 
         // Volume Histogram
@@ -1364,6 +1441,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
             }`}
         >
             {/* TOP BAR: High z-index (z-50) so dropdowns float ON TOP of chart canvas */}
+            {!hideTopBar && (
             <div className="relative z-50 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-gray-100 bg-gray-50/90 px-3 py-2 text-xs backdrop-blur-md dark:border-gray-800 dark:bg-gray-900/90 shadow-xs">
                 {/* Left Controls */}
                 <div className="flex flex-wrap items-center gap-2">
@@ -1504,6 +1582,7 @@ export default function HistoricalPriceChart({ points = [], symbol = "", rangeLa
                     </button>
                 </div>
             </div>
+            )}
 
             {/* MAIN CHART BODY + LEFT DRAWING TOOLBAR */}
             <div className="relative z-10 flex w-full gap-2">

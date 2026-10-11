@@ -122,11 +122,13 @@ async function getCryptoOptionChain(underlying = "BTC", selectedExpiry = null) {
     let spot24hChange = 0;
     let spot24hVol = 0;
 
-    // Look for spot ticker (e.g. BTCUSD, ETHUSD, .DEBTCUSDT)
+    // Look for spot / perpetual futures ticker (e.g. BTCUSDT, ETHUSDT, SOLUSDT)
     const spotTicker = tickers.find(t => 
-        t.symbol === `${cleanAsset}USD` || 
-        t.symbol === `${cleanAsset}USDT` ||
-        t.underlying_asset_symbol === cleanAsset
+        t.contract_type === "perpetual_futures" && (t.symbol === `${cleanAsset}USDT` || t.symbol === `${cleanAsset}USD`)
+    ) || tickers.find(t => 
+        t.contract_type === "spot" && (t.symbol === `${cleanAsset}_USDT` || t.symbol === `${cleanAsset}USDT`)
+    ) || tickers.find(t => 
+        (t.symbol === `${cleanAsset}USDT` || t.symbol === `${cleanAsset}USD`) && !t.symbol.startsWith("C-") && !t.symbol.startsWith("P-")
     );
 
     if (spotTicker) {
@@ -196,6 +198,24 @@ async function getCryptoOptionChain(underlying = "BTC", selectedExpiry = null) {
         const quotes = t.quotes || {};
         const greeks = t.greeks || {};
 
+        const rawMark = parseFloat(t.mark_price || 0);
+        const bidPrice = parseFloat(quotes.best_bid || 0);
+        const askPrice = parseFloat(quotes.best_ask || 0);
+        let finalMark = rawMark;
+        if (!finalMark || isNaN(finalMark) || finalMark <= 0) {
+            if (bidPrice > 0 && askPrice > 0) {
+                finalMark = (bidPrice + askPrice) / 2;
+            } else if (askPrice > 0) {
+                finalMark = askPrice;
+            } else if (bidPrice > 0) {
+                finalMark = bidPrice;
+            } else {
+                finalMark = p.contract_type === "call_options"
+                    ? Math.max(0.1, (spotPrice || 80000) - strike)
+                    : Math.max(0.1, strike - (spotPrice || 80000));
+            }
+        }
+
         const optionData = {
             symbol: p.symbol,
             productId: p.id,
@@ -203,12 +223,12 @@ async function getCryptoOptionChain(underlying = "BTC", selectedExpiry = null) {
             strike,
             expiryDate: p.settlement_time,
             expiryLabel: activeExpiryMeta?.label || "",
-            markPrice: parseFloat(t.mark_price || 0),
+            markPrice: parseFloat(finalMark.toFixed(4)),
             markIv: parseFloat(quotes.mark_iv || t.mark_vol || 0) * 100, // percentage
-            bidPrice: parseFloat(quotes.best_bid || 0),
+            bidPrice,
             bidIv: parseFloat(quotes.bid_iv || 0) * 100,
             bidQty: parseFloat(quotes.bid_size || 0) * parseFloat(p.contract_value || 0.001),
-            askPrice: parseFloat(quotes.best_ask || 0),
+            askPrice,
             askIv: parseFloat(quotes.ask_iv || 0) * 100,
             askQty: parseFloat(quotes.ask_size || 0) * parseFloat(p.contract_value || 0.001),
             oi: parseFloat(t.oi || 0),

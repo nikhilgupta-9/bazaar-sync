@@ -468,5 +468,60 @@ export async function stopBitcoinPipeline(token) {
     }));
 }
 
+// --- 1-Click Sample Test Data Generator & Importer ---
+
+export async function fetchSampleDataStats(token) {
+    return handle(await fetch(`${API_URL}/api/admin/data/sample-data/stats`, authed(token)));
+}
+
+export async function importSampleData(token, category = "all") {
+    return handle(await fetch(`${API_URL}/api/admin/data/sample-data/import`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ category }),
+    }));
+}
+
+export async function clearSampleData(token, category = "all") {
+    return handle(await fetch(`${API_URL}/api/admin/data/sample-data/clear`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ category }),
+    }));
+}
+
+// --- Admin Security & IP Whitelist ---
+
+export async function fetchAdminSecurityStatus(token) {
+    return handle(await fetch(`${API_URL}/api/admin/security/status`, authed(token)));
+}
+
+export async function toggleAdminIpRestriction(token, enabled) {
+    return handle(await fetch(`${API_URL}/api/admin/security/toggle`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+    }));
+}
+
+export async function addAdminAllowedIp(token, { ipOrCidr, label }) {
+    return handle(await fetch(`${API_URL}/api/admin/security/ips`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ ipOrCidr, label }),
+    }));
+}
+
+export async function removeAdminAllowedIp(token, id) {
+    return handle(await fetch(`${API_URL}/api/admin/security/ips/${id}`, {
+        method: "DELETE",
+        ...authed(token),
+    }));
+}
+
+export async function fetchPublicSecurityStatus() {
+    return handle(await fetch(`${API_URL}/api/auth/security-status`));
+}
+
 
 

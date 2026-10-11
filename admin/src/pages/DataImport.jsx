@@ -20,6 +20,7 @@ import {
     FiLayers,
     FiTrendingUp,
     FiCpu,
+    FiZap,
 } from "react-icons/fi";
 import { useAdminAuth } from "../context/AdminAuthContext";
 import {
@@ -457,6 +458,14 @@ export default function DataImport() {
                         <FiUploadCloud className="h-4 w-4" />
                         <span>Local CSV File Upload</span>
                     </button>
+
+                    <Link
+                        to="/data-sample"
+                        className="flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs sm:text-sm font-bold bg-gradient-to-r from-amber-500/20 to-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30 transition-all sm:ml-auto shadow-sm"
+                    >
+                        <FiZap className="h-4 w-4 text-amber-400" />
+                        <span>1-Click Sample Test Data Generator</span>
+                    </Link>
                 </div>
 
                 {/* TARGET TABLE PICKER */}

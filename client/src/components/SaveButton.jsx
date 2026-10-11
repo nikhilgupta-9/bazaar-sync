@@ -19,7 +19,7 @@ export default function SaveButton({ onSave, itemLabel = "item" }) {
         return (
             <button
                 onClick={() => navigate("/login")}
-                className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                className="rounded-xl border border-gray-300 dark:border-white/10 px-3 py-1.5 text-xs sm:text-[13px] font-semibold text-gray-600 dark:text-gray-300 bg-white dark:bg-[#0b1420] hover:bg-gray-50 dark:hover:bg-white/5 shadow-xs transition"
             >
                 Log in to save
             </button>
@@ -31,7 +31,7 @@ export default function SaveButton({ onSave, itemLabel = "item" }) {
             <button
                 disabled
                 title="Saving requires a Pro subscription"
-                className="cursor-not-allowed rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-400"
+                className="cursor-not-allowed rounded-xl border border-gray-200 dark:border-white/5 px-3 py-1.5 text-xs sm:text-[13px] font-semibold text-gray-400 dark:text-gray-600 bg-gray-50 dark:bg-white/[0.02]"
             >
                 Save (Pro only)
             </button>
@@ -62,21 +62,21 @@ export default function SaveButton({ onSave, itemLabel = "item" }) {
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         placeholder={`Name this ${itemLabel}`}
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        className="rounded-xl border border-gray-300 dark:border-white/10 bg-white dark:bg-[#070e17] px-2.5 py-1 text-xs sm:text-[13px] text-gray-900 dark:text-white outline-none focus:border-emerald-500"
                     />
                     <button
                         onClick={handleConfirm}
                         disabled={saving || !name.trim()}
-                        className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                        className="rounded-xl bg-emerald-600 px-3 py-1.5 text-xs sm:text-[13px] font-bold text-white hover:bg-emerald-500 disabled:opacity-50 shadow-xs transition"
                     >
                         {saving ? "Saving…" : "Confirm"}
                     </button>
-                    <button onClick={() => setShowPrompt(false)} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+                    <button onClick={() => setShowPrompt(false)} className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">✕</button>
                 </>
             ) : (
                 <button
                     onClick={() => setShowPrompt(true)}
-                    className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+                    className="rounded-xl bg-emerald-600 px-3 sm:px-4 py-1.5 text-xs sm:text-[13px] font-bold text-white hover:bg-emerald-500 shadow-xs transition"
                 >
                     Save {itemLabel}
                 </button>

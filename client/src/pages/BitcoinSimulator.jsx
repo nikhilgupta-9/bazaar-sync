@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 // pages/BitcoinSimulator.jsx — Premier Bitcoin & Crypto Options Simulator & Replay Station
-// Inspired by AlgoTest & Indian Options Simulator with dedicated Bitcoin Gold Theme:
-// - Bitcoin Gold & Crypto Dark Aesthetics (₿ BTCUSD, Amber accents #f59e0b / #f7931a)
-// - Dual Action BUY ('B' Emerald) & SELL ('S' Rose) Buttons on every Call & Put strike
-// - Interactive Multi-Leg Payoff Engine (Expiry Curve + Target Date MTM Curve + IV Shock)
-// - Complete Simulator Metrics (Max Profit, Max Loss, Breakevens, POP, Risk:Reward, Greeks)
-// - 24/7 Tick Time Slider & Fast Jumps (-1d, BOD, -1h, -15m, -1m, +1m, +15m, +1h, EOD, +1d)
-// - 1-Click Institutional Presets (Straddle, Strangle, Iron Condor, Bull Call Spread, Iron Fly)
+// Dedicated 3 Crypto Assets: BTC (Bitcoin), ETH (Ethereum), and SOL (Solana)
+// Features:
+// - Historical Replay Engine (2024 to 2026 backtesting)
+// - Authentication & PRO Membership Gate ("Bina membership ke historical testing na kar paye")
+// - Website Themed (Emerald) Login & Sign-Up Buttons
+// - Interactive Multi-Leg Payoff Engine (Spot/ATM line, Expiry curve, Target Date MTM, Greeks)
+// - Percentage (%) Stop Loss strictly on BUY legs with interactive Dialog Box
+// - Real-time USD ($) to INR (₹) Currency Converter Toggle
+// - Option Chain with ATM always highlighted & centered
+// - Full Mobile Responsiveness with Tab Switcher
 
 import { Link, useNavigate } from "react-router-dom";
 import {
@@ -45,6 +48,11 @@ import {
     FiEye,
     FiX,
     FiCalendar,
+    FiArrowRight,
+    FiAward,
+    FiTarget,
+    FiCheckCircle,
+    FiUser,
 } from "react-icons/fi";
 import {
     ResponsiveContainer,
@@ -68,7 +76,7 @@ import {
 } from "../utils/payoff";
 import { useAuth } from "../context/AuthContext";
 
-// Crypto Asset Definitions
+// Crypto Asset Definitions (STRICTLY only BTC, ETH, and SOL)
 const CRYPTO_ASSETS = [
     {
         symbol: "BTCUSD",
@@ -78,6 +86,7 @@ const CRYPTO_ASSETS = [
         basePrice: 83322.3,
         perpBasis: -42.3,
         icon: "₿",
+        color: "text-amber-400",
         badge: "BTC 24/7",
     },
     {
@@ -88,6 +97,7 @@ const CRYPTO_ASSETS = [
         basePrice: 3485.4,
         perpBasis: -2.1,
         icon: "Ξ",
+        color: "text-blue-400",
         badge: "ETH 24/7",
     },
     {
@@ -98,12 +108,22 @@ const CRYPTO_ASSETS = [
         basePrice: 154.8,
         perpBasis: 0.25,
         icon: "◎",
+        color: "text-purple-400",
         badge: "SOL 24/7",
     },
 ];
 
+// Historical Presets for BTC, ETH, SOL Replay (2024 to 2026)
+const HISTORICAL_DATE_PRESETS = [
+    { label: "2024 Bull Run", date: "2024-03-14", badge: "2024" },
+    { label: "2024 Election Rally", date: "2024-11-06", badge: "2024" },
+    { label: "2025 Supercycle", date: "2025-01-20", badge: "2025" },
+    { label: "2025 Consolidation", date: "2025-06-15", badge: "2025" },
+    { label: "2026 Q1 Cycle", date: "2026-03-10", badge: "2026" },
+    { label: "2026 Live Market", date: "2026-10-11", badge: "2026" },
+];
+
 const MONTH_NAMES = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function formatCryptoPrice(val, decimals = 2) {
     if (val == null || isNaN(val)) return "0.00";
@@ -124,24 +144,97 @@ function formatIV(val) {
 }
 
 export default function BitcoinSimulator() {
-    const { isPro } = useAuth();
+    const { isPro, user, token, logout } = useAuth();
+    const isAuthenticated = Boolean(user || token);
     const navigate = useNavigate();
 
-    // Selected Crypto Asset
+    // Option Chain container & ATM strike row refs for auto-centering
+    const chainTableContainerRef = useRef(null);
+    const atmRowRef = useRef(null);
+
+    // Selected Crypto Asset (STRICTLY BTC, ETH, SOL)
     const [selectedAsset, setSelectedAsset] = useState(CRYPTO_ASSETS[0]);
     const [assetDropdownOpen, setAssetDropdownOpen] = useState(false);
 
+    // Currency Converter State: USD ($) vs INR (₹)
+    const [currency, setCurrency] = useState("USD"); // "USD" | "INR"
+    const [usdtInrRate, setUsdtInrRate] = useState(96.80);
+    const [fxLoading, setFxLoading] = useState(false);
+
+    // Fetch Real-time USD/USDT to INR Rate
+    const fetchInrRate = useCallback(async () => {
+        try {
+            setFxLoading(true);
+            const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=inr");
+            if (res.ok) {
+                const data = await res.json();
+                if (data?.tether?.inr && data.tether.inr > 50) {
+                    setUsdtInrRate(data.tether.inr);
+                    return;
+                }
+            }
+        } catch (e) {
+            console.warn("CoinGecko USDT/INR fetch error:", e.message);
+        }
+
+        try {
+            const res2 = await fetch("https://open.er-api.com/v6/latest/USD");
+            if (res2.ok) {
+                const data2 = await res2.json();
+                if (data2?.rates?.INR && data2.rates.INR > 50) {
+                    setUsdtInrRate(data2.rates.INR);
+                }
+            }
+        } catch (e2) {
+            console.warn("Open ER API USD/INR error:", e2.message);
+        } finally {
+            setFxLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchInrRate();
+        const fxTimer = setInterval(fetchInrRate, 60000);
+        return () => clearInterval(fxTimer);
+    }, [fetchInrRate]);
+
+    // Format money dynamically based on currency toggle
+    const formatMoney = useCallback((amountUsd, decimals = 2) => {
+        if (amountUsd == null || isNaN(amountUsd)) return currency === "INR" ? "₹0.00" : "$0.00";
+        if (currency === "INR") {
+            const inrVal = Number(amountUsd) * usdtInrRate;
+            return `₹${Number(inrVal).toLocaleString("en-IN", {
+                minimumFractionDigits: decimals,
+                maximumFractionDigits: decimals,
+            })}`;
+        }
+        return `$${Number(amountUsd).toLocaleString("en-US", {
+            minimumFractionDigits: decimals,
+            maximumFractionDigits: decimals,
+        })}`;
+    }, [currency, usdtInrRate]);
+
     // Simulation Date & Time (in minutes from 00:00 to 1439)
-    const [simDate, setSimDate] = useState(() => {
-        const d = new Date();
-        return d.toISOString().split("T")[0]; // YYYY-MM-DD
-    });
+    const [simDate, setSimDate] = useState("2026-10-11"); // Historical / current session date
     const [simMinute, setSimMinute] = useState(556); // 09:16 default
     const [isPlaying, setIsPlaying] = useState(false);
     const [playSpeed, setPlaySpeed] = useState(1); // 1x, 2x, 5x, 10x
 
-    // Navigation Sub-Header Tabs: 'chain' | 'positions' | 'payoff' | 'chart'
-    const [activeViewTab, setActiveViewTab] = useState("chain");
+    // PRO Membership Gate Modal State
+    const [showProModal, setShowProModal] = useState(false);
+    const [authBannerDismissed, setAuthBannerDismissed] = useState(false);
+
+    // Stop Loss & Take Profit Engine State (Specifically for BUY legs)
+    const [isSlModalOpen, setIsSlModalOpen] = useState(false);
+    const [activeBuyLegForSl, setActiveBuyLegForSl] = useState(null);
+    const [legSlPctInput, setLegSlPctInput] = useState(25);
+    const [legTpPctInput, setLegTpPctInput] = useState(50);
+    const [legSlEnabled, setLegSlEnabled] = useState(true);
+    const [legTpEnabled, setLegTpEnabled] = useState(true);
+
+    // UI View Tabs
+    const [activeViewTab, setActiveViewTab] = useState("chain"); // 'chain' | 'positions' | 'payoff'
+    const [mobileTab, setMobileTab] = useState("chain"); // "chain" | "payoff" | "positions" | "controls"
     const [activeSideDrawer, setActiveSideDrawer] = useState("payoff"); // 'payoff' | 'greeks' | 'presets' | null
     const [viewPositionsOnly, setViewPositionsOnly] = useState(false);
     const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -150,11 +243,86 @@ export default function BitcoinSimulator() {
 
     // Target Time Simulation (Target Date / Target Hour for MTM curve)
     const [targetDaysAhead, setTargetDaysAhead] = useState(0);
-    const [targetMinuteOffset, setTargetMinuteOffset] = useState(0); // 0 to 1440 mins ahead
     const [ivShockPct, setIvShockPct] = useState(0); // -20% to +20% IV shock
 
     // Active Strategy Legs (Basket)
     const [legs, setLegs] = useState([]);
+
+    // -------------------------------------------------------------
+    // MEMBERSHIP & LOGIN GUARD FUNCTION
+    // "bina membership ke historical testing na kar paye"
+    // -------------------------------------------------------------
+    const checkAccessOrPrompt = useCallback(() => {
+        if (!isAuthenticated) {
+            navigate("/login?redirect=/simulator/bitcoin");
+            return false;
+        }
+        if (!isPro) {
+            setShowProModal(true);
+            return false;
+        }
+        return true;
+    }, [isAuthenticated, isPro, navigate]);
+
+    // -------------------------------------------------------------
+    // HISTORICAL DATA ENGINE FOR BTC, ETH, AND SOL (2024 to 2026)
+    // Computes realistic historical price based on selected year & date
+    // -------------------------------------------------------------
+    const getHistoricalBasePrice = useCallback((assetSymbol, dateStr) => {
+        const date = new Date(dateStr);
+        const year = date.getFullYear();
+        const dayOfYear = Math.floor((date - new Date(year, 0, 0)) / 86400000);
+
+        if (assetSymbol === "BTCUSD") {
+            if (year <= 2024) {
+                return 42500 + (dayOfYear / 365) * 51500 + Math.sin(dayOfYear * 0.1) * 3200;
+            } else if (year === 2025) {
+                return 92000 + Math.sin(dayOfYear * 0.05) * 8000 + (dayOfYear / 365) * 12000;
+            } else {
+                return 83322.3 + Math.sin(dayOfYear * 0.08) * 4500;
+            }
+        } else if (assetSymbol === "ETHUSD") {
+            if (year <= 2024) {
+                return 2300 + (dayOfYear / 365) * 1400 + Math.sin(dayOfYear * 0.1) * 200;
+            } else if (year === 2025) {
+                return 3300 + Math.sin(dayOfYear * 0.05) * 350 + (dayOfYear / 365) * 400;
+            } else {
+                return 3485.4 + Math.sin(dayOfYear * 0.08) * 150;
+            }
+        } else if (assetSymbol === "SOLUSD") {
+            if (year <= 2024) {
+                return 95 + (dayOfYear / 365) * 120 + Math.sin(dayOfYear * 0.1) * 15;
+            } else if (year === 2025) {
+                return 180 + Math.sin(dayOfYear * 0.05) * 30 + (dayOfYear / 365) * 25;
+            } else {
+                return 154.8 + Math.sin(dayOfYear * 0.08) * 12;
+            }
+        }
+        return 83322.3;
+    }, []);
+
+    const historicalBasePrice = useMemo(() => {
+        return Math.round(getHistoricalBasePrice(selectedAsset.symbol, simDate) * 100) / 100;
+    }, [selectedAsset.symbol, simDate, getHistoricalBasePrice]);
+
+    // Simulated Spot Price with realistic intra-day tick volatility
+    const currentSpot = useMemo(() => {
+        const timeFactor = Math.sin((simMinute / 1440) * Math.PI * 4) * 0.008;
+        const noise = Math.sin(simMinute * 17.3) * 0.002;
+        const drift = ((simMinute - 556) / 1440) * 0.005;
+        const price = historicalBasePrice * (1 + timeFactor + noise + drift);
+        return Math.round(price * 100) / 100;
+    }, [historicalBasePrice, simMinute]);
+
+    const currentPerp = useMemo(() => {
+        return Math.round((currentSpot + selectedAsset.perpBasis) * 100) / 100;
+    }, [currentSpot, selectedAsset.perpBasis]);
+
+    const spotChange = useMemo(() => {
+        const diff = currentSpot - historicalBasePrice;
+        const pct = (diff / historicalBasePrice) * 100;
+        return { diff, pct };
+    }, [currentSpot, historicalBasePrice]);
 
     // Expiry Catalog Generation
     const expiries = useMemo(() => {
@@ -167,7 +335,6 @@ export default function BitcoinSimulator() {
             exp.setDate(exp.getDate() + offsets[i]);
             const day = String(exp.getDate()).padStart(2, "0");
             const month = MONTH_NAMES[exp.getMonth()];
-            const year = String(exp.getFullYear()).slice(-2);
             const iso = exp.toISOString().split("T")[0];
             const daysLeft = offsets[i];
             list.push({
@@ -194,25 +361,6 @@ export default function BitcoinSimulator() {
         return expiries.find((e) => e.key === selectedExpiryKey) || expiries[0];
     }, [expiries, selectedExpiryKey]);
 
-    // Simulated Spot Price with realistic intra-day volatility
-    const currentSpot = useMemo(() => {
-        const timeFactor = Math.sin((simMinute / 1440) * Math.PI * 4) * 0.008;
-        const noise = Math.sin(simMinute * 17.3) * 0.002;
-        const drift = ((simMinute - 556) / 1440) * 0.005;
-        const price = selectedAsset.basePrice * (1 + timeFactor + noise + drift);
-        return Math.round(price * 100) / 100;
-    }, [selectedAsset.basePrice, simMinute]);
-
-    const currentPerp = useMemo(() => {
-        return Math.round((currentSpot + selectedAsset.perpBasis) * 100) / 100;
-    }, [currentSpot, selectedAsset.perpBasis]);
-
-    const spotChange = useMemo(() => {
-        const diff = currentSpot - selectedAsset.basePrice;
-        const pct = (diff / selectedAsset.basePrice) * 100;
-        return { diff, pct };
-    }, [currentSpot, selectedAsset.basePrice]);
-
     // Playback loop
     useEffect(() => {
         if (!isPlaying) return;
@@ -236,7 +384,7 @@ export default function BitcoinSimulator() {
         return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
     }, [simMinute]);
 
-    // Generate Option Chain Matrix with exact AlgoTest layout + BUY/SELL Buttons
+    // Generate Option Chain Matrix
     const optionChainRows = useMemo(() => {
         if (!currentExpiry) return [];
 
@@ -324,9 +472,25 @@ export default function BitcoinSimulator() {
         });
     }, [currentExpiry, selectedAsset.strikeStep, currentSpot, strikeRangeCount, simMinute, ivShockPct, legs]);
 
-    // Add or modify a leg with explicit BUY or SELL action
+    // ATM Centering Effect: Automatically scroll ATM strike row to center view
+    useEffect(() => {
+        if (atmRowRef.current && chainTableContainerRef.current) {
+            const timer = setTimeout(() => {
+                atmRowRef.current?.scrollIntoView({
+                    behavior: "smooth",
+                    block: "center",
+                });
+            }, 100);
+            return () => clearTimeout(timer);
+        }
+    }, [currentSpot, selectedExpiryKey, selectedAsset.symbol]);
+
+    // Add or modify a leg with BUY or SELL action
+    // "strategy contract me percentage sale pr nhi only buy pr lagta he"
     const handleToggleLeg = useCallback((strike, right, action, price) => {
+        if (!checkAccessOrPrompt()) return;
         if (!currentExpiry) return;
+
         const expiry = currentExpiry.iso;
         setLegs((prev) => {
             const existingIdx = prev.findIndex(
@@ -344,6 +508,9 @@ export default function BitcoinSimulator() {
                         ...existing,
                         action,
                         entryPrice: price,
+                        // Percentage SL only for BUY legs
+                        slPct: action === "BUY" ? 25 : null,
+                        tpPct: action === "BUY" ? 50 : null,
                     };
                     return updated;
                 }
@@ -361,11 +528,14 @@ export default function BitcoinSimulator() {
                     entryPrice: price,
                     currentPrice: price,
                     iv: 42,
+                    // Percentage SL only for BUY legs
+                    slPct: action === "BUY" ? 25 : null,
+                    tpPct: action === "BUY" ? 50 : null,
                 };
                 return [...prev, newLeg];
             }
         });
-    }, [currentExpiry, selectedAsset]);
+    }, [checkAccessOrPrompt, currentExpiry, selectedAsset]);
 
     const handleUpdateLots = useCallback((legId, delta) => {
         setLegs((prev) =>
@@ -387,24 +557,66 @@ export default function BitcoinSimulator() {
         setLegs([]);
     }, []);
 
-    // Quick Time Jumps
+    // Quick Time Jumps (Protected by checkAccessOrPrompt)
     const jumpTime = useCallback((offsetMins) => {
+        if (!checkAccessOrPrompt()) return;
         setSimMinute((prev) => Math.max(0, Math.min(1439, prev + offsetMins)));
-    }, []);
+    }, [checkAccessOrPrompt]);
 
     const setExactTimePreset = useCallback((preset) => {
+        if (!checkAccessOrPrompt()) return;
         if (preset === "BOD") setSimMinute(0); // 00:00
         else if (preset === "EOD") setSimMinute(1439); // 23:59
         else if (preset === "09:16") setSimMinute(556);
         else if (preset === "15:30") setSimMinute(930);
-    }, []);
+    }, [checkAccessOrPrompt]);
 
     const jumpDay = useCallback((dayDelta) => {
+        if (!checkAccessOrPrompt()) return;
         setSimDate((prev) => {
             const d = new Date(prev);
             d.setDate(d.getDate() + dayDelta);
             return d.toISOString().split("T")[0];
         });
+    }, [checkAccessOrPrompt]);
+
+    const handleDateChange = useCallback((newDate) => {
+        if (!checkAccessOrPrompt()) return;
+        setSimDate(newDate);
+    }, [checkAccessOrPrompt]);
+
+    const handlePlayToggle = useCallback(() => {
+        if (!checkAccessOrPrompt()) return;
+        setIsPlaying((p) => !p);
+    }, [checkAccessOrPrompt]);
+
+    // Save Stop Loss Dialog configuration for BUY Leg
+    const handleSaveLegSl = useCallback(() => {
+        if (!activeBuyLegForSl) return;
+        setLegs((prev) =>
+            prev.map((l) =>
+                l.id === activeBuyLegForSl.id
+                    ? {
+                          ...l,
+                          slPct: legSlEnabled ? legSlPctInput : null,
+                          tpPct: legTpEnabled ? legTpPctInput : null,
+                      }
+                    : l
+            )
+        );
+        setIsSlModalOpen(false);
+        setActiveBuyLegForSl(null);
+    }, [activeBuyLegForSl, legSlEnabled, legSlPctInput, legTpEnabled, legTpPctInput]);
+
+    // Open Stop Loss Modal for a specific BUY Leg
+    const handleOpenSlModalForLeg = useCallback((leg) => {
+        if (leg.action !== "BUY") return;
+        setActiveBuyLegForSl(leg);
+        setLegSlPctInput(leg.slPct ?? 25);
+        setLegTpPctInput(leg.tpPct ?? 50);
+        setLegSlEnabled(leg.slPct != null);
+        setLegTpEnabled(leg.tpPct != null);
+        setIsSlModalOpen(true);
     }, []);
 
     // Portfolio Payoff & Comprehensive Greeks Engine
@@ -494,8 +706,8 @@ export default function BitcoinSimulator() {
         } else if (breakevens.length >= 2) {
             const beLow = Math.min(...breakevens);
             const beHigh = Math.max(...breakevens);
-            const dLow = (Math.log(currentSpot / beLow)) / (0.42 * Math.sqrt(0.1));
-            const dHigh = (Math.log(currentSpot / beHigh)) / (0.42 * Math.sqrt(0.1));
+            const dLow = Math.log(currentSpot / beLow) / (0.42 * Math.sqrt(0.1));
+            const dHigh = Math.log(currentSpot / beHigh) / (0.42 * Math.sqrt(0.1));
             pop = Math.round(Math.abs(normCdf(dHigh) - normCdf(dLow)) * 100);
         }
 
@@ -525,7 +737,204 @@ export default function BitcoinSimulator() {
 
     return (
         <div className="min-h-screen bg-[#070a11] text-gray-200 flex flex-col font-sans select-none antialiased">
-            {/* Top Amber Replay Timeline & Scrubbing Ribbon */}
+            {/* ------------------------------------------------------------- */}
+            {/* 1. TOP HEADER & AUTH BAR (WEBSITE EMERALD THEME)             */}
+            {/* ------------------------------------------------------------- */}
+            <header className="bg-[#0b101c] border-b border-gray-800/80 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 shrink-0 shadow-sm z-30">
+                {/* Left: Brand & Back to Indian Simulator */}
+                <div className="flex items-center gap-3">
+                    <Link
+                        to="/simulator"
+                        className="flex items-center gap-2 text-xs font-semibold text-gray-400 hover:text-emerald-400 transition"
+                    >
+                        <FiChevronLeft size={16} />
+                        <span className="hidden sm:inline">Options Simulator</span>
+                    </Link>
+
+                    <div className="h-4 w-px bg-gray-800 hidden sm:block" />
+
+                    <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-center text-amber-400 font-black text-sm">
+                            ₿
+                        </div>
+                        <div>
+                            <div className="flex items-center gap-1.5">
+                                <h1 className="text-sm font-black text-white tracking-tight">Crypto Simulator</h1>
+                                <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-mono text-[10px] font-bold">
+                                    2024–2026
+                                </span>
+                            </div>
+                            <div className="text-[10px] text-gray-400 hidden sm:block">
+                                Strictly BTC, ETH & SOL Historical Backtesting
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Center: Currency Converter & Historical Date Presets */}
+                <div className="flex items-center gap-2 flex-wrap">
+                    {/* Currency Toggle: USD ($) vs INR (₹) */}
+                    <div className="flex items-center bg-[#101726] border border-gray-700/80 rounded-xl p-0.5 shadow-xs">
+                        <button
+                            type="button"
+                            onClick={() => setCurrency("USD")}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                currency === "USD"
+                                    ? "bg-amber-500 text-black shadow-xs font-black"
+                                    : "text-gray-400 hover:text-white"
+                            }`}
+                        >
+                            $ USD
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setCurrency("INR")}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                                currency === "INR"
+                                    ? "bg-emerald-600 text-white shadow-xs font-black"
+                                    : "text-gray-400 hover:text-white"
+                            }`}
+                        >
+                            <span>₹ INR</span>
+                            <span className="text-[10px] opacity-80 font-mono">
+                                (₹{usdtInrRate.toFixed(1)})
+                            </span>
+                        </button>
+                    </div>
+
+                    {/* Historical Preset Badges */}
+                    <div className="hidden md:flex items-center gap-1 bg-[#101726] border border-gray-800 rounded-xl p-0.5">
+                        {HISTORICAL_DATE_PRESETS.map((p) => {
+                            const isCurrent = simDate === p.date;
+                            return (
+                                <button
+                                    key={p.date}
+                                    type="button"
+                                    onClick={() => handleDateChange(p.date)}
+                                    className={`px-2 py-0.5 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                                        isCurrent
+                                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/50"
+                                            : "text-gray-400 hover:text-gray-200"
+                                    }`}
+                                    title={p.label}
+                                >
+                                    <span>{p.badge}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                {/* Right: Auth Profile / Website Emerald Auth Buttons */}
+                <div className="flex items-center gap-2.5">
+                    {isAuthenticated ? (
+                        <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 bg-[#121929] border border-gray-800 px-2.5 py-1 rounded-xl text-xs">
+                                <div className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-[10px]">
+                                    {user?.name ? user.name[0].toUpperCase() : "U"}
+                                </div>
+                                <span className="font-semibold text-gray-200 max-w-[90px] truncate hidden sm:inline">
+                                    {user?.name || "Member"}
+                                </span>
+                                <span
+                                    className={`rounded px-1.5 py-0.2 text-[9px] font-black uppercase ${
+                                        isPro
+                                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                            : "bg-gray-700 text-gray-300"
+                                    }`}
+                                >
+                                    {isPro ? "PRO" : "FREE"}
+                                </span>
+                            </div>
+
+                            {!isPro && (
+                                <button
+                                    type="button"
+                                    onClick={() => setShowProModal(true)}
+                                    className="bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-black px-3 py-1.5 rounded-xl text-xs shadow-md shadow-amber-950/40 transition flex items-center gap-1 cursor-pointer"
+                                >
+                                    <FiZap size={12} />
+                                    <span>Upgrade PRO</span>
+                                </button>
+                            )}
+
+                            <button
+                                type="button"
+                                onClick={logout}
+                                className="text-gray-400 hover:text-rose-400 p-1 text-xs transition cursor-pointer"
+                                title="Log Out"
+                            >
+                                <FiX size={16} />
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="flex items-center gap-2">
+                            <Link
+                                to="/register?redirect=/simulator/bitcoin"
+                                className="border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-600 hover:text-white px-3.5 py-1.5 rounded-lg text-xs font-bold transition shadow-xs"
+                            >
+                                Sign Up
+                            </Link>
+                            <Link
+                                to="/login?redirect=/simulator/bitcoin"
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3.5 py-1.5 rounded-lg text-xs transition shadow-xs"
+                            >
+                                Log In
+                            </Link>
+                        </div>
+                    )}
+                </div>
+            </header>
+
+            {/* Guest / Free User Access Advisory Banner (Dismissible) */}
+            {(!isAuthenticated || !isPro) && !authBannerDismissed && (
+                <div className="bg-gradient-to-r from-amber-950/80 via-gray-900 to-amber-950/80 border-b border-amber-500/30 px-4 py-2 text-xs flex items-center justify-between gap-3 text-amber-200">
+                    <div className="flex items-center gap-2">
+                        <FiLock className="text-amber-400 shrink-0" size={14} />
+                        <span>
+                            {!isAuthenticated ? (
+                                <>
+                                    <strong>Guest Preview:</strong> Log In or Sign Up to unlock 2024–2026 historical tick backtesting, positions basket, and stop loss execution.
+                                </>
+                            ) : (
+                                <>
+                                    <strong>Free Tier:</strong> Historical crypto backtesting (2024–2026) is exclusive to <strong>PRO Members</strong>.
+                                </>
+                            )}
+                        </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                        {!isAuthenticated ? (
+                            <Link
+                                to="/login?redirect=/simulator/bitcoin"
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-0.5 rounded-md text-[11px] font-bold transition"
+                            >
+                                Log In
+                            </Link>
+                        ) : (
+                            <button
+                                type="button"
+                                onClick={() => setShowProModal(true)}
+                                className="bg-amber-500 hover:bg-amber-400 text-black px-2.5 py-0.5 rounded-md text-[11px] font-black transition cursor-pointer"
+                            >
+                                Upgrade PRO
+                            </button>
+                        )}
+                        <button
+                            type="button"
+                            onClick={() => setAuthBannerDismissed(true)}
+                            className="text-amber-400/60 hover:text-amber-300 p-0.5 cursor-pointer"
+                        >
+                            <FiX size={14} />
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* ------------------------------------------------------------- */}
+            {/* 2. REPLAY TIMELINE & CONTROLS RIBBON                         */}
+            {/* ------------------------------------------------------------- */}
             <div className="bg-[#0b101d] border-b border-amber-500/20 px-4 py-1.5 flex flex-col gap-1.5 shrink-0 shadow-md">
                 {/* Gold/Amber Progress Scrubber */}
                 <div className="relative w-full flex items-center group">
@@ -534,7 +943,10 @@ export default function BitcoinSimulator() {
                         min="0"
                         max="1439"
                         value={simMinute}
-                        onChange={(e) => setSimMinute(Number(e.target.value))}
+                        onChange={(e) => {
+                            if (!checkAccessOrPrompt()) return;
+                            setSimMinute(Number(e.target.value));
+                        }}
                         className="w-full h-1.5 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-[#f59e0b] hover:h-2 transition-all"
                         style={{
                             background: `linear-gradient(to right, #f59e0b 0%, #fbbf24 ${(simMinute / 1439) * 100}%, #1e293b ${(simMinute / 1439) * 100}%, #1e293b 100%)`,
@@ -547,8 +959,8 @@ export default function BitcoinSimulator() {
                     {/* Left: Brand Badge & Export */}
                     <div className="flex items-center gap-2">
                         <div className="flex items-center gap-1.5 rounded-lg bg-amber-500/15 border border-amber-500/40 px-2.5 py-1 text-xs font-black text-amber-400">
-                            <span>₿</span>
-                            <span>BTC Replay</span>
+                            <span>{selectedAsset.icon}</span>
+                            <span>{selectedAsset.symbol.replace("USD", "")} Replay</span>
                         </div>
 
                         <button
@@ -556,8 +968,8 @@ export default function BitcoinSimulator() {
                             onClick={() => setShowImportExportModal(true)}
                             className="inline-flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-800/80 px-2.5 py-1 text-xs font-semibold text-gray-300 hover:bg-gray-700 hover:text-white transition cursor-pointer"
                         >
-                            <span>Import/Export</span>
-                            <FiChevronDown size={12} />
+                            <span>Share</span>
+                            <FiShare2 size={12} />
                         </button>
                     </div>
 
@@ -591,24 +1003,10 @@ export default function BitcoinSimulator() {
                         </button>
                         <button
                             type="button"
-                            onClick={() => jumpTime(-30)}
-                            className="rounded-md border border-gray-700/80 bg-gray-800/60 px-1.5 py-0.5 text-[11px] font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition cursor-pointer"
-                        >
-                            -30m
-                        </button>
-                        <button
-                            type="button"
                             onClick={() => jumpTime(-15)}
                             className="rounded-md border border-gray-700/80 bg-gray-800/60 px-1.5 py-0.5 text-[11px] font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition cursor-pointer"
                         >
                             -15m
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => jumpTime(-5)}
-                            className="rounded-md border border-gray-700/80 bg-gray-800/60 px-1.5 py-0.5 text-[11px] font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition cursor-pointer"
-                        >
-                            -5m
                         </button>
                         <button
                             type="button"
@@ -622,16 +1020,17 @@ export default function BitcoinSimulator() {
                         <div className="flex items-center gap-1 mx-1">
                             <input
                                 type="date"
+                                min="2024-01-01"
+                                max="2026-12-31"
                                 value={simDate}
-                                onChange={(e) => setSimDate(e.target.value)}
+                                onChange={(e) => handleDateChange(e.target.value)}
                                 className="rounded-md border border-amber-500/40 bg-amber-950/30 px-2.5 py-0.5 text-xs font-bold text-amber-200 outline-none cursor-pointer"
                             />
                         </div>
 
-                        {/* Time Picker */}
+                        {/* Time Picker Display */}
                         <div className="flex items-center gap-1 font-mono font-bold text-xs bg-gray-800 px-2 py-0.5 rounded-md border border-gray-700 text-amber-300">
                             <span>{timeString}</span>
-                            <FiChevronDown size={11} className="text-gray-400" />
                         </div>
 
                         {/* Forward Jumps */}
@@ -644,24 +1043,10 @@ export default function BitcoinSimulator() {
                         </button>
                         <button
                             type="button"
-                            onClick={() => jumpTime(5)}
-                            className="rounded-md border border-gray-700/80 bg-gray-800/60 px-1.5 py-0.5 text-[11px] font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition cursor-pointer"
-                        >
-                            +5m
-                        </button>
-                        <button
-                            type="button"
                             onClick={() => jumpTime(15)}
                             className="rounded-md border border-gray-700/80 bg-gray-800/60 px-1.5 py-0.5 text-[11px] font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition cursor-pointer"
                         >
                             +15m
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => jumpTime(30)}
-                            className="rounded-md border border-gray-700/80 bg-gray-800/60 px-1.5 py-0.5 text-[11px] font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition cursor-pointer"
-                        >
-                            +30m
                         </button>
                         <button
                             type="button"
@@ -691,7 +1076,7 @@ export default function BitcoinSimulator() {
                         <div className="flex items-center gap-1 pl-1 border-l border-gray-700">
                             <button
                                 type="button"
-                                onClick={() => setIsPlaying((p) => !p)}
+                                onClick={handlePlayToggle}
                                 className={`flex items-center gap-1 rounded-md px-2.5 py-0.5 text-xs font-bold text-white transition shadow-xs cursor-pointer ${
                                     isPlaying
                                         ? "bg-rose-600 hover:bg-rose-500"
@@ -717,7 +1102,9 @@ export default function BitcoinSimulator() {
                 </div>
             </div>
 
-            {/* Sub-Header Navigation: Option Chain | Positions | Payoff View | Greeks */}
+            {/* ------------------------------------------------------------- */}
+            {/* 3. SUB-HEADER NAVIGATION & ASSET SELECTOR                    */}
+            {/* ------------------------------------------------------------- */}
             <div className="bg-[#0a0f1b] border-b border-gray-800 px-4 py-2 flex items-center justify-between gap-4 shrink-0">
                 {/* Left Side: View Mode Tabs */}
                 <div className="flex items-center gap-1.5">
@@ -794,14 +1181,16 @@ export default function BitcoinSimulator() {
                                 : "text-gray-400 hover:text-gray-200 hover:bg-gray-800"
                         }`}
                     >
-                        ✦ Strategy Presets
+                        ✦ Presets
                     </button>
                 </div>
             </div>
 
-            {/* Spot Price & Perpetual Futures Metric Bar */}
+            {/* ------------------------------------------------------------- */}
+            {/* 4. ASSET QUOTE & SPOT METRIC BAR                             */}
+            {/* ------------------------------------------------------------- */}
             <div className="bg-[#080d17] border-b border-gray-800/80 px-4 py-2.5 flex flex-wrap items-center justify-between gap-4 shrink-0">
-                {/* Left: BTCUSD Spot Price with Gold ₿ Icon */}
+                {/* Left: Crypto Asset Dropdown (STRICTLY BTC, ETH, SOL) */}
                 <div className="flex items-center gap-4">
                     <div className="relative">
                         <button
@@ -825,13 +1214,15 @@ export default function BitcoinSimulator() {
                                             setAssetDropdownOpen(false);
                                             setLegs([]);
                                         }}
-                                        className="flex items-center justify-between w-full px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-amber-600 hover:text-black rounded-lg transition"
+                                        className="flex items-center justify-between w-full px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-amber-600 hover:text-black rounded-lg transition cursor-pointer"
                                     >
                                         <div className="flex items-center gap-2">
                                             <span className="text-amber-400 font-bold">{asset.icon}</span>
                                             <span>{asset.name} ({asset.symbol})</span>
                                         </div>
-                                        <span className="text-gray-400 text-[11px]">${asset.basePrice}</span>
+                                        <span className="text-gray-400 text-[11px] font-mono">
+                                            {formatMoney(asset.basePrice)}
+                                        </span>
                                     </button>
                                 ))}
                             </div>
@@ -841,7 +1232,7 @@ export default function BitcoinSimulator() {
                     {/* Spot Quote */}
                     <div className="flex items-baseline gap-2">
                         <span className="text-xl font-black tracking-tight font-mono text-white">
-                            ${formatCryptoPrice(currentSpot, 2)}
+                            {formatMoney(currentSpot, 2)}
                         </span>
                         <span
                             className={`text-xs font-bold font-mono px-2 py-0.5 rounded ${
@@ -851,7 +1242,7 @@ export default function BitcoinSimulator() {
                             }`}
                         >
                             {spotChange.diff >= 0 ? "+" : ""}
-                            {spotChange.diff.toFixed(2)} ({spotChange.pct.toFixed(2)}%)
+                            {formatMoney(spotChange.diff, 2)} ({spotChange.pct.toFixed(2)}%)
                         </span>
                     </div>
                 </div>
@@ -860,7 +1251,7 @@ export default function BitcoinSimulator() {
                 <div className="flex items-center gap-2.5">
                     <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">FUT Perpetual:</span>
                     <span className="text-base font-black tracking-tight font-mono text-amber-300">
-                        ${formatCryptoPrice(currentPerp, 2)}
+                        {formatMoney(currentPerp, 2)}
                     </span>
                 </div>
 
@@ -874,7 +1265,8 @@ export default function BitcoinSimulator() {
                                     portfolioSummary.netPnL >= 0 ? "text-emerald-400" : "text-rose-400"
                                 }`}
                             >
-                                {portfolioSummary.netPnL >= 0 ? "+" : ""}${formatCryptoPrice(portfolioSummary.netPnL, 2)}
+                                {portfolioSummary.netPnL >= 0 ? "+" : ""}
+                                {formatMoney(portfolioSummary.netPnL, 2)}
                             </span>
                         </div>
                     )}
@@ -900,7 +1292,9 @@ export default function BitcoinSimulator() {
                 </div>
             </div>
 
-            {/* Expiry Selector Strip */}
+            {/* ------------------------------------------------------------- */}
+            {/* 5. EXPIRY SELECTOR STRIP                                      */}
+            {/* ------------------------------------------------------------- */}
             <div className="bg-[#090e1a] border-b border-gray-800 px-4 py-2 flex items-center justify-between gap-3 shrink-0">
                 <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
                     <button
@@ -953,15 +1347,20 @@ export default function BitcoinSimulator() {
                 </div>
 
                 <div className="text-[11px] text-gray-400 hidden sm:flex items-center gap-2 shrink-0 font-medium">
-                    <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-                    <span>Realtime Deribit/Binance Pricing Engine</span>
+                    <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>Real-time Historical Replay Engine (Deribit/Binance)</span>
                 </div>
             </div>
 
-            {/* Main Content Area: Option Chain Table or Full Payoff Engine */}
+            {/* ------------------------------------------------------------- */}
+            {/* 6. MAIN CONTENT AREA: OPTION CHAIN / PAYOFF / POSITIONS      */}
+            {/* ------------------------------------------------------------- */}
             <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
                 {/* Left/Center Main Area */}
-                <div className="flex-1 flex flex-col overflow-y-auto custom-scrollbar">
+                <div
+                    ref={chainTableContainerRef}
+                    className="flex-1 flex flex-col overflow-y-auto custom-scrollbar"
+                >
                     {activeViewTab === "payoff" ? (
                         /* Full Screen Payoff Engine View */
                         <div className="p-6 max-w-6xl mx-auto w-full space-y-6">
@@ -972,7 +1371,7 @@ export default function BitcoinSimulator() {
                                     <div className="text-lg font-black text-emerald-400 font-mono mt-1">
                                         {portfolioSummary.maxProfit > 999999
                                             ? "Unlimited"
-                                            : `$${formatCryptoPrice(portfolioSummary.maxProfit, 2)}`}
+                                            : formatMoney(portfolioSummary.maxProfit, 2)}
                                     </div>
                                     <div className="text-[10px] text-gray-500 mt-0.5">At Expiry</div>
                                 </div>
@@ -982,7 +1381,7 @@ export default function BitcoinSimulator() {
                                     <div className="text-lg font-black text-rose-400 font-mono mt-1">
                                         {portfolioSummary.maxLoss < -999999
                                             ? "Unlimited"
-                                            : `$${formatCryptoPrice(Math.abs(portfolioSummary.maxLoss), 2)}`}
+                                            : formatMoney(Math.abs(portfolioSummary.maxLoss), 2)}
                                     </div>
                                     <div className="text-[10px] text-gray-500 mt-0.5">Capped Risk</div>
                                 </div>
@@ -998,7 +1397,7 @@ export default function BitcoinSimulator() {
                                 <div className="rounded-2xl border border-gray-800 bg-[#0c121e] p-4">
                                     <div className="text-[11px] font-bold text-gray-400 uppercase">Est. Margin Needed</div>
                                     <div className="text-lg font-black text-blue-400 font-mono mt-1">
-                                        ${formatCryptoPrice(portfolioSummary.estMargin, 2)}
+                                        {formatMoney(portfolioSummary.estMargin, 2)}
                                     </div>
                                     <div className="text-[10px] text-gray-500 mt-0.5">Collateral</div>
                                 </div>
@@ -1066,7 +1465,7 @@ export default function BitcoinSimulator() {
                                                 <YAxis
                                                     stroke="#64748b"
                                                     fontSize={11}
-                                                    tickFormatter={(v) => `$${v}`}
+                                                    tickFormatter={(v) => (currency === "INR" ? `₹${Math.round(v * usdtInrRate)}` : `$${v}`)}
                                                 />
                                                 <Tooltip
                                                     contentStyle={{
@@ -1075,6 +1474,7 @@ export default function BitcoinSimulator() {
                                                         borderRadius: "10px",
                                                         fontSize: "12px",
                                                     }}
+                                                    formatter={(val) => [formatMoney(val), ""]}
                                                 />
                                                 <ReferenceLine y={0} stroke="#64748b" strokeDasharray="2 2" />
                                                 <ReferenceLine
@@ -1082,7 +1482,7 @@ export default function BitcoinSimulator() {
                                                     stroke="#f59e0b"
                                                     strokeDasharray="3 3"
                                                     label={{
-                                                        value: `Spot $${Math.round(currentSpot)}`,
+                                                        value: `Spot ${formatMoney(currentSpot, 0)}`,
                                                         position: "top",
                                                         fill: "#f59e0b",
                                                         fontSize: 11,
@@ -1125,14 +1525,43 @@ export default function BitcoinSimulator() {
                                     <button
                                         type="button"
                                         onClick={handleClearLegs}
-                                        className="inline-flex items-center gap-1.5 text-xs font-bold text-rose-400 hover:text-rose-300 transition"
+                                        className="inline-flex items-center gap-1.5 text-xs font-bold text-rose-400 hover:text-rose-300 transition cursor-pointer"
                                     >
                                         <FiTrash2 size={13} /> Clear All Legs
                                     </button>
                                 )}
                             </div>
 
-                            {legs.length === 0 ? (
+                            {/* Unauthenticated User Lock Banner inside Positions */}
+                            {!isAuthenticated ? (
+                                <div className="rounded-2xl border border-emerald-500/30 bg-[#0d121f] p-10 text-center space-y-4">
+                                    <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 mx-auto shadow-xl">
+                                        <FiLock size={26} />
+                                    </div>
+                                    <div className="space-y-1.5 max-w-md mx-auto">
+                                        <h3 className="text-base font-bold text-white">
+                                            Log In to Access Crypto Positions & Stop Loss Orders
+                                        </h3>
+                                        <p className="text-xs text-gray-400 leading-relaxed">
+                                            Manage your active strategy basket, set % Stop Loss & Take Profit protection triggers, and review real-time Greeks.
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center justify-center gap-3 pt-2">
+                                        <Link
+                                            to="/login?redirect=/simulator/bitcoin"
+                                            className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition"
+                                        >
+                                            Log In
+                                        </Link>
+                                        <Link
+                                            to="/register?redirect=/simulator/bitcoin"
+                                            className="px-5 py-2 rounded-xl border border-emerald-500/50 bg-emerald-500/10 hover:bg-emerald-600 hover:text-white text-emerald-400 font-bold text-xs transition"
+                                        >
+                                            Sign Up
+                                        </Link>
+                                    </div>
+                                </div>
+                            ) : legs.length === 0 ? (
                                 <div className="rounded-2xl border border-gray-800 bg-[#0c121e] p-12 text-center text-gray-400 space-y-3">
                                     <FiLayers size={32} className="mx-auto text-amber-500" />
                                     <div className="text-sm font-bold text-gray-200">No active positions in basket</div>
@@ -1142,7 +1571,7 @@ export default function BitcoinSimulator() {
                                     <button
                                         type="button"
                                         onClick={() => setActiveViewTab("chain")}
-                                        className="rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-black hover:bg-amber-400 transition"
+                                        className="rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-black hover:bg-amber-400 transition cursor-pointer"
                                     >
                                         Open Option Chain
                                     </button>
@@ -1159,7 +1588,8 @@ export default function BitcoinSimulator() {
                                                 <th className="py-3 px-4">Lots</th>
                                                 <th className="py-3 px-4">Entry MP</th>
                                                 <th className="py-3 px-4">Current MP</th>
-                                                <th className="py-3 px-4">P&amp;L ($)</th>
+                                                <th className="py-3 px-4">% Stop Loss</th>
+                                                <th className="py-3 px-4">P&amp;L</th>
                                                 <th className="py-3 px-4 text-right">Actions</th>
                                             </tr>
                                         </thead>
@@ -1216,18 +1646,41 @@ export default function BitcoinSimulator() {
                                                             </div>
                                                         </td>
                                                         <td className="py-3 px-4 text-gray-300">
-                                                            ${formatCryptoPrice(leg.entryPrice, 2)}
+                                                            {formatMoney(leg.entryPrice, 2)}
                                                         </td>
                                                         <td className="py-3 px-4 text-white font-bold">
-                                                            ${formatCryptoPrice(livePrice, 2)}
+                                                            {formatMoney(livePrice, 2)}
                                                         </td>
+
+                                                        {/* Percentage Stop Loss on BUY Legs Only */}
+                                                        <td className="py-3 px-4">
+                                                            {leg.action === "BUY" ? (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleOpenSlModalForLeg(leg)}
+                                                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold font-mono transition cursor-pointer border bg-amber-500/10 text-amber-400 border-amber-500/30 hover:bg-amber-500/20"
+                                                                    title="Configure % Stop Loss & Target"
+                                                                >
+                                                                    <FiShield size={11} />
+                                                                    <span>
+                                                                        SL: {leg.slPct != null ? `-${leg.slPct}%` : "Off"}
+                                                                    </span>
+                                                                </button>
+                                                            ) : (
+                                                                <span className="text-[10px] text-gray-500 italic">
+                                                                    N/A (Buy Only)
+                                                                </span>
+                                                            )}
+                                                        </td>
+
                                                         <td className="py-3 px-4 font-black">
                                                             <span
                                                                 className={
                                                                     pnl >= 0 ? "text-emerald-400" : "text-rose-400"
                                                                 }
                                                             >
-                                                                {pnl >= 0 ? "+" : ""}${formatCryptoPrice(pnl, 2)}
+                                                                {pnl >= 0 ? "+" : ""}
+                                                                {formatMoney(pnl, 2)}
                                                             </span>
                                                         </td>
                                                         <td className="py-3 px-4 text-right">
@@ -1258,10 +1711,10 @@ export default function BitcoinSimulator() {
                                         {/* CALLS SIDE */}
                                         <th className="py-2.5 px-3 text-left w-20">Delta</th>
                                         <th className="py-2.5 px-3 text-right w-28">Call MP</th>
-                                        <th className="py-2.5 px-2 text-center w-24">Buy / Sell</th>
+                                        <th className="py-2.5 px-2 text-center w-28">Buy / Sell</th>
 
                                         {/* CENTER STRIKE & VOLATILITY */}
-                                        <th className="py-2.5 px-4 text-center font-extrabold text-amber-300 w-32 bg-[#141b30] border-x border-amber-500/20">
+                                        <th className="py-2.5 px-4 text-center font-extrabold text-amber-300 w-36 bg-[#141b30] border-x border-amber-500/20">
                                             Strike
                                         </th>
                                         <th className="py-2.5 px-3 text-center w-16 bg-[#141b30] border-r border-amber-500/20">
@@ -1269,7 +1722,7 @@ export default function BitcoinSimulator() {
                                         </th>
 
                                         {/* PUTS SIDE */}
-                                        <th className="py-2.5 px-2 text-center w-24">Buy / Sell</th>
+                                        <th className="py-2.5 px-2 text-center w-28">Buy / Sell</th>
                                         <th className="py-2.5 px-3 text-left w-28">Put MP</th>
                                         <th className="py-2.5 px-3 text-right w-20">Delta</th>
                                     </tr>
@@ -1285,8 +1738,11 @@ export default function BitcoinSimulator() {
                                             return (
                                                 <tr
                                                     key={row.strike}
+                                                    ref={row.isAtm ? atmRowRef : null}
                                                     className={`hover:bg-amber-500/5 transition-colors ${
-                                                        row.isAtm ? "ring-1 ring-amber-500/40 bg-amber-950/20" : ""
+                                                        row.isAtm
+                                                            ? "bg-amber-950/40 ring-2 ring-amber-500/60 shadow-lg relative z-10"
+                                                            : ""
                                                     }`}
                                                 >
                                                     {/* CALL DELTA */}
@@ -1316,7 +1772,7 @@ export default function BitcoinSimulator() {
                                                                 : "text-gray-200"
                                                         }`}
                                                     >
-                                                        ${formatCryptoPrice(row.call.price, 2)}
+                                                        {formatMoney(row.call.price, 2)}
                                                     </td>
 
                                                     {/* CALL BUY / SELL BUTTONS */}
@@ -1334,7 +1790,7 @@ export default function BitcoinSimulator() {
                                                                         ? "bg-emerald-500 text-black ring-2 ring-emerald-300"
                                                                         : "bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600 hover:text-white border border-emerald-500/30"
                                                                 }`}
-                                                                title={`Buy ${row.strike} CE @ $${row.call.price.toFixed(2)}`}
+                                                                title={`Buy ${row.strike} CE @ ${formatMoney(row.call.price, 2)}`}
                                                             >
                                                                 B
                                                             </button>
@@ -1346,26 +1802,44 @@ export default function BitcoinSimulator() {
                                                                         ? "bg-rose-500 text-white ring-2 ring-rose-300"
                                                                         : "bg-rose-600/20 text-rose-400 hover:bg-rose-600 hover:text-white border border-rose-500/30"
                                                                 }`}
-                                                                title={`Sell ${row.strike} CE @ $${row.call.price.toFixed(2)}`}
+                                                                title={`Sell ${row.strike} CE @ ${formatMoney(row.call.price, 2)}`}
                                                             >
                                                                 S
                                                             </button>
+                                                            {/* % SL Trigger indicator on active BUY leg */}
+                                                            {callLeg && callLeg.action === "BUY" && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleOpenSlModalForLeg(callLeg)}
+                                                                    className="px-1 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] font-bold hover:bg-amber-500/30 cursor-pointer"
+                                                                    title="Configure % Stop Loss"
+                                                                >
+                                                                    %{callLeg.slPct ?? 25}
+                                                                </button>
+                                                            )}
                                                         </div>
                                                     </td>
 
-                                                    {/* STRIKE PRICE (Center Column with ATM Indicator) */}
+                                                    {/* STRIKE PRICE (Center Column with ATM Indicator & Centering) */}
                                                     <td
                                                         className={`py-2 px-3 font-extrabold text-sm text-center ${
                                                             row.isAtm
-                                                                ? "bg-amber-950/40 text-amber-300 border-x border-amber-500/40 shadow-inner"
+                                                                ? "bg-amber-950/60 text-amber-200 border-x-2 border-amber-500 shadow-inner"
                                                                 : "bg-[#0f1424] text-white border-x border-gray-800"
                                                         }`}
                                                     >
                                                         <div className="flex flex-col items-center">
-                                                            <span>{row.strike}</span>
+                                                            <span className="flex items-center gap-1">
+                                                                {row.strike}
+                                                                {row.isAtm && (
+                                                                    <span className="px-1 py-0.2 rounded bg-amber-500 text-black text-[9px] font-black uppercase tracking-wider">
+                                                                        ATM
+                                                                    </span>
+                                                                )}
+                                                            </span>
                                                             {row.isAtm && (
                                                                 <span className="text-[9px] font-medium text-amber-400">
-                                                                    Synthetic FUT ${syntheticFut}
+                                                                    Fut {formatMoney(syntheticFut, 1)}
                                                                 </span>
                                                             )}
                                                         </div>
@@ -1397,7 +1871,7 @@ export default function BitcoinSimulator() {
                                                                         ? "bg-emerald-500 text-black ring-2 ring-emerald-300"
                                                                         : "bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600 hover:text-white border border-emerald-500/30"
                                                                 }`}
-                                                                title={`Buy ${row.strike} PE @ $${row.put.price.toFixed(2)}`}
+                                                                title={`Buy ${row.strike} PE @ ${formatMoney(row.put.price, 2)}`}
                                                             >
                                                                 B
                                                             </button>
@@ -1409,10 +1883,21 @@ export default function BitcoinSimulator() {
                                                                         ? "bg-rose-500 text-white ring-2 ring-rose-300"
                                                                         : "bg-rose-600/20 text-rose-400 hover:bg-rose-600 hover:text-white border border-rose-500/30"
                                                                 }`}
-                                                                title={`Sell ${row.strike} PE @ $${row.put.price.toFixed(2)}`}
+                                                                title={`Sell ${row.strike} PE @ ${formatMoney(row.put.price, 2)}`}
                                                             >
                                                                 S
                                                             </button>
+                                                            {/* % SL Trigger indicator on active BUY leg */}
+                                                            {putLeg && putLeg.action === "BUY" && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleOpenSlModalForLeg(putLeg)}
+                                                                    className="px-1 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] font-bold hover:bg-amber-500/30 cursor-pointer"
+                                                                    title="Configure % Stop Loss"
+                                                                >
+                                                                    %{putLeg.slPct ?? 25}
+                                                                </button>
+                                                            )}
                                                         </div>
                                                     </td>
 
@@ -1428,7 +1913,7 @@ export default function BitcoinSimulator() {
                                                                 : "text-gray-200"
                                                         }`}
                                                     >
-                                                        ${formatCryptoPrice(row.put.price, 2)}
+                                                        {formatMoney(row.put.price, 2)}
                                                     </td>
 
                                                     {/* PUT DELTA */}
@@ -1465,10 +1950,10 @@ export default function BitcoinSimulator() {
                                 {activeSideDrawer === "presets" && <FiZap size={14} className="text-amber-400" />}
                                 <span>
                                     {activeSideDrawer === "payoff"
-                                        ? "Bitcoin Payoff Matrix"
+                                        ? "Crypto Payoff Matrix"
                                         : activeSideDrawer === "greeks"
-                                        ? "Crypto Portfolio Greeks"
-                                        : "1-Click Strategy Presets"}
+                                        ? "Portfolio Greeks"
+                                        : "Strategy Presets"}
                                 </span>
                             </div>
                             <button
@@ -1483,14 +1968,13 @@ export default function BitcoinSimulator() {
                         {/* PAYOFF DRAWER */}
                         {activeSideDrawer === "payoff" && (
                             <div className="space-y-4">
-                                {/* Summary Metrics Card */}
                                 <div className="grid grid-cols-2 gap-2 text-xs">
                                     <div className="rounded-xl bg-[#070b14] border border-gray-800 p-2.5">
                                         <div className="text-[10px] text-gray-400 font-bold uppercase">Max Profit</div>
                                         <div className="text-sm font-black text-emerald-400 font-mono mt-0.5">
                                             {portfolioSummary.maxProfit > 999999
                                                 ? "Unlimited"
-                                                : `$${formatCryptoPrice(portfolioSummary.maxProfit, 2)}`}
+                                                : formatMoney(portfolioSummary.maxProfit, 2)}
                                         </div>
                                     </div>
 
@@ -1499,7 +1983,14 @@ export default function BitcoinSimulator() {
                                         <div className="text-sm font-black text-rose-400 font-mono mt-0.5">
                                             {portfolioSummary.maxLoss < -999999
                                                 ? "Unlimited"
-                                                : `$${formatCryptoPrice(Math.abs(portfolioSummary.maxLoss), 2)}`}
+                                                : formatMoney(Math.abs(portfolioSummary.maxLoss), 2)}
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-xl bg-[#070b14] border border-gray-800 p-2.5">
+                                        <div className="text-[10px] text-gray-400 font-bold uppercase">Est. Margin</div>
+                                        <div className="text-sm font-black text-blue-400 font-mono mt-0.5">
+                                            {formatMoney(portfolioSummary.estMargin, 2)}
                                         </div>
                                     </div>
 
@@ -1509,149 +2000,86 @@ export default function BitcoinSimulator() {
                                             {portfolioSummary.pop}%
                                         </div>
                                     </div>
-
-                                    <div className="rounded-xl bg-[#070b14] border border-gray-800 p-2.5">
-                                        <div className="text-[10px] text-gray-400 font-bold uppercase">Net Debit/Credit</div>
-                                        <div className="text-sm font-black text-blue-400 font-mono mt-0.5">
-                                            ${formatCryptoPrice(Math.abs(portfolioSummary.netDebit), 2)}
-                                        </div>
-                                    </div>
                                 </div>
 
-                                {/* Payoff Graph */}
-                                <div className="rounded-2xl border border-gray-800 bg-[#070b14] p-3">
-                                    <div className="flex items-center justify-between text-[11px] font-bold text-gray-400 mb-2">
-                                        <span>P&amp;L at Expiry Curve</span>
-                                        <span className="text-[10px] text-amber-400">Spot: ${Math.round(currentSpot)}</span>
-                                    </div>
-                                    <div className="h-48 w-full">
-                                        {legs.length === 0 ? (
-                                            <div className="h-full flex items-center justify-center text-xs text-gray-500">
-                                                Click B or S on the chain to view Payoff
-                                            </div>
-                                        ) : (
-                                            <ResponsiveContainer width="100%" height="100%">
-                                                <ComposedChart data={portfolioSummary.curve}>
-                                                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                                                    <XAxis
-                                                        dataKey="price"
-                                                        tickFormatter={(p) => Math.round(p)}
-                                                        stroke="#64748b"
-                                                        fontSize={10}
-                                                    />
-                                                    <YAxis
-                                                        stroke="#64748b"
-                                                        fontSize={10}
-                                                        tickFormatter={(v) => `$${v}`}
-                                                    />
-                                                    <Tooltip
-                                                        contentStyle={{
-                                                            backgroundColor: "#0f172a",
-                                                            border: "1px solid #334155",
-                                                            borderRadius: "8px",
-                                                            fontSize: "11px",
-                                                        }}
-                                                    />
-                                                    <ReferenceLine y={0} stroke="#475569" strokeDasharray="2 2" />
-                                                    <ReferenceLine
-                                                        x={currentSpot}
-                                                        stroke="#f59e0b"
-                                                        strokeDasharray="3 3"
-                                                    />
-                                                    <Line
-                                                        type="monotone"
-                                                        dataKey="pnl"
-                                                        stroke="#10b981"
-                                                        strokeWidth={2}
-                                                        dot={false}
-                                                    />
-                                                    <Line
-                                                        type="monotone"
-                                                        dataKey="targetPnl"
-                                                        stroke="#3b82f6"
-                                                        strokeWidth={1.5}
-                                                        strokeDasharray="3 3"
-                                                        dot={false}
-                                                    />
-                                                </ComposedChart>
-                                            </ResponsiveContainer>
-                                        )}
-                                    </div>
+                                {/* Mini Payoff Curve */}
+                                <div className="h-44 w-full rounded-2xl bg-[#070b14] border border-gray-800 p-2">
+                                    {legs.length === 0 ? (
+                                        <div className="h-full flex items-center justify-center text-[11px] text-gray-500 text-center px-4">
+                                            Add legs from the Option Chain to view the Payoff Chart.
+                                        </div>
+                                    ) : (
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <ComposedChart data={portfolioSummary.curve}>
+                                                <CartesianGrid strokeDasharray="3 3" stroke="#1f293d" />
+                                                <XAxis dataKey="price" hide />
+                                                <YAxis hide />
+                                                <ReferenceLine y={0} stroke="#64748b" strokeDasharray="2 2" />
+                                                <ReferenceLine x={currentSpot} stroke="#f59e0b" strokeDasharray="3 3" />
+                                                <Line
+                                                    type="monotone"
+                                                    dataKey="pnl"
+                                                    stroke="#10b981"
+                                                    strokeWidth={2}
+                                                    dot={false}
+                                                />
+                                                <Line
+                                                    type="monotone"
+                                                    dataKey="targetPnl"
+                                                    stroke="#3b82f6"
+                                                    strokeWidth={1.5}
+                                                    strokeDasharray="3 3"
+                                                    dot={false}
+                                                />
+                                            </ComposedChart>
+                                        </ResponsiveContainer>
+                                    )}
                                 </div>
-
-                                {/* Breakevens */}
-                                {portfolioSummary.breakevens.length > 0 && (
-                                    <div className="rounded-xl bg-[#070b14] border border-gray-800 p-3 text-xs">
-                                        <div className="text-[10px] text-gray-400 font-bold uppercase mb-1">
-                                            Breakeven Levels
-                                        </div>
-                                        <div className="flex flex-wrap gap-2 font-mono font-bold text-amber-300">
-                                            {portfolioSummary.breakevens.map((be, idx) => (
-                                                <span key={idx} className="bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800/60">
-                                                    ${formatCryptoPrice(be, 2)}
-                                                </span>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
                             </div>
                         )}
 
                         {/* GREEKS DRAWER */}
                         {activeSideDrawer === "greeks" && (
-                            <div className="space-y-3">
-                                <div className="rounded-xl bg-[#070b14] border border-gray-800 p-3.5 space-y-2.5 text-xs font-mono">
-                                    <div className="flex items-center justify-between border-b border-gray-800/80 pb-2">
-                                        <span className="text-gray-400 font-sans">Portfolio Delta</span>
-                                        <span className="font-bold text-white">
-                                            {formatDelta(portfolioSummary.netDelta)}
-                                        </span>
-                                    </div>
-                                    <div className="flex items-center justify-between border-b border-gray-800/80 pb-2">
-                                        <span className="text-gray-400 font-sans">Portfolio Theta ($/day)</span>
-                                        <span
-                                            className={`font-bold ${
-                                                portfolioSummary.netTheta >= 0 ? "text-emerald-400" : "text-rose-400"
-                                            }`}
-                                        >
-                                            {portfolioSummary.netTheta >= 0 ? "+" : ""}
-                                            ${formatCryptoPrice(portfolioSummary.netTheta, 2)}
-                                        </span>
-                                    </div>
-                                    <div className="flex items-center justify-between border-b border-gray-800/80 pb-2">
-                                        <span className="text-gray-400 font-sans">Portfolio Gamma</span>
-                                        <span className="font-bold text-white">
-                                            {portfolioSummary.netGamma.toFixed(4)}
-                                        </span>
-                                    </div>
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-gray-400 font-sans">Portfolio Vega ($/1% IV)</span>
-                                        <span className="font-bold text-white">
-                                            ${formatCryptoPrice(portfolioSummary.netVega, 2)}
-                                        </span>
-                                    </div>
+                            <div className="space-y-3 text-xs">
+                                <div className="flex items-center justify-between p-3 rounded-xl bg-[#070b14] border border-gray-800">
+                                    <span className="text-gray-400 font-bold">Delta (Δ)</span>
+                                    <span className="font-mono font-black text-white">{portfolioSummary.netDelta.toFixed(3)}</span>
+                                </div>
+                                <div className="flex items-center justify-between p-3 rounded-xl bg-[#070b14] border border-gray-800">
+                                    <span className="text-gray-400 font-bold">Theta (θ / day)</span>
+                                    <span className="font-mono font-black text-emerald-400">
+                                        {formatMoney(portfolioSummary.netTheta, 2)}
+                                    </span>
+                                </div>
+                                <div className="flex items-center justify-between p-3 rounded-xl bg-[#070b14] border border-gray-800">
+                                    <span className="text-gray-400 font-bold">Gamma (Γ)</span>
+                                    <span className="font-mono font-black text-white">{portfolioSummary.netGamma.toFixed(4)}</span>
+                                </div>
+                                <div className="flex items-center justify-between p-3 rounded-xl bg-[#070b14] border border-gray-800">
+                                    <span className="text-gray-400 font-bold">Vega (ν / 1%)</span>
+                                    <span className="font-mono font-black text-blue-400">
+                                        {formatMoney(portfolioSummary.netVega, 2)}
+                                    </span>
                                 </div>
                             </div>
                         )}
 
-                        {/* PRESETS DRAWER */}
+                        {/* STRATEGY PRESETS */}
                         {activeSideDrawer === "presets" && (
                             <div className="space-y-2 text-xs">
-                                <p className="text-gray-400 text-[11px] mb-2">
-                                    1-Click deploy standard institutional options strategies on {selectedAsset.symbol}:
-                                </p>
                                 {[
                                     {
-                                        name: "Straddle (ATM Call + ATM Put)",
-                                        desc: "Long Volatility Breakout",
+                                        name: "Long Straddle (Buy ATM)",
+                                        desc: "Direction neutral volatility breakout",
                                         action: () => {
+                                            if (!checkAccessOrPrompt()) return;
                                             const step = selectedAsset.strikeStep;
                                             const atm = Math.round(currentSpot / step) * step;
-                                            const row = optionChainRows.find((r) => r.strike === atm);
-                                            if (!row || !currentExpiry) return;
+                                            const r = optionChainRows.find((x) => x.strike === atm);
+                                            if (!r || !currentExpiry) return;
                                             setLegs([
                                                 {
-                                                    id: `leg-ce-${Date.now()}`,
+                                                    id: `leg-c-${Date.now()}`,
                                                     symbol: selectedAsset.symbol,
                                                     expiry: currentExpiry.iso,
                                                     expiryLabel: currentExpiry.label,
@@ -1659,12 +2087,14 @@ export default function BitcoinSimulator() {
                                                     right: "CE",
                                                     action: "BUY",
                                                     lots: 1,
-                                                    entryPrice: row.call.price,
-                                                    currentPrice: row.call.price,
+                                                    entryPrice: r.call.price,
+                                                    currentPrice: r.call.price,
                                                     iv: 42,
+                                                    slPct: 25,
+                                                    tpPct: 50,
                                                 },
                                                 {
-                                                    id: `leg-pe-${Date.now() + 1}`,
+                                                    id: `leg-p-${Date.now() + 1}`,
                                                     symbol: selectedAsset.symbol,
                                                     expiry: currentExpiry.iso,
                                                     expiryLabel: currentExpiry.label,
@@ -1672,64 +2102,69 @@ export default function BitcoinSimulator() {
                                                     right: "PE",
                                                     action: "BUY",
                                                     lots: 1,
-                                                    entryPrice: row.put.price,
-                                                    currentPrice: row.put.price,
+                                                    entryPrice: r.put.price,
+                                                    currentPrice: r.put.price,
                                                     iv: 42,
+                                                    slPct: 25,
+                                                    tpPct: 50,
                                                 },
                                             ]);
                                         },
                                     },
                                     {
-                                        name: "Short Strangle (OTM CE + OTM PE)",
-                                        desc: "Theta Decay Harvest",
+                                        name: "Short Straddle (Sell ATM)",
+                                        desc: "Pure theta decay range capture",
                                         action: () => {
+                                            if (!checkAccessOrPrompt()) return;
                                             const step = selectedAsset.strikeStep;
                                             const atm = Math.round(currentSpot / step) * step;
-                                            const callStrike = atm + step * 2;
-                                            const putStrike = atm - step * 2;
-                                            const rCall = optionChainRows.find((r) => r.strike === callStrike);
-                                            const rPut = optionChainRows.find((r) => r.strike === putStrike);
-                                            if (!rCall || !rPut || !currentExpiry) return;
+                                            const r = optionChainRows.find((x) => x.strike === atm);
+                                            if (!r || !currentExpiry) return;
                                             setLegs([
                                                 {
-                                                    id: `leg-ce-${Date.now()}`,
+                                                    id: `leg-c-${Date.now()}`,
                                                     symbol: selectedAsset.symbol,
                                                     expiry: currentExpiry.iso,
                                                     expiryLabel: currentExpiry.label,
-                                                    strike: callStrike,
+                                                    strike: atm,
                                                     right: "CE",
                                                     action: "SELL",
                                                     lots: 1,
-                                                    entryPrice: rCall.call.price,
-                                                    currentPrice: rCall.call.price,
+                                                    entryPrice: r.call.price,
+                                                    currentPrice: r.call.price,
                                                     iv: 42,
+                                                    slPct: null,
+                                                    tpPct: null,
                                                 },
                                                 {
-                                                    id: `leg-pe-${Date.now() + 1}`,
+                                                    id: `leg-p-${Date.now() + 1}`,
                                                     symbol: selectedAsset.symbol,
                                                     expiry: currentExpiry.iso,
                                                     expiryLabel: currentExpiry.label,
-                                                    strike: putStrike,
+                                                    strike: atm,
                                                     right: "PE",
                                                     action: "SELL",
                                                     lots: 1,
-                                                    entryPrice: rPut.put.price,
-                                                    currentPrice: rPut.put.price,
+                                                    entryPrice: r.put.price,
+                                                    currentPrice: r.put.price,
                                                     iv: 42,
+                                                    slPct: null,
+                                                    tpPct: null,
                                                 },
                                             ]);
                                         },
                                     },
                                     {
                                         name: "Bull Call Spread",
-                                        desc: "Directional Uptrend with Capped Risk",
+                                        desc: "Defined risk bullish trajectory",
                                         action: () => {
+                                            if (!checkAccessOrPrompt()) return;
                                             const step = selectedAsset.strikeStep;
                                             const atm = Math.round(currentSpot / step) * step;
                                             const buyStrike = atm;
                                             const sellStrike = atm + step * 2;
-                                            const rBuy = optionChainRows.find((r) => r.strike === buyStrike);
-                                            const rSell = optionChainRows.find((r) => r.strike === sellStrike);
+                                            const rBuy = optionChainRows.find((x) => x.strike === buyStrike);
+                                            const rSell = optionChainRows.find((x) => x.strike === sellStrike);
                                             if (!rBuy || !rSell || !currentExpiry) return;
                                             setLegs([
                                                 {
@@ -1744,6 +2179,8 @@ export default function BitcoinSimulator() {
                                                     entryPrice: rBuy.call.price,
                                                     currentPrice: rBuy.call.price,
                                                     iv: 42,
+                                                    slPct: 25,
+                                                    tpPct: 50,
                                                 },
                                                 {
                                                     id: `leg-s-${Date.now() + 1}`,
@@ -1757,26 +2194,9 @@ export default function BitcoinSimulator() {
                                                     entryPrice: rSell.call.price,
                                                     currentPrice: rSell.call.price,
                                                     iv: 42,
+                                                    slPct: null,
+                                                    tpPct: null,
                                                 },
-                                            ]);
-                                        },
-                                    },
-                                    {
-                                        name: "Iron Condor",
-                                        desc: "Range-Bound High POP Strategy",
-                                        action: () => {
-                                            const step = selectedAsset.strikeStep;
-                                            const atm = Math.round(currentSpot / step) * step;
-                                            const r1 = optionChainRows.find((r) => r.strike === atm - step * 3);
-                                            const r2 = optionChainRows.find((r) => r.strike === atm - step);
-                                            const r3 = optionChainRows.find((r) => r.strike === atm + step);
-                                            const r4 = optionChainRows.find((r) => r.strike === atm + step * 3);
-                                            if (!r1 || !r2 || !r3 || !r4 || !currentExpiry) return;
-                                            setLegs([
-                                                { id: `leg-1-${Date.now()}`, symbol: selectedAsset.symbol, expiry: currentExpiry.iso, expiryLabel: currentExpiry.label, strike: atm - step * 3, right: "PE", action: "BUY", lots: 1, entryPrice: r1.put.price, currentPrice: r1.put.price, iv: 42 },
-                                                { id: `leg-2-${Date.now() + 1}`, symbol: selectedAsset.symbol, expiry: currentExpiry.iso, expiryLabel: currentExpiry.label, strike: atm - step, right: "PE", action: "SELL", lots: 1, entryPrice: r2.put.price, currentPrice: r2.put.price, iv: 42 },
-                                                { id: `leg-3-${Date.now() + 2}`, symbol: selectedAsset.symbol, expiry: currentExpiry.iso, expiryLabel: currentExpiry.label, strike: atm + step, right: "CE", action: "SELL", lots: 1, entryPrice: r3.call.price, currentPrice: r3.call.price, iv: 42 },
-                                                { id: `leg-4-${Date.now() + 3}`, symbol: selectedAsset.symbol, expiry: currentExpiry.iso, expiryLabel: currentExpiry.label, strike: atm + step * 3, right: "CE", action: "BUY", lots: 1, entryPrice: r4.call.price, currentPrice: r4.call.price, iv: 42 },
                                             ]);
                                         },
                                     },
@@ -1797,45 +2217,314 @@ export default function BitcoinSimulator() {
                 )}
             </div>
 
-            {/* Import / Export Modal */}
-            {showImportExportModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-                    <div className="w-full max-w-md rounded-2xl border border-amber-500/30 bg-[#0f172a] p-5 shadow-2xl space-y-4">
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                                <FiShare2 size={16} className="text-amber-400" />
-                                <span>Export / Import Bitcoin Strategy</span>
-                            </h3>
-                            <button
-                                type="button"
-                                onClick={() => setShowImportExportModal(false)}
-                                className="text-gray-400 hover:text-white cursor-pointer"
-                            >
-                                <FiX size={16} />
-                            </button>
-                        </div>
-                        <p className="text-xs text-gray-400">
-                            Share your {selectedAsset.symbol} options backtest position with other traders or save it to your local disk.
-                        </p>
-                        <div className="space-y-2">
+            {/* ------------------------------------------------------------- */}
+            {/* 7. STOP LOSS & TARGET DIALOG BOX MODAL (BUY LEGS ONLY)        */}
+            {/* ------------------------------------------------------------- */}
+            {isSlModalOpen && activeBuyLegForSl && (
+                <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+                    <div className="w-full max-w-lg bg-[#11141f] border border-[#2b344a] rounded-2xl p-6 shadow-2xl space-y-4 text-gray-200 animate-in fade-in zoom-in-95 duration-150">
+                        {/* Modal Header */}
+                        <div className="flex items-center justify-between pb-3 border-b border-[#23293d]">
+                            <div className="flex items-center gap-2.5">
+                                <div className="p-2 rounded-xl bg-gradient-to-tr from-rose-600 to-amber-500 text-white shadow-md shadow-rose-900/30">
+                                    <FiShield size={18} />
+                                </div>
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <h3 className="font-extrabold text-base text-white">
+                                            Configure % Stop Loss &amp; Target
+                                        </h3>
+                                        <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono text-[10px] font-bold">
+                                            BUY (Long Leg)
+                                        </span>
+                                    </div>
+                                    <div className="text-xs text-gray-400 font-mono flex items-center gap-2 mt-0.5">
+                                        <span className="text-amber-300 font-bold">
+                                            {activeBuyLegForSl.symbol} {activeBuyLegForSl.strike} {activeBuyLegForSl.right}
+                                        </span>
+                                        <span>•</span>
+                                        <span>
+                                            Entry Premium:{" "}
+                                            <strong className="text-white">
+                                                {formatMoney(activeBuyLegForSl.entryPrice || 100, 2)}
+                                            </strong>
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
                             <button
                                 type="button"
                                 onClick={() => {
-                                    const json = JSON.stringify(legs, null, 2);
-                                    navigator.clipboard.writeText(json);
-                                    alert("Strategy JSON copied to clipboard!");
-                                    setShowImportExportModal(false);
+                                    setIsSlModalOpen(false);
+                                    setActiveBuyLegForSl(null);
                                 }}
-                                className="w-full flex items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-bold text-black hover:bg-amber-400 transition cursor-pointer"
+                                className="p-1 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition cursor-pointer"
                             >
-                                <FiDownload size={14} /> Copy Strategy JSON
+                                <FiX size={20} />
                             </button>
+                        </div>
+
+                        {/* Modal Body */}
+                        <div className="space-y-4 text-xs">
+                            {/* STOP LOSS PERCENTAGE SECTION */}
+                            <div className="p-3.5 rounded-xl bg-[#0c0f17] border border-rose-500/30 space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <label className="flex items-center gap-2 cursor-pointer font-bold text-sm text-rose-300">
+                                        <input
+                                            type="checkbox"
+                                            checked={legSlEnabled}
+                                            onChange={(e) => setLegSlEnabled(e.target.checked)}
+                                            className="w-4 h-4 rounded bg-[#171c2b] border-rose-500/50 text-rose-600 focus:ring-0 cursor-pointer"
+                                        />
+                                        <span>Stop Loss % (Debit Protection)</span>
+                                    </label>
+                                    {legSlEnabled && (
+                                        <span className="text-rose-400 font-mono font-bold text-xs">
+                                            -{legSlPctInput}% Loss
+                                        </span>
+                                    )}
+                                </div>
+
+                                {legSlEnabled && (
+                                    <div className="space-y-2.5 pt-1">
+                                        <div className="flex items-center gap-3">
+                                            <div className="relative flex-1">
+                                                <span className="absolute left-3 top-2 text-gray-500 font-mono text-xs font-bold">-</span>
+                                                <input
+                                                    type="number"
+                                                    min="1"
+                                                    max="99"
+                                                    value={legSlPctInput}
+                                                    onChange={(e) => setLegSlPctInput(Math.min(99, Math.max(1, Number(e.target.value))))}
+                                                    className="w-full bg-[#141926] border border-[#262e42] rounded-lg pl-6 pr-8 py-1.5 text-sm text-white font-mono font-bold focus:border-rose-500 focus:outline-none"
+                                                />
+                                                <span className="absolute right-3 top-2 text-gray-400 font-bold">%</span>
+                                            </div>
+
+                                            <div className="text-right font-mono bg-[#141926] px-3 py-1.5 rounded-lg border border-[#262e42] text-[11px]">
+                                                <span className="text-gray-400 block text-[10px]">Trigger Price</span>
+                                                <strong className="text-rose-400 font-bold">
+                                                    {formatMoney(
+                                                        (activeBuyLegForSl.entryPrice || 100) * (1 - legSlPctInput / 100),
+                                                        2
+                                                    )}
+                                                </strong>
+                                            </div>
+                                        </div>
+
+                                        {/* Quick Presets */}
+                                        <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                                            <span className="text-gray-400">Quick SL Presets:</span>
+                                            {[10, 20, 25, 35, 50, 75].map((pct) => (
+                                                <button
+                                                    key={pct}
+                                                    type="button"
+                                                    onClick={() => setLegSlPctInput(pct)}
+                                                    className={`px-2 py-0.5 rounded-md border font-mono font-bold transition-all cursor-pointer ${
+                                                        legSlPctInput === pct
+                                                            ? "bg-rose-600 text-white border-rose-500 shadow-sm"
+                                                            : "bg-[#181d2c] text-gray-300 border-[#2b344a] hover:bg-[#22293d]"
+                                                    }`}
+                                                >
+                                                    -{pct}%
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* TAKE PROFIT PERCENTAGE SECTION */}
+                            <div className="p-3.5 rounded-xl bg-[#0c0f17] border border-emerald-500/30 space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <label className="flex items-center gap-2 cursor-pointer font-bold text-sm text-emerald-300">
+                                        <input
+                                            type="checkbox"
+                                            checked={legTpEnabled}
+                                            onChange={(e) => setLegTpEnabled(e.target.checked)}
+                                            className="w-4 h-4 rounded bg-[#171c2b] border-emerald-500/50 text-emerald-600 focus:ring-0 cursor-pointer"
+                                        />
+                                        <span>Take Profit % (Target)</span>
+                                    </label>
+                                    {legTpEnabled && (
+                                        <span className="text-emerald-400 font-mono font-bold text-xs">
+                                            +{legTpPctInput}% Gain
+                                        </span>
+                                    )}
+                                </div>
+
+                                {legTpEnabled && (
+                                    <div className="space-y-2.5 pt-1">
+                                        <div className="flex items-center gap-3">
+                                            <div className="relative flex-1">
+                                                <span className="absolute left-3 top-2 text-gray-500 font-mono text-xs font-bold">+</span>
+                                                <input
+                                                    type="number"
+                                                    min="1"
+                                                    max="1000"
+                                                    value={legTpPctInput}
+                                                    onChange={(e) => setLegTpPctInput(Math.max(1, Number(e.target.value)))}
+                                                    className="w-full bg-[#141926] border border-[#262e42] rounded-lg pl-6 pr-8 py-1.5 text-sm text-white font-mono font-bold focus:border-emerald-500 focus:outline-none"
+                                                />
+                                                <span className="absolute right-3 top-2 text-gray-400 font-bold">%</span>
+                                            </div>
+
+                                            <div className="text-right font-mono bg-[#141926] px-3 py-1.5 rounded-lg border border-[#262e42] text-[11px]">
+                                                <span className="text-gray-400 block text-[10px]">Target Price</span>
+                                                <strong className="text-emerald-400 font-bold">
+                                                    {formatMoney(
+                                                        (activeBuyLegForSl.entryPrice || 100) * (1 + legTpPctInput / 100),
+                                                        2
+                                                    )}
+                                                </strong>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                                            <span className="text-gray-400">Quick Target Presets:</span>
+                                            {[25, 50, 75, 100, 150, 200].map((pct) => (
+                                                <button
+                                                    key={pct}
+                                                    type="button"
+                                                    onClick={() => setLegTpPctInput(pct)}
+                                                    className={`px-2 py-0.5 rounded-md border font-mono font-bold transition-all cursor-pointer ${
+                                                        legTpPctInput === pct
+                                                            ? "bg-emerald-600 text-white border-emerald-500 shadow-sm"
+                                                            : "bg-[#181d2c] text-gray-300 border-[#2b344a] hover:bg-[#22293d]"
+                                                    }`}
+                                                >
+                                                    +{pct}%
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Modal Footer */}
+                        <div className="flex items-center justify-between pt-3 border-t border-[#23293d]">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setLegs((prev) =>
+                                        prev.map((l) =>
+                                            l.id === activeBuyLegForSl.id ? { ...l, slPct: null, tpPct: null } : l
+                                        )
+                                    );
+                                    setIsSlModalOpen(false);
+                                    setActiveBuyLegForSl(null);
+                                }}
+                                className="px-3 py-2 rounded-xl bg-[#181d2c] hover:bg-[#22293d] text-rose-400 text-xs font-bold transition cursor-pointer"
+                            >
+                                Remove % SL/TP
+                            </button>
+
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setIsSlModalOpen(false);
+                                        setActiveBuyLegForSl(null);
+                                    }}
+                                    className="px-4 py-2 rounded-xl bg-[#181d2c] hover:bg-[#22293d] text-gray-300 text-xs font-bold transition cursor-pointer"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleSaveLegSl}
+                                    className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white text-xs font-extrabold shadow-lg shadow-emerald-900/40 transition cursor-pointer"
+                                >
+                                    Save % Triggers
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* Settings Modal */}
+            {/* ------------------------------------------------------------- */}
+            {/* 8. PRO MEMBERSHIP GATE MODAL                                 */}
+            {/* "bina membership ke historical testing na kar paye"         */}
+            {/* ------------------------------------------------------------- */}
+            {showProModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+                    <div className="w-full max-w-lg rounded-3xl border border-amber-500/40 bg-[#0d121f] p-6 shadow-2xl text-gray-200 space-y-5">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2.5">
+                                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 text-lg font-black">
+                                    ★
+                                </div>
+                                <div>
+                                    <h3 className="text-base font-black text-white">
+                                        PRO Membership Required
+                                    </h3>
+                                    <p className="text-xs text-amber-300/80 font-medium">
+                                        Unlock 2024–2026 Historical Crypto Backtesting
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowProModal(false)}
+                                className="text-gray-400 hover:text-white p-1 cursor-pointer"
+                            >
+                                <FiX size={18} />
+                            </button>
+                        </div>
+
+                        <div className="rounded-2xl bg-[#080c16] border border-gray-800 p-4 space-y-3 text-xs">
+                            <div className="flex items-start gap-2.5">
+                                <FiCheckCircle className="text-emerald-400 mt-0.5 shrink-0" size={15} />
+                                <div>
+                                    <strong className="text-white">Strictly BTC, ETH &amp; SOL Historical Data:</strong> Full 2024 to 2026 tick-by-tick option prices and implied volatility replay.
+                                </div>
+                            </div>
+                            <div className="flex items-start gap-2.5">
+                                <FiCheckCircle className="text-emerald-400 mt-0.5 shrink-0" size={15} />
+                                <div>
+                                    <strong className="text-white">24/7 Scrubbing &amp; Autoplay:</strong> Fast time jumps (-1d, -1h, +15m, +1h, EOD) with up to 10x playback speed.
+                                </div>
+                            </div>
+                            <div className="flex items-start gap-2.5">
+                                <FiCheckCircle className="text-emerald-400 mt-0.5 shrink-0" size={15} />
+                                <div>
+                                    <strong className="text-white">% Stop Loss &amp; Take Profit:</strong> Strict debit protection triggers on BUY legs with live USD/INR currency conversion.
+                                </div>
+                            </div>
+                            <div className="flex items-start gap-2.5">
+                                <FiCheckCircle className="text-emerald-400 mt-0.5 shrink-0" size={15} />
+                                <div>
+                                    <strong className="text-white">Full Multi-Leg Payoff Matrix:</strong> Target date forward simulation, IV shock curves, and real Greeks portfolio summary.
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-2">
+                            <button
+                                type="button"
+                                onClick={() => setShowProModal(false)}
+                                className="px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-bold transition cursor-pointer"
+                            >
+                                Maybe Later
+                            </button>
+
+                            <Link
+                                to="/pricing"
+                                className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white text-xs font-black shadow-lg shadow-emerald-950/60 transition"
+                            >
+                                <FiZap size={14} />
+                                <span>Upgrade to PRO Now</span>
+                            </Link>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ------------------------------------------------------------- */}
+            {/* 9. SETTINGS & EXPORT MODALS                                  */}
+            {/* ------------------------------------------------------------- */}
             {showSettingsModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
                     <div className="w-full max-w-md rounded-2xl border border-amber-500/30 bg-[#0f172a] p-5 shadow-2xl space-y-4">
@@ -1872,7 +2561,7 @@ export default function BitcoinSimulator() {
 
                             <div>
                                 <label className="block text-gray-400 font-bold mb-1">
-                                    Primary Crypto Underlying
+                                    Primary Crypto Underlying (Strictly 3 Assets)
                                 </label>
                                 <select
                                     value={selectedAsset.symbol}
@@ -1901,6 +2590,43 @@ export default function BitcoinSimulator() {
                                 className="rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-black hover:bg-amber-400 cursor-pointer"
                             >
                                 Done
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showImportExportModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+                    <div className="w-full max-w-md rounded-2xl border border-amber-500/30 bg-[#0f172a] p-5 shadow-2xl space-y-4">
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                                <FiShare2 size={16} className="text-amber-400" />
+                                <span>Export / Import Crypto Strategy</span>
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => setShowImportExportModal(false)}
+                                className="text-gray-400 hover:text-white cursor-pointer"
+                            >
+                                <FiX size={16} />
+                            </button>
+                        </div>
+                        <p className="text-xs text-gray-400">
+                            Share your {selectedAsset.symbol} options backtest position with other traders or save it to your local clipboard.
+                        </p>
+                        <div className="space-y-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const json = JSON.stringify(legs, null, 2);
+                                    navigator.clipboard.writeText(json);
+                                    alert("Strategy JSON copied to clipboard!");
+                                    setShowImportExportModal(false);
+                                }}
+                                className="w-full flex items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-bold text-black hover:bg-amber-400 transition cursor-pointer"
+                            >
+                                <FiDownload size={14} /> Copy Strategy JSON
                             </button>
                         </div>
                     </div>

@@ -1671,12 +1671,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
   return (
     <div
-      className={hideChrome ? "w-full" : "bg-gray-50/60 dark:bg-gray-950 w-full min-h-screen text-gray-900 dark:text-gray-100 transition-colors duration-200"}
+      className={hideChrome ? "w-full" : "bg-gray-50/60 dark:bg-[#070a11] w-full min-h-screen text-gray-900 dark:text-gray-100 transition-colors duration-200"}
       style={{ fontFamily: "'Poppins', sans-serif" }}
     >
       <div className={hideChrome ? "w-full" : "w-full px-2 sm:px-5 pt-3"}>
         <div className="w-full shrink-0 flex flex-col relative z-40">
-          <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 p-3 shadow-xs backdrop-blur-md">
+          <div className="rounded-2xl border border-gray-200 dark:border-white/10 bg-white/95 dark:bg-[#0b1420]/95 p-3 shadow-xs backdrop-blur-md">
             <div className="flex flex-wrap items-center justify-between gap-3">
               {hideChrome ? (
                 <div className="px-1 text-xs font-semibold text-gray-500 dark:text-gray-400">
@@ -1687,14 +1687,14 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 <button
                   onClick={() => cycleSymbol(-1)}
                   disabled={favorites.length < 2}
-                  className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-30 transition"
+                  className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-30 transition"
                   aria-label="Previous favorite symbol"
                 >
                   ‹
                 </button>
                 <button
                   onClick={() => setPickerOpen((v) => !v)}
-                  className="flex items-center gap-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-800/80 px-3.5 py-1.5 text-xs font-bold text-gray-900 dark:text-white shadow-xs hover:border-emerald-500 hover:bg-emerald-50/50 dark:hover:bg-emerald-950/30 transition"
+                  className="flex items-center gap-2.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/80 dark:bg-[#070e17] px-3.5 py-1.5 text-xs font-bold text-gray-900 dark:text-white shadow-xs hover:border-emerald-500 hover:bg-emerald-50/50 dark:hover:bg-emerald-950/30 transition"
                 >
                   <SymbolLogo symbol={symbol} size="xs" />
                   <span className="tracking-wide">{symbol}</span>
@@ -1703,7 +1703,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 <button
                   onClick={() => cycleSymbol(1)}
                   disabled={favorites.length < 2}
-                  className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-30 transition"
+                  className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-30 transition"
                   aria-label="Next favorite symbol"
                 >
                   ›
@@ -1712,14 +1712,14 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 {pickerOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
-                    <div className="absolute left-0 top-full z-50 mt-1.5 w-64 max-h-96 overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl text-xs">
-                      <div className="sticky top-0 border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 p-2.5">
+                    <div className="absolute left-0 top-full z-50 mt-1.5 w-64 max-h-96 overflow-y-auto rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-2xl text-xs">
+                      <div className="sticky top-0 border-b border-gray-100 dark:border-white/10 bg-white dark:bg-[#0b1420] p-2.5">
                         <input
                           autoFocus
                           value={pickerQuery}
                           onChange={(e) => setPickerQuery(e.target.value)}
                           placeholder="Search symbol…"
-                          className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-1.5 text-xs text-gray-900 dark:text-white outline-none focus:border-emerald-500"
+                          className="w-full rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-[#070e17] px-3 py-1.5 text-xs text-gray-900 dark:text-white outline-none focus:border-emerald-500"
                         />
                       </div>
                       {filteredIndices.length > 0 && (
@@ -1754,7 +1754,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed ${
                     playing
                       ? "bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md shadow-emerald-600/20 scale-[1.02]"
-                      : "border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+                      : "border border-gray-200 dark:border-white/10 bg-gray-100 dark:bg-[#070e17] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5"
                   }`}
                 >
                   {playing ? "❚❚ Pause" : "▶ Autoplay"}
@@ -1764,7 +1764,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   <button
                     onClick={() => setSpeedOpen((v) => !v)}
                     disabled={!replayData}
-                    className="rounded-xl border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-semibold bg-gray-50/80 dark:bg-gray-800/80 text-gray-700 dark:text-gray-300 outline-none disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700 transition"
+                    className="rounded-xl border border-gray-200 dark:border-white/10 px-3 py-1.5 text-xs font-semibold bg-gray-50/80 dark:bg-[#070e17] text-gray-700 dark:text-gray-300 outline-none disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-white/5 transition"
                   >
                     {MOVE_OPTIONS.find((o) => o.key === moveKey)?.label} / {EVERY_OPTIONS.find((o) => o.key === everyKey)?.label}
                   </button>
@@ -1772,7 +1772,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   {speedOpen && (
                     <>
                       <div className="fixed inset-0 z-40" onClick={() => setSpeedOpen(false)} />
-                      <div className="absolute right-0 z-50 mt-1.5 w-56 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-3.5 shadow-2xl text-xs">
+                      <div className="absolute right-0 z-50 mt-1.5 w-56 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-3.5 shadow-2xl text-xs">
                         <div className="mb-3">
                           <div className="mb-1.5 font-bold text-gray-700 dark:text-gray-300">Move Step</div>
                           <div className="flex flex-col gap-1.5">
@@ -1811,14 +1811,14 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
               <button
                 onClick={() => jumpDate(-1)}
                 disabled={!dates.length}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100/80 dark:bg-gray-800/80 px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 -1d
               </button>
               <button
                 onClick={jumpToStart}
                 disabled={!chainData}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100/80 dark:bg-gray-800/80 px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 SOD
               </button>
@@ -1826,7 +1826,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(-3600)}
                 disabled={!chainData || !canStepEarlier}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing earlier to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100/80 dark:bg-gray-800/80 px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 -1h
               </button>
@@ -1834,7 +1834,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(-900)}
                 disabled={!chainData || !canStepEarlier}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing earlier to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100/80 dark:bg-gray-800/80 px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 -15m
               </button>
@@ -1842,7 +1842,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(-300)}
                 disabled={!chainData || !canStepEarlier}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing earlier to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100/80 dark:bg-gray-800/80 px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 -5m
               </button>
@@ -1850,7 +1850,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(-60)}
                 disabled={!chainData || !canStepEarlier}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing earlier to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100/80 dark:bg-gray-800/80 px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 -1m
               </button>
@@ -1859,7 +1859,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 <button
                   onClick={() => (calendarOpen ? setCalendarOpen(false) : openCalendar())}
                   disabled={!dates.length}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/90 dark:bg-gray-800/90 px-3 py-1.5 font-bold text-gray-800 dark:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 transition shadow-xs"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/90 dark:bg-[#070e17] px-3 py-1.5 font-bold text-gray-800 dark:text-gray-100 hover:bg-gray-100 dark:hover:bg-white/5 disabled:opacity-40 transition shadow-xs"
                 >
                   <SlCalender className="text-emerald-600 dark:text-emerald-400" />
                   <span>{formatDateTimeLabel(selectedDate, currentTime)}</span>
@@ -1876,18 +1876,18 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 {calendarOpen && calendarYm && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setCalendarOpen(false)} />
-                    <div className="absolute left-0 z-50 mt-1.5 flex w-[calc(100vw-2rem)] max-w-[440px] flex-col overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl sm:w-[440px] sm:flex-row">
+                    <div className="absolute left-0 z-50 mt-1.5 flex w-[calc(100vw-2rem)] max-w-[440px] flex-col overflow-hidden rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-2xl sm:w-[440px] sm:flex-row">
                       {/* Month calendar */}
-                      <div className="flex-1 border-b border-gray-100 dark:border-gray-800 p-3.5 sm:border-b-0 sm:border-r">
+                      <div className="flex-1 border-b border-gray-100 dark:border-white/10 p-3.5 sm:border-b-0 sm:border-r">
                         <div className="mb-2.5 flex items-center justify-between">
                           <div className="flex items-center gap-1">
-                            <button onClick={() => shiftCalendarYear(-1)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-200" aria-label="Previous year"><FiChevronsLeft size={14} /></button>
-                            <button onClick={() => shiftCalendarMonth(-1)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-200" aria-label="Previous month"><FiChevronLeft size={14} /></button>
+                            <button onClick={() => shiftCalendarYear(-1)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-700 dark:hover:text-gray-200" aria-label="Previous year"><FiChevronsLeft size={14} /></button>
+                            <button onClick={() => shiftCalendarMonth(-1)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-700 dark:hover:text-gray-200" aria-label="Previous month"><FiChevronLeft size={14} /></button>
                           </div>
                           <div className="text-sm font-bold text-gray-800 dark:text-gray-100">{MONTHS_SHORT[calendarYm.m - 1]} {calendarYm.y}</div>
                           <div className="flex items-center gap-1">
-                            <button onClick={() => shiftCalendarMonth(1)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-200" aria-label="Next month"><FiChevronRight size={14} /></button>
-                            <button onClick={() => shiftCalendarYear(1)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-200" aria-label="Next year"><FiChevronsRight size={14} /></button>
+                            <button onClick={() => shiftCalendarMonth(1)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-700 dark:hover:text-gray-200" aria-label="Next month"><FiChevronRight size={14} /></button>
+                            <button onClick={() => shiftCalendarYear(1)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-700 dark:hover:text-gray-200" aria-label="Next year"><FiChevronsRight size={14} /></button>
                           </div>
                         </div>
                         <div className="mb-1.5 grid grid-cols-7 gap-1 text-center text-[10px] font-semibold text-gray-400 dark:text-gray-400">
@@ -1922,7 +1922,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                         : available
                                           ? missingOhlcv
                                             ? "bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 hover:bg-amber-200"
-                                            : "text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+                                            : "text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5"
                                           : optionOnly
                                             ? "bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-400 cursor-not-allowed"
                                             : ohlcvOnly
@@ -1952,7 +1952,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
                       {/* Hour / minute picker */}
                       <div className="flex w-full shrink-0 flex-col sm:w-[130px]">
-                        <div className="flex h-56 divide-x divide-gray-100 dark:divide-gray-800 overflow-hidden sm:h-72">
+                        <div className="flex h-56 divide-x divide-gray-100 dark:divide-white/10 overflow-hidden sm:h-72">
                           <div ref={hourListRef} className="flex-1 overflow-y-auto py-1 text-center">
                             {pendingHours.map((h) => (
                               <button
@@ -1960,7 +1960,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 ref={(el) => { if (h === pendingHour) activeHourBtnRef.current = el; }}
                                 onClick={() => pickHour(h)}
                                 className={`w-full py-1.5 text-[12px] font-bold ${
-                                  h === pendingHour ? "bg-emerald-600 text-white" : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+                                  h === pendingHour ? "bg-emerald-600 text-white" : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
                                 }`}
                               >
                                 {h}
@@ -1974,7 +1974,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 ref={(el) => { if (min === pendingMinute) activeMinuteBtnRef.current = el; }}
                                 onClick={() => pickMinute(min)}
                                 className={`w-full py-1.5 text-[12px] font-bold ${
-                                  min === pendingMinute ? "bg-emerald-600 text-white" : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+                                  min === pendingMinute ? "bg-emerald-600 text-white" : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
                                 }`}
                               >
                                 {min}
@@ -1982,7 +1982,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             ))}
                           </div>
                         </div>
-                        <div className="border-t border-gray-100 dark:border-gray-800 p-2.5">
+                        <div className="border-t border-gray-100 dark:border-white/10 p-2.5">
                           <button
                             onClick={confirmCalendarSelection}
                             disabled={!pendingDate}
@@ -2001,7 +2001,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(60)}
                 disabled={!chainData || !canStepLater}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing later to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100/80 dark:bg-gray-800/80 px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 +1m
               </button>
@@ -2009,7 +2009,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(300)}
                 disabled={!chainData || !canStepLater}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing later to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100/80 dark:bg-gray-800/80 px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 +5m
               </button>
@@ -2017,7 +2017,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(900)}
                 disabled={!chainData || !canStepLater}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing later to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100/80 dark:bg-gray-800/80 px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 +15m
               </button>
@@ -2025,21 +2025,21 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(3600)}
                 disabled={!chainData || !canStepLater}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing later to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100/80 dark:bg-gray-800/80 px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 +1h
               </button>
               <button
                 onClick={jumpToEnd}
                 disabled={!chainData}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100/80 dark:bg-gray-800/80 px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 EOD
               </button>
               <button
                 onClick={() => jumpDate(1)}
                 disabled={!dates.length}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100/80 dark:bg-gray-800/80 px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 +1d
               </button>
@@ -2064,7 +2064,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
         {!hideChain && (
         <div className="w-full shrink-0 flex flex-col lg:w-[600px]">
           {chainData && (
-            <div className="mb-3 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 p-3 shadow-xs backdrop-blur-md">
+            <div className="mb-3 rounded-2xl border border-gray-200 dark:border-white/10 bg-white/95 dark:bg-[#0b1420]/95 p-3 shadow-xs backdrop-blur-md">
               {/* Row 1: StockMojo Market Indicators */}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5 flex-wrap">
@@ -2137,7 +2137,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setHideChain(true)}
-                    className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-800/80 px-2.5 py-1 text-[11px] font-semibold text-gray-700 dark:text-gray-300 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+                    className="rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50/80 dark:bg-[#070e17] px-2.5 py-1 text-[11px] font-semibold text-gray-700 dark:text-gray-300 transition-colors hover:bg-gray-100 dark:hover:bg-white/5"
                     title="Hide Chain — give the right panel full width"
                   >
                     Hide Chain ⇥
@@ -2145,7 +2145,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 </div>
               </div>
 
-              <hr className="my-2 border-gray-100 dark:border-gray-800" />
+              <hr className="my-2 border-gray-100 dark:border-white/10" />
 
               {/* Row 2: Expiry Tabs & Settings */}
               <div className="flex items-center justify-between gap-3">
@@ -2163,7 +2163,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold transition-all duration-200 ${
                               isSelected
                                 ? "bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md shadow-emerald-600/20 scale-[1.02]"
-                                : "border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                : "border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-[#070e17] text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
                             }`}
                           >
                             {formatExpiryShort(exp)} <span className={`text-[10px] font-normal ${isSelected ? "text-emerald-100" : "text-gray-400"}`}>({dte}d)</span>
@@ -2178,7 +2178,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold transition-all duration-200 ${
                               !chainData.expiries.slice(0, 3).includes(chainData.selectedExpiry)
                                 ? "bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md shadow-emerald-600/20"
-                                : "border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                : "border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-[#070e17] text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
                             }`}
                           >
                             {!chainData.expiries.slice(0, 3).includes(chainData.selectedExpiry)
@@ -2189,7 +2189,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                           {expiryDropdownOpen && (
                             <>
                               <div className="fixed inset-0 z-10" onClick={() => setExpiryDropdownOpen(false)} />
-                              <div className="absolute left-0 top-full z-20 mt-1.5 min-w-[170px] max-h-72 overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 py-1.5 shadow-2xl text-xs animate-in fade-in slide-in-from-top-1 duration-200">
+                              <div className="absolute left-0 top-full z-20 mt-1.5 min-w-[170px] max-h-72 overflow-y-auto rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] py-1.5 shadow-2xl text-xs animate-in fade-in slide-in-from-top-1 duration-200">
                                 {chainData.expiries.slice(3).map((exp) => (
                                   <button
                                     key={exp}
@@ -2197,7 +2197,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                     className={`block w-full px-4 py-2 text-left font-semibold transition-colors ${
                                       exp === chainData.selectedExpiry 
                                         ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300" 
-                                        : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                                        : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5"
                                     }`}
                                   >
                                     {formatExpiryShort(exp)} ({daysBetween(selectedDate, exp)}d)
@@ -2216,7 +2216,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   <div className="relative">
                     <button
                       onClick={() => setSettingsOpen((v) => !v)}
-                      className="rounded-xl border border-gray-200 dark:border-gray-700 p-2 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+                      className="rounded-xl border border-gray-200 dark:border-white/10 p-2 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-white/5 transition"
                       aria-label="Option chain settings"
                       title="Column settings"
                     >
@@ -2226,7 +2226,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     {settingsOpen && (
                       <>
                         <div className="fixed inset-0 z-10" onClick={() => setSettingsOpen(false)} />
-                        <div className="absolute right-0 top-full z-20 mt-1.5 w-56 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 shadow-2xl text-xs animate-in fade-in slide-in-from-top-1 duration-200">
+                        <div className="absolute right-0 top-full z-20 mt-1.5 w-56 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-4 shadow-2xl text-xs animate-in fade-in slide-in-from-top-1 duration-200">
                           <div className="mb-3 flex items-center justify-between">
                             <span className="font-bold text-gray-800 dark:text-gray-100">Chain Settings</span>
                             <button 
@@ -2238,7 +2238,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                           </div>
                           
                           <div className="space-y-2">
-                            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800">
+                            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-white/5">
                               <input 
                                 type="checkbox" 
                                 checked={columns.oi} 
@@ -2248,7 +2248,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                               <span className="select-none font-medium text-gray-700 dark:text-gray-200">Open Interest</span>
                             </label>
                             
-                            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800">
+                            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-white/5">
                               <input 
                                 type="checkbox" 
                                 checked={columns.callDelta} 
@@ -2258,7 +2258,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                               <span className="select-none font-medium text-gray-700 dark:text-gray-200">Call/Put Delta</span>
                             </label>
                             
-                            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800">
+                            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-white/5">
                               <input 
                                 type="checkbox" 
                                 checked={columns.iv} 
@@ -2268,7 +2268,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                               <span className="select-none font-medium text-gray-700 dark:text-gray-200">IV</span>
                             </label>
                             
-                            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800">
+                            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-white/5">
                               <input 
                                 type="checkbox" 
                                 checked={columns.theta} 
@@ -2278,7 +2278,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                               <span className="select-none font-medium text-gray-700 dark:text-gray-200">Theta</span>
                             </label>
                             
-                            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800">
+                            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-white/5">
                               <input 
                                 type="checkbox" 
                                 checked={columns.vega} 
@@ -2288,7 +2288,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                               <span className="select-none font-medium text-gray-700 dark:text-gray-200">Vega</span>
                             </label>
                             
-                            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800">
+                            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-white/5">
                               <input 
                                 type="checkbox" 
                                 checked={columns.gamma} 
@@ -2320,15 +2320,15 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
           )}
 
           {displayRows.length > 0 && (
-            <div ref={chainScrollRef} className="max-h-[82vh] overflow-x-auto overflow-y-auto rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-xs custom-scrollbar">
+            <div ref={chainScrollRef} className="max-h-[82vh] overflow-x-auto overflow-y-auto rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs custom-scrollbar">
               <table className="w-full min-w-[540px] border-collapse text-[11px] sm:text-[12.5px]">
-                <thead className="sticky top-0 bg-gray-50 dark:bg-gray-850 border-b border-gray-200 dark:border-gray-800 z-10 shadow-2xs">
+                <thead className="sticky top-0 bg-gray-50 dark:bg-[#070e17] border-b border-gray-200 dark:border-white/10 z-10 shadow-2xs">
                   <tr className="text-center font-extrabold text-xs">
-                    <th colSpan={chainCeColCount} className="bg-emerald-50/80 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border-b border-gray-200 dark:border-gray-800 py-2 tracking-wide">
+                    <th colSpan={chainCeColCount} className="bg-emerald-50/80 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border-b border-gray-200 dark:border-white/10 py-2 tracking-wide">
                       CALLS (CE)
                     </th>
-                    <th className="bg-gray-100/90 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-800"></th>
-                    <th colSpan={chainPeColCount} className="bg-rose-50/80 dark:bg-rose-950/50 text-rose-800 dark:text-rose-300 border-b border-gray-200 dark:border-gray-800 py-2 tracking-wide">
+                    <th className="bg-gray-100/90 dark:bg-[#0b1420] border-b border-gray-200 dark:border-white/10"></th>
+                    <th colSpan={chainPeColCount} className="bg-rose-50/80 dark:bg-rose-950/50 text-rose-800 dark:text-rose-300 border-b border-gray-200 dark:border-white/10 py-2 tracking-wide">
                       PUTS (PE)
                     </th>
                   </tr>
@@ -2342,7 +2342,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                       LTP
                     </th>
                     {columns.oi && <th className="px-1.5 py-2 text-right font-semibold bg-emerald-50/30 dark:bg-emerald-950/20 w-[17%]">OI</th>}
-                    <th className="py-2 text-center font-extrabold text-gray-800 dark:text-gray-100 bg-gray-100/90 dark:bg-gray-800 w-[16%] border-x border-gray-200 dark:border-gray-800">
+                    <th className="py-2 text-center font-extrabold text-gray-800 dark:text-gray-100 bg-gray-100/90 dark:bg-[#0b1420] w-[16%] border-x border-gray-200 dark:border-white/10">
                       Strike
                     </th>
                     {columns.oi && <th className="px-1.5 py-2 text-left font-semibold bg-rose-50/30 dark:bg-rose-950/20 w-[17%]">OI</th>}
@@ -2356,7 +2356,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     {columns.gamma && <th className="px-1.5 py-2 text-center font-semibold bg-rose-50/30 dark:bg-rose-950/20">Γ</th>}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100 dark:divide-gray-800/80 font-medium">
+                <tbody className="divide-y divide-gray-100 dark:divide-white/5 font-medium">
                   {displayRows.map((row) => {
                     const isAtm =
                       row.strike ===
@@ -2376,7 +2376,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             ? "bg-emerald-50/80 dark:bg-emerald-950/50 font-bold border-l-4 border-l-emerald-500 ring-1 ring-inset ring-emerald-200 dark:ring-emerald-800/60" 
                             : row._anyStale 
                             ? "bg-amber-50/40 dark:bg-amber-950/20 hover:bg-amber-50/70" 
-                            : "hover:bg-gray-50/80 dark:hover:bg-gray-800/60"
+                            : "hover:bg-gray-50/80 dark:hover:bg-white/5"
                         }`}
                       >
                         {columns.gamma && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.gamma)}<StaleBadge stale={row.ce?._gammaStale} /></td>}
@@ -2391,7 +2391,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         )}
                         <td className={`group px-2 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-amber-50/40 dark:bg-amber-950/20" : ""}`}>
                           {ceNet !== 0 && (
-                            <span className={`absolute -top-0.5 right-0.5 z-[1] rounded-full border bg-white dark:bg-gray-900 px-1 text-[8px] font-black leading-tight ${ceNet > 0 ? "border-emerald-500 text-emerald-600" : "border-rose-500 text-rose-600"}`}>
+                            <span className={`absolute -top-0.5 right-0.5 z-[1] rounded-full border bg-white dark:bg-[#070e17] px-1 text-[8px] font-black leading-tight ${ceNet > 0 ? "border-emerald-500 text-emerald-600" : "border-rose-500 text-rose-600"}`}>
                               {ceNet > 0 ? `+${ceNet}` : ceNet}
                             </span>
                           )}
@@ -2406,12 +2406,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             <StaleBadge stale={row.ce?._ltpStale} label="no stored price at this minute — showing the last recorded value" />
                             {isAtm && <span className="text-[8px] font-extrabold tracking-wide">ATM</span>}
                           </span>
-                          <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white/95 dark:bg-gray-800/95 backdrop-blur-xs">
+                          <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white/95 dark:bg-[#0b1420]/95 backdrop-blur-xs">
                             {!replayData && (ceLeg ? (
                               <>
-                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty - 1)} className="rounded-lg border border-gray-300 dark:border-gray-600 px-1.5 py-0.5 text-[11px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">−</button>
+                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty - 1)} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-[11px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5">−</button>
                                 <span className="w-5 text-center text-[11px] font-bold tabular-nums text-gray-800 dark:text-gray-200">{ceLeg.qty}</span>
-                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty + 1)} className="rounded-lg border border-gray-300 dark:border-gray-600 px-1.5 py-0.5 text-[11px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">+</button>
+                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty + 1)} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-[11px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5">+</button>
                               </>
                             ) : (
                               <>
@@ -2429,7 +2429,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 </button>
                               </>
                             ))}
-                            <button onClick={() => setChartModal({ strike: row.strike, right: "CE" })} className="rounded-lg border border-gray-300 dark:border-gray-600 px-1.5 py-0.5 text-[12px] leading-none text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700" title="View contract chart">📈</button>
+                            <button onClick={() => setChartModal({ strike: row.strike, right: "CE" })} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-[12px] leading-none text-gray-500 hover:bg-gray-100 dark:hover:bg-white/5" title="View contract chart">📈</button>
                           </div>
                         </td>
                         {columns.oi && (
@@ -2438,12 +2438,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             {row.ce?._oiStale && <span className="absolute right-0.5 top-0.5"><StaleBadge stale label="no stored OI at this minute — last recorded value" /></span>}
                           </td>
                         )}
-                        <td className="py-1.5 text-center bg-gray-50/60 dark:bg-gray-800/60 border-x border-gray-200 dark:border-gray-800">
+                        <td className="py-1.5 text-center bg-gray-50/60 dark:bg-[#070e17]/80 border-x border-gray-200 dark:border-white/10">
                           <span
                             className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-xs font-bold tabular-nums font-mono ${
                               isAtm
                                 ? "border-emerald-600 bg-emerald-600 text-white shadow-xs font-black"
-                                : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-2xs"
+                                : "border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] text-gray-900 dark:text-gray-100 shadow-2xs"
                             }`}
                           >
                             {row.strike}
@@ -2462,7 +2462,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         )}
                         <td className={`group px-2 py-1.5 text-left tabular-nums relative ${peItm ? "bg-amber-50/40 dark:bg-amber-950/20" : ""}`}>
                           {peNet !== 0 && (
-                            <span className={`absolute -top-0.5 left-0.5 z-[1] rounded-full border bg-white dark:bg-gray-900 px-1 text-[8px] font-black leading-tight ${peNet > 0 ? "border-emerald-500 text-emerald-600" : "border-rose-500 text-rose-600"}`}>
+                            <span className={`absolute -top-0.5 left-0.5 z-[1] rounded-full border bg-white dark:bg-[#070e17] px-1 text-[8px] font-black leading-tight ${peNet > 0 ? "border-emerald-500 text-emerald-600" : "border-rose-500 text-rose-600"}`}>
                               {peNet > 0 ? `+${peNet}` : peNet}
                             </span>
                           )}
@@ -2477,12 +2477,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             <StaleBadge stale={row.pe?._ltpStale} label="no stored price at this minute — showing the last recorded value" />
                             {isAtm && <span className="text-[8px] font-extrabold tracking-wide">ATM</span>}
                           </span>
-                          <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white/95 dark:bg-gray-800/95 backdrop-blur-xs">
+                          <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white/95 dark:bg-[#0b1420]/95 backdrop-blur-xs">
                             {!replayData && (peLeg ? (
                               <>
-                                <button onClick={() => updateQty(peLeg.id, peLeg.qty - 1)} className="rounded-lg border border-gray-300 dark:border-gray-600 px-1.5 py-0.5 text-[11px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">−</button>
+                                <button onClick={() => updateQty(peLeg.id, peLeg.qty - 1)} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-[11px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5">−</button>
                                 <span className="w-5 text-center text-[11px] font-bold tabular-nums text-gray-800 dark:text-gray-200">{peLeg.qty}</span>
-                                <button onClick={() => updateQty(peLeg.id, peLeg.qty + 1)} className="rounded-lg border border-gray-300 dark:border-gray-600 px-1.5 py-0.5 text-[11px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">+</button>
+                                <button onClick={() => updateQty(peLeg.id, peLeg.qty + 1)} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-[11px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5">+</button>
                               </>
                             ) : (
                               <>
@@ -2500,7 +2500,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 </button>
                               </>
                             ))}
-                            <button onClick={() => setChartModal({ strike: row.strike, right: "PE" })} className="rounded-lg border border-gray-300 dark:border-gray-600 px-1.5 py-0.5 text-[12px] leading-none text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700" title="View contract chart">📈</button>
+                            <button onClick={() => setChartModal({ strike: row.strike, right: "PE" })} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-[12px] leading-none text-gray-500 hover:bg-gray-100 dark:hover:bg-white/5" title="View contract chart">📈</button>
                           </div>
                         </td>
                         {columns.callDelta && (
@@ -2522,7 +2522,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
           )}
 
           {!selectedDate && !chainError && (
-            <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-8 text-center text-xs text-gray-400 shadow-xs">
+            <div className="rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-8 text-center text-xs text-gray-400 shadow-xs">
               Pick a symbol and a historical trading day above. The chain is
               real data stored from that day — build legs the same way as
               Strategy Builder, then replay the whole day minute by minute from
@@ -2535,7 +2535,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
         {hideChain && (
           <button
             onClick={() => setHideChain(false)}
-            className="fixed left-3 top-20 z-30 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2 text-xs font-bold text-gray-700 dark:text-gray-200 shadow-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition"
+            className="fixed left-3 top-20 z-30 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-3.5 py-2 text-xs font-bold text-gray-700 dark:text-gray-200 shadow-xl hover:bg-gray-50 dark:hover:bg-white/5 transition"
           >
             Show Option Chain ⇥
           </button>

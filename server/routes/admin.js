@@ -14,11 +14,24 @@ const {
     getDiskUsage, exportData, previewDataPrune, executeDataPrune,
 } = require("../controllers/dataOpsController");
 const { previewExport, downloadExport, deleteExport } = require("../controllers/dataExportController");
+const {
+    getAdminSecurityStatus,
+    toggleAdminIpRestriction,
+    addAdminAllowedIp,
+    removeAdminAllowedIp,
+} = require("../controllers/adminSecurityController");
 const { requireAuth } = require("../middleware/auth");
 const { requireAdmin } = require("../middleware/requireAdmin");
+const { requireAdminIp } = require("../middleware/requireAdminIp");
 
 const router = express.Router();
-router.use(requireAuth, requireAdmin);
+router.use(requireAdminIp, requireAuth, requireAdmin);
+
+// Admin IP Restriction & Security Management
+router.get("/security/status", getAdminSecurityStatus);
+router.post("/security/toggle", toggleAdminIpRestriction);
+router.post("/security/ips", addAdminAllowedIp);
+router.delete("/security/ips/:id", removeAdminAllowedIp);
 
 router.get("/overview", getOverview);
 router.get("/users", listUsers);
@@ -111,6 +124,12 @@ router.get("/data/bitcoin/status", getBitcoinStatus);
 router.get("/data/export/preview", previewExport);
 router.get("/data/export/download", downloadExport);
 router.post("/data/export/delete", deleteExport);
+
+// 1-Click Sample Test Data Generator & Importer (Options, India VIX, Futures, Crypto)
+const sampleDataController = require("../controllers/sampleDataController");
+router.get("/data/sample-data/stats", sampleDataController.getStats);
+router.post("/data/sample-data/import", sampleDataController.importData);
+router.post("/data/sample-data/clear", sampleDataController.clearData);
 
 module.exports = router;
 

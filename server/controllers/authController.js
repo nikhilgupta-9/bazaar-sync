@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const { pool } = require("../config/db");
 const { isInstituteIp } = require("../services/instituteAccessService");
 const { sendPasswordResetEmail } = require("../services/emailService");
+const { isIpAllowed, getClientIp, getSecurityStatus } = require("../services/adminSecurityService");
 
 const { OAuth2Client } = require("google-auth-library");
 const axios = require("axios");
@@ -74,6 +75,20 @@ async function login(req, res) {
         const valid = await bcrypt.compare(password, user.password_hash);
         if (!valid) {
             return res.status(401).json({ error: "invalid email or password" });
+        }
+
+        // If user is admin, enforce admin IP whitelist check if active
+        if (user.role === "admin") {
+            const clientIp = getClientIp(req);
+            const ipCheck = await isIpAllowed(clientIp);
+            if (!ipCheck.allowed) {
+                console.warn(`[Security Alert] Blocked admin login from unauthorized IP: ${clientIp} for user ${user.email}`);
+                return res.status(403).json({
+                    error: `Access Denied: Your IP address (${clientIp}) is not authorized for Admin access.`,
+                    code: "ADMIN_IP_RESTRICTED",
+                    clientIp,
+                });
+            }
         }
 
         // Single-device security: generate a new unique session_id, invalidating any previous session
@@ -502,6 +517,20 @@ async function changePassword(req, res) {
     }
 }
 
+async function getPublicSecurityStatus(req, res) {
+    try {
+        const status = await getSecurityStatus(req);
+        res.json({
+            clientIp: status.clientIp,
+            isRestricted: status.isRestricted,
+            isCurrentIpAllowed: status.isCurrentIpAllowed,
+        });
+    } catch (err) {
+        console.error("[auth:getPublicSecurityStatus]", err);
+        res.status(500).json({ error: "failed to check security status" });
+    }
+}
+
 module.exports = {
     register,
     login,
@@ -513,4 +542,5 @@ module.exports = {
     getUserProfile,
     updateUserProfile,
     changePassword,
+    getPublicSecurityStatus,
 };

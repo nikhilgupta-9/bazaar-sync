@@ -25,14 +25,25 @@ function loadTvScript() {
         scriptState = "loading";
         const settle = (ok) => {
             scriptState = ok ? "ready" : "error";
-            scriptWaiters.forEach((r) => r(ok));
+            const waiters = scriptWaiters;
             scriptWaiters = [];
+            waiters.forEach((r) => r(ok));
         };
 
         const existing = document.querySelector(`script[src="${TV_SCRIPT_URL}"]`);
         if (existing) {
+            if (window.TradingView && window.TradingView.widget) {
+                return settle(true);
+            }
+            // If already loaded or errored
             existing.addEventListener("load", () => settle(!!(window.TradingView && window.TradingView.widget)));
             existing.addEventListener("error", () => settle(false));
+            // In case load already fired before listener was attached:
+            setTimeout(() => {
+                if (window.TradingView && window.TradingView.widget) {
+                    settle(true);
+                }
+            }, 300);
             return;
         }
 
@@ -98,6 +109,34 @@ const TV_SYMBOL_MAP = {
     "BAJAJ-AUTO": "NSE:BAJAJ_AUTO",
     "L&TFH": "NSE:L_TFH",
     "MCDOWELL-N": "NSE:UNITDSPR",
+
+    // Crypto Pairs (Binance / Delta Real-Time Feeds)
+    BTC: "BINANCE:BTCUSDT",
+    "BTC/USDT": "BINANCE:BTCUSDT",
+    BTCUSDT: "BINANCE:BTCUSDT",
+    BTCUSD: "BINANCE:BTCUSD",
+    BITCOIN: "BINANCE:BTCUSDT",
+    ETH: "BINANCE:ETHUSDT",
+    "ETH/USDT": "BINANCE:ETHUSDT",
+    ETHUSDT: "BINANCE:ETHUSDT",
+    ETHUSD: "BINANCE:ETHUSD",
+    ETHEREUM: "BINANCE:ETHUSDT",
+    SOL: "BINANCE:SOLUSDT",
+    "SOL/USDT": "BINANCE:SOLUSDT",
+    SOLUSDT: "BINANCE:SOLUSDT",
+    SOLUSD: "BINANCE:SOLUSD",
+    SOLANA: "BINANCE:SOLUSDT",
+    XAUT: "BINANCE:PAXGUSDT",
+    "XAUT/USDT": "BINANCE:PAXGUSDT",
+    XAUTUSDT: "BINANCE:PAXGUSDT",
+    PAXG: "BINANCE:PAXGUSDT",
+    PAXGUSDT: "BINANCE:PAXGUSDT",
+    DOGE: "BINANCE:DOGEUSDT",
+    DOGEUSDT: "BINANCE:DOGEUSDT",
+    XRP: "BINANCE:XRPUSDT",
+    XRPUSDT: "BINANCE:XRPUSDT",
+    BNB: "BINANCE:BNBUSDT",
+    BNBUSDT: "BINANCE:BNBUSDT",
 };
 
 function formatTvSymbol(rawSymbol) {
@@ -106,7 +145,18 @@ function formatTvSymbol(rawSymbol) {
     if (TV_SYMBOL_MAP[clean]) {
         return TV_SYMBOL_MAP[clean];
     }
-    if (clean.startsWith("NSE:") || clean.startsWith("BSE:") || clean.startsWith("INDEX:")) {
+    if (
+        clean.startsWith("NSE:") ||
+        clean.startsWith("BSE:") ||
+        clean.startsWith("INDEX:") ||
+        clean.startsWith("BINANCE:") ||
+        clean.startsWith("COINBASE:") ||
+        clean.startsWith("BYBIT:") ||
+        clean.startsWith("CRYPTO:") ||
+        clean.startsWith("BITSTAMP:") ||
+        clean.startsWith("FX:") ||
+        clean.startsWith("OANDA:")
+    ) {
         return clean;
     }
     const sanitized = clean.replace(/&/g, "_").replace(/-/g, "_");
@@ -115,18 +165,32 @@ function formatTvSymbol(rawSymbol) {
 
 let containerSeq = 0;
 
+const TV_STUDY_MAP = {
+    "STD;EMA": "MASimple@tv-basicstudies",
+    "STD;RSI": "RSI@tv-basicstudies",
+    "STD;MACD": "MACD@tv-basicstudies",
+    "STD;Bollinger_Bands": "BollingerBands@tv-basicstudies",
+    "STD;Volume": "Volume@tv-basicstudies",
+    "STD;Supertrend": "MASimple@tv-basicstudies",
+    EMA: "MASimple@tv-basicstudies",
+    RSI: "RSI@tv-basicstudies",
+    MACD: "MACD@tv-basicstudies",
+    "Bollinger Bands": "BollingerBands@tv-basicstudies",
+    Volume: "Volume@tv-basicstudies",
+};
+
 export default function TradingViewChart({
     symbol = "NIFTY",
     interval = "D",
     chartStyle = "1",
-    studies = ["STD;EMA", "STD;RSI", "STD;MACD", "STD;Bollinger_Bands"],
-    height = "100%",
+    studies = ["Volume@tv-basicstudies", "MASimple@tv-basicstudies", "RSI@tv-basicstudies"],
+    height = "680px",
     className = "",
 }) {
     const { isDark } = useTheme();
     const containerRef = useRef(null);
     const widgetRef = useRef(null);
-    const [containerId] = useState(() => `tradingview_dhan_${++containerSeq}`);
+    const [containerId] = useState(() => `tv_chart_${++containerSeq}`);
     const [loaded, setLoaded] = useState(
         typeof window !== "undefined" && window.TradingView && window.TradingView.widget ? true : null
     );
@@ -141,15 +205,52 @@ export default function TradingViewChart({
         };
     }, []);
 
+    const studiesKey = Array.isArray(studies) ? studies.join(",") : String(studies || "");
+
+    // Dynamic in-place Chart Style Switcher (Candles, Heikin Ashi, Line) without destroying widget
+    useEffect(() => {
+        if (!widgetRef.current) return;
+        try {
+            const chart = typeof widgetRef.current.chart === "function"
+                ? widgetRef.current.chart()
+                : (typeof widgetRef.current.activeChart === "function" ? widgetRef.current.activeChart() : null);
+            if (chart && typeof chart.setChartType === "function") {
+                chart.setChartType(Number(chartStyle));
+            }
+        } catch {
+            /* ignore */
+        }
+    }, [chartStyle]);
+
+    // Dynamic in-place Resolution Switcher
+    useEffect(() => {
+        if (!widgetRef.current) return;
+        try {
+            const chart = typeof widgetRef.current.chart === "function"
+                ? widgetRef.current.chart()
+                : (typeof widgetRef.current.activeChart === "function" ? widgetRef.current.activeChart() : null);
+            if (chart && typeof chart.setResolution === "function") {
+                chart.setResolution(interval);
+            }
+        } catch {
+            /* ignore */
+        }
+    }, [interval]);
+
     useEffect(() => {
         if (!loaded || !containerRef.current || !window.TradingView) return;
 
-        // Clear container content before mounting new instance
         if (containerRef.current) {
             containerRef.current.innerHTML = "";
+            containerRef.current.id = containerId;
         }
 
         const formattedSymbol = formatTvSymbol(symbol);
+
+        // Map studies to valid TradingView technical basic studies
+        const cleanStudies = (Array.isArray(studies) ? studies : [])
+            .map((s) => TV_STUDY_MAP[s] || s)
+            .filter(Boolean);
 
         try {
             const widget = new window.TradingView.widget({
@@ -167,28 +268,22 @@ export default function TradingViewChart({
                 hide_side_toolbar: false,
                 hide_legend: false,
                 save_image: true,
-                withdateranges: true,
-                details: true,
-                hotlist: true,
-                calendar: true,
-                show_popup_button: true,
+                withdateranges: false,
+                details: false,
+                hotlist: false,
+                calendar: false,
+                show_popup_button: false,
                 popup_width: "1000",
                 popup_height: "650",
-                studies: Array.isArray(studies) ? studies : [],
-                drawings_access: {
-                    type: "black",
-                    tools: [],
-                },
+                studies: cleanStudies,
                 disabled_features: [
-                    "use_localstorage_for_settings",
                     "header_saveload",
-                ],
-                enabled_features: [
-                    "study_templates",
-                    "side_toolbar_in_fullscreen_mode",
-                    "header_in_fullscreen_mode",
-                    "show_symbol_logos",
-                    "show_symbol_logo_in_legend",
+                    "display_market_status",
+                    "popup_hints",
+                    "caption_delayed_quotes",
+                    "show_interval_dialog_on_key_press",
+                    "timeframes_toolbar",
+                    "go_to_date",
                 ],
                 overrides: {
                     "paneProperties.background": isDark ? "#0b1420" : "#ffffff",
@@ -225,33 +320,45 @@ export default function TradingViewChart({
             }
             widgetRef.current = null;
         };
-    }, [loaded, symbol, interval, chartStyle, isDark, containerId, studies]);
+    }, [loaded, symbol, interval, chartStyle, isDark, studiesKey]);
 
     if (loaded === false) {
         return (
-            <div className="flex h-full min-h-[420px] flex-col items-center justify-center gap-2 rounded-xl border border-rose-200 bg-rose-50/50 p-6 text-center text-xs text-rose-700">
-                <span className="font-bold text-sm">Unable to connect to TradingView Cloud Feed</span>
-                <span className="text-gray-500">Please check your internet connection or switch to "Bazaar Sync Stored Data Engine".</span>
+            <div className="flex h-full min-h-[300px] flex-col items-center justify-center gap-2 rounded-xl border border-rose-200 bg-rose-50/50 p-6 text-center text-xs text-rose-700">
+                <span className="font-bold text-sm">Unable to connect to Chart Server</span>
+                <span className="text-gray-500">Please check your internet connection.</span>
             </div>
         );
     }
 
     if (loaded === null) {
         return (
-            <div className="flex h-full min-h-[420px] flex-col items-center justify-center gap-3 rounded-xl border border-gray-100 bg-gray-50/60 text-xs text-gray-500">
+            <div className="flex h-full min-h-[300px] flex-col items-center justify-center gap-3 bg-gray-50/60 dark:bg-[#0b1420] text-xs text-gray-500">
                 <div className="h-6 w-6 animate-spin rounded-full border-2 border-emerald-600 border-t-transparent" />
-                <span className="font-semibold text-emerald-800">Initializing Dhan-Style TradingView Pro Terminal…</span>
+                <span className="font-semibold text-emerald-800 dark:text-emerald-400">Loading TradingView Terminal…</span>
             </div>
         );
     }
 
     return (
-        <div className={`relative h-full w-full overflow-hidden rounded-xl bg-white shadow-inner dark:bg-[#0b1420] ${className}`}>
+        <div
+            className={`relative h-full w-full overflow-hidden bg-white dark:bg-[#0b1420] ${className}`}
+            style={{ height: height || "100%", minHeight: "560px", width: "100%" }}
+        >
+            <style>{`
+                .tradingview-widget-copyright { display: none !important; }
+                .tv-embed-widget-wrapper__header { display: none !important; }
+                #${containerId}, #${containerId} > div, #${containerId} iframe {
+                    height: 100% !important;
+                    min-height: 560px !important;
+                    width: 100% !important;
+                }
+            `}</style>
             <div
                 id={containerId}
                 ref={containerRef}
-                style={{ height: height || "100%", width: "100%" }}
-                className="h-full w-full min-h-[450px]"
+                style={{ height: "100%", minHeight: "560px", width: "100%" }}
+                className="h-full w-full"
             />
         </div>
     );

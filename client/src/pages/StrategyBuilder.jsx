@@ -23,7 +23,8 @@ import ContractChartModal from "../components/ContractChartModal";
 import Simulator from "./Simulator";
 import { SymbolLogo, getSymbolMeta } from "../utils/symbolIcons";
 import { saveStrategy } from "../services/strategiesApi";
-import { FiSettings, FiTrash2, FiRefreshCw } from "react-icons/fi";
+import { FiSettings, FiTrash2, FiRefreshCw, FiClock } from "react-icons/fi";
+import { useTheme } from "../context/ThemeContext";
 
 
 function formatDelta(value) {
@@ -143,9 +144,9 @@ function legFromRow(row, right, action, expiry, lotSize) {
 
 function Stat({ label, value, tone, hint }) {
     return (
-        <div title={hint} className="border-b border-gray-100 pb-2 last:border-0 last:pb-0">
-            <div className="text-[12px] font-medium text-gray-400 uppercase tracking-wider">{label}</div>
-            <div className={`text-sm font-bold tabular-nums mt-0.5 ${tone === "positive" ? "text-emerald-600" : tone === "negative" ? "text-rose-600" : "text-gray-800"}`}>
+        <div title={hint} className="border-b border-gray-100 dark:border-white/5 pb-2 last:border-0 last:pb-0">
+            <div className="text-[12px] font-medium text-gray-400 dark:text-gray-400 uppercase tracking-wider">{label}</div>
+            <div className={`text-sm font-bold tabular-nums mt-0.5 ${tone === "positive" ? "text-emerald-600 dark:text-emerald-400" : tone === "negative" ? "text-rose-600 dark:text-rose-400" : "text-gray-800 dark:text-gray-100"}`}>
                 {value}
             </div>
         </div>
@@ -202,6 +203,12 @@ export default function StrategyBuilder() {
     const [whatIfSpotPct, setWhatIfSpotPct] = useState(0); // -10..+10 (%)
     const [whatIfDaysForward, setWhatIfDaysForward] = useState(0); // 0..days-to-expiry
     const [whatIfIvShift, setWhatIfIvShift] = useState(0); // -20..+20 (percentage points)
+
+    const [currentTime, setCurrentTime] = useState(() => new Date());
+    useEffect(() => {
+        const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+        return () => clearInterval(timer);
+    }, []);
 
     const [columns, setColumns] = useState(DEFAULT_COLUMNS);
     const [atmBasis, setAtmBasis] = useState("spot"); // 'spot' | 'future' | 'synth'
@@ -605,9 +612,9 @@ export default function StrategyBuilder() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [legs, rowByStrike]);
 
-    const { curve, breakevens, maxProfit, maxLoss, netGreeks, pop, expectedMove, estMargin, riskReward } = useMemo(() => {
+    const { curve, breakevens, maxProfit, maxLoss, netGreeks, pop, expectedMove, estMargin, riskReward, yearsRemaining } = useMemo(() => {
         if (!activeLegs.length || !data || !data.spotPrice) {
-            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, pop: null, expectedMove: null, estMargin: null, riskReward: null };
+            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, pop: null, expectedMove: null, estMargin: null, riskReward: null, yearsRemaining: 0 };
         }
 
         try {
@@ -627,19 +634,19 @@ export default function StrategyBuilder() {
             // a calendar spread it's the near leg's expiry — the meaningful
             // horizon for "at expiry" (see payoff.js's evaluationExpiryOf).
             const evaluationExpiry = evaluationExpiryOf(activeLegs) || data.selectedExpiry;
-            const yearsRemaining = yearsToExpiry(evaluationExpiry);
+            const yearsRem = yearsToExpiry(evaluationExpiry);
             const atmRow = data.rows ? data.rows.find((r) => r.strike === data.atmStrike) : null;
             const atmIv = atmRow?.iv ?? null;
             const evalTimestamp = dataLoadedAt || staleNow || null;
-            curveData = (atmIv && typeof addMarkToMarketCurve === "function") ? addMarkToMarketCurve(curveData, activeLegs, yearsRemaining, evalTimestamp) : curveData;
-            const expMv = (atmIv && typeof computeExpectedMove === "function") ? computeExpectedMove(data.spotPrice, atmIv, yearsRemaining) : null;
-            const popVal = (atmIv && typeof computePOP === "function") ? computePOP(curveData, data.spotPrice, atmIv, yearsRemaining) : null;
+            curveData = (atmIv && typeof addMarkToMarketCurve === "function") ? addMarkToMarketCurve(curveData, activeLegs, yearsRem, evalTimestamp) : curveData;
+            const expMv = (atmIv && typeof computeExpectedMove === "function") ? computeExpectedMove(data.spotPrice, atmIv, yearsRem) : null;
+            const popVal = (atmIv && typeof computePOP === "function") ? computePOP(curveData, data.spotPrice, atmIv, yearsRem) : null;
             const marginVal = computeEstMargin(activeLegs, data.spotPrice, symbol);
 
-            return { curve: curveData, breakevens: breakEvs, maxProfit: mxProf, maxLoss: mxLoss, netGreeks: netGrks, pop: popVal, expectedMove: expMv, estMargin: marginVal, riskReward: rReward };
+            return { curve: curveData, breakevens: breakEvs, maxProfit: mxProf, maxLoss: mxLoss, netGreeks: netGrks, pop: popVal, expectedMove: expMv, estMargin: marginVal, riskReward: rReward, yearsRemaining: yearsRem };
         } catch (err) {
             console.error(err);
-            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, pop: null, expectedMove: null, estMargin: null, riskReward: null };
+            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, pop: null, expectedMove: null, estMargin: null, riskReward: null, yearsRemaining: 0 };
         }
     }, [activeLegs, data, symbol, dataLoadedAt, staleNow]);
 
@@ -681,46 +688,144 @@ export default function StrategyBuilder() {
     const daysToExpiry = data?.selectedExpiry ? Math.max(1, daysUntilExpiry(data.selectedExpiry)) : 30;
 
     return (
-        <div className="mx-auto max-w-[1600px] px-5 py-5 bg-gray-50/40 min-h-screen">
+        <div className="mx-auto max-w-[1600px] px-3 sm:px-5 py-5 bg-gray-50/40 dark:bg-[#070a11] min-h-screen text-gray-900 dark:text-gray-100 transition-colors">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-3">
-                    <div className="inline-flex rounded-xl border border-gray-200 bg-white p-0.5 text-xs font-bold shadow-xs">
+                {/* Left: Symbol Picker Pill + Action Buttons + Mode */}
+                <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1 relative">
+                        <button
+                            onClick={() => cycleSymbol(-1)}
+                            disabled={favorites.length < 2}
+                            className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-30 transition"
+                            aria-label="Previous favorite symbol"
+                        >
+                            ‹
+                        </button>
+                        {data?.lotSize && (
+                            <span className="rounded-md bg-gray-100 dark:bg-white/10 px-1.5 py-0.5 text-[11px] font-bold text-gray-600 dark:text-gray-300">
+                                [{data.lotSize}]
+                            </span>
+                        )}
+                        <button
+                            onClick={() => setPickerOpen((v) => !v)}
+                            className="flex items-center gap-2 rounded-xl border border-gray-300 dark:border-white/10 bg-white dark:bg-[#0b1420] px-3 py-1.5 text-xs font-bold text-gray-900 dark:text-white shadow-xs hover:border-emerald-500 hover:bg-emerald-50/50 dark:hover:bg-emerald-950/30 transition"
+                        >
+                            <SymbolLogo symbol={symbol} size="xs" />
+                            <span>{symbol}</span>
+                            <span className="text-[10px] text-gray-400">▾</span>
+                        </button>
+                        <button
+                            onClick={() => cycleSymbol(1)}
+                            disabled={favorites.length < 2}
+                            className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-30 transition"
+                            aria-label="Next favorite symbol"
+                        >
+                            ›
+                        </button>
+
+                        {pickerOpen && (
+                            <>
+                                <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
+                                <div className="absolute left-0 top-full z-50 mt-1 w-64 max-h-96 overflow-y-auto rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-2xl text-[13px] text-gray-800 dark:text-gray-100">
+                                    <div className="sticky top-0 border-b border-gray-100 dark:border-white/10 bg-white dark:bg-[#0b1420] p-2">
+                                        <input
+                                            autoFocus
+                                            value={pickerQuery}
+                                            onChange={(e) => setPickerQuery(e.target.value)}
+                                            placeholder="Search symbol…"
+                                            className="w-full rounded-md border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] text-gray-900 dark:text-white px-2.5 py-1 text-[13px] outline-none focus:border-emerald-500"
+                                        />
+                                    </div>
+                                    {filteredIndices.length > 0 && (
+                                        <div>
+                                            <div className="px-2 pt-2 pb-1 text-[11px] font-bold uppercase text-gray-400">Index</div>
+                                            {filteredIndices.map((s) => (
+                                                <SymbolOption key={s} sym={s} active={s === symbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
+                                            ))}
+                                        </div>
+                                    )}
+                                    {filteredStocks.length > 0 && (
+                                        <div>
+                                            <div className="px-2 pt-2 pb-1 text-[11px] font-bold uppercase text-gray-400">Stocks</div>
+                                            {filteredStocks.map((s) => (
+                                                <SymbolOption key={s} sym={s} active={s === symbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
+                                            ))}
+                                        </div>
+                                    )}
+                                    {!filteredIndices.length && !filteredStocks.length && (
+                                        <div className="px-3 py-6 text-center text-gray-400">No matches</div>
+                                    )}
+                                </div>
+                            </>
+                        )}
+                    </div>
+
+                    <SaveButton
+                        itemLabel="strategy"
+                        onSave={(token, name) => saveStrategy(token, { name, underlying: symbol, legs })}
+                    />
+                    <button
+                        onClick={() => setSavedOpen(true)}
+                        className="rounded-xl border border-gray-300 dark:border-white/10 px-3 py-1.5 text-xs font-semibold text-gray-700 dark:text-gray-300 bg-white dark:bg-[#0b1420] hover:bg-gray-50 dark:hover:bg-white/5 shadow-xs transition"
+                    >
+                        Saved
+                    </button>
+                    <button
+                        onClick={resetLegs}
+                        className="rounded-xl border border-rose-200 dark:border-rose-900/40 px-3 py-1.5 text-xs font-semibold text-rose-600 dark:text-rose-400 bg-rose-50/50 dark:bg-rose-950/20 hover:bg-rose-100/50 dark:hover:bg-rose-950/40 shadow-xs transition"
+                    >
+                        Reset
+                    </button>
+
+                    {legs.length > 0 && (
+                        <button
+                            onClick={() => setPaperExecuteOpen(true)}
+                            className="rounded-xl bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white shadow-xs transition flex items-center gap-1.5"
+                            title="Execute this strategy basket into your virtual Paper Trading portfolio"
+                        >
+                            <span>⚡ Trade Basket</span>
+                        </button>
+                    )}
+
+                    <div className="inline-flex rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-0.5 text-xs font-bold shadow-xs ml-1">
                         <button
                             onClick={() => setMode("live")}
-                            className={mode === "live" ? "rounded-lg bg-emerald-600 px-3 py-1.5 text-white shadow-xs" : "px-3 py-1.5 text-gray-600 hover:text-gray-900"}
+                            className={mode === "live" ? "rounded-lg bg-emerald-600 px-2.5 py-1 text-white shadow-xs" : "px-2.5 py-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"}
                         >
-                            Live Strategy
+                            Live
                         </button>
                         <button
                             onClick={() => setMode("historical")}
-                            className={mode === "historical" ? "rounded-lg bg-emerald-600 px-3 py-1.5 text-white shadow-xs" : "px-3 py-1.5 text-gray-600 hover:text-gray-900"}
+                            className={mode === "historical" ? "rounded-lg bg-emerald-600 px-2.5 py-1 text-white shadow-xs" : "px-2.5 py-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"}
                         >
-                            Historical Backtester
+                            Historical
                         </button>
+                    </div>
+                </div>
+
+                {/* Right: Live Clock & Market status */}
+                <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-3 py-1.5 text-xs font-semibold text-gray-700 dark:text-gray-200 shadow-xs">
+                        <FiClock className="text-gray-400" />
+                        <span className="tabular-nums font-mono">
+                            {currentTime.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}, {currentTime.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true })}
+                        </span>
                     </div>
 
                     {mode === "live" && (
-                        <div className="flex items-center gap-2">
-                            {isLive && marketStatus?.isOpen ? (
-                                <span className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-extrabold text-emerald-700">
-                                    <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                                    LIVE MARKET STREAM
-                                </span>
-                            ) : (
-                                <span className="flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600" title="Market closed or feed idle — system is rendering the latest available snapshot">
-                                    <span>◈</span>
-                                    <span>LATEST SNAPSHOT {dataLoadedAt ? `(${new Date(dataLoadedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })})` : ""}</span>
-                                </span>
-                            )}
-                        </div>
+                        isLive && marketStatus?.isOpen ? (
+                            <span className="flex items-center gap-1.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/40 px-2.5 py-1 text-[11px] font-extrabold text-emerald-700 dark:text-emerald-300">
+                                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                                LIVE STREAM
+                            </span>
+                        ) : (
+                            <span className="flex items-center gap-1.5 rounded-full bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 px-2.5 py-1 text-[11px] font-semibold text-gray-600 dark:text-gray-400">
+                                <span>◈</span>
+                                <span>LATEST SNAPSHOT</span>
+                            </span>
+                        )
                     )}
                 </div>
-
-                <span className="text-[11px] text-gray-400 hidden sm:inline">
-                    {mode === "live"
-                        ? "Real-time option chain & strategy builder with risk metrics and instant paper execution."
-                        : "Replay past trading days minute-by-minute with tick-level option prices."}
-                </span>
             </div>
 
             {mode === "historical" ? (
@@ -742,7 +847,7 @@ export default function StrategyBuilder() {
                             className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${
                                 mobileView === key
                                     ? "bg-emerald-600 text-white shadow-xs"
-                                    : "bg-white border border-gray-200 text-gray-700 hover:bg-gray-50"
+                                    : "bg-white dark:bg-[#0b1420] border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5"
                             }`}
                         >
                             {label}
@@ -754,87 +859,50 @@ export default function StrategyBuilder() {
                 {/* Left Column: Option Chain Window */}
                 {!hideChain && (
                 <div className={`w-full lg:w-[480px] xl:w-[540px] shrink-0 flex flex-col ${mobileView !== "all" && mobileView !== "chain" ? "hidden lg:flex" : ""}`}>
-                <div className="mb-3 rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+                <div className="mb-3 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-3 shadow-sm">
                     <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 relative">
-                            <button
-                                onClick={() => cycleSymbol(-1)}
-                                disabled={favorites.length < 2}
-                                className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-30"
-                                aria-label="Previous favorite symbol"
-                            >
-                                ‹
-                            </button>
-                            {data?.lotSize && (
-                                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-bold text-gray-500">
-                                    {data.lotSize}
-                                </span>
-                            )}
-                            <button
-                                onClick={() => setPickerOpen((v) => !v)}
-                                className="flex items-center gap-2 rounded-xl border border-gray-300 bg-white px-2.5 py-1 text-xs font-bold text-gray-900 shadow-xs hover:border-emerald-500 hover:bg-emerald-50/50 dark:border-gray-700 dark:bg-gray-800 dark:text-white transition"
-                            >
-                                <SymbolLogo symbol={symbol} size="xs" />
-                                <span>{symbol}</span>
-                                <span className="text-[10px] text-gray-400">▾</span>
-                            </button>
-                            <button
-                                onClick={() => cycleSymbol(1)}
-                                disabled={favorites.length < 2}
-                                className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-30"
-                                aria-label="Next favorite symbol"
-                            >
-                                ›
-                            </button>
-
-                            {pickerOpen && (
+                        <div className="flex flex-wrap items-center gap-2.5 text-[12px]">
+                            {data && (
                                 <>
-                                    <div className="fixed inset-0 z-10" onClick={() => setPickerOpen(false)} />
-                                    <div className="absolute left-0 top-full z-20 mt-1 w-64 max-h-96 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-xl text-[13px]">
-                                        <div className="sticky top-0 border-b border-gray-100 bg-white p-2">
-                                            <input
-                                                autoFocus
-                                                value={pickerQuery}
-                                                onChange={(e) => setPickerQuery(e.target.value)}
-                                                placeholder="Search symbol…"
-                                                className="w-full rounded-md border border-gray-200 px-2 py-1 text-[13px] outline-none focus:border-emerald-500"
-                                            />
-                                        </div>
-                                        {filteredIndices.length > 0 && (
-                                            <div>
-                                                <div className="px-2 pt-2 pb-1 text-[11px] font-bold uppercase text-gray-400">Index</div>
-                                                {filteredIndices.map((s) => (
-                                                    <SymbolOption key={s} sym={s} active={s === symbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
-                                                ))}
-                                            </div>
-                                        )}
-                                        {filteredStocks.length > 0 && (
-                                            <div>
-                                                <div className="px-2 pt-2 pb-1 text-[11px] font-bold uppercase text-gray-400">Stocks</div>
-                                                {filteredStocks.map((s) => (
-                                                    <SymbolOption key={s} sym={s} active={s === symbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
-                                                ))}
-                                            </div>
-                                        )}
-                                        {!filteredIndices.length && !filteredStocks.length && (
-                                            <div className="px-3 py-6 text-center text-gray-400">No matches</div>
-                                        )}
+                                    <div>
+                                        <span className="text-gray-400 font-semibold">SPOT: </span>
+                                        <span className="font-bold tabular-nums text-gray-900 dark:text-white">{formatPrice(data.spotPrice)}</span>
                                     </div>
+                                    <div className="h-3.5 w-px bg-gray-200 dark:bg-white/10" />
+                                    <div>
+                                        <span className="text-gray-400 font-semibold">VIX: </span>
+                                        <span className="font-bold tabular-nums text-gray-900 dark:text-white">
+                                            {data.vix != null ? Number(data.vix).toFixed(2) : "—"}
+                                        </span>
+                                    </div>
+                                    {data.futurePrice != null && (
+                                        <>
+                                            <div className="h-3.5 w-px bg-gray-200 dark:bg-white/10" />
+                                            <div>
+                                                <span className="text-gray-400 font-semibold">
+                                                    FUT{data.futureExpiry ? ` (${formatExpiryShort(data.futureExpiry)})` : ""}:{" "}
+                                                </span>
+                                                <span className="font-bold tabular-nums text-gray-900 dark:text-white">
+                                                    {formatPrice(data.futurePrice)}
+                                                </span>
+                                            </div>
+                                        </>
+                                    )}
                                 </>
                             )}
                         </div>
 
-                        <div className="flex items-center gap-1 relative">
+                        <div className="flex items-center gap-1.5 relative">
                             <button
                                 onClick={() => setHideChain(true)}
-                                className="rounded-md px-2 py-1 text-[12px] font-semibold text-gray-500 hover:bg-gray-100"
+                                className="rounded-md px-2 py-1 text-[12px] font-semibold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5"
                                 title="Hide Chain — give the right panel full width"
                             >
                                 Hide Chain
                             </button>
                             <button
                                 onClick={() => setSettingsOpen((v) => !v)}
-                                className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                                className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-700 dark:hover:text-gray-200"
                                 aria-label="Option chain settings"
                                 title="Column & ATM settings"
                             >
@@ -844,17 +912,17 @@ export default function StrategyBuilder() {
                             {settingsOpen && (
                                 <>
                                     <div className="fixed inset-0 z-10" onClick={() => setSettingsOpen(false)} />
-                                    <div className="absolute right-0 top-full z-20 mt-1 w-72 rounded-lg border border-gray-200 bg-white p-3 shadow-xl text-[13px]">
+                                    <div className="absolute right-0 top-full z-20 mt-1 w-72 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] text-gray-800 dark:text-gray-100 p-3 shadow-xl text-[13px]">
                                         <div className="mb-3 flex items-center justify-between">
-                                            <span className="font-bold text-gray-800">Chain Settings</span>
+                                            <span className="font-bold text-gray-800 dark:text-gray-100">Chain Settings</span>
                                             <span className="text-[11px] text-gray-400">{enabledColumnCount}/{totalColumnCount} columns</span>
                                         </div>
 
                                         <div className="mb-3">
-                                            <div className="mb-1.5 font-semibold text-gray-600">ATM Based On</div>
+                                            <div className="mb-1.5 font-semibold text-gray-600 dark:text-gray-400">ATM Based On</div>
                                             <div className="flex gap-3">
                                                 {[["spot", "Spot"], ["future", "Future"], ["synth", "Synth Future"]].map(([key, label]) => (
-                                                    <label key={key} className="flex items-center gap-1 text-gray-700 cursor-pointer">
+                                                    <label key={key} className="flex items-center gap-1 text-gray-700 dark:text-gray-300 cursor-pointer">
                                                         <input type="radio" name="atmBasis" checked={atmBasis === key} onChange={() => setAtmBasis(key)} />
                                                         {label}
                                                     </label>
@@ -863,53 +931,53 @@ export default function StrategyBuilder() {
                                         </div>
 
                                         <label className="mb-3 flex items-center justify-between cursor-pointer">
-                                            <span className="font-semibold text-gray-600">ATM Distance</span>
+                                            <span className="font-semibold text-gray-600 dark:text-gray-400">ATM Distance</span>
                                             <input type="checkbox" checked={showAtmDistance} onChange={() => setShowAtmDistance((v) => !v)} />
                                         </label>
 
                                         <div className="mb-3">
-                                            <div className="mb-1.5 font-semibold text-gray-600">Open Interest</div>
+                                            <div className="mb-1.5 font-semibold text-gray-600 dark:text-gray-400">Open Interest</div>
                                             <div className="flex gap-3">
-                                                <label className="flex items-center gap-1 text-gray-700 cursor-pointer">
+                                                <label className="flex items-center gap-1 text-gray-700 dark:text-gray-300 cursor-pointer">
                                                     <input type="checkbox" checked={columns.oi} onChange={() => toggleColumn("oi")} /> OI
                                                 </label>
-                                                <label className="flex items-center gap-1 text-gray-700 cursor-pointer">
+                                                <label className="flex items-center gap-1 text-gray-700 dark:text-gray-300 cursor-pointer">
                                                     <input type="checkbox" checked={columns.lot} onChange={() => toggleColumn("lot")} /> Lot
                                                 </label>
                                             </div>
                                         </div>
 
                                         <div className="mb-3">
-                                            <div className="mb-1.5 font-semibold text-gray-600">Delta & IV</div>
+                                            <div className="mb-1.5 font-semibold text-gray-600 dark:text-gray-400">Delta & IV</div>
                                             <div className="flex gap-3">
-                                                <label className="flex items-center gap-1 text-gray-700 cursor-pointer">
+                                                <label className="flex items-center gap-1 text-gray-700 dark:text-gray-300 cursor-pointer">
                                                     <input type="checkbox" checked={columns.callDelta} onChange={() => toggleColumn("callDelta")} /> Call Delta
                                                 </label>
-                                                <label className="flex items-center gap-1 text-gray-700 cursor-pointer">
+                                                <label className="flex items-center gap-1 text-gray-700 dark:text-gray-300 cursor-pointer">
                                                     <input type="checkbox" checked={columns.putDelta} onChange={() => toggleColumn("putDelta")} /> Put Delta
                                                 </label>
-                                                <label className="flex items-center gap-1 text-gray-700 cursor-pointer">
+                                                <label className="flex items-center gap-1 text-gray-700 dark:text-gray-300 cursor-pointer">
                                                     <input type="checkbox" checked={columns.iv} onChange={() => toggleColumn("iv")} /> IV
                                                 </label>
                                             </div>
                                         </div>
 
                                         <div className="mb-3">
-                                            <div className="mb-1.5 font-semibold text-gray-600">Greeks</div>
+                                            <div className="mb-1.5 font-semibold text-gray-600 dark:text-gray-400">Greeks</div>
                                             <div className="flex gap-3">
-                                                <label className="flex items-center gap-1 text-gray-700 cursor-pointer">
+                                                <label className="flex items-center gap-1 text-gray-700 dark:text-gray-300 cursor-pointer">
                                                     <input type="checkbox" checked={columns.theta} onChange={() => toggleColumn("theta")} /> Theta
                                                 </label>
-                                                <label className="flex items-center gap-1 text-gray-700 cursor-pointer">
+                                                <label className="flex items-center gap-1 text-gray-700 dark:text-gray-300 cursor-pointer">
                                                     <input type="checkbox" checked={columns.vega} onChange={() => toggleColumn("vega")} /> Vega
                                                 </label>
-                                                <label className="flex items-center gap-1 text-gray-700 cursor-pointer">
+                                                <label className="flex items-center gap-1 text-gray-700 dark:text-gray-300 cursor-pointer">
                                                     <input type="checkbox" checked={columns.gamma} onChange={() => toggleColumn("gamma")} /> Gamma
                                                 </label>
                                             </div>
                                         </div>
 
-                                        <button onClick={resetChainSettings} className="text-[12px] font-semibold text-emerald-600 hover:underline">
+                                        <button onClick={resetChainSettings} className="text-[12px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline">
                                             Reset to defaults
                                         </button>
                                     </div>
@@ -927,7 +995,7 @@ export default function StrategyBuilder() {
                                     className={`shrink-0 rounded-lg px-2.5 py-1 text-[12px] font-semibold transition ${
                                         exp === data.selectedExpiry
                                             ? "bg-emerald-600 text-white shadow-xs"
-                                            : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                                            : "bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-white/10"
                                     }`}
                                 >
                                     {formatExpiryShort(exp)} ({daysUntilExpiry(exp)}d)
@@ -937,33 +1005,8 @@ export default function StrategyBuilder() {
                     )}
                 </div>
 
-                {data && (
-                    <div className="mb-3 flex items-center gap-4 rounded-xl border border-gray-200 bg-white px-4 py-2 text-[13px] shadow-sm">
-                        <div>
-                            <span className="text-gray-400">SPOT: </span>
-                            <span className="font-bold tabular-nums text-gray-900">{formatPrice(data.spotPrice)}</span>
-                        </div>
-                        <div className="h-4 w-px bg-gray-200" />
-                        <div>
-                            <span className="text-gray-400">VIX: </span>
-                            <span className="font-bold tabular-nums text-gray-900">
-                                {data.vix != null ? Number(data.vix).toFixed(2) : "—"}
-                            </span>
-                        </div>
-                        <div className="h-4 w-px bg-gray-200" />
-                        <div>
-                            <span className="text-gray-400">
-                                FUT{data.futureExpiry ? ` (${formatExpiryShort(data.futureExpiry)})` : ""}:{" "}
-                            </span>
-                            <span className="font-bold tabular-nums text-gray-900">
-                                {data.futurePrice != null ? formatPrice(data.futurePrice) : "—"}
-                            </span>
-                        </div>
-                    </div>
-                )}
-
-                {error && <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-700">{error}</div>}
-                {loading && !data && <div className="rounded-xl border border-gray-200 bg-white px-3 py-12 text-center text-[13px] text-gray-400">Fetching option matrix...</div>}
+                {error && <div className="mb-3 rounded-lg border border-rose-200 dark:border-rose-900/40 bg-rose-50 dark:bg-rose-950/20 px-3 py-2 text-[13px] text-rose-700 dark:text-rose-300">{error}</div>}
+                {loading && !data && <div className="rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-3 py-12 text-center text-[13px] text-gray-400">Fetching option matrix...</div>}
 
                 {data && data.rows && (
                     <div className="relative">
@@ -982,7 +1025,7 @@ export default function StrategyBuilder() {
                                         className={`px-2 py-0.5 rounded font-semibold transition ${
                                             strikeWindow === val
                                                 ? "bg-emerald-600 text-white shadow-xs"
-                                                : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                                                : "bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-white/10"
                                         }`}
                                     >
                                         {label}
@@ -993,9 +1036,9 @@ export default function StrategyBuilder() {
                                 {displayChainRows.length} strikes shown
                             </span>
                         </div>
-                        <div ref={chainScrollRef} className="max-h-[82vh] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-sm custom-scrollbar">
+                        <div ref={chainScrollRef} className="max-h-[82vh] overflow-y-auto rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm custom-scrollbar">
                             <table className="w-full border-collapse text-[12px]">
-                                <thead className="sticky top-0 bg-gray-50 border-b border-gray-200 z-10 shadow-[0_1px_0_0_rgba(229,231,235,1)]">
+                                <thead className="sticky top-0 bg-gray-50 dark:bg-[#070e17] border-b border-gray-200 dark:border-white/10 z-10 shadow-[0_1px_0_0_rgba(229,231,235,1)] dark:shadow-[0_1px_0_0_rgba(255,255,255,0.05)]">
                                     <tr>
                                         {columns.theta && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Theta</th>}
                                         {columns.vega && <th className="px-1.5 py-2 text-center font-semibold text-gray-400 w-[10%]">Vega</th>}
@@ -1005,7 +1048,7 @@ export default function StrategyBuilder() {
                                         <th className="px-1.5 py-2 text-right font-semibold text-gray-400 w-[15%]">LTP</th>
                                         {columns.oi && <th className="px-1.5 py-2 text-right font-semibold text-gray-400 w-[18%]">OI{columns.lot ? " / Lot" : ""}</th>}
                                         <th
-                                            className="py-2 text-center font-bold text-gray-700 bg-gray-100/80 w-[16%] border-x border-gray-200 cursor-pointer select-none"
+                                            className="py-2 text-center font-bold text-gray-700 dark:text-gray-200 bg-gray-100/80 dark:bg-[#09111c] w-[16%] border-x border-gray-200 dark:border-white/10 cursor-pointer select-none"
                                             onClick={() => setStrikeAsc((v) => !v)}
                                             title="Sort strikes"
                                         >
@@ -1043,57 +1086,57 @@ export default function StrategyBuilder() {
                                             <tr
                                                 key={row.strike}
                                                 ref={isAtm ? atmRowRef : null}
-                                                className={`border-b border-gray-100/70 transition-colors ${isAtm ? "bg-emerald-50/70 font-semibold" : "hover:bg-gray-50/80"} ${rowStale ? "border-l-2 border-l-amber-300" : ""}`}
+                                                className={`border-b border-gray-100/70 dark:border-white/5 transition-colors ${isAtm ? "bg-emerald-50/70 dark:bg-emerald-950/40 font-semibold" : "hover:bg-gray-50/80 dark:hover:bg-white/[0.03]"} ${rowStale ? "border-l-2 border-l-amber-300" : ""}`}
                                             >
                                                 {columns.theta && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.theta ?? "-"}</td>}
                                                 {columns.vega && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.vega ?? "-"}</td>}
                                                 {columns.gamma && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.gamma ?? "-"}</td>}
                                                 {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.iv ?? "-"}</td>}
                                                 {columns.callDelta && (
-                                                    <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-amber-50" : ""}`}>
+                                                    <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-amber-50/60 dark:bg-amber-950/20" : ""}`}>
                                                         {formatDelta(row.ce?.delta)}
                                                         <StaleBadge stale={ceStale.greeksStale} ageMs={staleOpts.now - staleOpts.dataLoadedAt} label="greeks/IV don't stream live — last refreshed a while ago" />
                                                     </td>
                                                 )}
                                                 {/* CALL SIDE */}
-                                                <td className={`group px-1.5 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-amber-50" : ""}`}>
+                                                <td className={`group px-1.5 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-amber-50/60 dark:bg-amber-950/20" : ""}`}>
                                                     {ceNet !== 0 && (
-                                                        <span className={`absolute -top-0.5 right-0.5 z-[1] rounded-full border bg-white px-1.5 text-[9px] font-bold leading-tight ${ceNet > 0 ? "border-[#52C41A] text-[#52C41A]" : "border-[#FF4D4F] text-[#FF4D4F]"}`}>
+                                                        <span className={`absolute -top-0.5 right-0.5 z-[1] rounded-full border bg-white dark:bg-[#0c1421] px-1.5 text-[9px] font-bold leading-tight ${ceNet > 0 ? "border-[#52C41A] dark:border-emerald-500 text-[#52C41A] dark:text-emerald-400" : "border-[#FF4D4F] dark:border-rose-500 text-[#FF4D4F] dark:text-rose-400"}`}>
                                                             {ceNet > 0 ? `+${ceNet}` : ceNet}
                                                         </span>
                                                     )}
-                                                    <span className="text-gray-700 group-hover:invisible">
+                                                    <span className="text-gray-700 dark:text-gray-200 group-hover:invisible">
                                                         {formatPrice(row.ce?.ltp)}
                                                         <StaleBadge stale={ceStale.priceStale} ageMs={ceAge} />
                                                     </span>
-                                                    <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white">
+                                                    <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white dark:bg-[#0c1421]">
                                                         {ceLeg ? (
                                                             <>
-                                                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty - 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] font-bold text-gray-600 hover:bg-gray-100">−</button>
-                                                                <span className="w-4 text-center text-[10px] font-bold tabular-nums text-gray-700">{ceLeg.qty}</span>
-                                                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty + 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] font-bold text-gray-600 hover:bg-gray-100">+</button>
+                                                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty - 1)} className="rounded border border-gray-300 dark:border-white/10 px-1 py-0.5 text-[10px] font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10">−</button>
+                                                                <span className="w-4 text-center text-[10px] font-bold tabular-nums text-gray-700 dark:text-gray-200">{ceLeg.qty}</span>
+                                                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty + 1)} className="rounded border border-gray-300 dark:border-white/10 px-1 py-0.5 text-[10px] font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10">+</button>
                                                             </>
                                                         ) : (
                                                             <>
-                                                                <button onClick={() => addLeg(row, "CE", "buy")} className="rounded border border-[#52C41A] text-[#52C41A] hover:bg-[#52C41A] hover:text-white px-1.5 py-0.5 text-[10px] font-extrabold transition-colors">B</button>
-                                                                <button onClick={() => addLeg(row, "CE", "sell")} className="rounded border border-[#FF4D4F] text-[#FF4D4F] hover:bg-[#FF4D4F] hover:text-white px-1.5 py-0.5 text-[10px] font-extrabold transition-colors">S</button>
+                                                                <button onClick={() => addLeg(row, "CE", "buy")} className="rounded border border-[#52C41A] dark:border-emerald-500 text-[#52C41A] dark:text-emerald-400 hover:bg-[#52C41A] hover:text-white px-1.5 py-0.5 text-[10px] font-extrabold transition-colors">B</button>
+                                                                <button onClick={() => addLeg(row, "CE", "sell")} className="rounded border border-[#FF4D4F] dark:border-rose-500 text-[#FF4D4F] dark:text-rose-400 hover:bg-[#FF4D4F] hover:text-white px-1.5 py-0.5 text-[10px] font-extrabold transition-colors">S</button>
                                                             </>
                                                         )}
-                                                        <button onClick={() => setChartModal({ strike: row.strike, right: "CE" })} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
+                                                        <button onClick={() => setChartModal({ strike: row.strike, right: "CE" })} className="rounded border border-gray-300 dark:border-white/10 px-1 py-0.5 text-[10px] leading-none text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/10" title="View contract chart">📈</button>
                                                     </div>
                                                 </td>
                                                 {columns.oi && (
-                                                    <td className={`relative p-0 tabular-nums ${ceItm ? "bg-amber-50" : ""}`}>
+                                                    <td className={`relative p-0 tabular-nums ${ceItm ? "bg-amber-50/60 dark:bg-amber-950/20" : ""}`}>
                                                         <OiBar value={row.ce?.oi} max={maxCeOi} side="ce" />
                                                         {ceStale.priceStale && (
-                                                            <span className="absolute right-0.5 top-0.5"><StaleBadge stale ageMs={ceAge} /></span>
+                                                             <span className="absolute right-0.5 top-0.5"><StaleBadge stale ageMs={ceAge} /></span>
                                                         )}
                                                         {columns.lot && <div className="px-1 pb-0.5 text-[10px] text-gray-400 text-right">{lots ?? "-"} lots</div>}
                                                     </td>
                                                 )}
 
                                                 {/* STRIKE PRICE */}
-                                                <td className="py-1.5 text-center font-bold text-gray-900 bg-gray-50/40 border-x border-gray-100 text-[13px] tabular-nums">
+                                                <td className="py-1.5 text-center font-bold text-gray-900 dark:text-white bg-gray-50/40 dark:bg-[#070e17]/80 border-x border-gray-100 dark:border-white/10 text-[13px] tabular-nums">
                                                     {row.strike}
                                                     {showAtmDistance && (
                                                         <div className="text-[10px] font-normal text-gray-400">
@@ -1104,7 +1147,7 @@ export default function StrategyBuilder() {
 
                                                 {/* PUT SIDE */}
                                                 {columns.oi && (
-                                                    <td className={`relative p-0 tabular-nums ${peItm ? "bg-amber-50" : ""}`}>
+                                                    <td className={`relative p-0 tabular-nums ${peItm ? "bg-amber-50/60 dark:bg-amber-950/20" : ""}`}>
                                                         <OiBar value={row.pe?.oi} max={maxPeOi} side="pe" />
                                                         {peStale.priceStale && (
                                                             <span className="absolute left-0.5 top-0.5"><StaleBadge stale ageMs={peAge} /></span>
@@ -1112,34 +1155,34 @@ export default function StrategyBuilder() {
                                                         {columns.lot && <div className="px-1 pb-0.5 text-[10px] text-gray-400">{putLots ?? "-"} lots</div>}
                                                     </td>
                                                 )}
-                                                <td className={`group px-1.5 py-1.5 text-left tabular-nums relative ${peItm ? "bg-amber-50" : ""}`}>
+                                                <td className={`group px-1.5 py-1.5 text-left tabular-nums relative ${peItm ? "bg-amber-50/60 dark:bg-amber-950/20" : ""}`}>
                                                     {peNet !== 0 && (
-                                                        <span className={`absolute -top-0.5 left-0.5 z-[1] rounded-full border bg-white px-1.5 text-[9px] font-bold leading-tight ${peNet > 0 ? "border-[#52C41A] text-[#52C41A]" : "border-[#FF4D4F] text-[#FF4D4F]"}`}>
+                                                        <span className={`absolute -top-0.5 left-0.5 z-[1] rounded-full border bg-white dark:bg-[#0c1421] px-1.5 text-[9px] font-bold leading-tight ${peNet > 0 ? "border-[#52C41A] dark:border-emerald-500 text-[#52C41A] dark:text-emerald-400" : "border-[#FF4D4F] dark:border-rose-500 text-[#FF4D4F] dark:text-rose-400"}`}>
                                                             {peNet > 0 ? `+${peNet}` : peNet}
                                                         </span>
                                                     )}
-                                                    <span className="text-gray-700 group-hover:invisible">
+                                                    <span className="text-gray-700 dark:text-gray-200 group-hover:invisible">
                                                         {formatPrice(row.pe?.ltp)}
                                                         <StaleBadge stale={peStale.priceStale} ageMs={peAge} />
                                                     </span>
-                                                    <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white">
+                                                    <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white dark:bg-[#0c1421]">
                                                         {peLeg ? (
                                                             <>
-                                                                <button onClick={() => updateQty(peLeg.id, peLeg.qty - 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] font-bold text-gray-600 hover:bg-gray-100">−</button>
-                                                                <span className="w-4 text-center text-[10px] font-bold tabular-nums text-gray-700">{peLeg.qty}</span>
-                                                                <button onClick={() => updateQty(peLeg.id, peLeg.qty + 1)} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] font-bold text-gray-600 hover:bg-gray-100">+</button>
+                                                                <button onClick={() => updateQty(peLeg.id, peLeg.qty - 1)} className="rounded border border-gray-300 dark:border-white/10 px-1 py-0.5 text-[10px] font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10">−</button>
+                                                                <span className="w-4 text-center text-[10px] font-bold tabular-nums text-gray-700 dark:text-gray-200">{peLeg.qty}</span>
+                                                                <button onClick={() => updateQty(peLeg.id, peLeg.qty + 1)} className="rounded border border-gray-300 dark:border-white/10 px-1 py-0.5 text-[10px] font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10">+</button>
                                                             </>
                                                         ) : (
                                                             <>
-                                                                <button onClick={() => addLeg(row, "PE", "buy")} className="rounded border border-[#52C41A] text-[#52C41A] hover:bg-[#52C41A] hover:text-white px-1.5 py-0.5 text-[10px] font-extrabold transition-colors">B</button>
-                                                                <button onClick={() => addLeg(row, "PE", "sell")} className="rounded border border-[#FF4D4F] text-[#FF4D4F] hover:bg-[#FF4D4F] hover:text-white px-1.5 py-0.5 text-[10px] font-extrabold transition-colors">S</button>
+                                                                <button onClick={() => addLeg(row, "PE", "buy")} className="rounded border border-[#52C41A] dark:border-emerald-500 text-[#52C41A] dark:text-emerald-400 hover:bg-[#52C41A] hover:text-white px-1.5 py-0.5 text-[10px] font-extrabold transition-colors">B</button>
+                                                                <button onClick={() => addLeg(row, "PE", "sell")} className="rounded border border-[#FF4D4F] dark:border-rose-500 text-[#FF4D4F] dark:text-rose-400 hover:bg-[#FF4D4F] hover:text-white px-1.5 py-0.5 text-[10px] font-extrabold transition-colors">S</button>
                                                             </>
                                                         )}
-                                                        <button onClick={() => setChartModal({ strike: row.strike, right: "PE" })} className="rounded border border-gray-300 px-1 py-0.5 text-[10px] leading-none text-gray-500 hover:bg-gray-100" title="View contract chart">📈</button>
+                                                        <button onClick={() => setChartModal({ strike: row.strike, right: "PE" })} className="rounded border border-gray-300 dark:border-white/10 px-1 py-0.5 text-[10px] leading-none text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/10" title="View contract chart">📈</button>
                                                     </div>
                                                 </td>
                                                 {columns.putDelta && (
-                                                    <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-amber-50" : ""}`}>
+                                                    <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-amber-50/60 dark:bg-amber-950/20" : ""}`}>
                                                         {formatDelta(row.pe?.delta)}
                                                         <StaleBadge stale={peStale.greeksStale} ageMs={staleOpts.now - staleOpts.dataLoadedAt} label="greeks/IV don't stream live — last refreshed a while ago" />
                                                     </td>
@@ -1158,7 +1201,7 @@ export default function StrategyBuilder() {
                         {/* Floating "Go to ATM" pill */}
                         <button
                             onClick={() => scrollToAtm("smooth")}
-                            className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-gray-900/85 px-3 py-1.5 text-[12px] font-semibold text-white shadow-lg hover:bg-gray-900"
+                            className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-gray-900/85 hover:bg-gray-900 dark:bg-emerald-600 dark:hover:bg-emerald-500 px-3.5 py-1.5 text-[12px] font-semibold text-white shadow-lg transition"
                         >
                             Go to ATM
                         </button>
@@ -1170,7 +1213,7 @@ export default function StrategyBuilder() {
             {hideChain && (
                 <button
                     onClick={() => setHideChain(false)}
-                    className="fixed left-3 top-20 z-30 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-gray-600 shadow-md hover:bg-gray-50"
+                    className="fixed left-3 top-20 z-30 rounded-full border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-3 py-1.5 text-[12px] font-semibold text-gray-600 dark:text-gray-300 shadow-md hover:bg-gray-50 dark:hover:bg-white/5"
                 >
                     Show Option Chain
                 </button>
@@ -1179,39 +1222,11 @@ export default function StrategyBuilder() {
             {/* Right Column: Analytics, Chart, Profiles */}
             <div className={`flex-1 min-w-0 flex flex-col ${mobileView !== "all" && mobileView !== "payoff" && mobileView !== "positions" && mobileView !== "presets" ? "hidden lg:flex" : ""}`}>
                 {legs.length === 0 ? (
-                    <div className="flex-1 bg-white border border-gray-200 rounded-xl p-3 sm:p-6 shadow-sm">
+                    <div className="flex-1 min-w-0">
                         <PresetStrategies data={data} onApply={applyPreset} fetchExpiryRows={fetchExpiryRows} />
                     </div>
                 ) : (
                     <>
-                        <div className="mb-3 flex flex-wrap items-center justify-between sm:justify-end gap-2">
-                            <div className="flex items-center gap-1.5 sm:hidden">
-                                <span className="text-xs font-bold text-gray-700">{legs.length} Legs</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                                <button
-                                    onClick={() => setPaperExecuteOpen(true)}
-                                    className="rounded-xl bg-emerald-600 px-3 sm:px-4 py-1.5 text-xs sm:text-[13px] font-bold text-white hover:bg-emerald-700 shadow-xs transition flex items-center gap-1.5"
-                                    title="Execute this strategy basket into your virtual Paper Trading portfolio"
-                                >
-                                    <span>⚡ Trade Basket</span>
-                                </button>
-                                <SaveButton
-                                    itemLabel="strategy"
-                                    onSave={(token, name) => saveStrategy(token, { name, underlying: symbol, legs })}
-                                />
-                                <button
-                                    onClick={() => setSavedOpen(true)}
-                                    className="rounded-xl border border-gray-300 px-3 py-1.5 text-xs sm:text-[13px] font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-xs transition"
-                                >
-                                    Saved
-                                </button>
-                                <button onClick={resetLegs} className="rounded-xl border border-gray-300 px-3 py-1.5 text-xs sm:text-[13px] font-semibold text-gray-600 bg-white hover:bg-gray-50 shadow-xs transition">
-                                    Reset
-                                </button>
-                            </div>
-                        </div>
-
                         {savedOpen && (
                             <SavedStrategiesModal
                                 onClose={() => setSavedOpen(false)}
@@ -1229,121 +1244,145 @@ export default function StrategyBuilder() {
                             context="live"
                         />
 
-                        <div className="mb-4 flex flex-col md:flex-row gap-4 items-stretch">
-                            {/* StockMojo Matched Vertical Status Column */}
-                            <div className="w-full md:w-52 shrink-0 grid grid-cols-2 md:grid-cols-1 gap-3 rounded-xl border border-gray-200 bg-white p-3.5 sm:p-4 shadow-sm">
-                                {/* Always the real live P&L (raw LTP diff vs. each leg's entry
-                                    premium, same number the Positions table's "Total P&L" already
-                                    shows) — deliberately NEVER the Black-Scholes mark-to-market curve
-                                    estimate (that's a repriced approximation and can disagree with
-                                    what the position is actually worth, e.g. reading nonzero right when
-                                    a leg is added). Reads "-" rather than falling back to the estimate
-                                    when a leg's current LTP isn't known yet (e.g. market closed). */}
-                                <Stat label="Strategy P&L" value={formatPrice(totalLivePnl)} tone={totalLivePnl == null ? undefined : totalLivePnl >= 0 ? "positive" : "negative"} />
-                                <Stat label="Est. Margin" value={estMargin == null ? "—" : estMargin === 0 ? "Not required" : formatPrice(estMargin)} hint="Estimate, not real SPAN margin. Hedged short legs block only their spread's max loss; a naked short blocks ~10% of contract notional. Long legs need no margin." />
-                                <Stat label="Probability of Profit (POP)" value={pop != null ? `${pop.toFixed(0)}%` : "—"} hint="Normal distribution assumption breakdown strategy" />
-                                <Stat label="Max Profit Potential" value={maxProfit == null ? "—" : typeof maxProfit === "number" ? formatPrice(maxProfit) : maxProfit} tone="positive" />
-                                <Stat label="Max Loss Risk" value={maxLoss == null ? "—" : typeof maxLoss === "number" ? formatPrice(maxLoss) : maxLoss} tone="negative" />
-                                <Stat label="Risk : Reward" value={riskReward || "—"} hint="Ratio of maximum potential profit to maximum potential loss" />
-                                <Stat
-                                    label="Breakeven Thresholds"
-                                    value={
-                                        breakevens && breakevens.length ? (
-                                            <div className="space-y-0.5">
-                                                {breakevens.map((be, i) => (
-                                                    <div key={i}>
-                                                        {formatPrice(be)}
-                                                        {data?.spotPrice ? (
-                                                            <span className="ml-1 font-normal text-gray-400">
-                                                                ({formatPercent(((be - data.spotPrice) / data.spotPrice) * 100)})
-                                                            </span>
-                                                        ) : null}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        ) : (
-                                            "None"
-                                        )
-                                    }
-                                />
-                                <Stat label="Workspace Constraints" value={`${legs.length} of 6 legs (${activeLegs.length} active)`} />
+                        {/* Unified Strategy Analysis & Chart Card */}
+                        <div className="mb-4 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden flex flex-col transition-colors">
+                            {/* Card Top Tab Bar */}
+                            <div className="flex items-center justify-between gap-1 border-b border-gray-100 dark:border-white/10 bg-gray-50/50 dark:bg-[#070e17]/50 px-3 pt-2">
+                                <div className="flex gap-1 overflow-x-auto">
+                                    {[
+                                        ["payoff", "Payoff"],
+                                        ["strategy", "Strategy Chart"],
+                                        ["nifty", "NIFTY Chart"],
+                                        ["combined", "Strategy Chart + NIFTY Chart"],
+                                    ].map(([key, label]) => (
+                                        <button
+                                            key={key}
+                                            onClick={() => setChartTab(key)}
+                                            className={`shrink-0 rounded-t-lg px-3.5 py-1.5 text-xs font-bold transition-colors ${
+                                                chartTab === key
+                                                    ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 border border-b-0 border-gray-200 dark:border-white/10 shadow-xs"
+                                                    : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                                            }`}
+                                        >
+                                            {label}
+                                        </button>
+                                    ))}
+                                </div>
+                                {chartTab === "payoff" && (
+                                    <label className="mb-1.5 flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] px-2.5 py-1 text-[11px] font-semibold text-gray-600 dark:text-gray-300 shadow-xs">
+                                        Payoff setting
+                                        <span
+                                            role="switch"
+                                            aria-checked={payoffSettingsOpen}
+                                            onClick={() => setPayoffSettingsOpen((v) => !v)}
+                                            className={`relative inline-block h-4 w-8 rounded-full transition-colors ${payoffSettingsOpen ? "bg-emerald-600" : "bg-gray-300 dark:bg-gray-700"}`}
+                                        >
+                                            <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${payoffSettingsOpen ? "translate-x-4" : "translate-x-0.5"}`} />
+                                        </span>
+                                    </label>
+                                )}
                             </div>
 
-                            <div className="flex-1 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col">
-                                <div className="flex items-center justify-between gap-1 border-b border-gray-100 bg-gray-50/50 px-3 pt-2">
-                                    <div className="flex gap-1 overflow-x-auto">
-                                        {[
-                                            ["payoff", "Payoff"],
-                                            ["strategy", "Strategy Chart"],
-                                            ["nifty", "NIFTY Chart"],
-                                            ["combined", "Strategy Chart + NIFTY Chart"],
-                                        ].map(([key, label]) => (
-                                            <button
-                                                key={key}
-                                                onClick={() => setChartTab(key)}
-                                                className={`shrink-0 rounded-t-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                                                    chartTab === key
-                                                        ? "bg-white text-emerald-600 border border-b-0 border-gray-200"
-                                                        : "text-gray-500 hover:text-gray-800"
-                                                }`}
-                                            >
-                                                {label}
-                                            </button>
-                                        ))}
-                                    </div>
-                                    {chartTab === "payoff" && (
-                                        <label className="mb-1.5 flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-gray-600">
-                                            Payoff setting
-                                            <span
-                                                role="switch"
-                                                aria-checked={payoffSettingsOpen}
-                                                onClick={() => setPayoffSettingsOpen((v) => !v)}
-                                                className={`relative inline-block h-4 w-8 rounded-full transition-colors ${payoffSettingsOpen ? "bg-emerald-600" : "bg-gray-300"}`}
-                                            >
-                                                <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${payoffSettingsOpen ? "translate-x-4" : "translate-x-0.5"}`} />
+                            {/* What-If Simulation Sliders */}
+                            {chartTab === "payoff" && payoffSettingsOpen && (
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 border-b border-gray-100 dark:border-white/10 bg-gray-50/60 dark:bg-[#070e17]/60 px-4 py-3 text-[11px]">
+                                    <div>
+                                        <div className="mb-1 flex justify-between font-semibold text-gray-600 dark:text-gray-400">
+                                            <span>Underlying</span>
+                                            <span className="tabular-nums text-emerald-600 dark:text-emerald-400 font-bold">
+                                                {whatIfResult ? formatPrice(whatIfResult.simSpot) : "—"} ({whatIfSpotPct > 0 ? "+" : ""}{whatIfSpotPct}%)
                                             </span>
-                                        </label>
-                                    )}
+                                        </div>
+                                        <input type="range" min={-10} max={10} step={0.5} value={whatIfSpotPct} onChange={(e) => setWhatIfSpotPct(Number(e.target.value))} className="w-full accent-emerald-600" />
+                                    </div>
+                                    <div>
+                                        <div className="mb-1 flex justify-between font-semibold text-gray-600 dark:text-gray-400">
+                                            <span>Date/Time</span>
+                                            <span className="tabular-nums text-emerald-600 dark:text-emerald-400 font-bold">+{whatIfDaysForward}d</span>
+                                        </div>
+                                        <input type="range" min={0} max={daysToExpiry} step={1} value={whatIfDaysForward} onChange={(e) => setWhatIfDaysForward(Number(e.target.value))} className="w-full accent-emerald-600" />
+                                    </div>
+                                    <div>
+                                        <div className="mb-1 flex justify-between font-semibold text-gray-600 dark:text-gray-400">
+                                            <span>IV</span>
+                                            <span className="tabular-nums text-emerald-600 dark:text-emerald-400 font-bold">{whatIfIvShift > 0 ? "+" : ""}{whatIfIvShift}pt</span>
+                                        </div>
+                                        <input type="range" min={-20} max={20} step={1} value={whatIfIvShift} onChange={(e) => setWhatIfIvShift(Number(e.target.value))} className="w-full accent-emerald-600" />
+                                    </div>
+                                    <div className="sm:col-span-3 flex items-center justify-between rounded-xl border border-emerald-100 dark:border-emerald-500/20 bg-emerald-50/60 dark:bg-emerald-950/20 px-3 py-2">
+                                        <span className="font-semibold text-gray-700 dark:text-gray-300">Simulated P&L at these settings</span>
+                                        <span className={`text-sm font-black tabular-nums ${whatIfResult && whatIfResult.pnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                            {whatIfResult ? formatPrice(whatIfResult.pnl) : "—"}
+                                        </span>
+                                    </div>
                                 </div>
+                            )}
 
-                                {chartTab === "payoff" && payoffSettingsOpen && (
-                                    <div className="grid grid-cols-3 gap-4 border-b border-gray-100 bg-gray-50/60 px-4 py-3 text-[11px]">
-                                        <div>
-                                            <div className="mb-1 flex justify-between font-semibold text-gray-600">
-                                                <span>Underlying</span>
-                                                <span className="tabular-nums text-emerald-600 font-bold">
-                                                    {whatIfResult ? formatPrice(whatIfResult.simSpot) : "—"} ({whatIfSpotPct > 0 ? "+" : ""}{whatIfSpotPct}%)
-                                                </span>
+                            {/* Card Body */}
+                            {chartTab === "payoff" ? (
+                                <div className="flex flex-col lg:flex-row items-stretch min-h-[380px]">
+                                    {/* Left Metrics Sidebar inside Payoff card */}
+                                    <div className="w-full lg:w-56 xl:w-60 shrink-0 border-b lg:border-b-0 lg:border-r border-gray-100 dark:border-white/10 p-3.5 sm:p-4 bg-gray-50/30 dark:bg-[#070e17]/30 flex flex-col gap-2.5">
+                                        {/* Total Strategy P&L Badge */}
+                                        <div className={`p-2.5 rounded-xl border text-center transition-colors shadow-xs ${
+                                            totalLivePnl == null
+                                                ? "bg-gray-100/70 border-gray-200 dark:bg-white/5 dark:border-white/10 text-gray-500"
+                                                : totalLivePnl >= 0
+                                                ? "bg-emerald-50/80 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-800/40 text-emerald-600 dark:text-emerald-400"
+                                                : "bg-rose-50/80 border-rose-200 dark:bg-rose-950/30 dark:border-rose-800/40 text-rose-600 dark:text-rose-400"
+                                        }`}>
+                                            <div className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Strategy P&L</div>
+                                            <div className="text-base sm:text-lg font-black tabular-nums tracking-tight">
+                                                {totalLivePnl == null ? "—" : `${totalLivePnl >= 0 ? "+" : ""}${formatPrice(totalLivePnl)}`}
                                             </div>
-                                            <input type="range" min={-10} max={10} step={0.5} value={whatIfSpotPct} onChange={(e) => setWhatIfSpotPct(Number(e.target.value))} className="w-full accent-emerald-600" />
                                         </div>
-                                        <div>
-                                            <div className="mb-1 flex justify-between font-semibold text-gray-600">
-                                                <span>Date/Time</span>
-                                                <span className="tabular-nums text-emerald-600 font-bold">+{whatIfDaysForward}d</span>
-                                            </div>
-                                            <input type="range" min={0} max={daysToExpiry} step={1} value={whatIfDaysForward} onChange={(e) => setWhatIfDaysForward(Number(e.target.value))} className="w-full accent-emerald-600" />
-                                        </div>
-                                        <div>
-                                            <div className="mb-1 flex justify-between font-semibold text-gray-600">
-                                                <span>IV</span>
-                                                <span className="tabular-nums text-emerald-600 font-bold">{whatIfIvShift > 0 ? "+" : ""}{whatIfIvShift}pt</span>
-                                            </div>
-                                            <input type="range" min={-20} max={20} step={1} value={whatIfIvShift} onChange={(e) => setWhatIfIvShift(Number(e.target.value))} className="w-full accent-emerald-600" />
-                                        </div>
-                                        <div className="col-span-3 flex items-center justify-between rounded-xl border border-emerald-100 bg-emerald-50/60 px-3 py-2">
-                                            <span className="font-semibold text-gray-700">Simulated P&L at these settings</span>
-                                            <span className={`text-sm font-black tabular-nums ${whatIfResult && whatIfResult.pnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                                                {whatIfResult ? formatPrice(whatIfResult.pnl) : "—"}
-                                            </span>
+
+                                        <Stat label="Est. Margin" value={estMargin == null ? "—" : estMargin === 0 ? "Not required" : formatPrice(estMargin)} hint="Estimate, not real SPAN margin. Hedged short legs block only their spread's max loss; a naked short blocks ~10% of contract notional. Long legs need no margin." />
+                                        <Stat label="Probability of Profit (POP)" value={pop != null ? `${pop.toFixed(0)}%` : "—"} hint="Normal distribution assumption breakdown strategy" />
+                                        <Stat label="Reward : Risk" value={riskReward || "—"} hint="Ratio of maximum potential profit to maximum potential loss" />
+                                        <Stat label="Max Profit Potential" value={maxProfit == null ? "—" : typeof maxProfit === "number" ? formatPrice(maxProfit) : maxProfit} tone="positive" />
+                                        <Stat label="Max Loss Risk" value={maxLoss == null ? "—" : typeof maxLoss === "number" ? formatPrice(maxLoss) : maxLoss} tone="negative" />
+                                        <Stat
+                                            label="Breakeven Thresholds"
+                                            value={
+                                                breakevens && breakevens.length ? (
+                                                    <div className="space-y-0.5">
+                                                        {breakevens.map((be, i) => (
+                                                            <div key={i}>
+                                                                {formatPrice(be)}
+                                                                {data?.spotPrice ? (
+                                                                    <span className="ml-1 font-normal text-gray-400 dark:text-gray-500 text-[10.5px]">
+                                                                        ({formatPercent(((be - data.spotPrice) / data.spotPrice) * 100)})
+                                                                    </span>
+                                                                ) : null}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    "None"
+                                                )
+                                            }
+                                        />
+                                        <div className="mt-auto pt-2 border-t border-gray-100 dark:border-white/10 text-[11px] text-gray-400 dark:text-gray-500 flex justify-between">
+                                            <span>Legs:</span>
+                                            <span className="font-semibold text-gray-700 dark:text-gray-300">{legs.length} / 6 ({activeLegs.length} active)</span>
                                         </div>
                                     </div>
-                                )}
 
-                                <div className="flex-1 p-4 flex flex-col justify-center">
-                                    {chartTab === "payoff" && (
-                                        <PayoffChart curve={curve} spotPrice={data?.spotPrice} breakevens={breakevens} expectedMove={expectedMove} />
-                                    )}
+                                    {/* Right Payoff Chart Area */}
+                                    <div className="flex-1 p-3 sm:p-4 flex flex-col justify-center min-w-0">
+                                        <PayoffChart
+                                            curve={curve}
+                                            spotPrice={data?.spotPrice}
+                                            breakevens={breakevens}
+                                            expectedMove={expectedMove}
+                                            oiData={data?.rows || []}
+                                            yearsRemaining={yearsRemaining}
+                                        />
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="p-4 flex flex-col justify-center">
                                     {chartTab === "strategy" && (
                                         <LiveIntradayChart symbol={symbol} mode="strategy" legs={legs} selectedExpiry={data?.selectedExpiry} />
                                     )}
@@ -1354,21 +1393,21 @@ export default function StrategyBuilder() {
                                         <LiveIntradayChart symbol={symbol} mode="combined" legs={legs} selectedExpiry={data?.selectedExpiry} height={380} />
                                     )}
                                 </div>
-                            </div>
+                            )}
                         </div>
 
                         {/* Interactive Position and Greeks Segment Control */}
-                        <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-                            <div className="flex border-b border-gray-200 bg-gray-50/50 text-[13px] font-semibold">
+                        <div className="rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden transition-colors">
+                            <div className="flex border-b border-gray-200 dark:border-white/10 bg-gray-50/50 dark:bg-[#070e17]/50 text-[13px] font-semibold">
                                 <button
                                     onClick={() => setTab("positions")}
-                                    className={`px-5 py-3 transition-colors ${tab === "positions" ? "border-b-2 border-emerald-600 text-emerald-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
+                                    className={`px-5 py-3 transition-colors ${tab === "positions" ? "border-b-2 border-emerald-600 text-emerald-600 dark:text-emerald-400 bg-white dark:bg-[#0b1420]" : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"}`}
                                 >
                                     Active Positions ({legs.length})
                                 </button>
                                 <button
                                     onClick={() => setTab("greeks")}
-                                    className={`px-5 py-3 transition-colors ${tab === "greeks" ? "border-b-2 border-emerald-600 text-emerald-600 bg-white" : "text-gray-500 hover:text-gray-800"}`}
+                                    className={`px-5 py-3 transition-colors ${tab === "greeks" ? "border-b-2 border-emerald-600 text-emerald-600 dark:text-emerald-400 bg-white dark:bg-[#0b1420]" : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"}`}
                                 >
                                     Portfolio Greeks
                                 </button>
@@ -1376,35 +1415,35 @@ export default function StrategyBuilder() {
 
                             {tab === "positions" ? (
                                 <>
-                                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 bg-gray-50/40 px-4 py-2 text-[12px]">
+                                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 dark:border-white/10 bg-gray-50/40 dark:bg-[#070e17]/40 px-4 py-2 text-[12px]">
                                         <div className="flex items-center gap-3">
-                                            <label className="flex items-center gap-1.5 text-gray-600 cursor-pointer" title="Include/exclude every leg in the payoff calculation">
-                                                <input type="checkbox" checked={allLegsActive} onChange={toggleSelectAllLegs} /> Select All
+                                            <label className="flex items-center gap-1.5 text-gray-600 dark:text-gray-300 cursor-pointer" title="Include/exclude every leg in the payoff calculation">
+                                                <input type="checkbox" checked={allLegsActive} onChange={toggleSelectAllLegs} className="accent-emerald-600 cursor-pointer" /> Select All
                                             </label>
                                             <button
                                                 onClick={() => setLegsTopFirst((v) => !v)}
-                                                className="rounded-md border border-gray-200 px-2 py-1 font-semibold text-gray-600 hover:bg-gray-100"
+                                                className="rounded-md border border-gray-200 dark:border-white/10 px-2 py-1 font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 transition"
                                             >
                                                 {legsTopFirst ? "Top ↓" : "Bottom ↑"}
                                             </button>
                                             <div className="flex items-center gap-1">
-                                                <span className="text-gray-400">Lots:</span>
-                                                <button onClick={() => bulkAdjustLots(-1)} className="rounded border border-gray-200 px-1.5 py-0.5 font-bold text-gray-600 hover:bg-gray-100">−</button>
-                                                <span className="w-6 text-center font-bold tabular-nums text-gray-800">{commonLots ?? "—"}</span>
-                                                <button onClick={() => bulkAdjustLots(1)} className="rounded border border-gray-200 px-1.5 py-0.5 font-bold text-gray-600 hover:bg-gray-100">+</button>
+                                                <span className="text-gray-400 dark:text-gray-500">Lots:</span>
+                                                <button onClick={() => bulkAdjustLots(-1)} className="rounded border border-gray-200 dark:border-white/10 px-1.5 py-0.5 font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 transition">−</button>
+                                                <span className="w-6 text-center font-bold tabular-nums text-gray-800 dark:text-gray-200">{commonLots ?? "—"}</span>
+                                                <button onClick={() => bulkAdjustLots(1)} className="rounded border border-gray-200 dark:border-white/10 px-1.5 py-0.5 font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 transition">+</button>
                                             </div>
                                             <div>
-                                                <span className="text-gray-400">Total Qty: </span>
-                                                <span className="font-bold tabular-nums text-gray-800">{totalLots}</span>
+                                                <span className="text-gray-400 dark:text-gray-500">Total Qty: </span>
+                                                <span className="font-bold tabular-nums text-gray-800 dark:text-gray-200">{totalLots}</span>
                                             </div>
                                         </div>
                                         <div>
-                                            <span className="text-gray-400">Total P&L: </span>
-                                            <span className={`font-bold tabular-nums ${totalLivePnl != null && totalLivePnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                                            <span className="text-gray-400 dark:text-gray-500">Total P&L: </span>
+                                            <span className={`font-bold tabular-nums ${totalLivePnl != null && totalLivePnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
                                                 {totalLivePnl != null ? formatPrice(totalLivePnl) : "-"}
                                             </span>
                                             {totalLivePnl != null && (
-                                                <span className="ml-1 text-gray-400" title="vs. total premium across all legs">
+                                                <span className="ml-1 text-gray-400 dark:text-gray-500" title="vs. total premium across all legs">
                                                     ({(() => {
                                                         const exposure = legs.reduce((s, l) => s + Math.abs(l.premium * legMultiplier(l)), 0);
                                                         return exposure > 0 ? `${((totalLivePnl / exposure) * 100).toFixed(1)}%` : "—";
@@ -1416,7 +1455,7 @@ export default function StrategyBuilder() {
 
                                     <table className="w-full border-collapse text-[13px]">
                                         <thead>
-                                            <tr className="text-gray-400 bg-gray-50/40 border-b border-gray-100">
+                                            <tr className="text-gray-400 dark:text-gray-400 bg-gray-50/40 dark:bg-[#070e17]/40 border-b border-gray-100 dark:border-white/10">
                                                 <th className="px-2 py-2.5 w-8" title="Include in payoff calculation"></th>
                                                 <th className="px-4 py-2.5 text-left font-medium">Action</th>
                                                 <th className="px-4 py-2.5 text-right font-medium" title="Real per-lot share count for this symbol — use the Lots stepper above to change position size">Lot Size</th>
@@ -1431,7 +1470,7 @@ export default function StrategyBuilder() {
                                                 <th className="px-4 py-2.5 text-center font-medium">Exit</th>
                                             </tr>
                                         </thead>
-                                        <tbody className="divide-y divide-gray-100">
+                                        <tbody className="divide-y divide-gray-100 dark:divide-white/5">
                                             {orderedLegs.map((leg) => {
                                                 const row = rowByStrike.get(leg.strike);
                                                 const liveLtp = row ? (leg.type === "CE" ? row.ce?.ltp : row.pe?.ltp) : null;
@@ -1439,14 +1478,14 @@ export default function StrategyBuilder() {
                                                 const livePnl = legLivePnl(leg);
                                                 const included = leg.active !== false;
                                                 return (
-                                                    <tr key={leg.id} className={`hover:bg-gray-50/40 transition-colors ${included ? "" : "opacity-50"}`}>
+                                                    <tr key={leg.id} className={`hover:bg-gray-50/40 dark:hover:bg-white/[0.03] transition-colors ${included ? "" : "opacity-50"}`}>
                                                         <td className="px-2 py-2.5 text-center">
                                                             <input
                                                                 type="checkbox"
                                                                 checked={included}
                                                                 onChange={() => toggleLegActive(leg.id)}
                                                                 title={included ? "Included in payoff calculation — uncheck to exclude" : "Excluded from payoff calculation — check to include"}
-                                                                className="cursor-pointer"
+                                                                className="cursor-pointer accent-emerald-600"
                                                             />
                                                         </td>
                                                         <td className="px-4 py-2.5">
@@ -1460,7 +1499,7 @@ export default function StrategyBuilder() {
                                                         </td>
                                                         <td className="px-4 py-2.5 text-right">
                                                             <span
-                                                                className="font-bold tabular-nums text-gray-800"
+                                                                className="font-bold tabular-nums text-gray-800 dark:text-gray-200"
                                                                 title="Real per-lot share count for this symbol, from lot_size_history — used for every P&L/margin number on this leg. Change position size via the Lots stepper above."
                                                             >
                                                                 {leg.lotSize ?? "1 (unknown)"}
@@ -1470,7 +1509,7 @@ export default function StrategyBuilder() {
                                                             <select
                                                                 value={leg.expiry || ""}
                                                                 onChange={(e) => rollLegExpiry(leg.id, e.target.value)}
-                                                                className="rounded-md border border-gray-200 bg-white px-1.5 py-1 text-[12px] font-medium text-gray-700 outline-none focus:border-emerald-500"
+                                                                className="rounded-md border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] px-1.5 py-1 text-[12px] font-medium text-gray-700 dark:text-gray-200 outline-none focus:border-emerald-500"
                                                             >
                                                                 {(data?.expiries || [leg.expiry]).map((exp) => (
                                                                     <option key={exp} value={exp}>{formatExpiryShort(exp)} ({daysUntilExpiry(exp)}d)</option>
@@ -1479,13 +1518,13 @@ export default function StrategyBuilder() {
                                                         </td>
                                                         <td className="px-4 py-2.5 text-right">
                                                             <div className="flex items-center justify-end gap-1">
-                                                                <button onClick={() => rollLegStrike(leg.id, -1)} className="rounded border border-gray-200 px-1 text-[11px] font-bold text-gray-500 hover:bg-gray-100" title="Roll to lower strike">−</button>
-                                                                <span className="font-bold tabular-nums text-gray-900">{leg.strike}</span>
-                                                                <button onClick={() => rollLegStrike(leg.id, 1)} className="rounded border border-gray-200 px-1 text-[11px] font-bold text-gray-500 hover:bg-gray-100" title="Roll to higher strike">+</button>
+                                                                <button onClick={() => rollLegStrike(leg.id, -1)} className="rounded border border-gray-200 dark:border-white/10 px-1 text-[11px] font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 transition" title="Roll to lower strike">−</button>
+                                                                <span className="font-bold tabular-nums text-gray-900 dark:text-white">{leg.strike}</span>
+                                                                <button onClick={() => rollLegStrike(leg.id, 1)} className="rounded border border-gray-200 dark:border-white/10 px-1 text-[11px] font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 transition" title="Roll to higher strike">+</button>
                                                             </div>
                                                         </td>
                                                         <td className="px-4 py-2.5">
-                                                            <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold ${leg.type === "CE" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-purple-50 text-purple-700 border border-purple-200"}`}>
+                                                            <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold ${leg.type === "CE" ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800" : "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800"}`}>
                                                                 {leg.type}
                                                             </span>
                                                         </td>
@@ -1497,7 +1536,7 @@ export default function StrategyBuilder() {
                                                                 value={leg.premium}
                                                                 onChange={(e) => updateLeg(leg.id, { premium: Math.max(0, Number(e.target.value) || 0) })}
                                                                 title="Entry price — editable, overrides what was captured when the leg was added"
-                                                                className="w-20 rounded-lg border border-gray-200 px-2 py-1 text-right tabular-nums text-gray-800 focus:border-emerald-500 outline-none"
+                                                                className="w-20 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] px-2 py-1 text-right tabular-nums text-gray-800 dark:text-gray-200 focus:border-emerald-500 outline-none"
                                                             />
                                                         </td>
                                                         <td className="px-4 py-2.5 text-right">
@@ -1508,33 +1547,33 @@ export default function StrategyBuilder() {
                                                                 value={currentLtp ?? ""}
                                                                 onChange={(e) => updateLeg(leg.id, { ltpOverride: e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0) })}
                                                                 title="LTP — editable, overrides the live chain price for this leg's P&L/margin. Clear to resume following the live feed."
-                                                                className={`w-20 rounded-lg border px-2 py-1 text-right tabular-nums outline-none focus:border-emerald-500 ${leg.ltpOverride != null ? "border-amber-300 bg-amber-50 text-gray-900" : "border-gray-200 text-gray-900"}`}
+                                                                className={`w-20 rounded-lg border px-2 py-1 text-right tabular-nums outline-none focus:border-emerald-500 ${leg.ltpOverride != null ? "border-amber-300 dark:border-amber-600 bg-amber-50 dark:bg-amber-950/40 text-gray-900 dark:text-white" : "border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] text-gray-900 dark:text-white"}`}
                                                             />
                                                         </td>
-                                                        <td className={`px-4 py-2.5 text-right font-bold tabular-nums ${livePnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                                                        <td className={`px-4 py-2.5 text-right font-bold tabular-nums ${livePnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
                                                             {livePnl != null ? formatPrice(livePnl) : "-"}
                                                         </td>
-                                                        <td className="px-4 py-2.5 text-right tabular-nums text-gray-700">
+                                                        <td className="px-4 py-2.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
                                                             {leg.action === "sell" && data?.spotPrice
                                                                 ? formatPrice(computeEstMargin([leg], data.spotPrice, symbol))
-                                                                : <span className="text-gray-300">—</span>}
+                                                                : <span className="text-gray-300 dark:text-gray-600">—</span>}
                                                         </td>
                                                         <td className="px-4 py-2.5 text-center">
                                                             <button
                                                                 onClick={() => openSlTgModal(leg)}
-                                                                className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                                                                className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-700 dark:hover:text-gray-200 transition"
                                                                 title={leg.slPercent != null || leg.tgPercent != null ? `SL ${leg.slPercent ?? "—"}% / TG ${leg.tgPercent ?? "—"}%` : "Set SL/TG"}
                                                             >
                                                                 <FiSettings size={13} />
                                                             </button>
                                                             {(leg.slPercent != null || leg.tgPercent != null) && (
-                                                                <div className="text-[10px] text-gray-400">SL {leg.slPercent ?? "—"}% / TG {leg.tgPercent ?? "—"}%</div>
+                                                                <div className="text-[10px] text-gray-400 dark:text-gray-500">SL {leg.slPercent ?? "—"}% / TG {leg.tgPercent ?? "—"}%</div>
                                                             )}
                                                         </td>
                                                         <td className="px-4 py-2.5">
                                                             <div className="flex items-center justify-center gap-2">
-                                                                <button onClick={() => resetLegEntryToLtp(leg.id)} className="text-gray-400 hover:text-emerald-600 transition" title="Reset entry to current LTP"><FiRefreshCw size={12} /></button>
-                                                                <button onClick={() => removeLeg(leg.id)} className="text-gray-400 hover:text-rose-600 transition" title="Remove leg"><FiTrash2 size={13} /></button>
+                                                                <button onClick={() => resetLegEntryToLtp(leg.id)} className="text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition" title="Reset entry to current LTP"><FiRefreshCw size={12} /></button>
+                                                                <button onClick={() => removeLeg(leg.id)} className="text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 transition" title="Remove leg"><FiTrash2 size={13} /></button>
                                                             </div>
                                                         </td>
                                                     </tr>

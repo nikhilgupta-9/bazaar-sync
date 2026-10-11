@@ -10,11 +10,13 @@ const {
     getUserProfile,
     updateUserProfile,
     changePassword,
+    getPublicSecurityStatus,
 } = require("../controllers/authController");
 const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
 
+router.get("/security-status", getPublicSecurityStatus);
 router.post("/register", register);
 router.post("/login", login);
 router.post("/google", googleAuth);
