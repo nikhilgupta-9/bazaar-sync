@@ -406,7 +406,8 @@ const CATEGORY_NAMES = {
     option_chain: "Option Chain",
     futures: "Futures",
     india_vix: "India VIX",
-    bitcoin: "Bitcoin",
+    bitcoin: "crypto",
+    crypto: "crypto",
     ohlcv: "Stocks OHLCV",
     stock_ohlcv: "Stocks OHLCV",
 };
@@ -447,7 +448,7 @@ async function ensureSubFolder(folderName, parentFolderId) {
 
 /**
  * Ensures Category / Year / Symbol hierarchy:
- * RootFolder -> Category (Option Chain | Futures | India VIX | Bitcoin) -> Year (2023 | 2024 | 2025 | 2026) -> (Optional) Symbol
+ * RootFolder -> Category (Option Chain | Futures | India VIX | crypto) -> Year (2023 | 2024 | 2025 | 2026) -> (Optional) Symbol
  */
 async function ensureCategoryYearHierarchy(category, year, symbol = null, rootFolderId = null) {
     const effectiveRoot = rootFolderId || getEffectiveRootFolderId();
@@ -458,7 +459,7 @@ async function ensureCategoryYearHierarchy(category, year, symbol = null, rootFo
     let targetFolderId = yearFolderId;
     let symbolFolderId = null;
 
-    if (symbol && category !== "india_vix" && category !== "bitcoin") {
+    if (symbol && category !== "india_vix") {
         symbolFolderId = await ensureSubFolder(String(symbol).toUpperCase(), yearFolderId);
         targetFolderId = symbolFolderId;
     }

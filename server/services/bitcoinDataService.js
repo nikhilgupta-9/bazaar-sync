@@ -234,9 +234,9 @@ async function startCryptoPipeline({ symbols = ["BTCUSDT"], years = [2023, 2024,
                     if (res.totalCandles > 0) {
                         activeCryptoJob.totalCandles += res.totalCandles;
 
-                        // 2. Ensure Google Drive Folder Hierarchy: Root -> Crypto -> {symbol} -> {year}
-                        const categoryName = sym === "BTCUSDT" ? "bitcoin" : "crypto";
-                        appendLog(`Ensuring Google Drive folder hierarchy: ${categoryName} / ${sym} / ${yr}...`);
+                        // 2. Ensure Google Drive Folder Hierarchy: Root -> crypto -> {year} -> {symbol}
+                        const categoryName = "crypto";
+                        appendLog(`Ensuring Google Drive folder hierarchy: ${categoryName} / ${yr} / ${sym}...`);
                         const { targetFolderId } = await gdrive.ensureCategoryYearHierarchy(categoryName, yr, sym);
 
                         // 3. Upload to Google Drive

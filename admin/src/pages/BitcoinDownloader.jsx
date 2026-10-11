@@ -501,7 +501,7 @@ export default function BitcoinDownloader() {
                                 </div>
                                 <div className="flex items-center justify-between">
                                     <span>Folder Hierarchy:</span>
-                                    <span className="text-gray-300 font-mono">/Crypto/{`{coin}`}/{`{year}`}/</span>
+                                    <span className="text-emerald-400 font-mono">/crypto/{`{year}`}/{`{coin}`}/</span>
                                 </div>
                             </div>
                         </div>
