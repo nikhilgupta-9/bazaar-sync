@@ -34,7 +34,7 @@ function sleep(ms) {
 
 async function getUniverseSymbols(filterMode = 'all') {
     if (filterMode === 'indices') return ALL_INDICES;
-    if (filterMode === 'stocks') return POPULAR_FO_STOCKS;
+    if (filterMode === 'popular') return POPULAR_FO_STOCKS;
 
     try {
         const [rows] = await pool.query(
@@ -43,10 +43,12 @@ async function getUniverseSymbols(filterMode = 'all') {
         );
         if (rows.length >= 50) {
             const stockSyms = rows.map((r) => r.symbol);
+            if (filterMode === 'stocks') return stockSyms;
             return [...ALL_INDICES, ...stockSyms];
         }
     } catch (e) {}
 
+    if (filterMode === 'stocks') return POPULAR_FO_STOCKS;
     return [...ALL_INDICES, ...POPULAR_FO_STOCKS];
 }
 
@@ -168,8 +170,43 @@ async function runUpstoxFuturesPipeline() {
     if (symbolsArg) {
         symbols = symbolsArg.split('=')[1].split(',').map((s) => s.trim().toUpperCase());
     } else {
-        const filterMode = indicesOnly ? 'indices' : stocksOnly ? 'stocks' : 'all';
+        const popularOnly = args.includes('--popular');
+        const filterMode = indicesOnly ? 'indices' : popularOnly ? 'popular' : stocksOnly ? 'stocks' : 'all';
         symbols = await getUniverseSymbols(filterMode);
+    }
+
+    // Alphabetical filter (e.g. --from-letter=R --to-letter=Z)
+    const fromLetterArg = args.find((a) => a.startsWith('--from-letter='));
+    const toLetterArg = args.find((a) => a.startsWith('--to-letter='));
+    if (fromLetterArg || toLetterArg) {
+        const fL = (fromLetterArg ? fromLetterArg.split('=')[1] : 'A').toUpperCase();
+        const tL = (toLetterArg ? toLetterArg.split('=')[1] : 'Z').toUpperCase();
+        symbols = symbols.filter((s) => {
+            const firstChar = s[0].toUpperCase();
+            return firstChar >= fL && firstChar <= tL;
+        });
+    }
+
+    // Start-After filter (e.g. --start-after=RELIANCE)
+    const startAfterArg = args.find((a) => a.startsWith('--start-after='));
+    if (startAfterArg) {
+        const startAfterSym = startAfterArg.split('=')[1].toUpperCase();
+        const foundIdx = symbols.findIndex((s) => s.toUpperCase() === startAfterSym);
+        if (foundIdx !== -1) {
+            symbols = symbols.slice(foundIdx + 1);
+        }
+    }
+
+    // Slot Splitting (e.g. --slot=1/3, --slot=2/3, --slot=3/3)
+    const slotArg = args.find((a) => a.startsWith('--slot='));
+    if (slotArg) {
+        const [curSlot, totalSlots] = slotArg.split('=')[1].split('/').map(Number);
+        if (curSlot && totalSlots && curSlot <= totalSlots) {
+            const chunkSize = Math.ceil(symbols.length / totalSlots);
+            const startIdx = (curSlot - 1) * chunkSize;
+            symbols = symbols.slice(startIdx, startIdx + chunkSize);
+            console.log(`[Upstox Futures Runner] Slot ${curSlot}/${totalSlots} selected: ${symbols.length} symbols`);
+        }
     }
 
     console.log(`\n================================================================`);
