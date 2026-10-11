@@ -702,6 +702,11 @@ export default function HistoricalPriceChart({
         chart.timeScale().subscribeVisibleLogicalRangeChange(triggerRender);
         chart.timeScale().subscribeVisibleTimeRangeChange(triggerRender);
 
+        // Immediate and delayed coordinate refresh so all existing drawings align onto the new style/series
+        requestAnimationFrame(() => triggerRender());
+        setTimeout(() => triggerRender(), 50);
+        setTimeout(() => triggerRender(), 200);
+
         // Crosshair Move Handler
         const onMove = (param) => {
             triggerRender();
@@ -1812,7 +1817,7 @@ export default function HistoricalPriceChart({
                     )}
 
                     {/* Lightweight Charts Canvas */}
-                    <div ref={containerRef} className="h-[68vh] min-h-[480px] w-full" />
+                    <div ref={containerRef} className="h-full min-h-[680px] w-full" />
 
                     {/* SVG Vector Drawing Layer */}
                     {drawingsVisible && (

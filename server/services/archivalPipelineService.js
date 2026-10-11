@@ -113,7 +113,7 @@ async function exportToGzipCsv(dataType, symbol, year) {
                    pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume, pe_delta, pe_gamma, pe_theta, pe_vega
             FROM option_chain_history
             WHERE symbol = ? AND trade_date >= ? AND trade_date <= ?
-            ORDER BY trade_date ASC, trade_time ASC, strike ASC
+            ORDER BY trade_date ASC, trade_time ASC
             LIMIT ? OFFSET ?
         `;
         csvHeader = "id,symbol,trade_date,trade_time,expiry,strike,underlying_price,ce_ltp,ce_oi,ce_oi_change,ce_iv,ce_volume,ce_delta,ce_gamma,ce_theta,ce_vega,pe_ltp,pe_oi,pe_oi_change,pe_iv,pe_volume,pe_delta,pe_gamma,pe_theta,pe_vega\n";
@@ -185,7 +185,7 @@ async function exportToGzipCsv(dataType, symbol, year) {
 
     appendLog(`Exporting ${totalRecords.toLocaleString()} rows for ${symbol || dataType} (${year}) [${dataType}] to compressed CSV...`);
 
-    const gzip = zlib.createGzip({ level: 9 });
+    const gzip = zlib.createGzip({ level: 6 });
     const writeStream = fs.createWriteStream(outputPath);
     
     let streamError = null;
@@ -195,9 +195,10 @@ async function exportToGzipCsv(dataType, symbol, year) {
 
     gzip.write(csvHeader);
 
-    // Stream query in chunks of 15,000 rows
-    const chunkSize = 15000;
+    // Stream query in efficient chunks of 50,000 rows
+    const chunkSize = 50000;
     let offset = 0;
+    let lastProgressLogTime = Date.now();
 
     while (offset < totalRecords) {
         if (streamError) throw streamError;
@@ -218,10 +219,19 @@ async function exportToGzipCsv(dataType, symbol, year) {
             } else {
                 line = `${r.id},${r.symbol},${r.trade_date},${r.trade_time || ""},${r.open || 0},${r.high || 0},${r.low || 0},${r.close || 0},${r.volume || 0}\n`;
             }
-            gzip.write(line);
+
+            if (!gzip.write(line)) {
+                await new Promise((resolve) => gzip.once("drain", resolve));
+            }
         }
 
         offset += rows.length;
+        const now = Date.now();
+        if (now - lastProgressLogTime >= 3000 || offset >= totalRecords) {
+            const pct = Math.min(100, ((offset / totalRecords) * 100).toFixed(1));
+            appendLog(`Export progress for ${symbol || dataType} (${year}): ${offset.toLocaleString()} / ${totalRecords.toLocaleString()} rows (${pct}%)...`);
+            lastProgressLogTime = now;
+        }
     }
 
     gzip.end();
@@ -346,15 +356,30 @@ async function parseCsvGzipFile(filePath) {
 /**
  * Smart Deduplication, ATM ±30 Polish, and Multi-Machine Cloud Merge Engine
  */
-async function smartMergeAndPolishDataset({ dataType, symbol, year, localGzipPath, existingDriveFileId, targetFolderId }) {
+async function smartMergeAndPolishDataset({ dataType, symbol, year, localGzipPath, existingDriveFileId, targetFolderId, totalRecords = 0 }) {
     const sym = String(symbol || "").toUpperCase();
-    appendLog(`[SmartMerge] Starting deduplication & ATM ±30 polish for [${dataType}] ${sym} (${year})...`);
+    const cleanSym = sym.replace(/[^A-Za-z0-9_]/g, "");
+    const finalFileName = `${cleanSym}_${year}_${dataType}.csv.gz`;
 
-    // 1. Parse local newly exported rows
+    // 1. If no cloud file exists in Google Drive, the newly exported file is already unique and clean directly from DB
+    if (!existingDriveFileId) {
+        appendLog(`[SmartMerge] No existing cloud file found in Google Drive. Skipping re-parse; using clean DB export directly.`);
+        const stat = fs.existsSync(localGzipPath) ? fs.statSync(localGzipPath) : { size: 0 };
+        return {
+            finalGzipPath: localGzipPath,
+            finalFileName,
+            fileSizeBytes: stat.size,
+            totalRecords: totalRecords || 0,
+            duplicatesMerged: 0,
+            polishStats: { totalSnapshots: 0, fullAtm30CoverageSnapshots: 0, averageStrikesPerSnapshot: 0 },
+        };
+    }
+
+    // 2. Parse local newly exported rows
     const localRows = await parseCsvGzipFile(localGzipPath);
     appendLog(`[SmartMerge] Local DB batch has ${localRows.length.toLocaleString()} raw rows.`);
 
-    // 2. Download and parse existing cloud rows if file exists in Google Drive
+    // 3. Download and parse existing cloud rows if file exists in Google Drive
     let cloudRows = [];
     let tempCloudDownloadPath = null;
     if (existingDriveFileId) {
@@ -485,11 +510,9 @@ async function smartMergeAndPolishDataset({ dataType, symbol, year, localGzipPat
     });
 
     // 6. Write out the Polished GZIP CSV file
-    const cleanSym = sym.replace(/[^A-Za-z0-9_]/g, "");
-    const finalFileName = `${cleanSym}_${year}_${dataType}.csv.gz`;
     const finalGzipPath = path.join(STAGING_DIR, `polished_${finalFileName}`);
 
-    const gzip = zlib.createGzip({ level: 9 });
+    const gzip = zlib.createGzip({ level: 6 });
     const writeStream = fs.createWriteStream(finalGzipPath);
     gzip.pipe(writeStream);
 
@@ -514,7 +537,9 @@ async function smartMergeAndPolishDataset({ dataType, symbol, year, localGzipPat
         } else {
             line = `${i + 1},${r.symbol || sym},${r.trade_date},${r.trade_time || ""},${r.open || 0},${r.high || 0},${r.low || 0},${r.close || 0},${r.volume || 0}\n`;
         }
-        gzip.write(line);
+        if (!gzip.write(line)) {
+            await new Promise((resolve) => gzip.once("drain", resolve));
+        }
     }
 
     gzip.end();
@@ -578,6 +603,7 @@ async function processBatch({ dataType = "option_chain", symbol, year, folderId 
         localGzipPath: exportResult.outputPath,
         existingDriveFileId: existingFileId,
         targetFolderId,
+        totalRecords: exportResult.totalRecords,
     });
 
     // 5. Upload newly polished & merged file to Google Drive

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 // pages/HistoricalChart.jsx — Fullscreen Professional TradingView Workstation
 // Edge-to-edge chart terminal matching AlgoTest / TradingView / Dhan with all native drawing tools,
 // 100+ technical indicators, clean Indian & Crypto market switching, zero obstructive notices.
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useTheme } from "../context/ThemeContext";
 import { fetchSymbolList, fetchUnderlyingHistory } from "../services/optionChainApi";
 import HistoricalPriceChart from "../components/HistoricalPriceChart";
@@ -17,6 +17,11 @@ import {
     FiTrendingUp,
 } from "react-icons/fi";
 
+const CORE_INDIAN_CHIPS = [
+    { label: "NIFTY", symbol: "NIFTY" },
+    { label: "SENSEX", symbol: "SENSEX" },
+    { label: "MIDCAP", symbol: "MIDCPNIFTY" },
+];
 const DEFAULT_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"];
 const QUICK_STOCKS = ["RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "TCS", "TATAMOTORS", "SBIN"];
 
@@ -112,15 +117,34 @@ function aggregateCandles(daily, mode = "1D") {
 
 export default function HistoricalChart() {
     const { isDark } = useTheme();
-    const [marketType, setMarketType] = useState("indian"); // "indian" | "crypto"
-    const [chartEngine, setChartEngine] = useState("stored_db"); // "stored_db" (clean TV-grade native engine) | "tradingview"
+    const [searchParams] = useSearchParams();
+    const initialMarket = searchParams.get("market") === "crypto" ? "crypto" : "indian";
+    const initialSymbol = searchParams.get("symbol") || (initialMarket === "crypto" ? "BTC" : "NIFTY");
+
+    const [marketType, setMarketType] = useState(initialMarket);
+    const [chartEngine, setChartEngine] = useState("tradingview"); // "tradingview" (Local TV Library) | "stored_db" (Bazaar Sync Pro)
     const [symbolList, setSymbolList] = useState({ indices: DEFAULT_INDICES, stocks: [] });
-    const [symbol, setSymbol] = useState("NIFTY");
+    const [symbol, setSymbol] = useState(initialSymbol);
     const [days, setDays] = useState(180);
     const [timeframe, setTimeframe] = useState("1D");
 
-    // Fullscreen state
+    // Fullscreen & Height state
     const [isFullscreen, setIsFullscreen] = useState(false);
+    const [chartHeightMode, setChartHeightMode] = useState("screen"); // "screen" | "850" | "1000"
+
+    const computedChartHeight = useMemo(() => {
+        if (isFullscreen) return "calc(100vh - 80px)";
+        if (chartHeightMode === "850") return "850px";
+        if (chartHeightMode === "1000") return "1000px";
+        return "calc(100vh - 165px)";
+    }, [isFullscreen, chartHeightMode]);
+
+    const computedMinHeight = useMemo(() => {
+        if (isFullscreen) return "calc(100vh - 80px)";
+        if (chartHeightMode === "850") return "850px";
+        if (chartHeightMode === "1000") return "1000px";
+        return "720px";
+    }, [isFullscreen, chartHeightMode]);
 
     // Indicator & Style Controls (directly above chart)
     const [chartStyle, setChartStyle] = useState("1"); // "1" = Candles, "8" = Heikin Ashi, "2" = Line
@@ -209,7 +233,7 @@ export default function HistoricalChart() {
             } ${
                 isFullscreen
                     ? "fixed inset-0 z-50 h-screen w-screen overflow-hidden"
-                    : "flex-1 min-h-[calc(100vh-100px)]"
+                    : "flex-1 min-h-[calc(100vh-84px)] h-full"
             }`}
         >
             {/* SLEEK SINGLE-LINE WORKSTATION TOOLBAR */}
@@ -268,42 +292,36 @@ export default function HistoricalChart() {
                             ))}
                         </div>
                     ) : (
-                        <div className="flex items-center gap-1 shrink-0">
-                            {DEFAULT_INDICES.map((s) => (
-                                <button
-                                    key={s}
-                                    onClick={() => setSymbol(s)}
-                                    className={`rounded-md px-2 py-0.5 text-xs font-bold transition-all border ${
-                                        symbol === s
-                                            ? "bg-emerald-600 text-white border-emerald-600 shadow-2xs"
-                                            : "bg-gray-50 text-gray-600 border-gray-200 hover:border-gray-400 dark:bg-[#151926] dark:text-gray-400 dark:border-[#252b3d] dark:hover:text-gray-200"
-                                    }`}
-                                >
-                                    {s}
-                                </button>
-                            ))}
-                            {QUICK_STOCKS.slice(0, 3).map((s) => (
-                                <button
-                                    key={s}
-                                    onClick={() => setSymbol(s)}
-                                    className={`hidden lg:inline-flex rounded-md px-2 py-0.5 text-xs font-medium transition-all border ${
-                                        symbol === s
-                                            ? "bg-emerald-600 text-white border-emerald-600 font-bold"
-                                            : "bg-gray-50 text-gray-600 border-gray-200 hover:border-gray-400 dark:bg-[#151926] dark:text-gray-400 dark:border-[#252b3d] dark:hover:text-gray-200"
-                                    }`}
-                                >
-                                    {s}
-                                </button>
-                            ))}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                            {CORE_INDIAN_CHIPS.map((chip) => {
+                                const isActive =
+                                    symbol === chip.symbol ||
+                                    (chip.symbol === "MIDCPNIFTY" && (symbol === "MIDCAP" || symbol === "MIDCPNIFTY"));
+                                return (
+                                    <button
+                                        key={chip.symbol}
+                                        onClick={() => setSymbol(chip.symbol)}
+                                        className={`rounded-md px-2.5 py-1 text-xs font-bold transition-all border ${
+                                            isActive
+                                                ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
+                                                : "bg-gray-50 text-gray-700 border-gray-200 hover:border-gray-400 dark:bg-[#151926] dark:text-gray-300 dark:border-[#252b3d] dark:hover:text-white"
+                                        }`}
+                                    >
+                                        {chip.label}
+                                    </button>
+                                );
+                            })}
                             <select
                                 value={symbol}
                                 onChange={(e) => setSymbol(e.target.value)}
-                                className="rounded-md border border-gray-200 bg-white px-2 py-0.5 text-xs font-bold text-gray-800 shadow-2xs outline-none focus:border-emerald-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 shrink-0"
+                                className="rounded-md border border-gray-200 bg-white px-2.5 py-1 text-xs font-bold text-gray-800 shadow-xs outline-none focus:border-emerald-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 shrink-0 cursor-pointer"
                             >
-                                <optgroup label="Index Universe">
-                                    {symbolList.indices.map((s) => (
-                                        <option key={s} value={s}>{s}</option>
-                                    ))}
+                                <optgroup label="Other Indices">
+                                    {symbolList.indices
+                                        .filter((s) => !["NIFTY", "SENSEX", "MIDCPNIFTY"].includes(s))
+                                        .map((s) => (
+                                            <option key={s} value={s}>{s}</option>
+                                        ))}
                                 </optgroup>
                                 {symbolList.stocks.length > 0 && (
                                     <optgroup label="F&O Stocks">
@@ -312,35 +330,12 @@ export default function HistoricalChart() {
                                         ))}
                                     </optgroup>
                                 )}
+                                <optgroup label="Core Indices">
+                                    <option value="NIFTY">NIFTY</option>
+                                    <option value="SENSEX">SENSEX</option>
+                                    <option value="MIDCPNIFTY">MIDCAP (MIDCPNIFTY)</option>
+                                </optgroup>
                             </select>
-                        </div>
-                    )}
-
-                    {/* Chart Engine Switcher (when Indian Market) */}
-                    {marketType === "indian" && (
-                        <div className="hidden sm:flex rounded-md bg-gray-100 p-0.5 border border-gray-200 dark:bg-[#151926] dark:border-[#252b3d] shrink-0">
-                            <button
-                                onClick={() => setChartEngine("stored_db")}
-                                className={`px-2 py-0.5 text-[11px] font-bold rounded transition-all ${
-                                    chartEngine === "stored_db"
-                                        ? "bg-emerald-600 text-white shadow-2xs"
-                                        : "text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
-                                }`}
-                                title="Bazaar Sync Pro Native Charting Terminal (All Drawing Tools & 100% Unrestricted Data)"
-                            >
-                                ⚡ Bazaar Sync Pro
-                            </button>
-                            <button
-                                onClick={() => setChartEngine("tradingview")}
-                                className={`px-2 py-0.5 text-[11px] font-bold rounded transition-all ${
-                                    chartEngine === "tradingview"
-                                        ? "bg-emerald-600 text-white shadow-2xs"
-                                        : "text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
-                                }`}
-                                title="TradingView Free Embed Widget"
-                            >
-                                🌐 TV Embed
-                            </button>
                         </div>
                     )}
                 </div>
@@ -471,6 +466,29 @@ export default function HistoricalChart() {
                         ))}
                     </div>
 
+                    {/* Height Mode Switcher: Fit Screen / 850px / 1000px */}
+                    <div className="hidden sm:flex items-center gap-0.5 bg-white dark:bg-[#151926] p-0.5 rounded-lg border border-gray-200 dark:border-[#252b3d]">
+                        <span className="px-1 text-[10px] font-semibold text-gray-400 uppercase">Height:</span>
+                        {[
+                            { id: "screen", label: "Fit Screen", title: "Auto-fit 100% of screen height" },
+                            { id: "850", label: "850px", title: "Tall 850px view" },
+                            { id: "1000", label: "1000px", title: "Extra tall 1000px view" },
+                        ].map((h) => (
+                            <button
+                                key={h.id}
+                                onClick={() => setChartHeightMode(h.id)}
+                                className={`px-1.5 py-0.5 rounded text-[11px] font-bold transition-all ${
+                                    chartHeightMode === h.id
+                                        ? "bg-emerald-600 text-white shadow-2xs"
+                                        : "text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
+                                }`}
+                                title={h.title}
+                            >
+                                {h.label}
+                            </button>
+                        ))}
+                    </div>
+
                     {/* Timeframe & Range Controls */}
                     {chartEngine === "stored_db" && marketType === "indian" ? (
                         <div className="flex items-center gap-1.5">
@@ -539,8 +557,8 @@ export default function HistoricalChart() {
             <div
                 className="relative flex-1 w-full overflow-hidden bg-white dark:bg-[#0b1420]"
                 style={{
-                    height: isFullscreen ? "calc(100vh - 84px)" : "calc(100vh - 140px)",
-                    minHeight: "580px",
+                    height: computedChartHeight,
+                    minHeight: computedMinHeight,
                 }}
             >
                 {chartEngine === "tradingview" || isCrypto ? (
@@ -549,7 +567,7 @@ export default function HistoricalChart() {
                         interval={chartInterval}
                         chartStyle={chartStyle}
                         studies={chartStudies}
-                        height="100%"
+                        height={computedChartHeight}
                         className="h-full w-full"
                     />
                 ) : (

@@ -209,10 +209,10 @@ export default function PayoffChart({
     return (
         <div className="w-full flex flex-col">
             {/* Top SD & Spot Header */}
-            <div className="mb-2 flex items-center justify-between px-2 sm:px-6 text-[10.5px] font-bold text-gray-500 dark:text-gray-400">
+            <div className="mb-1 flex items-center justify-between px-1 sm:px-3 text-[9.5px] font-semibold text-gray-500 dark:text-gray-400">
                 <span className="tabular-nums">−2SD {sd2Down ? `(${Math.round(sd2Down).toLocaleString("en-IN")})` : ""}</span>
                 <span className="tabular-nums">−1SD {sd1Down ? `(${Math.round(sd1Down).toLocaleString("en-IN")})` : ""}</span>
-                <span className="text-xs font-black text-gray-900 dark:text-white px-2.5 py-0.5 rounded-full bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 shadow-xs">
+                <span className="text-[10.5px] font-black text-gray-900 dark:text-white px-2 py-0.2 rounded-full bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 shadow-xs">
                     {spotPrice ? `Spot: ${formatPrice(spotPrice)}` : ""}
                 </span>
                 <span className="tabular-nums">+1SD {sd1Up ? `(${Math.round(sd1Up).toLocaleString("en-IN")})` : ""}</span>
@@ -221,7 +221,7 @@ export default function PayoffChart({
 
             <div className="relative w-full" style={{ height }}>
                 <ResponsiveContainer width="100%" height="100%">
-                    <ComposedChart data={curve} margin={{ top: 15, right: 25, left: 10, bottom: 5 }}>
+                    <ComposedChart data={curve} margin={{ top: 8, right: 15, left: 0, bottom: 2 }}>
                         <defs>
                             {/* Area fill gradient: soft green above zero, soft red below zero */}
                             <linearGradient id="payoffAreaGradient" x1="0" y1="0" x2="0" y2="1">
@@ -244,15 +244,15 @@ export default function PayoffChart({
                             dataKey="price"
                             type="number"
                             domain={[minPrice, maxPrice]}
-                            tick={{ fontSize: 10, fill: textColor }}
+                            tick={{ fontSize: 9.5, fill: textColor }}
                             tickFormatter={(v) => Math.round(v).toLocaleString("en-IN")}
                             axisLine={{ stroke: axisColor, strokeWidth: 1 }}
                             tickLine={{ stroke: axisColor, strokeWidth: 1 }}
                         />
                         <YAxis
                             yAxisId="pnl"
-                            tick={{ fontSize: 10, fill: textColor }}
-                            width={58}
+                            tick={{ fontSize: 9.5, fill: textColor }}
+                            width={46}
                             axisLine={{ stroke: axisColor, strokeWidth: 1 }}
                             tickLine={{ stroke: axisColor, strokeWidth: 1 }}
                             tickFormatter={(v) => Math.round(v).toLocaleString("en-IN")}
@@ -261,9 +261,9 @@ export default function PayoffChart({
                                 angle: -90,
                                 position: "insideLeft",
                                 fill: textColor,
-                                fontSize: 10,
+                                fontSize: 9,
                                 fontWeight: "bold",
-                                offset: 12,
+                                offset: 8,
                             }}
                         />
 

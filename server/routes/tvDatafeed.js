@@ -77,7 +77,11 @@ async function symbolUniverse() {
     return list;
 }
 function cleanSymbol(raw) {
-    return String(raw || "").toUpperCase().replace(/^NSE:/, "").trim();
+    const s = String(raw || "").toUpperCase().replace(/^NSE:/, "").replace(/^BSE:/, "").trim();
+    if (s === "MIDCAP" || s === "NIFTY MIDCAP" || s === "NIFTY_MID_SELECT") return "MIDCPNIFTY";
+    if (s === "NIFTY 50" || s === "NIFTY50") return "NIFTY";
+    if (s === "BANK NIFTY" || s === "NIFTY BANK") return "BANKNIFTY";
+    return s;
 }
 
 // -- /symbols -----------------------------------------------------------

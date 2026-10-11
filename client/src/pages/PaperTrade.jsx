@@ -32,8 +32,9 @@ import {
     computeMarginDetails,
     evaluationExpiryOf,
 } from "../utils/payoff";
-import { yearsToExpiry } from "../utils/blackScholes";
+import { yearsToExpiry, bsPrice } from "../utils/blackScholes";
 import PayoffChart from "../components/PayoffChart";
+import TradingViewChart from "../components/TradingViewChart";
 import PresetStrategies from "../components/PresetStrategies";
 import { fetchSymbolList } from "../services/optionChainApi";
 import {
@@ -62,9 +63,32 @@ const STRIKE_RANGES = [
     { label: "All", value: null },
 ];
 
+const BACKEND_BASE = "http://localhost:5001";
+
+const CRYPTO_COINS = [
+    { symbol: "BTC", name: "Bitcoin", icon: "₿", defaultLot: 0.001, leverage: "100x", color: "text-amber-500", pair: "BTCUSDT" },
+    { symbol: "ETH", name: "Ethereum", icon: "Ξ", defaultLot: 0.01, leverage: "50x", color: "text-blue-500", pair: "ETHUSDT" },
+    { symbol: "SOL", name: "Solana", icon: "◎", defaultLot: 0.1, leverage: "20x", color: "text-purple-500", pair: "SOLUSDT" },
+];
+
 const GUEST_WALLET_KEY = "bazaar_sync_guest_wallet";
+const GUEST_CRYPTO_WALLET_KEY = "bazaar_sync_guest_crypto_wallet";
 const GUEST_POSITIONS_KEY = "bazaar_sync_guest_positions";
 const GUEST_CLOSED_KEY = "bazaar_sync_guest_closed";
+
+function loadGuestCryptoWallet() {
+    try {
+        const raw = localStorage.getItem(GUEST_CRYPTO_WALLET_KEY);
+        if (raw) return JSON.parse(raw);
+    } catch {}
+    return { balance: 10000, margin_utilized: 0 }; // $10,000 USDT initial virtual capital
+}
+
+function saveGuestCryptoWallet(w) {
+    try {
+        localStorage.setItem(GUEST_CRYPTO_WALLET_KEY, JSON.stringify(w));
+    } catch {}
+}
 
 function loadGuestWallet() {
     try {
@@ -127,14 +151,169 @@ export default function PaperTrade() {
     const {
         symbol,
         setSymbol,
-        data: chainData,
-        loading: chainLoading,
-        error: chainError,
-        load: changeExpiry,
-        marketStatus,
-        isLive,
-        lastUpdated,
+        data: indianChainData,
+        loading: indianChainLoading,
+        error: indianChainError,
+        load: changeIndianExpiry,
+        marketStatus: indianMarketStatus,
+        isLive: indianIsLive,
+        lastUpdated: indianLastUpdated,
     } = useOptionChain("NIFTY");
+
+    // Market Switcher: 'indian' | 'crypto'
+    const [marketMode, setMarketMode] = useState("indian");
+    const [cryptoSymbol, setCryptoSymbol] = useState("BTC");
+    const [cryptoChainData, setCryptoChainData] = useState(null);
+    const [cryptoLoading, setCryptoLoading] = useState(false);
+    const [cryptoError, setCryptoError] = useState(null);
+    const [selectedCryptoExpiry, setSelectedCryptoExpiry] = useState(null);
+    const [currency, setCurrency] = useState("USD"); // "USD" | "INR"
+    const [usdtInrRate, setUsdtInrRate] = useState(86.5);
+    const [chartViewTab, setChartViewTab] = useState("presets"); // "presets" | "payoff" | "tradingview" (default to presets matching StockMojo)
+    const [positionsViewTab, setPositionsViewTab] = useState("payoff"); // "payoff" | "tradingview"
+    const [cryptoWallet, setCryptoWallet] = useState(loadGuestCryptoWallet);
+
+    const isCrypto = marketMode === "crypto";
+    const activeSymbol = isCrypto ? cryptoSymbol : symbol;
+    const chainData = isCrypto ? cryptoChainData : indianChainData;
+    const chainLoading = isCrypto ? cryptoLoading : indianChainLoading;
+    const chainError = isCrypto ? cryptoError : indianChainError;
+    const changeExpiry = isCrypto
+        ? (_sym, exp) => setSelectedCryptoExpiry(exp)
+        : changeIndianExpiry;
+    const marketStatus = isCrypto ? { isOpen: true, nextOpen: null } : indianMarketStatus;
+    const isLive = isCrypto ? true : indianIsLive;
+    const lastUpdated = isCrypto ? new Date().toISOString() : indianLastUpdated;
+
+    // Fetch live USDT/INR rate
+    useEffect(() => {
+        let active = true;
+        async function fetchFx() {
+            try {
+                const res = await fetch("https://open.er-api.com/v6/latest/USD");
+                if (res.ok) {
+                    const d = await res.json();
+                    if (active && d?.rates?.INR) setUsdtInrRate(d.rates.INR);
+                }
+            } catch {}
+        }
+        fetchFx();
+        return () => { active = false; };
+    }, []);
+
+    // Fetch Crypto Option Chain
+    const fetchCryptoOptionChain = useCallback(async (coin = cryptoSymbol, exp = selectedCryptoExpiry) => {
+        setCryptoLoading(true);
+        setCryptoError(null);
+        try {
+            const url = `${BACKEND_BASE}/api/crypto/option-chain?underlying=${coin}${exp ? `&expiry=${encodeURIComponent(exp)}` : ""}`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+
+            const spot = Number(data.spotPrice) || (coin === "BTC" ? 85000 : coin === "ETH" ? 2500 : 110);
+            const step = coin === "BTC" ? 200 : coin === "ETH" ? 25 : 2;
+            const baseStrike = Math.round(spot / step) * step;
+
+            let expiries = (data.expiries || []).map((e) => (typeof e === "string" ? e : e.raw || e.label));
+            if (!expiries.length) {
+                const today = new Date();
+                expiries = [
+                    new Date(today.getTime() + 86400000).toISOString().split("T")[0],
+                    new Date(today.getTime() + 2 * 86400000).toISOString().split("T")[0],
+                    new Date(today.getTime() + 7 * 86400000).toISOString().split("T")[0],
+                    new Date(today.getTime() + 14 * 86400000).toISOString().split("T")[0],
+                ];
+            }
+            const activeExp = exp || data.activeExpiry?.raw || expiries[0];
+
+            let rows = [];
+            if (Array.isArray(data.chain) && data.chain.length > 0) {
+                rows = data.chain.map((r) => ({
+                    strike: Number(r.strike),
+                    ce: {
+                        ltp: r.call?.markPrice ?? r.call?.askPrice ?? r.call?.bidPrice ?? 0,
+                        iv: r.call?.markIv ?? 24,
+                        delta: r.call?.delta != null ? Number(r.call.delta) : 0.5,
+                        oi: r.call?.oi ?? 0,
+                        bid: r.call?.bidPrice,
+                        ask: r.call?.askPrice,
+                    },
+                    pe: {
+                        ltp: r.put?.markPrice ?? r.put?.askPrice ?? r.put?.bidPrice ?? 0,
+                        iv: r.put?.markIv ?? 24,
+                        delta: r.put?.delta != null ? Number(r.put.delta) : -0.5,
+                        oi: r.put?.oi ?? 0,
+                        bid: r.put?.bidPrice,
+                        ask: r.put?.askPrice,
+                    },
+                }));
+            } else {
+                for (let i = -15; i <= 15; i++) {
+                    const strike = baseStrike + i * step;
+                    const diff = strike - spot;
+                    const callMark = Math.max(0.1, Math.round(spot * 0.03 * Math.exp(-diff / (spot * 0.1)) * 100) / 100);
+                    const putMark = Math.max(0.1, Math.round(spot * 0.03 * Math.exp(diff / (spot * 0.1)) * 100) / 100);
+                    rows.push({
+                        strike,
+                        ce: {
+                            ltp: callMark,
+                            iv: 24 + Math.abs(i) * 0.4,
+                            delta: Math.max(0.05, Math.min(0.95, 0.5 - diff / (spot * 0.2))),
+                            oi: Math.round(150 + Math.abs(i) * 12),
+                            bid: Math.round(callMark * 0.98 * 100) / 100,
+                            ask: Math.round(callMark * 1.02 * 100) / 100,
+                        },
+                        pe: {
+                            ltp: putMark,
+                            iv: 24 + Math.abs(i) * 0.4,
+                            delta: Math.min(-0.05, Math.max(-0.95, -0.5 - diff / (spot * 0.2))),
+                            oi: Math.round(160 + Math.abs(i) * 10),
+                            bid: Math.round(putMark * 0.98 * 100) / 100,
+                            ask: Math.round(putMark * 1.02 * 100) / 100,
+                        },
+                    });
+                }
+            }
+
+            let closestAtm = rows[0]?.strike;
+            let minDiff = Infinity;
+            rows.forEach((r) => {
+                const diff = Math.abs(r.strike - spot);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestAtm = r.strike;
+                }
+            });
+
+            setCryptoChainData({
+                symbol: coin,
+                spotPrice: spot,
+                spotChange: (spot * (Number(data.spot24hChange) || 0)) / 100,
+                spotChangePercent: Number(data.spot24hChange) || 0,
+                selectedExpiry: activeExp,
+                expiries,
+                lotSize: CRYPTO_COINS.find((c) => c.symbol === coin)?.defaultLot || 1,
+                atmStrike: closestAtm,
+                rows,
+            });
+        } catch (err) {
+            console.error("[PaperTrade] fetchCryptoOptionChain error:", err);
+            setCryptoError(err.message);
+        } finally {
+            setCryptoLoading(false);
+        }
+    }, [cryptoSymbol, selectedCryptoExpiry]);
+
+    useEffect(() => {
+        if (marketMode === "crypto") {
+            fetchCryptoOptionChain(cryptoSymbol, selectedCryptoExpiry);
+            const timer = setInterval(() => {
+                fetchCryptoOptionChain(cryptoSymbol, selectedCryptoExpiry);
+            }, 3000);
+            return () => clearInterval(timer);
+        }
+    }, [marketMode, cryptoSymbol, selectedCryptoExpiry, fetchCryptoOptionChain]);
 
     // 2. Universe of 7 Indices & 210+ Stocks
     const [symbolList, setSymbolList] = useState({ indices: FALLBACK_INDICES, stocks: [] });
@@ -272,7 +451,27 @@ export default function PaperTrade() {
     // Derived Market Values
     const spotPrice = chainData?.spotPrice ? Number(chainData.spotPrice) : null;
     const atmStrike = chainData?.atmStrike ? Number(chainData.atmStrike) : null;
-    const lotSize = chainData?.lotSize ? Number(chainData.lotSize) : 50;
+    const currentCryptoCoin = useMemo(() => CRYPTO_COINS.find((c) => c.symbol === cryptoSymbol) || CRYPTO_COINS[0], [cryptoSymbol]);
+    const lotSize = isCrypto
+        ? currentCryptoCoin.defaultLot
+        : (chainData?.lotSize ? Number(chainData.lotSize) : 50);
+
+    const formatActivePrice = useCallback((val, decimals = 2) => {
+        if (val == null || isNaN(val)) return "—";
+        if (isCrypto) {
+            if (currency === "INR") {
+                return `₹${Number(val * usdtInrRate).toLocaleString("en-IN", {
+                    minimumFractionDigits: decimals,
+                    maximumFractionDigits: decimals,
+                })}`;
+            }
+            return `$${Number(val).toLocaleString("en-US", {
+                minimumFractionDigits: decimals,
+                maximumFractionDigits: decimals,
+            })}`;
+        }
+        return formatPrice(val);
+    }, [isCrypto, currency, usdtInrRate]);
 
     // Display rows based on strike range around ATM
     const displayRows = useMemo(() => {
@@ -538,7 +737,7 @@ export default function PaperTrade() {
     // 6. Payoff Analysis for Active Open Positions
     const openPositionLegs = useMemo(() => {
         return openPositions
-            .filter((p) => p.symbol === symbol)
+            .filter((p) => p.symbol === activeSymbol)
             .map((p) => ({
                 id: p.id,
                 action: p.side === "long" ? "buy" : "sell",
@@ -549,7 +748,7 @@ export default function PaperTrade() {
                 lotSize: Number(p.lot_size) || lotSize,
                 expiry: p.expiry,
             }));
-    }, [openPositions, symbol, lotSize]);
+    }, [openPositions, activeSymbol, lotSize]);
 
     const positionsPayoffData = useMemo(() => {
         if (!openPositionLegs.length || !spotPrice) {
@@ -624,13 +823,18 @@ export default function PaperTrade() {
     async function handleExecuteHedge() {
         if (!basketLegs.length) return;
 
-        const currentBalance = wallet ? Number(wallet.balance) : 100000;
+        const currentBalance = isCrypto
+            ? Number(cryptoWallet.balance)
+            : (wallet ? Number(wallet.balance) : 100000);
+
         if (currentBalance < hedgeStats.fundsRequired) {
             setFeedback({
                 type: "error",
-                text: `Insufficient Virtual Cash. Required: ${formatRupees(hedgeStats.fundsRequired)}, Available: ${formatRupees(currentBalance)}. Refill +₹5,00,000 for ₹100 below.`,
+                text: isCrypto
+                    ? `Insufficient Virtual USDT Balance. Required: $${hedgeStats.fundsRequired.toFixed(2)}, Available: $${currentBalance.toFixed(2)}.`
+                    : `Insufficient Virtual Cash. Required: ${formatRupees(hedgeStats.fundsRequired)}, Available: ${formatRupees(currentBalance)}. Refill +₹5,00,000 for ₹100 below.`,
             });
-            setRefillModalOpen(true);
+            if (!isCrypto) setRefillModalOpen(true);
             return;
         }
 
@@ -640,12 +844,12 @@ export default function PaperTrade() {
 
             const title =
                 basketLegs.length === 1
-                    ? `${symbol} ${basketLegs[0].strike} ${basketLegs[0].type}`
-                    : `${symbol} Hedge Basket (${basketLegs.length} Legs)`;
+                    ? `${activeSymbol} ${basketLegs[0].strike} ${basketLegs[0].type}`
+                    : `${activeSymbol} Hedge Basket (${basketLegs.length} Legs)`;
 
-            if (token) {
+            if (token && !isCrypto) {
                 await openStrategyTrade(token, {
-                    symbol,
+                    symbol: activeSymbol,
                     expiry: chainData?.selectedExpiry,
                     strategy_name: title,
                     legs: basketLegs.map((l) => ({
@@ -670,7 +874,8 @@ export default function PaperTrade() {
                     const margin = l.action === "sell" ? (spotPrice || l.strike) * totalShares * 0.12 : premiumTotal;
                     return {
                         id: ++legIdCounter,
-                        symbol,
+                        symbol: activeSymbol,
+                        market: isCrypto ? "crypto" : "indian",
                         expiry: chainData?.selectedExpiry,
                         strategy_name: title,
                         option_type: l.type,
@@ -690,12 +895,21 @@ export default function PaperTrade() {
                 saveGuestPositions(updatedOpens);
                 setOpenPositions(updatedOpens);
 
-                const updatedWallet = {
-                    balance: currentBalance - hedgeStats.fundsRequired,
-                    margin_utilized: (wallet?.margin_utilized || 0) + hedgeStats.fundsRequired,
-                };
-                saveGuestWallet(updatedWallet);
-                setWallet(updatedWallet);
+                if (isCrypto) {
+                    const updatedCryptoWallet = {
+                        balance: currentBalance - hedgeStats.fundsRequired,
+                        margin_utilized: (cryptoWallet?.margin_utilized || 0) + hedgeStats.fundsRequired,
+                    };
+                    saveGuestCryptoWallet(updatedCryptoWallet);
+                    setCryptoWallet(updatedCryptoWallet);
+                } else {
+                    const updatedWallet = {
+                        balance: currentBalance - hedgeStats.fundsRequired,
+                        margin_utilized: (wallet?.margin_utilized || 0) + hedgeStats.fundsRequired,
+                    };
+                    saveGuestWallet(updatedWallet);
+                    setWallet(updatedWallet);
+                }
             }
 
             setFeedback({ type: "success", text: `Paper Trade "${title}" executed successfully!` });
@@ -714,7 +928,7 @@ export default function PaperTrade() {
             setClosingId(pos.id);
             setFeedback(null);
 
-            if (token) {
+            if (token && pos.market !== "crypto") {
                 await closePosition(token, pos.id);
                 await loadWallet();
                 await loadPositions();
@@ -739,12 +953,21 @@ export default function PaperTrade() {
                 setClosedPositions(updatedClosed);
 
                 const marginReleased = Number(pos.margin_blocked || 0);
-                const updatedWallet = {
-                    balance: (wallet?.balance || 100000) + marginReleased + realizedPnl,
-                    margin_utilized: Math.max(0, (wallet?.margin_utilized || 0) - marginReleased),
-                };
-                saveGuestWallet(updatedWallet);
-                setWallet(updatedWallet);
+                if (pos.market === "crypto") {
+                    const updatedCryptoWallet = {
+                        balance: (cryptoWallet?.balance || 10000) + marginReleased + realizedPnl,
+                        margin_utilized: Math.max(0, (cryptoWallet?.margin_utilized || 0) - marginReleased),
+                    };
+                    saveGuestCryptoWallet(updatedCryptoWallet);
+                    setCryptoWallet(updatedCryptoWallet);
+                } else {
+                    const updatedWallet = {
+                        balance: (wallet?.balance || 100000) + marginReleased + realizedPnl,
+                        margin_utilized: Math.max(0, (wallet?.margin_utilized || 0) - marginReleased),
+                    };
+                    saveGuestWallet(updatedWallet);
+                    setWallet(updatedWallet);
+                }
             }
 
             setFeedback({ type: "success", text: `Position ${pos.symbol} ${pos.strike} ${pos.option_type} closed.` });
@@ -763,40 +986,57 @@ export default function PaperTrade() {
             setFeedback(null);
 
             if (token) {
-                await closeAllPositions(token);
+                try {
+                    await closeAllPositions(token);
+                } catch {}
                 await loadWallet();
                 await loadPositions();
-            } else {
-                let netRealized = 0;
-                let totalMarginReleased = 0;
-                const newlyClosed = openPositions.map((pos) => {
-                    const liveLtp = pos.current_price || pos.entry_price;
-                    const totalShares = pos.lots * pos.lot_size;
-                    const diff = pos.side === "long" ? liveLtp - pos.entry_price : pos.entry_price - liveLtp;
-                    const realizedPnl = diff * totalShares;
+            }
+            
+            let netRealized = 0;
+            let totalMarginReleased = 0;
+            let cryptoNetRealized = 0;
+            let cryptoMarginReleased = 0;
+
+            const newlyClosed = openPositions.map((pos) => {
+                const liveLtp = pos.current_price || pos.entry_price;
+                const totalShares = pos.lots * pos.lot_size;
+                const diff = pos.side === "long" ? liveLtp - pos.entry_price : pos.entry_price - liveLtp;
+                const realizedPnl = diff * totalShares;
+                if (pos.market === "crypto") {
+                    cryptoNetRealized += realizedPnl;
+                    cryptoMarginReleased += Number(pos.margin_blocked || 0);
+                } else {
                     netRealized += realizedPnl;
                     totalMarginReleased += Number(pos.margin_blocked || 0);
-                    return {
-                        ...pos,
-                        exit_price: liveLtp,
-                        realized_pnl: realizedPnl,
-                        closed_at: new Date().toISOString(),
-                    };
-                });
-
-                saveGuestPositions([]);
-                const updatedClosed = [...newlyClosed, ...closedPositions];
-                saveGuestClosed(updatedClosed);
-                setOpenPositions([]);
-                setClosedPositions(updatedClosed);
-
-                const updatedWallet = {
-                    balance: (wallet?.balance || 100000) + totalMarginReleased + netRealized,
-                    margin_utilized: 0,
+                }
+                return {
+                    ...pos,
+                    exit_price: liveLtp,
+                    realized_pnl: realizedPnl,
+                    closed_at: new Date().toISOString(),
                 };
-                saveGuestWallet(updatedWallet);
-                setWallet(updatedWallet);
-            }
+            });
+
+            saveGuestPositions([]);
+            const updatedClosed = [...newlyClosed, ...closedPositions];
+            saveGuestClosed(updatedClosed);
+            setOpenPositions([]);
+            setClosedPositions(updatedClosed);
+
+            const updatedWallet = {
+                balance: (wallet?.balance || 100000) + totalMarginReleased + netRealized,
+                margin_utilized: 0,
+            };
+            saveGuestWallet(updatedWallet);
+            setWallet(updatedWallet);
+
+            const updatedCryptoWallet = {
+                balance: (cryptoWallet?.balance || 10000) + cryptoMarginReleased + cryptoNetRealized,
+                margin_utilized: 0,
+            };
+            saveGuestCryptoWallet(updatedCryptoWallet);
+            setCryptoWallet(updatedCryptoWallet);
 
             setFeedback({ type: "success", text: "All open paper positions squared off." });
         } catch (err) {
@@ -904,22 +1144,81 @@ export default function PaperTrade() {
             {/* --------------------------------------------------------------------- */}
             {/* Top Responsive Full-Width Header Bar */}
             {/* --------------------------------------------------------------------- */}
+            {/* Top Responsive Full-Width Header Bar */}
+            {/* --------------------------------------------------------------------- */}
             <div className="sticky top-0 z-40 bg-white/95 dark:bg-[#111c2a]/95 backdrop-blur-md border-b border-gray-200 dark:border-gray-800 px-3 sm:px-6 py-2.5 shadow-xs">
                 <div className="w-full max-w-[1920px] mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
-                    {/* Symbol Selector & Spot Ticker */}
+                    {/* Market Switcher & Symbol Selector & Spot Ticker */}
                     <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                        <button
-                            onClick={() => setSearchOpen(true)}
-                            className="flex items-center gap-1.5 sm:gap-2 bg-gray-100 hover:bg-gray-200 dark:bg-[#18263a] dark:hover:bg-[#20324c] border border-gray-300 dark:border-gray-700 px-2.5 sm:px-3 py-1.5 rounded-xl font-black text-xs sm:text-sm text-gray-900 dark:text-white transition cursor-pointer shadow-2xs"
-                        >
-                            <span className="text-emerald-600 dark:text-emerald-400 font-extrabold">{symbol}</span>
-                            <FiChevronDown className="text-gray-400" />
-                        </button>
+                        {/* Market Mode Switcher: Indian Market vs Crypto */}
+                        <div className="flex items-center bg-gray-200/90 dark:bg-[#152132] p-1 rounded-xl border border-gray-300 dark:border-gray-700 shadow-inner">
+                            <button
+                                onClick={() => {
+                                    setMarketMode("indian");
+                                    setBasketLegs([]);
+                                }}
+                                className={`px-2.5 sm:px-3 py-1 rounded-lg font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                                    !isCrypto
+                                        ? "bg-emerald-600 text-white shadow-xs"
+                                        : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                                }`}
+                            >
+                                <span>🇮🇳</span>
+                                <span className="hidden xs:inline">Indian Market</span>
+                                <span className="xs:hidden">NSE</span>
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setMarketMode("crypto");
+                                    setBasketLegs([]);
+                                }}
+                                className={`px-2.5 sm:px-3 py-1 rounded-lg font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                                    isCrypto
+                                        ? "bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-xs"
+                                        : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                                }`}
+                            >
+                                <span>⚡</span>
+                                <span className="hidden xs:inline">Crypto</span>
+                                <span className="xs:hidden">Crypto</span>
+                            </button>
+                        </div>
+
+                        {/* Symbol Selector */}
+                        {!isCrypto ? (
+                            <button
+                                onClick={() => setSearchOpen(true)}
+                                className="flex items-center gap-1.5 sm:gap-2 bg-gray-100 hover:bg-gray-200 dark:bg-[#18263a] dark:hover:bg-[#20324c] border border-gray-300 dark:border-gray-700 px-2.5 sm:px-3 py-1.5 rounded-xl font-black text-xs sm:text-sm text-gray-900 dark:text-white transition cursor-pointer shadow-2xs"
+                            >
+                                <span className="text-emerald-600 dark:text-emerald-400 font-extrabold">{symbol}</span>
+                                <FiChevronDown className="text-gray-400" />
+                            </button>
+                        ) : (
+                            <div className="flex items-center gap-1 bg-gray-100 dark:bg-[#18263a] p-1 rounded-xl border border-gray-300 dark:border-gray-700">
+                                {CRYPTO_COINS.map((c) => (
+                                    <button
+                                        key={c.symbol}
+                                        onClick={() => {
+                                            setCryptoSymbol(c.symbol);
+                                            setBasketLegs([]);
+                                        }}
+                                        className={`px-2 py-0.8 rounded-lg font-bold text-xs transition cursor-pointer flex items-center gap-1 ${
+                                            cryptoSymbol === c.symbol
+                                                ? "bg-amber-500 text-white shadow-xs"
+                                                : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                                        }`}
+                                    >
+                                        <span>{c.icon}</span>
+                                        <span>{c.symbol}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        )}
 
                         <div className="flex items-center gap-1.5 sm:gap-2 font-mono">
                             <span className="text-gray-500 dark:text-gray-400 font-sans text-[11px] hidden xs:inline">Spot:</span>
                             <span className="font-extrabold text-gray-900 dark:text-white text-xs sm:text-sm tabular-nums">
-                                {spotPrice ? formatPrice(spotPrice) : "—"}
+                                {formatActivePrice(spotPrice)}
                             </span>
                             {chainData?.spotChange != null && (
                                 <span className={`text-[10px] sm:text-[11px] font-bold ${Number(chainData.spotChange) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
@@ -928,13 +1227,36 @@ export default function PaperTrade() {
                             )}
                         </div>
 
-                        {/* Live WebSocket Status Pill */}
+                        {/* USD <-> INR Currency Switcher for Crypto */}
+                        {isCrypto && (
+                            <div className="flex items-center bg-gray-200/80 dark:bg-[#18263a] p-0.5 rounded-lg border border-gray-300 dark:border-gray-700">
+                                <button
+                                    onClick={() => setCurrency("USD")}
+                                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                                        currency === "USD" ? "bg-purple-600 text-white shadow-xs" : "text-gray-500 hover:text-gray-800 dark:hover:text-gray-200"
+                                    }`}
+                                >
+                                    $ USD
+                                </button>
+                                <button
+                                    onClick={() => setCurrency("INR")}
+                                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                                        currency === "INR" ? "bg-emerald-600 text-white shadow-xs" : "text-gray-500 hover:text-gray-800 dark:hover:text-gray-200"
+                                    }`}
+                                    title={`1 USD = ₹${usdtInrRate.toFixed(2)}`}
+                                >
+                                    ₹ INR
+                                </button>
+                            </div>
+                        )}
+
+                        {/* Live Stream Status Pill */}
                         <div className="flex items-center gap-1.5 px-2 py-0.8 rounded-full bg-emerald-100 dark:bg-emerald-950/70 border border-emerald-300 dark:border-emerald-800/50 text-[10px] sm:text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
                             <span className="relative flex h-2 w-2">
                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                             </span>
-                            <span className="hidden sm:inline">Live Stream</span>
+                            <span className="hidden sm:inline">{isCrypto ? "24/7 Live Feed" : "Live Stream"}</span>
                             <span className="sm:hidden">Live</span>
                         </div>
                     </div>
@@ -946,7 +1268,7 @@ export default function PaperTrade() {
                                 <span className="text-gray-500 dark:text-gray-400 text-[11px] hidden sm:inline">Expiry:</span>
                                 <select
                                     value={chainData.selectedExpiry || ""}
-                                    onChange={(e) => changeExpiry(symbol, e.target.value)}
+                                    onChange={(e) => changeExpiry(activeSymbol, e.target.value)}
                                     className="bg-gray-100 dark:bg-[#18263a] border border-gray-300 dark:border-gray-700 rounded-lg px-2 py-1 font-bold text-gray-800 dark:text-gray-200 text-xs outline-none cursor-pointer"
                                 >
                                     {chainData.expiries.map((exp) => (
@@ -960,21 +1282,47 @@ export default function PaperTrade() {
 
                         <div className="flex items-center gap-2 sm:gap-3 pl-2 sm:pl-3 border-l border-gray-200 dark:border-gray-800">
                             <div>
-                                <div className="text-[9px] sm:text-[10px] text-gray-400 font-bold uppercase">Virtual Cash</div>
+                                <div className="text-[9px] sm:text-[10px] text-gray-400 font-bold uppercase">
+                                    {isCrypto ? "Virtual USDT" : "Virtual Cash"}
+                                </div>
                                 <div className="font-mono font-black text-[11px] sm:text-xs text-gray-900 dark:text-white tabular-nums">
-                                    {formatRupees(virtualCash)}
+                                    {isCrypto ? (
+                                        currency === "INR" ? (
+                                            `₹${Number(cryptoWallet.balance * usdtInrRate).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`
+                                        ) : (
+                                            `$${Number(cryptoWallet.balance).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                        )
+                                    ) : (
+                                        formatRupees(virtualCash)
+                                    )}
                                 </div>
                             </div>
 
-                            {/* Refill Button (+₹5L for ₹100) */}
-                            <button
-                                onClick={() => setRefillModalOpen(true)}
-                                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] shadow-xs cursor-pointer transition flex items-center gap-1"
-                                title="Add +₹5,00,000 Virtual Capital for ₹100"
-                            >
-                                <FiPlusCircle className="text-xs" />
-                                <span>+₹5L (₹100)</span>
-                            </button>
+                            {/* Refill / Reset Button */}
+                            {!isCrypto ? (
+                                <button
+                                    onClick={() => setRefillModalOpen(true)}
+                                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] shadow-xs cursor-pointer transition flex items-center gap-1"
+                                    title="Add +₹5,00,000 Virtual Capital for ₹100"
+                                >
+                                    <FiPlusCircle className="text-xs" />
+                                    <span>+₹5L (₹100)</span>
+                                </button>
+                            ) : (
+                                <button
+                                    onClick={() => {
+                                        const resetW = { balance: 10000, margin_utilized: 0 };
+                                        saveGuestCryptoWallet(resetW);
+                                        setCryptoWallet(resetW);
+                                        setFeedback({ type: "success", text: "Crypto Virtual Capital reset to $10,000 USDT!" });
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-[11px] shadow-xs cursor-pointer transition flex items-center gap-1"
+                                    title="Reset Virtual USDT Balance to $10,000"
+                                >
+                                    <FiRefreshCw className="text-xs" />
+                                    <span>$10k USDT</span>
+                                </button>
+                            )}
 
                             {/* Pro Membership Badge / Button */}
                             {!isPro ? (
@@ -996,26 +1344,49 @@ export default function PaperTrade() {
             </div>
 
             {/* --------------------------------------------------------------------- */}
-            {/* Quick Indices Bar & View Navigation */}
+            {/* Quick Indices / Crypto Bar & View Navigation */}
             {/* --------------------------------------------------------------------- */}
             <div className="bg-white/80 dark:bg-[#101926]/90 border-b border-gray-200 dark:border-gray-800 px-3 sm:px-6 py-2 overflow-x-auto">
                 <div className="w-full max-w-[1920px] mx-auto flex flex-wrap items-center justify-between gap-2.5 text-xs">
-                    <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 max-w-full">
-                        <span className="text-[11px] text-gray-400 font-bold mr-1 shrink-0 hidden md:inline">7 Indices:</span>
-                        {symbolList.indices.map((sym) => (
-                            <button
-                                key={sym}
-                                onClick={() => setSymbol(sym)}
-                                className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer shrink-0 ${
-                                    symbol === sym
-                                        ? "bg-emerald-600 text-white shadow-xs"
-                                        : "bg-gray-100 dark:bg-[#182333] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#223348]"
-                                }`}
-                            >
-                                {sym}
-                            </button>
-                        ))}
-                    </div>
+                    {!isCrypto ? (
+                        <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 max-w-full">
+                            <span className="text-[11px] text-gray-400 font-bold mr-1 shrink-0 hidden md:inline">7 Indices:</span>
+                            {symbolList.indices.map((sym) => (
+                                <button
+                                    key={sym}
+                                    onClick={() => setSymbol(sym)}
+                                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer shrink-0 ${
+                                        symbol === sym
+                                            ? "bg-emerald-600 text-white shadow-xs"
+                                            : "bg-gray-100 dark:bg-[#182333] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#223348]"
+                                    }`}
+                                >
+                                    {sym}
+                                </button>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="flex items-center gap-2 overflow-x-auto py-0.5 max-w-full">
+                            <span className="text-[11px] text-gray-400 font-bold mr-1 shrink-0 hidden md:inline">Crypto Assets:</span>
+                            {CRYPTO_COINS.map((c) => (
+                                <button
+                                    key={c.symbol}
+                                    onClick={() => {
+                                        setCryptoSymbol(c.symbol);
+                                        setBasketLegs([]);
+                                    }}
+                                    className={`px-3 py-1 rounded-lg font-bold text-xs transition cursor-pointer shrink-0 flex items-center gap-1.5 ${
+                                        cryptoSymbol === c.symbol
+                                            ? "bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-xs"
+                                            : "bg-gray-100 dark:bg-[#182333] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#223348]"
+                                    }`}
+                                >
+                                    <span className="text-sm">{c.icon}</span>
+                                    <span>{c.name} ({c.symbol})</span>
+                                </button>
+                            ))}
+                        </div>
+                    )}
 
                     <div className="flex items-center bg-gray-200/80 dark:bg-[#182333] p-1 rounded-xl text-xs font-bold shrink-0 shadow-inner">
                         <button
@@ -1145,26 +1516,75 @@ export default function PaperTrade() {
                             </div>
                         </div>
 
-                        {/* Split Workstation Grid (Desktop: Left Option Chain, Right Payoff Workbench) */}
-                        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-start">
+                        {/* Split Workstation Grid (Desktop: Left Option Chain 40%, Right StockMojo Strategy Workbench 60%) */}
+                        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
                             {/* ========================================================= */}
-                            {/* LEFT PANEL: LIVE OPTION CHAIN TABLE */}
+                            {/* LEFT PANEL: STOCKMOJO OPTION CHAIN WINDOW (40% width) */}
                             {/* ========================================================= */}
-                            <div className={`lg:col-span-7 xl:col-span-7 2xl:col-span-7 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#121c2b] shadow-sm overflow-hidden flex flex-col ${
+                            <div className={`lg:col-span-5 xl:col-span-5 2xl:col-span-5 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden flex flex-col lg:sticky lg:top-[70px] ${
                                 mobileTradeTab !== "chain" ? "hidden lg:flex" : "flex"
                             }`}>
-                                {/* Table Controls */}
-                                <div className="px-3 sm:px-4 py-2.5 bg-gray-50 dark:bg-[#162234] border-b border-gray-200 dark:border-gray-800 flex flex-wrap items-center justify-between gap-2 text-xs">
-                                    <div className="flex items-center gap-1.5">
-                                        <span className="text-gray-500 dark:text-gray-400 font-bold text-[11px]">Strikes:</span>
+                                {/* StockMojo 3-Cell Status Bar: SPOT | VIX | LOT / FUT */}
+                                <div className="grid grid-cols-3 divide-x divide-gray-100 dark:divide-white/10 border-b border-gray-100 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70 text-center py-2 px-1 text-xs">
+                                    <div>
+                                        <span className="text-[10px] text-gray-400 font-bold uppercase block">SPOT</span>
+                                        <span className="font-extrabold font-mono text-gray-900 dark:text-white tabular-nums text-[11.5px]">
+                                            {formatActivePrice(spotPrice)}
+                                        </span>
+                                    </div>
+                                    <div>
+                                        <span className="text-[10px] text-gray-400 font-bold uppercase block">VIX</span>
+                                        <span className="font-extrabold font-mono text-gray-900 dark:text-white tabular-nums text-[11.5px]">
+                                            {chainData?.vix != null ? Number(chainData.vix).toFixed(2) : "13.40"}
+                                        </span>
+                                    </div>
+                                    <div>
+                                        <span className="text-[10px] text-gray-400 font-bold uppercase block">
+                                            {isCrypto ? "24h VOL" : "LOT SIZE"}
+                                        </span>
+                                        <span className="font-extrabold font-mono text-emerald-600 dark:text-emerald-400 tabular-nums text-[11.5px]">
+                                            {isCrypto ? "Active" : lotSize}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {/* StockMojo Scrollable Expiry Pills Bar */}
+                                {chainData?.expiries?.length > 0 && (
+                                    <div className="px-2.5 py-1.5 border-b border-gray-100 dark:border-white/10 flex items-center gap-1.5 overflow-x-auto no-scrollbar bg-white dark:bg-[#0b1420]">
+                                        <span className="text-[10px] font-bold text-gray-400 shrink-0">EXPIRY:</span>
+                                        {chainData.expiries.map((exp) => {
+                                            const active = exp === chainData.selectedExpiry;
+                                            return (
+                                                <button
+                                                    key={exp}
+                                                    type="button"
+                                                    onClick={() => changeExpiry(activeSymbol, exp)}
+                                                    className={`px-2 py-0.8 rounded-md text-[11px] font-bold shrink-0 transition cursor-pointer ${
+                                                        active
+                                                            ? "bg-emerald-600 text-white shadow-xs"
+                                                            : "bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-white/10"
+                                                    }`}
+                                                >
+                                                    {formatExpiryShort(exp)}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
+                                {/* Strike Filter Bar */}
+                                <div className="px-3 py-1.5 bg-gray-50/50 dark:bg-[#070e17]/50 border-b border-gray-100 dark:border-white/10 flex flex-wrap items-center justify-between gap-1.5 text-xs">
+                                    <div className="flex items-center gap-1">
+                                        <span className="text-gray-400 font-bold text-[10.5px]">Strikes:</span>
                                         {STRIKE_RANGES.map((r) => (
                                             <button
                                                 key={r.label}
+                                                type="button"
                                                 onClick={() => setStrikeRange(r.value)}
-                                                className={`px-2 py-0.8 rounded-lg font-bold text-[11px] transition cursor-pointer ${
+                                                className={`px-1.5 py-0.5 rounded text-[10.5px] font-bold transition cursor-pointer ${
                                                     strikeRange === r.value
                                                         ? "bg-emerald-600 text-white shadow-xs"
-                                                        : "bg-gray-200/80 dark:bg-[#1c2a3d] text-gray-700 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-[#253852]"
+                                                        : "bg-white dark:bg-[#121c2b] text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-white/10 hover:border-emerald-500"
                                                 }`}
                                             >
                                                 {r.label}
@@ -1173,440 +1593,513 @@ export default function PaperTrade() {
                                     </div>
 
                                     {/* Mobile View Toggle (Calls | Both | Puts) */}
-                                    <div className="flex md:hidden items-center bg-gray-200 dark:bg-[#182333] p-0.5 rounded-lg text-xs font-bold">
+                                    <div className="flex md:hidden items-center bg-gray-100 dark:bg-[#121c2b] p-0.5 rounded-lg text-xs font-bold border border-gray-200 dark:border-white/10">
                                         <button
+                                            type="button"
                                             onClick={() => setMobileSide("calls")}
-                                            className={`px-2 py-0.8 rounded-md text-[11px] ${mobileSide === "calls" ? "bg-white dark:bg-gray-900 text-blue-600 dark:text-blue-400 shadow-xs" : "text-gray-500"}`}
+                                            className={`px-2 py-0.5 rounded text-[10px] ${mobileSide === "calls" ? "bg-white dark:bg-[#0b1420] text-blue-600 dark:text-blue-400 shadow-xs" : "text-gray-500"}`}
                                         >
                                             Calls
                                         </button>
                                         <button
+                                            type="button"
                                             onClick={() => setMobileSide("both")}
-                                            className={`px-2 py-0.8 rounded-md text-[11px] ${mobileSide === "both" ? "bg-white dark:bg-gray-900 text-emerald-600 dark:text-emerald-400 shadow-xs" : "text-gray-500"}`}
+                                            className={`px-2 py-0.5 rounded text-[10px] ${mobileSide === "both" ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 shadow-xs" : "text-gray-500"}`}
                                         >
                                             Both
                                         </button>
                                         <button
+                                            type="button"
                                             onClick={() => setMobileSide("puts")}
-                                            className={`px-2 py-0.8 rounded-md text-[11px] ${mobileSide === "puts" ? "bg-white dark:bg-gray-900 text-purple-600 dark:text-purple-400 shadow-xs" : "text-gray-500"}`}
+                                            className={`px-2 py-0.5 rounded text-[10px] ${mobileSide === "puts" ? "bg-white dark:bg-[#0b1420] text-purple-600 dark:text-purple-400 shadow-xs" : "text-gray-500"}`}
                                         >
                                             Puts
                                         </button>
                                     </div>
 
-                                    <div className="text-gray-500 dark:text-gray-400 text-[11px] font-mono hidden sm:block">
-                                        Live Ticks: <span className="text-emerald-600 dark:text-emerald-400 font-bold">{displayRows.length} strikes</span> | Lot: <span className="text-gray-900 dark:text-white font-bold">{lotSize}</span>
+                                    <div className="text-gray-400 text-[10.5px] font-mono hidden sm:block">
+                                        <span className="text-emerald-600 dark:text-emerald-400 font-bold">{displayRows.length}</span> strikes
                                     </div>
                                 </div>
 
                                 {/* Fast Responsive Option Chain Table with Independent Scroll */}
-                                <div className="overflow-x-auto max-h-[calc(100vh-210px)] overflow-y-auto custom-scrollbar">
+                                <div className="overflow-x-auto max-h-[calc(100vh-250px)] overflow-y-auto custom-scrollbar">
                                     <table className="w-full text-xs text-center border-collapse">
                                         <thead className="sticky top-0 z-10">
-                                            <tr className="bg-gray-100/90 dark:bg-[#101926]/95 backdrop-blur-xs text-gray-600 dark:text-gray-400 text-[11px] font-bold border-b border-gray-200 dark:border-gray-800">
+                                            <tr className="bg-gray-100/90 dark:bg-[#070e17]/95 backdrop-blur-xs text-gray-500 dark:text-gray-400 text-[10px] font-bold border-b border-gray-200 dark:border-white/10">
                                                 {(mobileSide === "both" || mobileSide === "calls") && (
-                                                    <th colSpan={4} className="py-2 bg-blue-50/70 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 uppercase tracking-wider text-[10px]">CALL OPTIONS</th>
+                                                    <th colSpan={3} className="py-1 bg-blue-50/50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 uppercase tracking-wider text-[9.5px] font-extrabold">CALLS</th>
                                                 )}
-                                                <th className="py-2 bg-gray-200/80 dark:bg-[#172335] text-gray-900 dark:text-white font-extrabold text-[11px]">STRIKE</th>
+                                                <th className="py-1 w-16 min-w-[62px] max-w-[70px] bg-gray-100 dark:bg-[#0b1420] text-gray-800 dark:text-gray-200 font-extrabold text-[10px]">STRIKE</th>
                                                 {(mobileSide === "both" || mobileSide === "puts") && (
-                                                    <th colSpan={4} className="py-2 bg-purple-50/70 dark:bg-purple-950/40 text-purple-700 dark:text-purple-400 uppercase tracking-wider text-[10px]">PUT OPTIONS</th>
+                                                    <th colSpan={3} className="py-1 bg-purple-50/50 dark:bg-purple-950/20 text-purple-600 dark:text-purple-400 uppercase tracking-wider text-[9.5px] font-extrabold">PUTS</th>
                                                 )}
                                             </tr>
-                                            <tr className="bg-gray-50/95 dark:bg-[#131d2c]/95 backdrop-blur-xs text-gray-500 dark:text-gray-400 text-[10px] border-b border-gray-200 dark:border-gray-800 font-semibold">
+                                            <tr className="bg-gray-50 dark:bg-[#0b1420] backdrop-blur-xs text-gray-400 text-[9.5px] border-b border-gray-100 dark:border-white/10 font-semibold">
                                                 {(mobileSide === "both" || mobileSide === "calls") && (
                                                     <>
-                                                        <th className="py-1.5 px-2 text-right">OI</th>
-                                                        <th className="py-1.5 px-2 text-right">Delta</th>
-                                                        <th className="py-1.5 px-2 text-right">Live LTP</th>
-                                                        <th className="py-1.5 px-2 text-center w-14">Trade</th>
+                                                        <th className="py-1 px-1 text-right font-medium">CallΔ</th>
+                                                        <th className="py-1 px-1 text-right font-medium">LTP</th>
+                                                        <th className="py-1 px-1 text-center w-11 font-medium">Trade</th>
                                                     </>
                                                 )}
-                                                <th className="py-1.5 px-2.5 bg-gray-100/90 dark:bg-[#172335]/90 text-gray-800 dark:text-gray-200 font-bold">Strike</th>
+                                                <th className="py-1 px-1 w-16 min-w-[62px] max-w-[70px] bg-gray-50/50 dark:bg-[#070e17]/50 text-gray-700 dark:text-gray-300 font-bold text-[10px]">Strike</th>
                                                 {(mobileSide === "both" || mobileSide === "puts") && (
                                                     <>
-                                                        <th className="py-1.5 px-2 text-center w-14">Trade</th>
-                                                        <th className="py-1.5 px-2 text-left">Live LTP</th>
-                                                        <th className="py-1.5 px-2 text-left">Delta</th>
-                                                        <th className="py-1.5 px-2 text-left">OI</th>
+                                                        <th className="py-1 px-1 text-center w-11 font-medium">Trade</th>
+                                                        <th className="py-1 px-1 text-left font-medium">LTP</th>
+                                                        <th className="py-1 px-1 text-left font-medium">PutΔ</th>
                                                     </>
                                                 )}
                                             </tr>
                                         </thead>
-                                        <tbody className="divide-y divide-gray-100 dark:divide-gray-800/80 font-mono text-xs">
-                                            {displayRows.map((row) => {
-                                                const strikeNum = Number(row.strike);
-                                                const isAtm = atmStrike != null && strikeNum === atmStrike;
-                                                const ceLeg = basketLegs.find((l) => l.strike === strikeNum && l.type === "CE");
-                                                const peLeg = basketLegs.find((l) => l.strike === strikeNum && l.type === "PE");
+                                        <tbody className="divide-y divide-gray-100 dark:divide-white/5 font-mono text-xs">
+                                            {displayRows.length === 0 ? (
+                                                <tr>
+                                                    <td colSpan={7} className="py-10 text-center text-xs text-gray-400 dark:text-gray-500">
+                                                        No strikes available for {activeSymbol} on this expiry.
+                                                    </td>
+                                                </tr>
+                                            ) : (
+                                                displayRows.map((row) => {
+                                                    const strikeNum = Number(row.strike);
+                                                    const isAtm = atmStrike != null && strikeNum === atmStrike;
+                                                    const ceLeg = basketLegs.find((l) => l.strike === strikeNum && l.type === "CE");
+                                                    const peLeg = basketLegs.find((l) => l.strike === strikeNum && l.type === "PE");
 
-                                                return (
-                                                    <tr
-                                                        key={row.strike}
-                                                        className={`hover:bg-gray-50 dark:hover:bg-[#18263a] transition ${
-                                                            isAtm ? "bg-amber-50/70 dark:bg-amber-950/30 font-bold" : ""
-                                                        }`}
-                                                    >
-                                                        {/* CE Side */}
-                                                        {(mobileSide === "both" || mobileSide === "calls") && (
-                                                            <>
-                                                                <td className="py-1.5 px-2 text-right text-gray-500 dark:text-gray-400 tabular-nums text-[11px]">
-                                                                    {formatOi(row.ce?.oi)}
-                                                                </td>
-                                                                <td className="py-1.5 px-2 text-right text-gray-400 tabular-nums text-[11px]">
-                                                                    {row.ce?.delta != null ? Number(row.ce.delta).toFixed(2) : "—"}
-                                                                </td>
-                                                                <td className="py-1.5 px-2 text-right font-bold tabular-nums text-gray-900 dark:text-white">
-                                                                    {row.ce?.ltp != null ? formatPrice(row.ce.ltp) : "—"}
-                                                                </td>
-                                                                <td className="py-1.5 px-2 text-center">
-                                                                    {row.ce?.ltp != null && (
-                                                                        <div className="flex items-center justify-center gap-1">
-                                                                            <button
-                                                                                onClick={() => handleToggleLeg(row, "CE", "buy")}
-                                                                                className={`px-1.5 py-0.5 rounded text-[10px] font-black border transition cursor-pointer ${
-                                                                                    ceLeg?.action === "buy"
-                                                                                        ? "bg-emerald-600 text-white border-emerald-500 shadow-xs"
-                                                                                        : "border-emerald-500 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/60"
-                                                                                }`}
-                                                                                title="Buy Call"
-                                                                            >
-                                                                                B
-                                                                            </button>
-                                                                            <button
-                                                                                onClick={() => handleToggleLeg(row, "CE", "sell")}
-                                                                                className={`px-1.5 py-0.5 rounded text-[10px] font-black border transition cursor-pointer ${
-                                                                                    ceLeg?.action === "sell"
-                                                                                        ? "bg-rose-600 text-white border-rose-500 shadow-xs"
-                                                                                        : "border-rose-500 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/60"
-                                                                                }`}
-                                                                                title="Sell Call"
-                                                                            >
-                                                                                S
-                                                                            </button>
-                                                                        </div>
-                                                                    )}
-                                                                </td>
-                                                            </>
-                                                        )}
-
-                                                        {/* Strike */}
-                                                        <td className={`py-1.5 px-2.5 bg-gray-50/80 dark:bg-[#152132] font-black tabular-nums border-x border-gray-100 dark:border-gray-800 ${
-                                                            isAtm ? "text-amber-600 dark:text-amber-400" : "text-gray-900 dark:text-white"
-                                                        }`}>
-                                                            {row.strike}
-                                                            {isAtm && (
-                                                                <span className="ml-1 text-[9px] px-1 py-0.2 rounded bg-amber-500 text-black font-bold">
-                                                                    ATM
-                                                                </span>
+                                                    return (
+                                                        <tr
+                                                            key={row.strike}
+                                                            className={`hover:bg-gray-50/80 dark:hover:bg-white/[0.03] transition-colors ${
+                                                                isAtm ? "bg-amber-50/50 dark:bg-amber-950/20 font-bold" : ""
+                                                            }`}
+                                                        >
+                                                            {/* CE Side */}
+                                                            {(mobileSide === "both" || mobileSide === "calls") && (
+                                                                <>
+                                                                    <td className="py-1 px-1 text-right text-gray-400 tabular-nums text-[10px]">
+                                                                        {row.ce?.delta != null ? Number(row.ce.delta).toFixed(2) : "—"}
+                                                                    </td>
+                                                                    <td className="py-1 px-1 text-right font-bold tabular-nums text-gray-900 dark:text-white text-[10.5px]">
+                                                                        {row.ce?.ltp != null ? formatActivePrice(row.ce.ltp) : "—"}
+                                                                    </td>
+                                                                    <td className="py-1 px-1 text-center w-11">
+                                                                        {row.ce?.ltp != null && (
+                                                                            <div className="flex items-center justify-center gap-0.5">
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => handleToggleLeg(row, "CE", "buy")}
+                                                                                    className={`px-1 py-0.5 min-w-[17px] rounded text-[9px] font-black border transition cursor-pointer ${
+                                                                                        ceLeg?.action === "buy"
+                                                                                            ? "bg-emerald-600 text-white border-emerald-500 shadow-xs"
+                                                                                            : "border-emerald-500/60 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                                                                                    }`}
+                                                                                    title="Buy Call"
+                                                                                >
+                                                                                    B
+                                                                                </button>
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => handleToggleLeg(row, "CE", "sell")}
+                                                                                    className={`px-1 py-0.5 min-w-[17px] rounded text-[9px] font-black border transition cursor-pointer ${
+                                                                                        ceLeg?.action === "sell"
+                                                                                            ? "bg-rose-600 text-white border-rose-500 shadow-xs"
+                                                                                            : "border-rose-500/60 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40"
+                                                                                    }`}
+                                                                                    title="Sell Call"
+                                                                                >
+                                                                                    S
+                                                                                </button>
+                                                                            </div>
+                                                                        )}
+                                                                    </td>
+                                                                </>
                                                             )}
-                                                        </td>
 
-                                                        {/* PE Side */}
-                                                        {(mobileSide === "both" || mobileSide === "puts") && (
-                                                            <>
-                                                                <td className="py-1.5 px-2 text-center">
-                                                                    {row.pe?.ltp != null && (
-                                                                        <div className="flex items-center justify-center gap-1">
-                                                                            <button
-                                                                                onClick={() => handleToggleLeg(row, "PE", "buy")}
-                                                                                className={`px-1.5 py-0.5 rounded text-[10px] font-black border transition cursor-pointer ${
-                                                                                    peLeg?.action === "buy"
-                                                                                        ? "bg-emerald-600 text-white border-emerald-500 shadow-xs"
-                                                                                        : "border-emerald-500 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/60"
-                                                                                }`}
-                                                                                title="Buy Put"
-                                                                            >
-                                                                                B
-                                                                            </button>
-                                                                            <button
-                                                                                onClick={() => handleToggleLeg(row, "PE", "sell")}
-                                                                                className={`px-1.5 py-0.5 rounded text-[10px] font-black border transition cursor-pointer ${
-                                                                                    peLeg?.action === "sell"
-                                                                                        ? "bg-rose-600 text-white border-rose-500 shadow-xs"
-                                                                                        : "border-rose-500 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/60"
-                                                                                }`}
-                                                                                title="Sell Put"
-                                                                            >
-                                                                                S
-                                                                            </button>
-                                                                        </div>
+                                                            {/* Strike Column */}
+                                                            <td className={`py-1 px-1.5 w-20 min-w-[70px] text-center bg-gray-50/70 dark:bg-[#070e17]/80 font-black tabular-nums border-x border-gray-100 dark:border-white/5 text-[11px] ${
+                                                                isAtm ? "text-amber-600 dark:text-amber-400" : "text-gray-900 dark:text-white"
+                                                            }`}>
+                                                                <div className="flex items-center justify-center gap-1">
+                                                                    <span>{row.strike}</span>
+                                                                    {isAtm && (
+                                                                        <span className="text-[7.5px] px-1 py-0 rounded bg-amber-500 text-black font-extrabold leading-tight">
+                                                                            ATM
+                                                                        </span>
                                                                     )}
-                                                                </td>
-                                                                <td className="py-1.5 px-2 text-left font-bold tabular-nums text-gray-900 dark:text-white">
-                                                                    {row.pe?.ltp != null ? formatPrice(row.pe.ltp) : "—"}
-                                                                </td>
-                                                                <td className="py-1.5 px-2 text-left text-gray-400 tabular-nums text-[11px]">
-                                                                    {row.pe?.delta != null ? Number(row.pe.delta).toFixed(2) : "—"}
-                                                                </td>
-                                                                <td className="py-1.5 px-2 text-left text-gray-500 dark:text-gray-400 tabular-nums text-[11px]">
-                                                                    {formatOi(row.pe?.oi)}
-                                                                </td>
-                                                            </>
-                                                        )}
-                                                    </tr>
-                                                );
-                                            })}
+                                                                </div>
+                                                            </td>
+
+                                                            {/* PE Side */}
+                                                            {(mobileSide === "both" || mobileSide === "puts") && (
+                                                                <>
+                                                                    <td className="py-1 px-1 text-center w-11">
+                                                                        {row.pe?.ltp != null && (
+                                                                            <div className="flex items-center justify-center gap-0.5">
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => handleToggleLeg(row, "PE", "buy")}
+                                                                                    className={`px-1 py-0.5 min-w-[17px] rounded text-[9px] font-black border transition cursor-pointer ${
+                                                                                        peLeg?.action === "buy"
+                                                                                            ? "bg-emerald-600 text-white border-emerald-500 shadow-xs"
+                                                                                            : "border-emerald-500/60 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                                                                                    }`}
+                                                                                    title="Buy Put"
+                                                                                >
+                                                                                    B
+                                                                                </button>
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => handleToggleLeg(row, "PE", "sell")}
+                                                                                    className={`px-1 py-0.5 min-w-[17px] rounded text-[9px] font-black border transition cursor-pointer ${
+                                                                                        peLeg?.action === "sell"
+                                                                                            ? "bg-rose-600 text-white border-rose-500 shadow-xs"
+                                                                                            : "border-rose-500/60 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40"
+                                                                                    }`}
+                                                                                    title="Sell Put"
+                                                                                >
+                                                                                    S
+                                                                                </button>
+                                                                            </div>
+                                                                        )}
+                                                                    </td>
+                                                                    <td className="py-1 px-1 text-left font-bold tabular-nums text-gray-900 dark:text-white text-[10.5px]">
+                                                                        {row.pe?.ltp != null ? formatActivePrice(row.pe.ltp) : "—"}
+                                                                    </td>
+                                                                    <td className="py-1 px-1 text-left text-gray-400 tabular-nums text-[10px]">
+                                                                        {row.pe?.delta != null ? Number(row.pe.delta).toFixed(2) : "—"}
+                                                                    </td>
+                                                                </>
+                                                            )}
+                                                        </tr>
+                                                    );
+                                                })
+                                            )}
                                         </tbody>
                                     </table>
                                 </div>
                             </div>
 
                             {/* ========================================================= */}
-                            {/* RIGHT PANEL: PAYOFF CHART & STRATEGY WORKBENCH */}
+                            {/* RIGHT PANEL: STOCKMOJO STRATEGY BUILDER WORKBENCH (60% width) */}
                             {/* ========================================================= */}
-                            <div className={`lg:col-span-5 xl:col-span-5 2xl:col-span-5 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#121c2b] p-3.5 sm:p-4 shadow-sm space-y-3.5 lg:sticky lg:top-[70px] ${
-                                mobileTradeTab !== "payoff" ? "hidden lg:block" : "block"
+                            <div className={`lg:col-span-7 xl:col-span-7 2xl:col-span-7 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden flex flex-col ${
+                                mobileTradeTab !== "payoff" ? "hidden lg:flex" : "flex"
                             }`}>
-                                {/* Header & 1-Click Presets */}
-                                <div className="border-b border-gray-100 dark:border-gray-800 pb-3 space-y-2.5">
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-2">
-                                            <FiBarChart2 className="text-emerald-600 dark:text-emerald-400 text-base" />
-                                            <span className="font-extrabold text-xs sm:text-sm text-gray-900 dark:text-white">
-                                                Payoff Chart & Hedge Builder
-                                            </span>
-                                        </div>
-                                        <span className="text-[11px] font-bold text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-[#18263a] px-2 py-0.5 rounded-md">
-                                            {basketLegs.length} Legs
-                                        </span>
-                                    </div>
-
-                                    {/* 1-Click Presets & All Matrix Buttons */}
-                                    <div className="flex items-center gap-1.5 overflow-x-auto text-[10px] font-bold py-0.5 no-scrollbar">
+                                {/* StockMojo Top Navigation & Presets Bar */}
+                                <div className="border-b border-gray-100 dark:border-white/10 bg-gray-50/50 dark:bg-[#070e17]/50 px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+                                    <div className="flex items-center gap-1.5">
                                         <button
-                                            onClick={() => setShowPresetsModal(true)}
-                                            className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-500 cursor-pointer shrink-0 transition flex items-center gap-1 shadow-xs"
+                                            type="button"
+                                            onClick={() => setChartViewTab("payoff")}
+                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                                                chartViewTab === "payoff"
+                                                    ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 border border-gray-200 dark:border-white/10 shadow-xs"
+                                                    : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                                            }`}
                                         >
-                                            <span>✨ All 15+ Strategies</span>
+                                            <span>📊 Payoff</span>
+                                            {basketLegs.length > 0 && (
+                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                            )}
                                         </button>
                                         <button
+                                            type="button"
+                                            onClick={() => setChartViewTab("tradingview")}
+                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                                                chartViewTab === "tradingview"
+                                                    ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 border border-gray-200 dark:border-white/10 shadow-xs"
+                                                    : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                                            }`}
+                                        >
+                                            <span>📈 TradingView</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setChartViewTab("presets")}
+                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                                                chartViewTab === "presets"
+                                                    ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 border border-gray-200 dark:border-white/10 shadow-xs"
+                                                    : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                                            }`}
+                                        >
+                                            <span>⚡ Ready-Made Strategies</span>
+                                        </button>
+                                    </div>
+
+                                    {/* Quick Preset Pills */}
+                                    <div className="flex items-center gap-1 overflow-x-auto text-[10.5px] font-semibold py-0.5 no-scrollbar text-gray-600 dark:text-gray-400">
+                                        <button
+                                            type="button"
                                             onClick={() => applyPresetHedge("BULL_CALL_SPREAD")}
-                                            className="px-2 py-1 rounded-lg bg-gray-100 dark:bg-[#1c2a3d] hover:bg-gray-200 dark:hover:bg-[#253852] text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-700/60 cursor-pointer shrink-0 transition"
+                                            className="px-2 py-0.8 rounded-md bg-white dark:bg-[#121c2b] border border-gray-200 dark:border-white/10 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 shrink-0 transition cursor-pointer"
                                         >
                                             Bull Call
                                         </button>
                                         <button
+                                            type="button"
                                             onClick={() => applyPresetHedge("BEAR_PUT_SPREAD")}
-                                            className="px-2 py-1 rounded-lg bg-gray-100 dark:bg-[#1c2a3d] hover:bg-gray-200 dark:hover:bg-[#253852] text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-700/60 cursor-pointer shrink-0 transition"
+                                            className="px-2 py-0.8 rounded-md bg-white dark:bg-[#121c2b] border border-gray-200 dark:border-white/10 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 shrink-0 transition cursor-pointer"
                                         >
                                             Bear Put
                                         </button>
                                         <button
+                                            type="button"
                                             onClick={() => applyPresetHedge("IRON_CONDOR")}
-                                            className="px-2 py-1 rounded-lg bg-gray-100 dark:bg-[#1c2a3d] hover:bg-gray-200 dark:hover:bg-[#253852] text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-700/60 cursor-pointer shrink-0 transition"
+                                            className="px-2 py-0.8 rounded-md bg-white dark:bg-[#121c2b] border border-gray-200 dark:border-white/10 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 shrink-0 transition cursor-pointer"
                                         >
                                             Iron Condor
                                         </button>
                                         <button
+                                            type="button"
                                             onClick={() => applyPresetHedge("STRADDLE")}
-                                            className="px-2 py-1 rounded-lg bg-gray-100 dark:bg-[#1c2a3d] hover:bg-gray-200 dark:hover:bg-[#253852] text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-700/60 cursor-pointer shrink-0 transition"
+                                            className="px-2 py-0.8 rounded-md bg-white dark:bg-[#121c2b] border border-gray-200 dark:border-white/10 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 shrink-0 transition cursor-pointer"
                                         >
                                             Straddle
-                                        </button>
-                                        <button
-                                            onClick={() => applyPresetHedge("SHORT_STRANGLE")}
-                                            className="px-2 py-1 rounded-lg bg-gray-100 dark:bg-[#1c2a3d] hover:bg-gray-200 dark:hover:bg-[#253852] text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-700/60 cursor-pointer shrink-0 transition"
-                                        >
-                                            Strangle
                                         </button>
                                     </div>
                                 </div>
 
-                                {basketLegs.length > 0 ? (
-                                    <div className="space-y-3">
-                                        {/* Strategy Analytics Badges Grid */}
-                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs">
-                                            {payoffData.maxProfit != null && (
-                                                <div className="px-2.5 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
-                                                    <div className="text-[9px] text-emerald-600 dark:text-emerald-400 uppercase font-bold">Max Profit</div>
-                                                    <div className="font-mono font-black tabular-nums truncate">
-                                                        {typeof payoffData.maxProfit === "number" ? `+${formatPrice(payoffData.maxProfit)}` : payoffData.maxProfit}
+                                {/* Active Visual View (Payoff Chart, TradingView, or StockMojo Presets Matrix) */}
+                                {chartViewTab === "presets" ? (
+                                    <div className="p-3 bg-white dark:bg-[#0b1420] min-h-[360px] overflow-y-auto max-h-[500px]">
+                                        <PresetStrategies
+                                            data={chainData}
+                                            onApply={(pLegs) => {
+                                                applyFullPreset(pLegs);
+                                                setChartViewTab("payoff");
+                                            }}
+                                        />
+                                    </div>
+                                ) : chartViewTab === "payoff" ? (
+                                    <div className="p-3 sm:p-4 space-y-3">
+                                        {/* StockMojo 2-Column Split: Stats Left + Chart Right */}
+                                        <div className="flex flex-col sm:flex-row gap-3">
+                                            {/* StockMojo Stat Cards Column */}
+                                            <div className="w-full sm:w-[170px] xl:w-[190px] shrink-0 space-y-1.5 text-xs">
+                                                <div className="p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
+                                                    <div className="text-[9.5px] uppercase font-bold text-gray-500 dark:text-gray-400">Required Funds</div>
+                                                    <div className="text-sm font-black tabular-nums text-emerald-600 dark:text-emerald-400 font-mono">
+                                                        {formatActivePrice(payoffData.fundsRequired)}
                                                     </div>
                                                 </div>
-                                            )}
-                                            {payoffData.maxLoss != null && (
-                                                <div className="px-2.5 py-1.5 rounded-lg bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300">
-                                                    <div className="text-[9px] text-rose-600 dark:text-rose-400 uppercase font-bold">Max Loss</div>
-                                                    <div className="font-mono font-black tabular-nums truncate">
-                                                        {typeof payoffData.maxLoss === "number" ? formatPrice(payoffData.maxLoss) : payoffData.maxLoss}
-                                                    </div>
-                                                </div>
-                                            )}
-                                            {payoffData.riskReward && payoffData.riskReward !== "—" && (
-                                                <div className="px-2.5 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/50 border border-blue-300 dark:border-blue-800 text-blue-800 dark:text-blue-300">
-                                                    <div className="text-[9px] text-blue-600 dark:text-blue-400 uppercase font-bold">Risk : Reward</div>
-                                                    <div className="font-mono font-black tabular-nums truncate">{payoffData.riskReward}</div>
-                                                </div>
-                                            )}
-                                            {payoffData.pop != null && (
-                                                <div className="px-2.5 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300">
-                                                    <div className="text-[9px] text-amber-600 dark:text-amber-400 uppercase font-bold">POP (Profit Prob)</div>
-                                                    <div className="font-mono font-black tabular-nums">{payoffData.pop}%</div>
-                                                </div>
-                                            )}
-                                            {payoffData.breakevens?.length > 0 && (
-                                                <div className="px-2.5 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-950/50 border border-purple-300 dark:border-purple-800 text-purple-800 dark:text-purple-300 col-span-2 sm:col-span-1">
-                                                    <div className="text-[9px] text-purple-600 dark:text-purple-400 uppercase font-bold">Breakeven</div>
-                                                    <div className="font-mono font-bold text-[11px] tabular-nums truncate">
-                                                        {payoffData.breakevens.map((b) => Math.round(b)).join(" | ")}
-                                                    </div>
-                                                </div>
-                                            )}
-                                            {payoffData.netGreeks && (
-                                                <div className="px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-[#18263a] border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300">
-                                                    <div className="text-[9px] text-gray-400 uppercase font-bold">Net Delta (Δ)</div>
-                                                    <div className="font-mono font-bold text-[11px] tabular-nums">
-                                                        {payoffData.netGreeks.delta.toFixed(2)}
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>
 
-                                        {/* Real-time Payoff Chart Container */}
-                                        <div className="bg-gray-50/70 dark:bg-[#101926]/70 border border-gray-200 dark:border-gray-800 rounded-xl p-2.5 shadow-inner">
-                                            <div className="flex items-center justify-between mb-1 px-1">
-                                                <div className="text-[10px] font-extrabold uppercase text-gray-500 dark:text-gray-400">
-                                                    Live Payoff Curve ({symbol})
+                                                <div className="p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
+                                                    <div className="text-[9.5px] uppercase font-bold text-gray-500 dark:text-gray-400">Max Profit</div>
+                                                    <div className="text-xs font-black tabular-nums text-emerald-600 dark:text-emerald-400 truncate">
+                                                        {payoffData.maxProfit == null ? "—" : typeof payoffData.maxProfit === "number" ? `+${formatActivePrice(payoffData.maxProfit)}` : payoffData.maxProfit}
+                                                    </div>
                                                 </div>
-                                                <div className="flex items-center gap-2.5 text-[9px] text-gray-400 font-semibold">
-                                                    <span className="flex items-center gap-1">
-                                                        <span className="w-2 h-0.5 bg-emerald-500 rounded"></span> Expiry
-                                                    </span>
-                                                    <span className="flex items-center gap-1">
-                                                        <span className="w-2 h-0.5 bg-blue-500 rounded border-b border-dashed"></span> Today
-                                                    </span>
+
+                                                <div className="p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
+                                                    <div className="text-[9.5px] uppercase font-bold text-gray-500 dark:text-gray-400">Max Loss</div>
+                                                    <div className="text-xs font-black tabular-nums text-rose-600 dark:text-rose-400 truncate">
+                                                        {payoffData.maxLoss == null ? "—" : typeof payoffData.maxLoss === "number" ? formatActivePrice(payoffData.maxLoss) : payoffData.maxLoss}
+                                                    </div>
                                                 </div>
+
+                                                <div className="p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70 flex justify-between items-center">
+                                                    <div className="text-[9.5px] uppercase font-bold text-gray-500 dark:text-gray-400">POP</div>
+                                                    <div className="text-xs font-black tabular-nums text-gray-800 dark:text-gray-200">
+                                                        {payoffData.pop != null ? `${payoffData.pop}%` : "—"}
+                                                    </div>
+                                                </div>
+
+                                                <div className="p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70 flex justify-between items-center">
+                                                    <div className="text-[9.5px] uppercase font-bold text-gray-500 dark:text-gray-400">Reward : Risk</div>
+                                                    <div className="text-xs font-black tabular-nums text-gray-800 dark:text-gray-200">
+                                                        {payoffData.riskReward || "—"}
+                                                    </div>
+                                                </div>
+
+                                                {payoffData.breakevens?.length > 0 && (
+                                                    <div className="p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
+                                                        <div className="text-[9px] uppercase font-bold text-gray-500 dark:text-gray-400">Breakeven</div>
+                                                        <div className="text-[10.5px] font-bold tabular-nums text-purple-600 dark:text-purple-400 truncate">
+                                                            {payoffData.breakevens.map((b) => (isCrypto ? Number(b).toFixed(1) : Math.round(b))).join(" | ")}
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </div>
-                                            <PayoffChart
-                                                curve={payoffData.curve}
-                                                spotPrice={spotPrice}
-                                                breakevens={payoffData.breakevens}
-                                                expectedMove={payoffData.expectedMove}
-                                                atmIv={payoffData.atmIv}
-                                                yearsRemaining={payoffData.yearsRemaining}
-                                                height={220}
+
+                                            {/* Payoff Curve Canvas */}
+                                            <div className="flex-1 min-w-0 bg-white dark:bg-[#070e17] rounded-xl border border-gray-200 dark:border-white/10 p-2 flex flex-col justify-center">
+                                                {basketLegs.length > 0 ? (
+                                                    <PayoffChart
+                                                        curve={payoffData.curve}
+                                                        spotPrice={spotPrice}
+                                                        breakevens={payoffData.breakevens}
+                                                        expectedMove={payoffData.expectedMove}
+                                                        atmIv={payoffData.atmIv}
+                                                        yearsRemaining={payoffData.yearsRemaining}
+                                                        height={220}
+                                                    />
+                                                ) : (
+                                                    <div className="py-8 px-4 text-center text-xs text-gray-400 dark:text-gray-500 space-y-3">
+                                                        <div className="text-3xl">📊</div>
+                                                        <div className="font-bold text-gray-700 dark:text-gray-300">No strategy legs selected</div>
+                                                        <p className="text-[11px] max-w-[240px] mx-auto text-gray-500 dark:text-gray-400">
+                                                            Click B (Buy) or S (Sell) on option chain strikes, or pick from ready-made presets below.
+                                                        </p>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setChartViewTab("presets")}
+                                                            className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-xs transition cursor-pointer inline-flex items-center gap-1.5"
+                                                        >
+                                                            <span>⚡ Pick Ready-Made Strategy</span>
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    /* Standalone Local TradingView Chart */
+                                    <div className="p-3 sm:p-4 space-y-2">
+                                        <div className="flex items-center justify-between text-xs text-gray-500 px-1">
+                                            <span className="font-extrabold text-gray-900 dark:text-white flex items-center gap-1.5">
+                                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                                                {activeSymbol} Technical Terminal
+                                            </span>
+                                            <span className="font-mono text-[11px]">
+                                                Spot: <strong className="text-gray-900 dark:text-white">{formatActivePrice(spotPrice)}</strong>
+                                            </span>
+                                        </div>
+                                        <div className="h-[340px] w-full rounded-xl overflow-hidden border border-gray-200 dark:border-white/10 bg-[#0b1420]">
+                                            <TradingViewChart
+                                                symbol={isCrypto ? cryptoSymbol : symbol}
+                                                height="100%"
                                             />
                                         </div>
+                                    </div>
+                                )}
 
-                                        {/* Selected Basket Legs List with Strike Roll & Action Toggle */}
-                                        <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-0.5 custom-scrollbar">
+                                {/* StockMojo Clean Positions & Basket Table */}
+                                <div className="border-t border-gray-100 dark:border-white/10 bg-white dark:bg-[#0b1420] p-3 sm:p-4 space-y-2.5">
+                                    <div className="flex items-center justify-between text-xs">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-black text-gray-900 dark:text-white">Selected Strategy Legs</span>
+                                            <span className="rounded-full bg-emerald-100 dark:bg-emerald-950/60 px-2 py-0.2 text-[10px] font-black text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-800">
+                                                {basketLegs.length} Active
+                                            </span>
+                                        </div>
+
+                                        {basketLegs.length > 0 && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setBasketLegs([])}
+                                                className="text-[11px] font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+                                            >
+                                                Clear All
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {basketLegs.length === 0 ? (
+                                        <div className="p-3 rounded-xl bg-gray-50 dark:bg-[#070e17] border border-dashed border-gray-200 dark:border-white/10 text-center text-xs text-gray-400 dark:text-gray-500">
+                                            Click <strong>B</strong> or <strong>S</strong> on any strike in Option Chain on the left to add legs.
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-1.5 max-h-[160px] overflow-y-auto pr-0.5 custom-scrollbar">
                                             {basketLegs.map((leg) => (
                                                 <div
                                                     key={leg.id}
-                                                    className="flex items-center justify-between bg-gray-50 dark:bg-[#18263a] border border-gray-200 dark:border-gray-700/70 p-2 rounded-xl text-xs shadow-2xs hover:border-emerald-500/50 transition"
+                                                    className="flex items-center justify-between p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/60 dark:bg-[#070e17]/60 text-xs shadow-2xs hover:border-emerald-500/40 transition"
                                                 >
                                                     <div className="flex items-center gap-2">
                                                         <button
+                                                            type="button"
                                                             onClick={() => toggleBasketLegAction(leg.id)}
-                                                            className={`px-2 py-0.5 rounded text-[9px] font-black uppercase text-white cursor-pointer transition shadow-xs hover:opacity-90 ${
-                                                                leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"
+                                                            className={`px-2 py-0.5 rounded text-[10px] font-black uppercase text-white cursor-pointer shadow-xs transition ${
+                                                                leg.action === "buy" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700"
                                                             }`}
-                                                            title="Click to toggle BUY / SELL"
+                                                            title="Toggle Buy / Sell"
                                                         >
-                                                            {leg.action.toUpperCase()}
+                                                            {leg.action}
                                                         </button>
 
                                                         <div className="flex items-center gap-1">
                                                             <button
+                                                                type="button"
                                                                 onClick={() => rollBasketLegStrike(leg.id, -1)}
-                                                                className="w-5 h-5 rounded flex items-center justify-center bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 text-[10px] font-bold cursor-pointer transition"
-                                                                title="Shift strike down"
+                                                                className="w-5 h-5 rounded flex items-center justify-center bg-gray-200 dark:bg-white/10 hover:bg-gray-300 dark:hover:bg-white/20 text-gray-700 dark:text-gray-300 text-[10px] font-bold transition cursor-pointer"
+                                                                title="Shift Strike Down"
                                                             >
                                                                 ↓
                                                             </button>
-                                                            <div>
-                                                                <div className="font-extrabold font-mono text-gray-900 dark:text-white text-xs">
-                                                                    {leg.strike} {leg.type}
-                                                                </div>
-                                                                <div className="text-[10px] text-gray-500 dark:text-gray-400 font-mono">
-                                                                    LTP: {formatPrice(leg.premium)}
-                                                                </div>
-                                                            </div>
+                                                            <span className="font-extrabold font-mono text-gray-900 dark:text-white px-1">
+                                                                {leg.strike} {leg.type}
+                                                            </span>
                                                             <button
+                                                                type="button"
                                                                 onClick={() => rollBasketLegStrike(leg.id, 1)}
-                                                                className="w-5 h-5 rounded flex items-center justify-center bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 text-[10px] font-bold cursor-pointer transition"
-                                                                title="Shift strike up"
+                                                                className="w-5 h-5 rounded flex items-center justify-center bg-gray-200 dark:bg-white/10 hover:bg-gray-300 dark:hover:bg-white/20 text-gray-700 dark:text-gray-300 text-[10px] font-bold transition cursor-pointer"
+                                                                title="Shift Strike Up"
                                                             >
                                                                 ↑
                                                             </button>
                                                         </div>
+
+                                                        <span className="text-[11px] font-mono text-gray-500 dark:text-gray-400">
+                                                            @{formatActivePrice(leg.premium)}
+                                                        </span>
                                                     </div>
 
                                                     <div className="flex items-center gap-2">
-                                                        <div className="flex items-center bg-white dark:bg-[#101926] rounded-lg border border-gray-200 dark:border-gray-700 shadow-2xs">
+                                                        <div className="flex items-center bg-white dark:bg-[#121c2b] rounded-lg border border-gray-200 dark:border-white/10 shadow-2xs">
                                                             <button
+                                                                type="button"
                                                                 onClick={() => updateBasketLegLots(leg.id, -1)}
-                                                                className="px-2 py-0.5 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white cursor-pointer font-bold"
+                                                                className="px-2 py-0.5 text-gray-500 hover:text-gray-900 dark:hover:text-white font-bold cursor-pointer"
                                                             >
                                                                 −
                                                             </button>
-                                                            <span className="px-1.5 font-bold text-gray-900 dark:text-white text-[11px] tabular-nums">
+                                                            <span className="px-1 text-[11px] font-bold tabular-nums text-gray-900 dark:text-white">
                                                                 {leg.qty}L
                                                             </span>
                                                             <button
+                                                                type="button"
                                                                 onClick={() => updateBasketLegLots(leg.id, 1)}
-                                                                className="px-2 py-0.5 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white cursor-pointer font-bold"
+                                                                className="px-2 py-0.5 text-gray-500 hover:text-gray-900 dark:hover:text-white font-bold cursor-pointer"
                                                             >
                                                                 +
                                                             </button>
                                                         </div>
+
                                                         <button
+                                                            type="button"
                                                             onClick={() => removeBasketLeg(leg.id)}
                                                             className="text-gray-400 hover:text-rose-600 p-1 cursor-pointer transition"
-                                                            title="Remove leg"
+                                                            title="Delete Leg"
                                                         >
-                                                            <FiTrash2 />
+                                                            <FiTrash2 size={13} />
                                                         </button>
                                                     </div>
                                                 </div>
                                             ))}
                                         </div>
+                                    )}
 
-                                        {/* Margin Details & Execution Buttons */}
-                                        <div className="pt-2 border-t border-gray-100 dark:border-gray-800 space-y-2.5">
-                                            <div className="flex items-center justify-between text-xs">
-                                                <div>
-                                                    <span className="text-gray-500 dark:text-gray-400 text-[11px]">Required Funds: </span>
-                                                    <span className="font-black text-emerald-600 dark:text-emerald-400 font-mono text-sm tabular-nums">
-                                                        {formatRupees(payoffData.fundsRequired)}
-                                                    </span>
-                                                </div>
-                                                {payoffData.isHedged && payoffData.marginBenefit > 0 && (
-                                                    <span className="px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold">
-                                                        ✓ Saved {formatPrice(payoffData.marginBenefit)} (Hedge)
-                                                    </span>
-                                                )}
-                                            </div>
-
-                                            <div className="flex items-center gap-2">
-                                                <button
-                                                    onClick={() => setBasketLegs([])}
-                                                    className="px-3 py-2 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 text-xs font-bold cursor-pointer transition"
-                                                >
-                                                    Clear
-                                                </button>
-                                                <button
-                                                    onClick={handleExecuteHedge}
-                                                    disabled={isExecuting}
-                                                    className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold shadow-md shadow-emerald-600/20 transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
-                                                >
-                                                    <FiCheck className="text-sm" />
-                                                    <span>{isExecuting ? "Executing…" : "⚡ Execute Live Paper Trade"}</span>
-                                                </button>
+                                    {/* Execute Trade Action Bar */}
+                                    <div className="pt-2 border-t border-gray-100 dark:border-white/10 flex items-center justify-between gap-3">
+                                        <div className="text-xs">
+                                            <div className="text-[10px] font-bold uppercase text-gray-400">Virtual Funds Req.</div>
+                                            <div className="text-sm font-black font-mono text-emerald-600 dark:text-emerald-400 tabular-nums">
+                                                {formatActivePrice(payoffData.fundsRequired)}
                                             </div>
                                         </div>
+
+                                        <button
+                                            type="button"
+                                            onClick={handleExecuteHedge}
+                                            disabled={isExecuting || basketLegs.length === 0}
+                                            className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-extrabold text-xs shadow-md shadow-emerald-600/20 transition flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
+                                        >
+                                            <FiCheck size={14} />
+                                            <span>{isExecuting ? "Executing Live…" : "⚡ Execute Paper Trade"}</span>
+                                        </button>
                                     </div>
-                                ) : (
-                                    <div className="text-center py-12 px-4 rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-800 space-y-2.5">
-                                        <div className="text-3xl">📊</div>
-                                        <div className="font-extrabold text-gray-800 dark:text-gray-200 text-xs">
-                                            No Strategy Legs Selected
-                                        </div>
-                                        <p className="text-[11px] text-gray-500 dark:text-gray-400 max-w-[260px] mx-auto leading-relaxed">
-                                            Click <strong className="text-emerald-600 dark:text-emerald-400">B (Buy)</strong> or <strong className="text-rose-600 dark:text-rose-400">S (Sell)</strong> on any strike in the Option Chain table on the left, or choose a 1-Click preset above.
-                                        </p>
-                                    </div>
-                                )}
+                                </div>
                             </div>
                         </div>
 
@@ -1668,45 +2161,81 @@ export default function PaperTrade() {
                             </div>
                         </div>
 
-                        {/* Collapsible Portfolio Payoff Chart for Open Positions */}
+                        {/* Collapsible Portfolio Payoff / TradingView Chart for Open Positions */}
                         {showPositionsPayoff && openPositions.length > 0 && (
                             <div className="p-4 bg-gray-50/70 dark:bg-[#101926]/70 border-b border-gray-200 dark:border-gray-800 space-y-3">
                                 <div className="flex flex-wrap items-center justify-between gap-2.5">
                                     <div className="flex flex-wrap items-center gap-2 text-xs">
-                                        <span className="font-extrabold text-xs text-gray-900 dark:text-white">
-                                            {symbol} Portfolio Risk Curve:
+                                        <div className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#121c2b] p-0.5 shadow-xs">
+                                            <button
+                                                type="button"
+                                                onClick={() => setPositionsViewTab("payoff")}
+                                                className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition cursor-pointer ${
+                                                    positionsViewTab === "payoff"
+                                                        ? "bg-emerald-600 text-white shadow-xs"
+                                                        : "text-gray-600 dark:text-gray-300 hover:text-emerald-500"
+                                                }`}
+                                            >
+                                                📊 Risk Curve
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setPositionsViewTab("tradingview")}
+                                                className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition cursor-pointer ${
+                                                    positionsViewTab === "tradingview"
+                                                        ? "bg-emerald-600 text-white shadow-xs"
+                                                        : "text-gray-600 dark:text-gray-300 hover:text-emerald-500"
+                                                }`}
+                                            >
+                                                📈 TradingView
+                                            </button>
+                                        </div>
+
+                                        <span className="font-extrabold text-xs text-gray-900 dark:text-white ml-1">
+                                            {activeSymbol} Portfolio:
                                         </span>
                                         {positionsPayoffData.maxProfit != null && (
                                             <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 font-bold">
-                                                Max Profit: {typeof positionsPayoffData.maxProfit === "number" ? `+${formatPrice(positionsPayoffData.maxProfit)}` : positionsPayoffData.maxProfit}
+                                                Max Profit: {typeof positionsPayoffData.maxProfit === "number" ? `+${formatActivePrice(positionsPayoffData.maxProfit)}` : positionsPayoffData.maxProfit}
                                             </span>
                                         )}
                                         {positionsPayoffData.maxLoss != null && (
                                             <span className="px-2 py-0.5 rounded bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 font-bold">
-                                                Max Loss: {typeof positionsPayoffData.maxLoss === "number" ? formatPrice(positionsPayoffData.maxLoss) : positionsPayoffData.maxLoss}
+                                                Max Loss: {typeof positionsPayoffData.maxLoss === "number" ? formatActivePrice(positionsPayoffData.maxLoss) : positionsPayoffData.maxLoss}
                                             </span>
                                         )}
                                         {positionsPayoffData.breakevens?.length > 0 && (
                                             <span className="px-2 py-0.5 rounded bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-300 font-bold">
-                                                Breakeven: {positionsPayoffData.breakevens.map((b) => Math.round(b)).join(" | ")}
+                                                Breakeven: {positionsPayoffData.breakevens.map((b) => (isCrypto ? Number(b).toFixed(1) : Math.round(b))).join(" | ")}
                                             </span>
                                         )}
                                     </div>
                                     <div className="text-[11px] text-gray-400">
-                                        Spot: <strong className="text-gray-900 dark:text-white">{spotPrice ? formatPrice(spotPrice) : "—"}</strong>
+                                        Spot: <strong className="text-gray-900 dark:text-white">{spotPrice ? formatActivePrice(spotPrice) : "—"}</strong>
                                     </div>
                                 </div>
-                                <div className="bg-white dark:bg-[#121c2b] p-3 rounded-xl border border-gray-200 dark:border-gray-800 shadow-inner">
-                                    <PayoffChart
-                                        curve={positionsPayoffData.curve}
-                                        spotPrice={spotPrice}
-                                        breakevens={positionsPayoffData.breakevens}
-                                        expectedMove={positionsPayoffData.expectedMove}
-                                        atmIv={positionsPayoffData.atmIv}
-                                        yearsRemaining={positionsPayoffData.yearsRemaining}
-                                        height={260}
-                                    />
-                                </div>
+
+                                {positionsViewTab === "payoff" ? (
+                                    <div className="bg-white dark:bg-[#121c2b] p-3 rounded-xl border border-gray-200 dark:border-gray-800 shadow-inner">
+                                        <PayoffChart
+                                            curve={positionsPayoffData.curve}
+                                            spotPrice={spotPrice}
+                                            breakevens={positionsPayoffData.breakevens}
+                                            expectedMove={positionsPayoffData.expectedMove}
+                                            atmIv={positionsPayoffData.atmIv}
+                                            yearsRemaining={positionsPayoffData.yearsRemaining}
+                                            height={260}
+                                        />
+                                    </div>
+                                ) : (
+                                    <div className="h-[420px] w-full rounded-xl overflow-hidden border border-gray-200 dark:border-gray-800 shadow-inner bg-white dark:bg-[#121c2b]">
+                                        <TradingViewChart
+                                            symbol={activeSymbol}
+                                            theme="dark"
+                                            height="100%"
+                                        />
+                                    </div>
+                                )}
                             </div>
                         )}
 
@@ -1746,10 +2275,37 @@ export default function PaperTrade() {
                                         {openPositions.map((pos) => {
                                             const pnl = Number(pos.unrealizedPnl || 0);
                                             const isProfit = pnl >= 0;
+                                            const isCryptoPos = pos.market === "crypto" || ["BTC", "ETH", "SOL"].includes(pos.symbol);
+                                            const formatPosCurrency = (val) => {
+                                                if (val == null) return "—";
+                                                if (isCryptoPos) {
+                                                    return currency === "INR"
+                                                        ? `₹${Number(val * usdtInrRate).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                                        : `$${Number(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                                                }
+                                                return `₹${Math.round(val).toLocaleString("en-IN")}`;
+                                            };
+                                            const formatPosPrice = (val) => {
+                                                if (val == null) return "—";
+                                                if (isCryptoPos) {
+                                                    return currency === "INR"
+                                                        ? `₹${Number(val * usdtInrRate).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                                        : `$${Number(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                                                }
+                                                return formatPrice(val);
+                                            };
+
                                             return (
                                                 <tr key={pos.id} className="hover:bg-gray-50 dark:hover:bg-[#18263a] transition">
                                                     <td className="px-3 py-2.5 font-bold text-gray-900 dark:text-white">
-                                                        {pos.symbol}
+                                                        <div className="flex items-center gap-1.5">
+                                                            <span>{pos.symbol}</span>
+                                                            {isCryptoPos && (
+                                                                <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-amber-500/10 text-amber-500 border border-amber-500/30">
+                                                                    ⚡ CRYPTO
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                         {pos.strategy_name && (
                                                             <div className="text-[10px] text-gray-500 dark:text-gray-400 font-sans font-normal truncate max-w-[120px]">
                                                                 {pos.strategy_name}
@@ -1780,18 +2336,18 @@ export default function PaperTrade() {
                                                         </span>
                                                     </td>
                                                     <td className="px-3 py-2.5 text-right font-bold tabular-nums text-gray-700 dark:text-gray-300">
-                                                        {formatPrice(pos.entry_price)}
+                                                        {formatPosPrice(pos.entry_price)}
                                                     </td>
                                                     <td className="px-3 py-2.5 text-right font-bold tabular-nums text-gray-900 dark:text-white">
-                                                        {pos.current_price != null ? formatPrice(pos.current_price) : "—"}
+                                                        {pos.current_price != null ? formatPosPrice(pos.current_price) : "—"}
                                                     </td>
                                                     <td className={`px-3 py-2.5 text-right font-black tabular-nums ${
                                                         isProfit ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
                                                     }`}>
-                                                        {isProfit ? "+" : ""}{formatRupees(pnl)}
+                                                        {isProfit ? "+" : ""}{formatPosCurrency(pnl)}
                                                     </td>
                                                     <td className="px-3 py-2.5 text-right text-gray-500 dark:text-gray-400 tabular-nums">
-                                                        {formatRupees(pos.margin_blocked || 0)}
+                                                        {formatPosCurrency(pos.margin_blocked || 0)}
                                                     </td>
                                                     <td className="px-3 py-2.5 text-center">
                                                         <button
@@ -1848,9 +2404,38 @@ export default function PaperTrade() {
                                         {closedPositions.map((pos) => {
                                             const pnl = Number(pos.realized_pnl || 0);
                                             const isProfit = pnl >= 0;
+                                            const isCryptoPos = pos.market === "crypto" || ["BTC", "ETH", "SOL"].includes(pos.symbol);
+                                            const formatPosCurrency = (val) => {
+                                                if (val == null) return "—";
+                                                if (isCryptoPos) {
+                                                    return currency === "INR"
+                                                        ? `₹${Number(val * usdtInrRate).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                                        : `$${Number(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                                                }
+                                                return `₹${Math.round(val).toLocaleString("en-IN")}`;
+                                            };
+                                            const formatPosPrice = (val) => {
+                                                if (val == null) return "—";
+                                                if (isCryptoPos) {
+                                                    return currency === "INR"
+                                                        ? `₹${Number(val * usdtInrRate).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                                        : `$${Number(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                                                }
+                                                return formatPrice(val);
+                                            };
+
                                             return (
                                                 <tr key={pos.id} className="hover:bg-gray-50 dark:hover:bg-[#18263a] transition">
-                                                    <td className="px-3 py-2.5 font-bold text-gray-900 dark:text-white">{pos.symbol}</td>
+                                                    <td className="px-3 py-2.5 font-bold text-gray-900 dark:text-white">
+                                                        <div className="flex items-center gap-1.5">
+                                                            <span>{pos.symbol}</span>
+                                                            {isCryptoPos && (
+                                                                <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-amber-500/10 text-amber-500 border border-amber-500/30">
+                                                                    ⚡ CRYPTO
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </td>
                                                     <td className="px-3 py-2.5 text-center">
                                                         <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
                                                             pos.side === "long" ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300" : "bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300"
@@ -1862,12 +2447,12 @@ export default function PaperTrade() {
                                                     <td className="px-3 py-2.5 font-sans text-gray-700 dark:text-gray-300">{formatExpiryShort(pos.expiry)}</td>
                                                     <td className="px-3 py-2.5 text-center font-bold text-gray-900 dark:text-white">{pos.strike}</td>
                                                     <td className="px-3 py-2.5 text-center font-bold text-blue-600 dark:text-blue-400">{pos.option_type}</td>
-                                                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-700 dark:text-gray-300">{formatPrice(pos.entry_price)}</td>
-                                                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-900 dark:text-white">{pos.exit_price != null ? formatPrice(pos.exit_price) : "—"}</td>
+                                                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-700 dark:text-gray-300">{formatPosPrice(pos.entry_price)}</td>
+                                                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-900 dark:text-white">{pos.exit_price != null ? formatPosPrice(pos.exit_price) : "—"}</td>
                                                     <td className={`px-3 py-2.5 text-right font-black tabular-nums ${
                                                         isProfit ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
                                                     }`}>
-                                                        {isProfit ? "+" : ""}{formatRupees(pnl)}
+                                                        {isProfit ? "+" : ""}{formatPosCurrency(pnl)}
                                                     </td>
                                                     <td className="px-3 py-2.5 text-right text-gray-500 font-sans text-[11px]">
                                                         {pos.closed_at ? formatDateTime(pos.closed_at) : "—"}
