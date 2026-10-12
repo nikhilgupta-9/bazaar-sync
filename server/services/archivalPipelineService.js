@@ -195,64 +195,81 @@ async function exportToGzipCsv(dataType, symbol, year) {
 
     gzip.write(csvHeader);
 
-    // Stream query in efficient chunks of 50,000 rows
-    const chunkSize = 50000;
-    let offset = 0;
+    // High-performance streaming: stream directly from MySQL using cursor stream
+    // avoiding slow quadratic LIMIT/OFFSET and memory exhaustion on multi-million row datasets
+    const streamSql = rowsSql.replace(/\s*LIMIT\s*\?\s*OFFSET\s*\?\s*/i, "");
+    const streamParams = dataType === "india_vix" || dataType === "bitcoin" 
+        ? [startDate, endDate]
+        : [symbol, startDate, endDate];
+
+    const conn = await db.getConnection();
+    let processed = 0;
     let lastProgressLogTime = Date.now();
 
-    while (offset < totalRecords) {
-        if (streamError) throw streamError;
+    try {
+        await new Promise((resolve, reject) => {
+            const queryStream = conn.connection.query(streamSql, streamParams).stream();
 
-        const queryParams = dataType === "india_vix" || dataType === "bitcoin" 
-            ? [startDate, endDate, chunkSize, offset]
-            : [symbol, startDate, endDate, chunkSize, offset];
+            queryStream.on("data", (r) => {
+                if (streamError) {
+                    queryStream.destroy(streamError);
+                    return;
+                }
 
-        const rows = await db.query(rowsSql, queryParams);
-        if (!rows || rows.length === 0) break;
+                let line = "";
+                if (dataType === "option_chain") {
+                    line = `${r.id},${r.symbol},${r.trade_date},${r.trade_time || ""},${r.expiry},${r.strike},${r.underlying_price || ""},${r.ce_ltp || ""},${r.ce_oi || ""},${r.ce_oi_change || ""},${r.ce_iv || ""},${r.ce_volume || ""},${r.ce_delta || ""},${r.ce_gamma || ""},${r.ce_theta || ""},${r.ce_vega || ""},${r.pe_ltp || ""},${r.pe_oi || ""},${r.pe_oi_change || ""},${r.pe_iv || ""},${r.pe_volume || ""},${r.pe_delta || ""},${r.pe_gamma || ""},${r.pe_theta || ""},${r.pe_vega || ""}\n`;
+                } else if (dataType === "futures") {
+                    line = `${r.id},${r.symbol},${r.expiry || ""},${r.trade_date},${r.trade_time || ""},${r.open || 0},${r.high || 0},${r.low || 0},${r.close || 0},${r.volume || 0},${r.oi || 0},${r.oi_change || 0},${r.underlying_price || ""}\n`;
+                } else {
+                    line = `${r.id},${r.symbol},${r.trade_date},${r.trade_time || ""},${r.open || 0},${r.high || 0},${r.low || 0},${r.close || 0},${r.volume || 0}\n`;
+                }
 
-        for (const r of rows) {
-            let line = "";
-            if (dataType === "option_chain") {
-                line = `${r.id},${r.symbol},${r.trade_date},${r.trade_time || ""},${r.expiry},${r.strike},${r.underlying_price || ""},${r.ce_ltp || ""},${r.ce_oi || ""},${r.ce_oi_change || ""},${r.ce_iv || ""},${r.ce_volume || ""},${r.ce_delta || ""},${r.ce_gamma || ""},${r.ce_theta || ""},${r.ce_vega || ""},${r.pe_ltp || ""},${r.pe_oi || ""},${r.pe_oi_change || ""},${r.pe_iv || ""},${r.pe_volume || ""},${r.pe_delta || ""},${r.pe_gamma || ""},${r.pe_theta || ""},${r.pe_vega || ""}\n`;
-            } else if (dataType === "futures") {
-                line = `${r.id},${r.symbol},${r.expiry || ""},${r.trade_date},${r.trade_time || ""},${r.open || 0},${r.high || 0},${r.low || 0},${r.close || 0},${r.volume || 0},${r.oi || 0},${r.oi_change || 0},${r.underlying_price || ""}\n`;
-            } else {
-                line = `${r.id},${r.symbol},${r.trade_date},${r.trade_time || ""},${r.open || 0},${r.high || 0},${r.low || 0},${r.close || 0},${r.volume || 0}\n`;
-            }
+                processed++;
+                const canWrite = gzip.write(line);
+                if (!canWrite) {
+                    queryStream.pause();
+                    gzip.once("drain", () => queryStream.resume());
+                }
 
-            if (!gzip.write(line)) {
-                await new Promise((resolve) => gzip.once("drain", resolve));
-            }
-        }
+                const now = Date.now();
+                if (now - lastProgressLogTime >= 4000 || processed >= totalRecords) {
+                    const pct = Math.min(100, ((processed / totalRecords) * 100).toFixed(1));
+                    appendLog(`Export progress for ${symbol || dataType} (${year}): ${processed.toLocaleString()} / ${totalRecords.toLocaleString()} rows (${pct}%)...`);
+                    lastProgressLogTime = now;
+                }
+            });
 
-        offset += rows.length;
-        const now = Date.now();
-        if (now - lastProgressLogTime >= 3000 || offset >= totalRecords) {
-            const pct = Math.min(100, ((offset / totalRecords) * 100).toFixed(1));
-            appendLog(`Export progress for ${symbol || dataType} (${year}): ${offset.toLocaleString()} / ${totalRecords.toLocaleString()} rows (${pct}%)...`);
-            lastProgressLogTime = now;
-        }
-    }
+            queryStream.on("end", () => {
+                gzip.end();
+            });
 
-    gzip.end();
+            queryStream.on("error", (err) => {
+                gzip.destroy(err);
+                reject(err);
+            });
 
-    await new Promise((resolve, reject) => {
-        if (streamError) return reject(streamError);
-        writeStream.on("finish", () => {
-            if (streamError) reject(streamError);
-            else resolve();
+            writeStream.on("finish", () => {
+                if (streamError) reject(streamError);
+                else resolve();
+            });
+
+            writeStream.on("error", (err) => {
+                reject(err);
+            });
         });
-        writeStream.on("error", reject);
-    });
+    } finally {
+        conn.release();
+    }
 
     if (!fs.existsSync(outputPath)) {
         await new Promise((r) => setTimeout(r, 200));
     }
     const fileSizeBytes = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
-    appendLog(`Created ${fileName} (${(fileSizeBytes / (1024 * 1024)).toFixed(2)} MB compressed)`);
+    appendLog(`Created ${fileName} (${(fileSizeBytes / (1024 * 1024)).toFixed(2)} MB compressed, ${processed.toLocaleString()} rows)`);
 
     return {
-        totalRecords,
+        totalRecords: processed || totalRecords,
         outputPath,
         fileName,
         fileSizeBytes,
