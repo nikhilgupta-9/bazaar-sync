@@ -51,26 +51,71 @@ function matchesEntry(ip, entry) {
     return false;
 }
 
+let isInitialized = false;
+let initPromise = null;
+
+async function ensureTablesInitialized() {
+    if (isInitialized) return;
+    if (initPromise) return initPromise;
+
+    initPromise = (async () => {
+        try {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS admin_security_settings (
+                    setting_key VARCHAR(64) PRIMARY KEY,
+                    setting_value TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS admin_ip_allowlist (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    ip_or_cidr VARCHAR(64) NOT NULL UNIQUE,
+                    label VARCHAR(128) DEFAULT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+            isInitialized = true;
+        } catch (err) {
+            // Silently handle if table already exists or DB warming up
+        } finally {
+            initPromise = null;
+        }
+    })();
+
+    return initPromise;
+}
+
+// Auto-run initialization in background
+ensureTablesInitialized().catch(() => {});
+
 async function isIpRestrictionEnabled() {
     try {
+        if (!isInitialized) await ensureTablesInitialized();
         const [[row]] = await pool.query(
             "SELECT setting_value FROM admin_security_settings WHERE setting_key = 'ip_restriction_enabled'"
         );
         return row ? row.setting_value === "1" : false;
     } catch (err) {
-        console.error("[adminSecurityService:isIpRestrictionEnabled]", err.message);
+        if (err.code !== "ER_NO_SUCH_TABLE" && err.errno !== 1146) {
+            console.error("[adminSecurityService:isIpRestrictionEnabled]", err.message);
+        }
         return false;
     }
 }
 
 async function getAllowedIps() {
     try {
+        if (!isInitialized) await ensureTablesInitialized();
         const [rows] = await pool.query(
             "SELECT id, ip_or_cidr, label, created_at, updated_at FROM admin_ip_allowlist ORDER BY id DESC"
         );
         return rows || [];
     } catch (err) {
-        console.error("[adminSecurityService:getAllowedIps]", err.message);
+        if (err.code !== "ER_NO_SUCH_TABLE" && err.errno !== 1146) {
+            console.error("[adminSecurityService:getAllowedIps]", err.message);
+        }
         return [];
     }
 }

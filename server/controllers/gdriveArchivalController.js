@@ -209,12 +209,13 @@ async function getCloudCoverage(req, res) {
  */
 async function startPipeline(req, res) {
     try {
-        const { dataTypes, targetYears, symbols, autoPrune } = req.body || {};
+        const { dataTypes, targetYears, symbols, autoPrune, directUpload } = req.body || {};
         const result = await archivalPipeline.startArchivalPipeline({
             dataTypes,
             targetYears,
             symbols,
             autoPrune,
+            directUpload,
             source: "manual",
         });
         res.json(result);

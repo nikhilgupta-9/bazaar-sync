@@ -342,32 +342,102 @@ function getStrikeStepForSymbol(symbol, sampleStrikes = []) {
 }
 
 /**
- * Parses a CSV or CSV.GZ file line by line into structured objects
+function extractTradeDateFromLine(line, dataType) {
+    if (!line) return "";
+    const parts = line.split(",");
+    if (dataType === "futures") {
+        return parts[3]?.trim() || "";
+    }
+    return parts[2]?.trim() || "";
+}
+
+/**
+ * High-speed streaming merge for two GZIP CSV files with O(1) memory usage
  */
-async function parseCsvGzipFile(filePath) {
-    if (!fs.existsSync(filePath)) return [];
-    const isGzip = filePath.endsWith(".gz");
-    const fileStream = fs.createReadStream(filePath);
-    const inputStream = isGzip ? fileStream.pipe(zlib.createGunzip()) : fileStream;
-    const rl = readline.createInterface({ input: inputStream, crlfDelay: Infinity });
+async function streamMergeGzipCsv({ localGzipPath, cloudGzipPath, finalGzipPath, dataType }) {
+    const localDates = new Set();
+    let localRowsCount = 0;
 
-    const rows = [];
-    let headers = null;
+    // 1. Scan local newly exported file to index distinct trade dates
+    const localScanStream = fs.createReadStream(localGzipPath).pipe(zlib.createGunzip());
+    const localRl = readline.createInterface({ input: localScanStream, crlfDelay: Infinity });
 
-    for await (const line of rl) {
+    let localHeader = "";
+    for await (const line of localRl) {
         if (!line || !line.trim()) continue;
-        const parts = line.split(",").map((s) => s.trim());
-        if (!headers) {
-            headers = parts.map((h) => h.toLowerCase());
+        if (!localHeader) {
+            localHeader = line;
             continue;
         }
-        const obj = {};
-        for (let i = 0; i < headers.length; i++) {
-            obj[headers[i]] = parts[i] !== undefined ? parts[i] : "";
-        }
-        rows.push(obj);
+        localRowsCount++;
+        const d = extractTradeDateFromLine(line, dataType);
+        if (d) localDates.add(d);
     }
-    return rows;
+
+    const gzip = zlib.createGzip({ level: 6 });
+    const writeStream = fs.createWriteStream(finalGzipPath);
+    let streamError = null;
+    gzip.on("error", (e) => { streamError = e; });
+    writeStream.on("error", (e) => { streamError = e; });
+    gzip.pipe(writeStream);
+
+    gzip.write(localHeader + "\n");
+
+    let cloudRowsKept = 0;
+    let cloudRowsSkipped = 0;
+
+    // 2. Stream existing cloud rows: keep rows whose dates are missing locally (e.g. pruned earlier)
+    if (cloudGzipPath && fs.existsSync(cloudGzipPath)) {
+        const cloudStream = fs.createReadStream(cloudGzipPath).pipe(zlib.createGunzip());
+        const cloudRl = readline.createInterface({ input: cloudStream, crlfDelay: Infinity });
+
+        let cloudHeaderSeen = false;
+        for await (const line of cloudRl) {
+            if (!line || !line.trim()) continue;
+            if (!cloudHeaderSeen) {
+                cloudHeaderSeen = true;
+                continue;
+            }
+            const d = extractTradeDateFromLine(line, dataType);
+            if (d && !localDates.has(d)) {
+                cloudRowsKept++;
+                if (!gzip.write(line + "\n")) {
+                    await new Promise((r) => gzip.once("drain", r));
+                }
+            } else {
+                cloudRowsSkipped++;
+            }
+        }
+    }
+
+    // 3. Stream all fresh local DB rows into the merged output
+    const localWriteStream = fs.createReadStream(localGzipPath).pipe(zlib.createGunzip());
+    const localStreamRl = readline.createInterface({ input: localWriteStream, crlfDelay: Infinity });
+
+    let localHeaderSeen2 = false;
+    for await (const line of localStreamRl) {
+        if (!line || !line.trim()) continue;
+        if (!localHeaderSeen2) {
+            localHeaderSeen2 = true;
+            continue;
+        }
+        if (!gzip.write(line + "\n")) {
+            await new Promise((r) => gzip.once("drain", r));
+        }
+    }
+
+    gzip.end();
+    await new Promise((resolve, reject) => {
+        writeStream.on("finish", () => (streamError ? reject(streamError) : resolve()));
+        writeStream.on("error", reject);
+    });
+
+    const totalRecords = cloudRowsKept + localRowsCount;
+    return {
+        totalRecords,
+        cloudRowsKept,
+        cloudRowsSkipped,
+    };
 }
 
 /**
@@ -392,197 +462,58 @@ async function smartMergeAndPolishDataset({ dataType, symbol, year, localGzipPat
         };
     }
 
-    // 2. Parse local newly exported rows
-    const localRows = await parseCsvGzipFile(localGzipPath);
-    appendLog(`[SmartMerge] Local DB batch has ${localRows.length.toLocaleString()} raw rows.`);
-
-    // 3. Download and parse existing cloud rows if file exists in Google Drive
-    let cloudRows = [];
+    // 2. Existing cloud file found: Perform streaming merge with zero heap overhead
     let tempCloudDownloadPath = null;
-    if (existingDriveFileId) {
-        try {
-            tempCloudDownloadPath = path.join(STAGING_DIR, `temp_cloud_${existingDriveFileId}_${Date.now()}.csv.gz`);
-            appendLog(`[SmartMerge] Existing CSV found in Google Drive (ID: ${existingDriveFileId}). Downloading for smart merge...`);
-            await gdrive.downloadFile({
-                fileId: existingDriveFileId,
-                destinationPath: tempCloudDownloadPath,
-            });
-            cloudRows = await parseCsvGzipFile(tempCloudDownloadPath);
-            appendLog(`[SmartMerge] Downloaded ${cloudRows.length.toLocaleString()} existing cloud rows from Google Drive.`);
-        } catch (err) {
-            appendLog(`[SmartMerge] Notice: Could not download existing file (${err.message}). Proceeding with local dataset.`, "warn");
-        } finally {
-            if (tempCloudDownloadPath && fs.existsSync(tempCloudDownloadPath)) {
-                try { fs.unlinkSync(tempCloudDownloadPath); } catch (_) {}
-            }
-        }
-    }
-
-    // 3. Composite Key Deduplication & Field Merging
-    const recordMap = new Map();
-    let duplicatesMerged = 0;
-
-    function processRow(r) {
-        if (!r) return;
-        let key = "";
-        if (dataType === "option_chain") {
-            const cleanStrike = parseFloat(r.strike || 0).toFixed(2);
-            key = `${r.symbol || sym}_${r.trade_date}_${r.trade_time || "00:00:00"}_${r.expiry}_${cleanStrike}`;
-        } else if (dataType === "futures") {
-            key = `${r.symbol || sym}_${r.expiry}_${r.trade_date}_${r.trade_time || "00:00:00"}`;
-        } else {
-            key = `${r.symbol || sym}_${r.trade_date}_${r.trade_time || "00:00:00"}`;
-        }
-
-        if (recordMap.has(key)) {
-            duplicatesMerged++;
-            // Merge with existing: prioritize non-empty, non-zero values
-            const prev = recordMap.get(key);
-            const merged = { ...prev };
-            for (const [k, v] of Object.entries(r)) {
-                if (v !== "" && v !== "0" && v !== "null" && v !== undefined) {
-                    merged[k] = v;
-                }
-            }
-            recordMap.set(key, merged);
-        } else {
-            recordMap.set(key, { ...r, symbol: r.symbol || sym });
-        }
-    }
-
-    // Process cloud rows first, then local rows overlaying fresh values
-    cloudRows.forEach(processRow);
-    localRows.forEach(processRow);
-
-    const mergedRows = Array.from(recordMap.values());
-    appendLog(`[SmartMerge] Total combined unique records: ${mergedRows.length.toLocaleString()} (${duplicatesMerged.toLocaleString()} duplicate records merged/eliminated).`);
-
-    // 4. ATM ±30 Strike Polish Analysis (for Option Chain)
-    let polishStats = {
-        totalSnapshots: 0,
-        fullAtm30CoverageSnapshots: 0,
-        averageStrikesPerSnapshot: 0,
-    };
-
-    if (dataType === "option_chain" && mergedRows.length > 0) {
-        const sampleStrikes = mergedRows.slice(0, 500).map((r) => parseFloat(r.strike)).filter(Boolean);
-        const step = getStrikeStepForSymbol(sym, sampleStrikes);
-
-        // Group rows by snapshot: (trade_date, trade_time, expiry)
-        const snapshots = new Map();
-        mergedRows.forEach((r) => {
-            const snapKey = `${r.trade_date}_${r.trade_time || "00:00:00"}_${r.expiry}`;
-            if (!snapshots.has(snapKey)) snapshots.set(snapKey, []);
-            snapshots.get(snapKey).push(r);
+    try {
+        tempCloudDownloadPath = path.join(STAGING_DIR, `temp_cloud_${existingDriveFileId}_${Date.now()}.csv.gz`);
+        appendLog(`[SmartMerge] Existing CSV found in Google Drive (ID: ${existingDriveFileId}). Downloading for streaming merge...`);
+        await gdrive.downloadFile({
+            fileId: existingDriveFileId,
+            destinationPath: tempCloudDownloadPath,
         });
 
-        polishStats.totalSnapshots = snapshots.size;
-        let totalStrikesAcrossSnaps = 0;
-
-        snapshots.forEach((snapRows) => {
-            totalStrikesAcrossSnaps += snapRows.length;
-            // Determine spot price
-            let spot = parseFloat(snapRows[0]?.underlying_price || 0);
-            if (!spot || isNaN(spot)) {
-                const sortedS = snapRows.map((r) => parseFloat(r.strike)).filter(Boolean).sort((a, b) => a - b);
-                spot = sortedS[Math.floor(sortedS.length / 2)] || 0;
-            }
-
-            if (spot > 0) {
-                const atmStrike = Math.round(spot / step) * step;
-                const minTargetStrike = atmStrike - 30 * step;
-                const maxTargetStrike = atmStrike + 30 * step;
-
-                const strikeSet = new Set(snapRows.map((r) => Math.round(parseFloat(r.strike))));
-                let targetStrikesPresent = 0;
-                for (let s = minTargetStrike; s <= maxTargetStrike; s += step) {
-                    if (strikeSet.has(s)) targetStrikesPresent++;
-                }
-
-                // If at least 50 out of 61 target strikes are present, consider full/high coverage
-                if (targetStrikesPresent >= 50) {
-                    polishStats.fullAtm30CoverageSnapshots++;
-                }
-            }
+        const polishedGzipPath = path.join(STAGING_DIR, `polished_${finalFileName}`);
+        const streamRes = await streamMergeGzipCsv({
+            localGzipPath,
+            cloudGzipPath: tempCloudDownloadPath,
+            finalGzipPath: polishedGzipPath,
+            dataType,
+            sym,
         });
 
-        polishStats.averageStrikesPerSnapshot = Math.round(totalStrikesAcrossSnaps / (snapshots.size || 1));
-        appendLog(`[PolishEngine] ATM ±30 analysis on ${sym} (${year}): Step=${step}. Snapshots=${polishStats.totalSnapshots}, Avg Strikes/Snap=${polishStats.averageStrikesPerSnapshot}. Complete ATM ±30 snapshots: ${polishStats.fullAtm30CoverageSnapshots}/${polishStats.totalSnapshots}`);
-    }
+        const stat = fs.existsSync(polishedGzipPath) ? fs.statSync(polishedGzipPath) : { size: 0 };
+        appendLog(`[SmartMerge] ✅ Streaming merge complete: ${streamRes.totalRecords.toLocaleString()} total rows (${streamRes.cloudRowsKept.toLocaleString()} kept from cloud, ${streamRes.cloudRowsSkipped.toLocaleString()} cloud duplicates eliminated).`);
 
-    // 5. Strict Sorting
-    mergedRows.sort((a, b) => {
-        const dComp = (a.trade_date || "").localeCompare(b.trade_date || "");
-        if (dComp !== 0) return dComp;
-        const tComp = (a.trade_time || "").localeCompare(b.trade_time || "");
-        if (tComp !== 0) return tComp;
-        if (a.expiry && b.expiry) {
-            const expComp = a.expiry.localeCompare(b.expiry);
-            if (expComp !== 0) return expComp;
-        }
-        if (a.strike !== undefined && b.strike !== undefined) {
-            return parseFloat(a.strike) - parseFloat(b.strike);
-        }
-        return 0;
-    });
-
-    // 6. Write out the Polished GZIP CSV file
-    const finalGzipPath = path.join(STAGING_DIR, `polished_${finalFileName}`);
-
-    const gzip = zlib.createGzip({ level: 6 });
-    const writeStream = fs.createWriteStream(finalGzipPath);
-    gzip.pipe(writeStream);
-
-    let csvHeader = "";
-    if (dataType === "option_chain") {
-        csvHeader = "id,symbol,trade_date,trade_time,expiry,strike,underlying_price,ce_ltp,ce_oi,ce_oi_change,ce_iv,ce_volume,ce_delta,ce_gamma,ce_theta,ce_vega,pe_ltp,pe_oi,pe_oi_change,pe_iv,pe_volume,pe_delta,pe_gamma,pe_theta,pe_vega\n";
-    } else if (dataType === "futures") {
-        csvHeader = "id,symbol,expiry,trade_date,trade_time,open,high,low,close,volume,oi,oi_change,underlying_price\n";
-    } else {
-        csvHeader = "id,symbol,trade_date,trade_time,open,high,low,close,volume\n";
-    }
-
-    gzip.write(csvHeader);
-
-    for (let i = 0; i < mergedRows.length; i++) {
-        const r = mergedRows[i];
-        let line = "";
-        if (dataType === "option_chain") {
-            line = `${i + 1},${r.symbol || sym},${r.trade_date},${r.trade_time || ""},${r.expiry},${r.strike},${r.underlying_price || ""},${r.ce_ltp || ""},${r.ce_oi || ""},${r.ce_oi_change || ""},${r.ce_iv || ""},${r.ce_volume || ""},${r.ce_delta || ""},${r.ce_gamma || ""},${r.ce_theta || ""},${r.ce_vega || ""},${r.pe_ltp || ""},${r.pe_oi || ""},${r.pe_oi_change || ""},${r.pe_iv || ""},${r.pe_volume || ""},${r.pe_delta || ""},${r.pe_gamma || ""},${r.pe_theta || ""},${r.pe_vega || ""}\n`;
-        } else if (dataType === "futures") {
-            line = `${i + 1},${r.symbol || sym},${r.expiry || ""},${r.trade_date},${r.trade_time || ""},${r.open || 0},${r.high || 0},${r.low || 0},${r.close || 0},${r.volume || 0},${r.oi || 0},${r.oi_change || 0},${r.underlying_price || ""}\n`;
-        } else {
-            line = `${i + 1},${r.symbol || sym},${r.trade_date},${r.trade_time || ""},${r.open || 0},${r.high || 0},${r.low || 0},${r.close || 0},${r.volume || 0}\n`;
-        }
-        if (!gzip.write(line)) {
-            await new Promise((resolve) => gzip.once("drain", resolve));
+        return {
+            finalGzipPath: polishedGzipPath,
+            finalFileName,
+            fileSizeBytes: stat.size,
+            totalRecords: streamRes.totalRecords,
+            duplicatesMerged: streamRes.cloudRowsSkipped,
+            polishStats: { totalSnapshots: 0, fullAtm30CoverageSnapshots: 0, averageStrikesPerSnapshot: 0 },
+        };
+    } catch (err) {
+        appendLog(`[SmartMerge] Notice: Cloud streaming merge error (${err.message}). Using clean local DB export directly.`, "warn");
+        const stat = fs.existsSync(localGzipPath) ? fs.statSync(localGzipPath) : { size: 0 };
+        return {
+            finalGzipPath: localGzipPath,
+            finalFileName,
+            fileSizeBytes: stat.size,
+            totalRecords: totalRecords || 0,
+            duplicatesMerged: 0,
+            polishStats: { totalSnapshots: 0, fullAtm30CoverageSnapshots: 0, averageStrikesPerSnapshot: 0 },
+        };
+    } finally {
+        if (tempCloudDownloadPath && fs.existsSync(tempCloudDownloadPath)) {
+            try { fs.unlinkSync(tempCloudDownloadPath); } catch (_) {}
         }
     }
-
-    gzip.end();
-
-    await new Promise((resolve, reject) => {
-        writeStream.on("finish", resolve);
-        writeStream.on("error", reject);
-    });
-
-    const fileSizeBytes = fs.statSync(finalGzipPath).size;
-    appendLog(`[SmartMerge] ✅ Successfully created polished GZIP: ${finalFileName} (${(fileSizeBytes / (1024 * 1024)).toFixed(2)} MB, ${mergedRows.length.toLocaleString()} clean rows)`);
-
-    return {
-        finalGzipPath,
-        finalFileName,
-        fileSizeBytes,
-        totalRecords: mergedRows.length,
-        duplicatesMerged,
-        polishStats,
-    };
 }
 
 /**
  * Runs a single Category + Symbol + Year Archival Unit with Smart Cloud Merge & Duplicate Elimination
  */
-async function processBatch({ dataType = "option_chain", symbol, year, folderId = gdrive.DEFAULT_ROOT_FOLDER_ID, autoPrune = true }) {
+async function processBatch({ dataType = "option_chain", symbol, year, folderId = gdrive.DEFAULT_ROOT_FOLDER_ID, autoPrune = true, directUpload = false }) {
     const sym = symbol || (dataType === "india_vix" ? "INDIAVIX" : dataType === "bitcoin" ? "BTCUSDT" : "ALL");
     appendLog(`Starting smart archival batch: [${dataType.toUpperCase()}] ${sym} - Year ${year}...`);
 
@@ -599,26 +530,32 @@ async function processBatch({ dataType = "option_chain", symbol, year, folderId 
     const { targetFolderId } = await gdrive.ensureCategoryYearHierarchy(dataType, year, sym, folderId);
 
     // 3. Search for existing file(s) in Google Drive with the same name to prevent duplicates
-    appendLog(`Checking Google Drive for existing files: ${exportResult.fileName}...`);
-    const existingCloudFiles = await gdrive.findFilesByName({
-        parentFolderId: targetFolderId,
-        fileName: exportResult.fileName,
-    }).catch(() => []);
+    let existingCloudFiles = [];
+    let existingFileId = null;
+    if (!directUpload) {
+        appendLog(`Checking Google Drive for existing files: ${exportResult.fileName}...`);
+        existingCloudFiles = await gdrive.findFilesByName({
+            parentFolderId: targetFolderId,
+            fileName: exportResult.fileName,
+        }).catch(() => []);
 
-    const existingFileId = existingCloudFiles.length > 0 ? existingCloudFiles[0].id : null;
-    if (existingCloudFiles.length > 0) {
-        appendLog(`Found ${existingCloudFiles.length} existing version(s) in Google Drive. Performing Smart Cloud Merge & ATM ±30 Polish...`);
+        existingFileId = existingCloudFiles.length > 0 ? existingCloudFiles[0].id : null;
+        if (existingCloudFiles.length > 0) {
+            appendLog(`Found ${existingCloudFiles.length} existing version(s) in Google Drive. Performing Smart Cloud Merge...`);
+        } else {
+            appendLog(`No prior cloud file found. Uploading clean local DB export...`);
+        }
     } else {
-        appendLog(`No prior cloud file found. Performing local deduplication & ATM ±30 Polish...`);
+        appendLog(`Direct Upload mode active. Bypassing cloud search and merge.`);
     }
 
-    // 4. Smart Merge & Polish: Combines Cloud Data + Local Data, removes duplicates, checks ATM ±30
+    // 4. Smart Merge & Polish: Combines Cloud Data + Local Data, removes duplicates
     const mergeResult = await smartMergeAndPolishDataset({
         dataType,
         symbol: sym,
         year,
         localGzipPath: exportResult.outputPath,
-        existingDriveFileId: existingFileId,
+        existingDriveFileId: directUpload ? null : existingFileId,
         targetFolderId,
         totalRecords: exportResult.totalRecords,
     });
@@ -718,6 +655,7 @@ async function startArchivalPipeline({
     targetYears = ["2023", "2024"],
     symbols = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "ZYDUSLIFE"],
     autoPrune = true,
+    directUpload = false,
     source = "manual",
 }) {
     if (activePipeline.isRunning) {
@@ -761,6 +699,7 @@ async function startArchivalPipeline({
         error: null,
         startTime: new Date().toISOString(),
         autoPrune,
+        directUpload: Boolean(directUpload),
     };
 
     appendLog(`Archival Pipeline started via ${source.toUpperCase()} (${batchList.length} total tasks)...`);
@@ -792,6 +731,7 @@ async function startArchivalPipeline({
                         symbol: batch.symbol,
                         year: batch.year,
                         autoPrune,
+                        directUpload: Boolean(directUpload),
                     });
                 } catch (bErr) {
                     appendLog(`Batch failed for [${batch.dataType}] ${batch.symbol} (${batch.year}): ${bErr.message}`, "error");

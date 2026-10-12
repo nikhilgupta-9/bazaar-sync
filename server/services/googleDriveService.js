@@ -513,11 +513,14 @@ async function uploadFile({ filePath, fileName, mimeType = "application/gzip", p
     const fileSize = fs.statSync(filePath).size;
     const fileStream = fs.createReadStream(filePath);
 
-    // Calculate SHA256 checksum
-    const hash = crypto.createHash("sha256");
-    const fileBuffer = fs.readFileSync(filePath);
-    hash.update(fileBuffer);
-    const checksumSha256 = hash.digest("hex");
+    // Calculate SHA256 checksum safely via stream
+    const checksumSha256 = await new Promise((resolve, reject) => {
+        const hash = crypto.createHash("sha256");
+        const s = fs.createReadStream(filePath);
+        s.on("data", (chunk) => hash.update(chunk));
+        s.on("end", () => resolve(hash.digest("hex")));
+        s.on("error", reject);
+    });
 
     const media = {
         mimeType,
