@@ -78,6 +78,87 @@ async function listPositions(req, res) {
     }
 }
 
+async function placeOrder(req, res) {
+    try {
+        const {
+            symbol, expiry, strike, optRight, opt_right, option_type, type,
+            side, orderType, order_type, price, triggerPrice, trigger_price,
+            lots, stopLossPrice, stop_loss_price, targetPrice, target_price,
+            trailingSl, trailing_sl, strategyName,
+        } = req.body;
+        const right = optRight || opt_right || option_type || type;
+        const oType = orderType || order_type || "LIMIT";
+        const ordSide = side || "buy";
+        const sl = stopLossPrice != null ? stopLossPrice : stop_loss_price;
+        const tp = targetPrice != null ? targetPrice : target_price;
+        const tsl = trailingSl != null ? trailingSl : trailing_sl;
+        const trig = triggerPrice != null ? triggerPrice : trigger_price;
+
+        if (!symbol || !expiry || strike == null || !right || lots == null) {
+            return res.status(400).json({ error: "symbol, expiry, strike, optRight and lots are required" });
+        }
+
+        const order = await paperPositionService.placeOrder(req.user.sub, {
+            symbol,
+            expiry,
+            strike,
+            optRight: right,
+            side: ordSide,
+            orderType: oType,
+            price,
+            triggerPrice: trig,
+            lots: Number(lots),
+            stopLossPrice: sl,
+            targetPrice: tp,
+            trailingSl: tsl,
+            strategyName,
+        });
+        res.status(201).json({ order });
+    } catch (err) {
+        const status = err.status || 500;
+        if (status === 500) console.error("[paperTrade:placeOrder]", err);
+        res.status(status).json({ error: err.message || "failed to place order" });
+    }
+}
+
+async function cancelOrder(req, res) {
+    try {
+        const order = await paperPositionService.cancelOrder(req.user.sub, req.params.id);
+        res.json({ order, message: "Order cancelled successfully" });
+    } catch (err) {
+        const status = err.status || 500;
+        if (status === 500) console.error("[paperTrade:cancelOrder]", err);
+        res.status(status).json({ error: err.message || "failed to cancel order" });
+    }
+}
+
+async function listOrders(req, res) {
+    try {
+        const { status, limit } = req.query;
+        const orders = await paperPositionService.listOrders(req.user.sub, { status, limit });
+        res.json({ orders });
+    } catch (err) {
+        console.error("[paperTrade:listOrders]", err);
+        res.status(500).json({ error: "failed to load orders" });
+    }
+}
+
+async function updatePositionBracket(req, res) {
+    try {
+        const { stopLossPrice, stop_loss_price, targetPrice, target_price, trailingSl, trailing_sl } = req.body;
+        const position = await paperPositionService.updatePositionBracket(req.user.sub, req.params.id, {
+            stopLossPrice: stopLossPrice != null ? stopLossPrice : stop_loss_price,
+            targetPrice: targetPrice != null ? targetPrice : target_price,
+            trailingSl: trailingSl != null ? trailingSl : trailing_sl,
+        });
+        res.json({ position });
+    } catch (err) {
+        const status = err.status || 500;
+        if (status === 500) console.error("[paperTrade:updatePositionBracket]", err);
+        res.status(status).json({ error: err.message || "failed to update bracket" });
+    }
+}
+
 async function getLeaderboard(req, res) {
     try {
         const userId = req.user?.sub || null;
@@ -89,4 +170,15 @@ async function getLeaderboard(req, res) {
     }
 }
 
-module.exports = { openPosition, openStrategy, closePosition, closeAllPositions, listPositions, getLeaderboard };
+module.exports = {
+    openPosition,
+    openStrategy,
+    closePosition,
+    closeAllPositions,
+    listPositions,
+    placeOrder,
+    cancelOrder,
+    listOrders,
+    updatePositionBracket,
+    getLeaderboard,
+};

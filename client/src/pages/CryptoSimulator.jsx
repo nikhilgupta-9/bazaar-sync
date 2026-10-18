@@ -741,7 +741,7 @@ export default function CryptoSimulator() {
     }, [currentSpot]);
 
     return (
-        <div className="min-h-screen bg-[#0b0e14] text-gray-200 font-sans selection:bg-purple-600/40">
+        <div className="min-h-screen bg-[#0b0e14] text-gray-200 font-sans selection:bg-amber-500/30 selection:text-amber-200">
             {/* ------------------------------------------------------------- */}
             {/* 1. TOP HEADER & TOOLBAR (EXACTLY LIKE STRATEGY BUILDER)       */}
             {/* ------------------------------------------------------------- */}
@@ -749,8 +749,8 @@ export default function CryptoSimulator() {
                 {/* Left: Page Title, View Mode & Coin Switcher */}
                 <div className="flex flex-wrap items-center gap-3">
                     <div className="flex items-center gap-2 pr-2 border-r border-[#1f2535]">
-                        <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-purple-600 via-indigo-600 to-emerald-400 flex items-center justify-center shadow-md shadow-purple-900/40">
-                            <span className="text-white font-black text-sm">Δ</span>
+                        <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-amber-500 via-orange-500 to-yellow-400 flex items-center justify-center shadow-md shadow-amber-900/40">
+                            <span className="text-gray-950 font-black text-sm">Δ</span>
                         </div>
                         <div>
                             <div className="flex items-center gap-1.5">
@@ -774,7 +774,7 @@ export default function CryptoSimulator() {
                             onClick={() => setViewMode("option_chain")}
                             className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
                                 viewMode === "option_chain"
-                                    ? "bg-purple-600 text-white shadow"
+                                    ? "bg-amber-500 text-black font-extrabold shadow"
                                     : "text-gray-400 hover:text-gray-200"
                             }`}
                         >
@@ -785,7 +785,7 @@ export default function CryptoSimulator() {
                             onClick={() => setViewMode("payoff")}
                             className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
                                 viewMode === "payoff"
-                                    ? "bg-purple-600 text-white shadow"
+                                    ? "bg-amber-500 text-black font-extrabold shadow"
                                     : "text-gray-400 hover:text-gray-200"
                             }`}
                         >
@@ -805,7 +805,7 @@ export default function CryptoSimulator() {
                                 }}
                                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer ${
                                     selectedCoin === coin.symbol
-                                        ? "bg-purple-500/20 text-purple-300 border-purple-500 shadow-sm ring-1 ring-purple-500/30 font-extrabold"
+                                        ? "bg-amber-500/15 text-amber-300 border-amber-500/60 shadow-sm ring-1 ring-amber-500/40 font-extrabold"
                                         : "bg-[#151926] text-gray-400 border-[#252b3d] hover:border-gray-600 hover:text-gray-200"
                                 }`}
                             >
@@ -846,7 +846,7 @@ export default function CryptoSimulator() {
                                 onClick={() => setSelectedExpiryKey(exp.key)}
                                 className={`shrink-0 px-3 py-1 rounded-lg text-xs font-semibold transition-all border cursor-pointer flex items-center gap-1 ${
                                     isSelected
-                                        ? "bg-[#251d3b] text-purple-300 border-purple-500 font-bold ring-1 ring-purple-500/50"
+                                        ? "bg-amber-950/40 text-amber-300 border-amber-500/70 font-bold ring-1 ring-amber-500/50"
                                         : "bg-[#151926] text-gray-400 border-[#252b3d] hover:text-gray-200"
                                 }`}
                             >
@@ -879,7 +879,7 @@ export default function CryptoSimulator() {
                             onClick={() => setCurrency("USD")}
                             className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                                 currency === "USD"
-                                    ? "bg-purple-600 text-white shadow-xs font-black"
+                                    ? "bg-amber-500 text-black font-extrabold shadow-xs font-black"
                                     : "text-gray-400 hover:text-white"
                             }`}
                         >
@@ -1197,7 +1197,7 @@ export default function CryptoSimulator() {
                         onClick={() => setIsStrategyTrayOpen((p) => !p)}
                         className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#151926] border border-[#252b3d] text-xs font-bold text-gray-300 hover:text-white transition cursor-pointer"
                     >
-                        <FiLayers size={13} className="text-purple-400" />
+                        <FiLayers size={13} className="text-amber-400" />
                         <span>Strategy Tray ({legs.length})</span>
                         <FiChevronDown size={13} className={`transition-transform ${isStrategyTrayOpen ? "rotate-180" : ""}`} />
                     </button>
@@ -1212,10 +1212,10 @@ export default function CryptoSimulator() {
                     <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                             <h2 className="text-xs font-bold text-gray-200 uppercase tracking-wider flex items-center gap-1.5">
-                                <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+                                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
                                 <span>Simulated Strategy Legs Basket</span>
                             </h2>
-                            <span className="px-2 py-0.2 rounded-full bg-purple-500/20 text-purple-300 font-mono text-[10px] font-bold">
+                            <span className="px-2 py-0.2 rounded-full bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold">
                                 {legs.length} Active {legs.length === 1 ? "Leg" : "Legs"}
                             </span>
                         </div>
@@ -1263,7 +1263,7 @@ export default function CryptoSimulator() {
                                         const pnl = (livePrice - leg.entryPrice) * mult * leg.lots;
 
                                         return (
-                                            <tr key={leg.id} className="hover:bg-purple-950/10 transition">
+                                            <tr key={leg.id} className="hover:bg-amber-950/15 transition">
                                                 <td className="py-2 px-3">
                                                     <span
                                                         className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
@@ -1550,7 +1550,7 @@ export default function CryptoSimulator() {
                                                 <tr
                                                     key={row.strike}
                                                     ref={row.isAtm ? atmRowRef : null}
-                                                    className={`hover:bg-purple-950/20 transition-colors ${
+                                                    className={`hover:bg-amber-950/20 transition-colors ${
                                                         row.isAtm
                                                             ? "bg-amber-950/40 ring-2 ring-amber-500/60 shadow-lg relative z-10"
                                                             : ""
@@ -1883,7 +1883,7 @@ export default function CryptoSimulator() {
                         onClick={() => setBottomTab("positions")}
                         className={`px-4 py-2 text-xs font-bold transition-all border-b-2 cursor-pointer ${
                             bottomTab === "positions"
-                                ? "border-purple-500 text-purple-400"
+                                ? "border-amber-500 text-amber-400"
                                 : "border-transparent text-gray-400 hover:text-gray-200"
                         }`}
                     >
@@ -1894,7 +1894,7 @@ export default function CryptoSimulator() {
                         onClick={() => setBottomTab("stop_orders")}
                         className={`px-4 py-2 text-xs font-bold transition-all border-b-2 cursor-pointer flex items-center gap-1.5 ${
                             bottomTab === "stop_orders"
-                                ? "border-purple-500 text-purple-400"
+                                ? "border-amber-500 text-amber-400"
                                 : "border-transparent text-gray-400 hover:text-gray-200"
                         }`}
                     >
@@ -1966,7 +1966,7 @@ export default function CryptoSimulator() {
                                             const pnl = (livePrice - leg.entryPrice) * mult * leg.lots;
 
                                             return (
-                                                <tr key={leg.id} className="hover:bg-purple-950/10">
+                                                <tr key={leg.id} className="hover:bg-amber-950/15">
                                                     <td className="py-2 px-3">
                                                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${leg.action === "BUY" ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
                                                             {leg.action}
@@ -2029,7 +2029,7 @@ export default function CryptoSimulator() {
                                                 const tpPrice = leg.tpPct != null ? leg.entryPrice * (1 + leg.tpPct / 100) : null;
 
                                                 return (
-                                                    <tr key={leg.id} className="hover:bg-purple-950/10">
+                                                    <tr key={leg.id} className="hover:bg-amber-950/15">
                                                         <td className="py-2 px-3 font-bold text-white">
                                                             {leg.symbol} {leg.strike} {leg.right}
                                                         </td>

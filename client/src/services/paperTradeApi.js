@@ -78,3 +78,37 @@ export async function fetchPaperLeaderboard(token) {
     });
     return handle(res);
 }
+
+export async function fetchPaperOrders(token, status = "") {
+    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+    const res = await fetch(`${API_URL}/api/paper-trade/orders${query}`, {
+        headers: { Authorization: `Bearer ${token}` },
+    });
+    return handle(res);
+}
+
+export async function placePaperOrder(token, payload) {
+    const res = await fetch(`${API_URL}/api/paper-trade/orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+    });
+    return handle(res);
+}
+
+export async function cancelPaperOrder(token, orderId) {
+    const res = await fetch(`${API_URL}/api/paper-trade/orders/${orderId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+    });
+    return handle(res);
+}
+
+export async function updatePositionBracket(token, positionId, { stopLossPrice, targetPrice, trailingSl }) {
+    const res = await fetch(`${API_URL}/api/paper-trade/positions/${positionId}/bracket`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ stopLossPrice, targetPrice, trailingSl }),
+    });
+    return handle(res);
+}

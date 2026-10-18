@@ -13,9 +13,18 @@ const STALE_MS = Number(process.env.MARKET_CACHE_STALE_MS || 120000); // 2 min
 // token -> { kind, underlying, strike, right, expiry, lotSize,
 //            ltp, volume, oi, oiChangePercent, timestamp, receivedAt }
 const cache = new Map();
+const tickListeners = new Set();
 
 let lastUpdateAt = 0;
 let feedConnected = false;
+
+function addTickListener(fn) {
+    if (typeof fn === "function") {
+        tickListeners.add(fn);
+        return () => tickListeners.delete(fn);
+    }
+    return () => {};
+}
 
 function applyTicks(ticks) {
     const now = Date.now();
@@ -23,6 +32,14 @@ function applyTicks(ticks) {
         cache.set(t.token, { ...t, receivedAt: now });
     }
     lastUpdateAt = now;
+
+    for (const fn of tickListeners) {
+        try {
+            fn(ticks);
+        } catch (err) {
+            console.error("[marketCache:listenerError]", err.message);
+        }
+    }
 }
 
 function setFeedConnected(connected) {
@@ -162,4 +179,5 @@ module.exports = {
     getLotSize,
     getChain,
     getBroadcastPayload,
+    addTickListener,
 };

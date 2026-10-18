@@ -64,7 +64,6 @@ import { bsPrice, calculateGreeks, normCdf } from "../utils/blackScholes";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { saveStrategy } from "../services/strategiesApi";
-import { openStrategyTrade, fetchPositions, closePosition } from "../services/paperTradeApi";
 import TradingViewChart from "../components/TradingViewChart";
 
 const BACKEND_BASE = "http://localhost:5001";
@@ -84,6 +83,13 @@ function formatNumber(num, decimals = 2) {
     });
 }
 
+// Yesterday in IST as YYYY-MM-DD — the latest fully-recorded day for the backtester.
+function yesterdayIst() {
+    const t = new Date(Date.now() + 5.5 * 3600 * 1000 - 86400 * 1000);
+    return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(t.getUTCDate()).padStart(2, "0")}`;
+}
+const minuteToHHMM = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
 function formatCompact(num) {
     if (num == null || isNaN(num)) return "0";
     const n = Math.abs(num);
@@ -92,8 +98,145 @@ function formatCompact(num) {
     return num.toFixed(2);
 }
 
-export default function CryptoStrategyBuilder() {
+// -------------------------------------------------------------
+// SKELETON LOADERS FOR DELTA OBSIDIAN THEME
+// -------------------------------------------------------------
+function SkeletonBone({ className = "" }) {
+    return <div className={`animate-pulse rounded-md bg-[#1d2335]/80 ${className}`} />;
+}
+
+function OptionChainSkeletonRows({ rowCount = 14 }) {
+    return (
+        <>
+            {Array.from({ length: rowCount }).map((_, idx) => {
+                const isAtmRow = idx === Math.floor(rowCount / 2);
+                return (
+                    <tr
+                        key={`skel-row-${idx}`}
+                        className={`border-b border-[#1b2030] transition-colors ${
+                            isAtmRow
+                                ? "bg-emerald-950/20 border-y border-emerald-500/40"
+                                : idx % 2 === 0
+                                ? "bg-[#11141f]/50"
+                                : "bg-[#141824]/40"
+                        }`}
+                    >
+                        {/* CALL DELTA */}
+                        <td className="py-2.5 px-1">
+                            <SkeletonBone className="h-3.5 w-7 mx-auto bg-gray-700/40" />
+                        </td>
+                        {/* CALL BID QTY */}
+                        <td className="py-2.5 px-1 hidden md:table-cell">
+                            <SkeletonBone className="h-3 w-9 mx-auto bg-gray-800/60" />
+                        </td>
+                        {/* CALL BID (IV) */}
+                        <td className="py-2.5 px-1">
+                            <div className="flex flex-col items-center gap-1">
+                                <SkeletonBone className="h-3 w-11 bg-emerald-900/30 border border-emerald-500/20" />
+                                <SkeletonBone className="h-2 w-7 bg-gray-800/50" />
+                            </div>
+                        </td>
+                        {/* CALL MARK (IV) */}
+                        <td className="py-2 px-2 bg-emerald-500/5">
+                            <div className="flex flex-col items-center gap-1">
+                                <SkeletonBone className="h-4 w-14 bg-emerald-500/20 border border-emerald-500/30" />
+                                <SkeletonBone className="h-2 w-8 bg-emerald-500/20" />
+                            </div>
+                        </td>
+                        {/* CALL ASK (IV) */}
+                        <td className="py-2.5 px-1">
+                            <div className="flex flex-col items-center gap-1">
+                                <SkeletonBone className="h-3 w-11 bg-rose-900/30 border border-rose-500/20" />
+                                <SkeletonBone className="h-2 w-7 bg-gray-800/50" />
+                            </div>
+                        </td>
+                        {/* CALL ASK QTY */}
+                        <td className="py-2.5 px-1 hidden md:table-cell">
+                            <SkeletonBone className="h-3 w-9 mx-auto bg-gray-800/60" />
+                        </td>
+                        {/* CALL OI */}
+                        <td className="py-2.5 px-2">
+                            <div className="flex items-center justify-end gap-1.5">
+                                <SkeletonBone className="h-3 w-10 bg-gray-700/40" />
+                                <SkeletonBone className="h-1.5 w-12 bg-emerald-500/20 rounded-full" />
+                            </div>
+                        </td>
+
+                        {/* STRIKE (CENTER) */}
+                        <td className={`py-2 px-3 bg-[#0e111a] border-x border-[#23293d] ${isAtmRow ? "ring-1 ring-emerald-500/40" : ""}`}>
+                            <div className="flex items-center justify-center gap-1">
+                                <SkeletonBone className={`h-4 w-16 ${isAtmRow ? "bg-amber-500/30 border border-amber-500/50" : "bg-amber-500/20"}`} />
+                                {isAtmRow && (
+                                    <span className="text-[8px] px-1 py-0.2 rounded bg-emerald-500/30 text-emerald-300 font-extrabold uppercase animate-pulse">
+                                        ATM
+                                    </span>
+                                )}
+                            </div>
+                        </td>
+
+                        {/* PUT OI */}
+                        <td className="py-2.5 px-2">
+                            <div className="flex items-center justify-start gap-1.5">
+                                <SkeletonBone className="h-1.5 w-12 bg-rose-500/20 rounded-full" />
+                                <SkeletonBone className="h-3 w-10 bg-gray-700/40" />
+                            </div>
+                        </td>
+                        {/* PUT BID QTY */}
+                        <td className="py-2.5 px-1 hidden md:table-cell">
+                            <SkeletonBone className="h-3 w-9 mx-auto bg-gray-800/60" />
+                        </td>
+                        {/* PUT BID (IV) */}
+                        <td className="py-2.5 px-1">
+                            <div className="flex flex-col items-center gap-1">
+                                <SkeletonBone className="h-3 w-11 bg-emerald-900/30 border border-emerald-500/20" />
+                                <SkeletonBone className="h-2 w-7 bg-gray-800/50" />
+                            </div>
+                        </td>
+                        {/* PUT MARK (IV) */}
+                        <td className="py-2 px-2 bg-rose-500/5">
+                            <div className="flex flex-col items-center gap-1">
+                                <SkeletonBone className="h-4 w-14 bg-rose-500/20 border border-rose-500/30" />
+                                <SkeletonBone className="h-2 w-8 bg-rose-500/20" />
+                            </div>
+                        </td>
+                        {/* PUT ASK (IV) */}
+                        <td className="py-2.5 px-1">
+                            <div className="flex flex-col items-center gap-1">
+                                <SkeletonBone className="h-3 w-11 bg-rose-900/30 border border-rose-500/20" />
+                                <SkeletonBone className="h-2 w-7 bg-gray-800/50" />
+                            </div>
+                        </td>
+                        {/* PUT ASK QTY */}
+                        <td className="py-2.5 px-1 hidden md:table-cell">
+                            <SkeletonBone className="h-3 w-9 mx-auto bg-gray-800/60" />
+                        </td>
+                        {/* PUT DELTA */}
+                        <td className="py-2.5 px-1">
+                            <SkeletonBone className="h-3.5 w-7 mx-auto bg-gray-700/40" />
+                        </td>
+                    </tr>
+                );
+            })}
+        </>
+    );
+}
+
+// `historical` = the Crypto Backtester (/simulator/crypto): same UI, but the chain
+// comes from real Delta Exchange 1-min history at a chosen date + time (IST)
+// instead of the live feed. No live data is used in that mode.
+export default function CryptoStrategyBuilder({ historical = false }) {
     const { token, user } = useAuth();
+    const selfPath = historical ? "/simulator/crypto" : "/strategy-builder/crypto";
+    const coinList = historical ? CRYPTO_COINS.filter((c) => c.symbol !== "XAUT") : CRYPTO_COINS; // no XAUT options history
+
+    // Historical replay clock (only used when `historical`)
+    const [histMeta, setHistMeta] = useState({ minDate: "2024-01-01", maxDate: yesterdayIst() });
+    const [histDate, setHistDate] = useState(yesterdayIst());
+    const [histMinute, setHistMinute] = useState(9 * 60 + 15); // 09:15 IST
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [playSpeed, setPlaySpeed] = useState(1); // minutes advanced per second
+    const histRequestRef = useRef(0);
+    const hasChainRef = useRef(false);
     const isAuthenticated = Boolean(user || token);
     const { theme, toggleTheme, isDark } = useTheme();
     const navigate = useNavigate();
@@ -207,17 +350,19 @@ export default function CryptoStrategyBuilder() {
         return () => clearInterval(fxTimer);
     }, [fetchInrRate]);
 
-    // Format money dynamically based on currency toggle
+    // Format money dynamically based on currency toggle (handles negatives cleanly, e.g. -$0.05)
     const formatMoney = useCallback((amountUsd, decimals = 2) => {
         if (amountUsd == null || isNaN(amountUsd)) return currency === "INR" ? "₹0.00" : "$0.00";
+        const isNeg = Number(amountUsd) < 0;
+        const absVal = Math.abs(Number(amountUsd));
         if (currency === "INR") {
-            const inrVal = Number(amountUsd) * usdtInrRate;
-            return `₹${Number(inrVal).toLocaleString("en-IN", {
+            const inrVal = absVal * usdtInrRate;
+            return `${isNeg ? "-" : ""}₹${Number(inrVal).toLocaleString("en-IN", {
                 minimumFractionDigits: decimals,
                 maximumFractionDigits: decimals,
             })}`;
         }
-        return `$${Number(amountUsd).toLocaleString("en-US", {
+        return `${isNeg ? "-" : ""}$${Number(absVal).toLocaleString("en-US", {
             minimumFractionDigits: decimals,
             maximumFractionDigits: decimals,
         })}`;
@@ -265,6 +410,10 @@ export default function CryptoStrategyBuilder() {
     const [legSlEnabled, setLegSlEnabled] = useState(true);
     const [legTpEnabled, setLegTpEnabled] = useState(true);
 
+    // Demo wallet capital (initial $12,810 simulated demo funds)
+    const [demoBalance, setDemoBalance] = useState(12810);
+    const positionsPanelRef = useRef(null);
+
     // Positions & Order Management State (Empty until trades are placed / logged in)
     const [positions, setPositions] = useState([]);
     const [stopOrders, setStopOrders] = useState([]);
@@ -285,9 +434,39 @@ export default function CryptoStrategyBuilder() {
     // 1. FETCH LIVE CRYPTO OPTION CHAIN (DELTA API PROXY)
     // -------------------------------------------------------------
     const fetchOptionChain = useCallback(async (isSilent = false) => {
-        if (!isSilent) setLoading(true);
+        // While replaying, stepping the clock shouldn't flash the skeleton once a chain is on screen.
+        const silent = isSilent || (historical && hasChainRef.current);
+        if (!silent) setLoading(true);
         else setRefreshing(true);
         setError(null);
+        const requestId = ++histRequestRef.current;
+
+        if (historical) {
+            try {
+                const url = `${BACKEND_BASE}/api/crypto/history/chain?underlying=${selectedCoin}&date=${histDate}&time=${minuteToHHMM(histMinute)}${selectedExpiry ? `&expiry=${encodeURIComponent(selectedExpiry)}` : ""}`;
+                const res = await fetch(url);
+                const data = await res.json().catch(() => ({}));
+                if (requestId !== histRequestRef.current) return; // a newer scrub already won
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}: Failed to load historical chain`);
+                setChainData(data);
+                hasChainRef.current = (data.chain || []).length > 0;
+                setLastSyncTime(Date.now());
+                prevSpotRef.current = data.spotPrice;
+                // The chosen expiry may have settled by this minute — follow the server's pick.
+                if (data.activeExpiry?.raw && data.activeExpiry.raw !== selectedExpiry) setSelectedExpiry(data.activeExpiry.raw);
+                if (data.spotPrice && (!targetPrice || targetPrice === 83025.0)) setTargetPrice(data.spotPrice);
+            } catch (err) {
+                if (requestId !== histRequestRef.current) return;
+                setError(err.message);
+                setIsPlaying(false);
+            } finally {
+                if (requestId === histRequestRef.current) {
+                    setLoading(false);
+                    setRefreshing(false);
+                }
+            }
+            return;
+        }
 
         try {
             const url = `${BACKEND_BASE}/api/crypto/option-chain?underlying=${selectedCoin}${selectedExpiry ? `&expiry=${encodeURIComponent(selectedExpiry)}` : ""}`;
@@ -322,7 +501,7 @@ export default function CryptoStrategyBuilder() {
             setLoading(false);
             setRefreshing(false);
         }
-    }, [selectedCoin, selectedExpiry]);
+    }, [selectedCoin, selectedExpiry, historical, histDate, histMinute]);
 
     const generateFallbackChain = (coin) => {
         const spot = coin === "BTC" ? 85289.5 : coin === "ETH" ? 3492.0 : coin === "SOL" ? 156.0 : 2750.0;
@@ -395,9 +574,42 @@ export default function CryptoStrategyBuilder() {
 
     useEffect(() => {
         fetchOptionChain();
+        if (historical) return undefined; // replay: refetch only when date / time / coin / expiry change
         const timer = setInterval(() => fetchOptionChain(true), 2500);
         return () => clearInterval(timer);
-    }, [fetchOptionChain]);
+    }, [fetchOptionChain, historical]);
+
+    // Backtester: date bounds from the server, and the replay clock.
+    useEffect(() => {
+        if (!historical) return undefined;
+        let cancelled = false;
+        fetch(`${BACKEND_BASE}/api/crypto/history/meta`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((m) => {
+                if (!cancelled && m?.minDate && m?.maxDate) setHistMeta({ minDate: m.minDate, maxDate: m.maxDate });
+            })
+            .catch(() => {});
+        return () => {
+            cancelled = true;
+        };
+    }, [historical]);
+
+    useEffect(() => {
+        if (!historical || !isPlaying) return undefined;
+        const timer = setInterval(() => {
+            setHistMinute((m) => {
+                const next = m + playSpeed;
+                if (next >= 1439) {
+                    setIsPlaying(false);
+                    return 1439;
+                }
+                return next;
+            });
+        }, 1000);
+        return () => clearInterval(timer);
+    }, [historical, isPlaying, playSpeed]);
+
+    const stepHistMinute = (delta) => setHistMinute((m) => Math.min(1439, Math.max(0, m + delta)));
     // -------------------------------------------------------------
     // ATM STRIKE COMPUTATION & AUTO-SCROLL TO CENTER
     // -------------------------------------------------------------
@@ -483,7 +695,11 @@ export default function CryptoStrategyBuilder() {
             bidPrice: option.bidPrice || 0,
             askPrice: option.askPrice || 0,
             iv: option.markIv || 22.0,
-            leverage: option.leverage || currentCoinConfig.leverage || "100x",
+            delta: option.delta != null ? Number(option.delta) : (option.contractType === "call" ? 0.5 : -0.5),
+            gamma: option.gamma != null ? Number(option.gamma) : 0.0002,
+            theta: option.theta != null ? Number(option.theta) : -1.5,
+            vega: option.vega != null ? Number(option.vega) : 3.0,
+            leverage: currentCoinConfig.leverage || "100x",
             selected: true,
             // Percentage SL only applies to BUY legs, never to SELL legs
             slPct: act === "BUY" ? 25 : null,
@@ -507,6 +723,87 @@ export default function CryptoStrategyBuilder() {
 
     const handleClearAllLegs = () => {
         setStrategyLegs([]);
+    };
+
+    // 1-Click Delta Exchange Pre-Built Strategy Mapper
+    const handleApplyPresetStrategy = (presetKey) => {
+        if (!chainData.chain || chainData.chain.length === 0) return;
+        const strikes = chainData.chain.map((r) => r.strike).sort((a, b) => a - b);
+        let atmIdx = strikes.indexOf(atmStrike);
+        if (atmIdx === -1) {
+            let minDist = Infinity;
+            strikes.forEach((s, idx) => {
+                const dist = Math.abs(s - (chainData.spotPrice || 82000));
+                if (dist < minDist) {
+                    minDist = dist;
+                    atmIdx = idx;
+                }
+            });
+        }
+        if (atmIdx === -1) atmIdx = Math.floor(strikes.length / 2);
+
+        const getOptionAt = (offset, type) => {
+            const idx = Math.max(0, Math.min(strikes.length - 1, atmIdx + offset));
+            const row = chainData.chain.find((r) => r.strike === strikes[idx]);
+            if (!row) return null;
+            return type === "CALL" ? row.call : row.put;
+        };
+
+        const newLegs = [];
+        const expLabel = chainData.activeExpiry?.label || "11 Oct 26";
+        const cVal = currentCoinConfig.defaultLot || 0.001;
+
+        const addPresetLeg = (opt, action, type) => {
+            if (!opt) return;
+            const markP = opt.markPrice && opt.markPrice > 0 ? opt.markPrice : (opt.bidPrice || opt.askPrice || 100);
+            newLegs.push({
+                id: `leg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                symbol: opt.symbol || `${type === "CALL" ? "C" : "P"}-${selectedCoin}-${opt.strike}`,
+                action,
+                type,
+                strike: opt.strike,
+                expiry: expLabel,
+                lots: 1,
+                contractValue: cVal,
+                price: markP,
+                markPrice: markP,
+                bidPrice: opt.bidPrice || 0,
+                askPrice: opt.askPrice || 0,
+                iv: opt.markIv || 25.0,
+                delta: opt.delta != null ? Number(opt.delta) : (type === "CALL" ? 0.5 : -0.5),
+                gamma: opt.gamma != null ? Number(opt.gamma) : 0.0002,
+                theta: opt.theta != null ? Number(opt.theta) : -1.5,
+                vega: opt.vega != null ? Number(opt.vega) : 3.0,
+                leverage: currentCoinConfig.leverage || "100x",
+                selected: true,
+                slPct: action === "BUY" ? 25 : null,
+                tpPct: action === "BUY" ? 50 : null,
+            });
+        };
+
+        if (presetKey === "bull_call_spread") {
+            addPresetLeg(getOptionAt(0, "CALL"), "BUY", "CALL");
+            addPresetLeg(getOptionAt(1, "CALL"), "SELL", "CALL");
+        } else if (presetKey === "bear_put_spread") {
+            addPresetLeg(getOptionAt(0, "PUT"), "BUY", "PUT");
+            addPresetLeg(getOptionAt(-1, "PUT"), "SELL", "PUT");
+        } else if (presetKey === "long_straddle") {
+            addPresetLeg(getOptionAt(0, "CALL"), "BUY", "CALL");
+            addPresetLeg(getOptionAt(0, "PUT"), "BUY", "PUT");
+        } else if (presetKey === "long_strangle") {
+            addPresetLeg(getOptionAt(1, "CALL"), "BUY", "CALL");
+            addPresetLeg(getOptionAt(-1, "PUT"), "BUY", "PUT");
+        } else if (presetKey === "iron_condor") {
+            addPresetLeg(getOptionAt(-2, "PUT"), "BUY", "PUT");
+            addPresetLeg(getOptionAt(-1, "PUT"), "SELL", "PUT");
+            addPresetLeg(getOptionAt(1, "CALL"), "SELL", "CALL");
+            addPresetLeg(getOptionAt(2, "CALL"), "BUY", "CALL");
+        }
+
+        if (newLegs.length > 0) {
+            setStrategyLegs(newLegs);
+            if (!isStrategyBuilderOpen) setIsStrategyBuilderOpen(true);
+        }
     };
 
     const handleUpdateLegAction = (id, newAction) => {
@@ -723,6 +1020,37 @@ export default function CryptoStrategyBuilder() {
         };
     }, [activeSelectedLegs, globalMultiplier, chainData.spotPrice, targetDaysAhead, currentCoinConfig]);
 
+    // Strategy Portfolio Greeks calculation (Delta, Gamma, Theta, Vega)
+    const strategyGreeks = useMemo(() => {
+        let netDelta = 0;
+        let netGamma = 0;
+        let netTheta = 0;
+        let netVega = 0;
+
+        activeSelectedLegs.forEach((leg) => {
+            const cVal = leg.contractValue || currentCoinConfig.defaultLot || 0.001;
+            const volume = (leg.lots || 1) * cVal * globalMultiplier;
+            const direction = leg.action === "BUY" ? 1 : -1;
+
+            const d = leg.delta != null ? Number(leg.delta) : (leg.type === "CALL" ? 0.5 : -0.5);
+            const g = leg.gamma != null ? Number(leg.gamma) : 0.0002;
+            const t = leg.theta != null ? Number(leg.theta) : -1.5;
+            const v = leg.vega != null ? Number(leg.vega) : 3.0;
+
+            netDelta += direction * d * volume;
+            netGamma += direction * g * volume;
+            netTheta += direction * t * volume;
+            netVega += direction * v * volume;
+        });
+
+        return {
+            delta: netDelta,
+            gamma: netGamma,
+            theta: netTheta,
+            vega: netVega,
+        };
+    }, [activeSelectedLegs, globalMultiplier, currentCoinConfig]);
+
     // Current PNL at Target Price
     const targetPricePnl = useMemo(() => {
         if (activeSelectedLegs.length === 0) return 0;
@@ -740,17 +1068,79 @@ export default function CryptoStrategyBuilder() {
         return pnl;
     }, [activeSelectedLegs, globalMultiplier, targetPrice, currentCoinConfig]);
 
+    // Live portfolio summary across all open positions
+    const portfolioSummary = useMemo(() => {
+        let totalUnrealizedPnl = 0;
+        let totalMarginUsed = 0;
+        let totalNotional = 0;
+
+        positions.forEach((pos) => {
+            totalUnrealizedPnl += Number(pos.unrealizedPnl || 0);
+            totalMarginUsed += Number(pos.margin || 0);
+            const cVal = pos.contractValue || (pos.coinSymbol === "BTC" ? 0.001 : 0.01);
+            totalNotional += (pos.lots || 1) * cVal * (chainData.spotPrice || 82000);
+        });
+
+        return {
+            totalUnrealizedPnl,
+            totalMarginUsed,
+            totalNotional,
+            count: positions.length,
+        };
+    }, [positions, chainData.spotPrice]);
+
+    // Update live positions mark price and unrealized P&L when chainData refreshes
+    useEffect(() => {
+        if (!chainData?.chain || positions.length === 0) return;
+        setPositions((prevPositions) => {
+            let hasChanged = false;
+            const updated = prevPositions.map((pos) => {
+                // Only reprice from the chain this position belongs to (same coin + expiry) —
+                // otherwise viewing another expiry/coin, or an expiry settling mid-replay,
+                // would mark it with an unrelated contract's price.
+                if (pos.coinSymbol && chainData.underlying && pos.coinSymbol !== chainData.underlying) return pos;
+                if (pos.expiry && chainData.activeExpiry?.label && pos.expiry !== chainData.activeExpiry.label) return pos;
+                const row = chainData.chain.find((r) => r.strike === pos.strike);
+                if (!row) return pos;
+                const optionData = pos.type === "CALL" ? row.call : row.put;
+                const currentMark = optionData?.markPrice != null ? optionData.markPrice : pos.markPrice;
+                if (currentMark == null) return pos;
+
+                const cVal = pos.contractValue || (pos.coinSymbol === "BTC" ? 0.001 : 0.01);
+                const volume = (pos.lots || 1) * cVal;
+                const isBuy = pos.side === "BUY";
+                const pnl = isBuy
+                    ? (currentMark - pos.entryPrice) * volume
+                    : (pos.entryPrice - currentMark) * volume;
+                const pnlPct = pos.entryPrice > 0
+                    ? isBuy
+                        ? ((currentMark - pos.entryPrice) / pos.entryPrice) * 100
+                        : ((pos.entryPrice - currentMark) / pos.entryPrice) * 100
+                    : 0;
+
+                if (Math.abs(currentMark - pos.markPrice) > 0.0001 || Math.abs(pnl - pos.unrealizedPnl) > 0.005) {
+                    hasChanged = true;
+                    return {
+                        ...pos,
+                        markPrice: currentMark,
+                        unrealizedPnl: pnl,
+                        pnlPct: pnlPct,
+                    };
+                }
+                return pos;
+            });
+            return hasChanged ? updated : prevPositions;
+        });
+    }, [chainData]);
+
     // -------------------------------------------------------------
     // 4. ORDER EXECUTION & STOP LOSS MANAGEMENT ENGINE
     // -------------------------------------------------------------
     const handlePlaceOrder = () => {
-        if (!isAuthenticated) {
-            setOrderSuccessMsg("⚡ Strategy executed in Guest Demo Paper Mode! Sign up or Log in anytime to save trades to your account.");
-            setTimeout(() => setOrderSuccessMsg(null), 5000);
-        }
         if (activeSelectedLegs.length === 0) return;
-        const timestamp = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-        const dateStr = `11 Oct ${timestamp}`;
+        const now = new Date();
+        const timestamp = now.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        const dateStr = `${now.toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} ${timestamp}`;
 
         const newPositions = [];
         const newStopOrders = [];
@@ -762,8 +1152,11 @@ export default function CryptoStrategyBuilder() {
             const soId = `SO-${Math.floor(1000 + Math.random() * 9000)}`;
             const tpId = `TP-${Math.floor(1000 + Math.random() * 9000)}`;
             const ordId = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
-            const entryPrice = leg.price || 100;
-            const sizeStr = `${leg.lots || 1} Lot (${((leg.lots || 1) * (selectedCoin === "BTC" ? 0.001 : 0.01)).toFixed(3)} ${selectedCoin})`;
+            const entryPrice = leg.price || leg.markPrice || 100;
+            const cVal = leg.contractValue || currentCoinConfig.defaultLot || 0.001;
+            const coinQty = (leg.lots || 1) * cVal;
+            const sizeStr = `${leg.lots || 1} Ctr (${coinQty.toFixed(3)} ${selectedCoin})`;
+            const legMargin = (payoffMetrics.orderMargin || 100) / (activeSelectedLegs.length || 1);
 
             // Calculate SL Trigger Description & Price
             let slText = "None";
@@ -782,12 +1175,12 @@ export default function CryptoStrategyBuilder() {
 
                 newStopOrders.push({
                     id: soId,
-                    contract: `${leg.symbol}-${leg.expiry.replace(/\s+/g, "")}`,
+                    contract: `${selectedCoin} ${leg.strike?.toLocaleString()} ${leg.type === "CALL" ? "CE" : "PE"}`,
                     type: "STOP_LOSS",
                     condition:
                         slType === "spot_price"
                             ? `${selectedCoin} Spot <= $${slValue}`
-                            : `Mark Price ${leg.action === "BUY" ? "<=" : ">="} $${formatNumber(slPrice)}`,
+                            : `Mark ${leg.action === "BUY" ? "<=" : ">="} $${formatNumber(slPrice)}`,
                     triggerPrice: slPrice,
                     orderType: "Market SL",
                     status: "ACTIVE",
@@ -813,12 +1206,12 @@ export default function CryptoStrategyBuilder() {
 
                 newStopOrders.push({
                     id: tpId,
-                    contract: `${leg.symbol}-${leg.expiry.replace(/\s+/g, "")}`,
+                    contract: `${selectedCoin} ${leg.strike?.toLocaleString()} ${leg.type === "CALL" ? "CE" : "PE"}`,
                     type: "TAKE_PROFIT",
                     condition:
                         tpType === "spot_price"
                             ? `${selectedCoin} Spot >= $${tpValue}`
-                            : `Mark Price ${leg.action === "BUY" ? ">=" : "<="} $${formatNumber(tpPrice)}`,
+                            : `Mark ${leg.action === "BUY" ? ">=" : "<="} $${formatNumber(tpPrice)}`,
                     triggerPrice: tpPrice,
                     orderType: "Market TP",
                     status: "ACTIVE",
@@ -829,38 +1222,44 @@ export default function CryptoStrategyBuilder() {
 
             newPositions.push({
                 id: posId,
-                symbol: `${leg.symbol}-${leg.expiry.replace(/\s+/g, "")}`,
+                symbol: `${selectedCoin} ${leg.strike?.toLocaleString()} ${leg.type === "CALL" ? "CE" : "PE"}`,
                 side: leg.action,
                 type: leg.type,
                 strike: leg.strike,
-                expiry: leg.expiry,
+                expiry: leg.expiry || chainData.activeExpiry?.label || "11 Oct 26",
                 lots: leg.lots || 1,
+                contractValue: cVal,
+                coinQty,
+                coinSymbol: selectedCoin,
+                coinIcon: currentCoinConfig.icon || "₿",
                 size: sizeStr,
                 entryPrice,
                 markPrice: entryPrice,
+                margin: legMargin,
                 unrealizedPnl: 0.0,
                 pnlPct: 0.0,
                 slTrigger: slText,
                 tpTrigger: tpText,
                 stopOrderId: soId,
                 status: "OPEN",
+                createdAt: dateStr,
             });
 
             newFills.push({
                 id: `fill-${Date.now()}-${idx}`,
                 orderId: ordId,
-                contract: `${leg.symbol}-${leg.expiry.replace(/\s+/g, "")}`,
+                contract: `${selectedCoin} ${leg.strike?.toLocaleString()} ${leg.type === "CALL" ? "CE" : "PE"}`,
                 side: leg.action,
                 size: sizeStr,
                 price: `$${formatNumber(entryPrice)}`,
-                fee: `$${(entryPrice * 0.001).toFixed(2)}`,
+                fee: `$${(entryPrice * coinQty * 0.0005).toFixed(2)}`,
                 time: dateStr,
                 type: "ENTRY",
             });
 
             newHistory.push({
                 id: ordId,
-                contract: `${leg.symbol}-${leg.expiry.replace(/\s+/g, "")}`,
+                contract: `${selectedCoin} ${leg.strike?.toLocaleString()} ${leg.type === "CALL" ? "CE" : "PE"}`,
                 side: leg.action,
                 type: "MARKET",
                 status: "FILLED",
@@ -873,26 +1272,38 @@ export default function CryptoStrategyBuilder() {
         setStopOrders((prev) => [...newStopOrders, ...prev]);
         setFills((prev) => [...newFills, ...prev]);
         setOrderHistory((prev) => [...newHistory, ...prev]);
+        setDemoBalance((prev) => Math.max(0, prev - (payoffMetrics.orderMargin || 100)));
+
+        // Automatically switch to positions tab so user sees their executed order immediately
+        setBottomTab("positions");
+        setMobileTab("positions");
 
         setOrderSuccessMsg(
-            `✅ Order Executed! ${activeSelectedLegs.length} positions opened. ${
-                enableStopLoss ? `Stop Loss active (${slType === "mtm_loss" ? `-$${slValue}` : `${slValue}`})` : ""
-            }`
+            `Order Executed! ${activeSelectedLegs.length} position(s) opened in Delta Simulator. Margin Used: $${formatNumber(payoffMetrics.orderMargin || 100)}`
         );
-        setTimeout(() => setOrderSuccessMsg(null), 5000);
+        setTimeout(() => setOrderSuccessMsg(null), 6000);
+
+        // Smooth scroll to positions panel
+        setTimeout(() => {
+            if (positionsPanelRef.current) {
+                positionsPanelRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
+        }, 150);
     };
 
-    // Market Close Position
+    // Market Close Individual Position
     const handleClosePosition = (posId) => {
         const targetPos = positions.find((p) => p.id === posId);
         if (!targetPos) return;
 
-        const timestamp = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-        const dateStr = `11 Oct ${timestamp}`;
+        const now = new Date();
+        const timestamp = now.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        const dateStr = `${now.toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} ${timestamp}`;
         const closeOrderId = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
 
         setPositions((prev) => prev.filter((p) => p.id !== posId));
         setStopOrders((prev) => prev.filter((so) => so.posId !== posId && so.id !== targetPos.stopOrderId));
+        setDemoBalance((prev) => prev + (targetPos.margin || 0) + (targetPos.unrealizedPnl || 0));
 
         setFills((prev) => [
             {
@@ -902,9 +1313,9 @@ export default function CryptoStrategyBuilder() {
                 side: targetPos.side === "BUY" ? "SELL" : "BUY",
                 size: targetPos.size,
                 price: `$${formatNumber(targetPos.markPrice)}`,
-                fee: "$0.15",
+                fee: "$0.10",
                 time: dateStr,
-                type: "MANUAL_CLOSE",
+                type: "MARKET_CLOSE",
             },
             ...prev,
         ]);
@@ -928,6 +1339,52 @@ export default function CryptoStrategyBuilder() {
             }$${formatNumber(targetPos.unrealizedPnl)})`
         );
         setTimeout(() => setOrderSuccessMsg(null), 4000);
+    };
+
+    // Market Close All Open Positions
+    const handleCloseAllPositions = () => {
+        if (positions.length === 0) return;
+        const now = new Date();
+        const timestamp = now.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        const dateStr = `${now.toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} ${timestamp}`;
+
+        let totalPnl = 0;
+        const newFills = [];
+        const newHistory = [];
+
+        positions.forEach((pos) => {
+            totalPnl += (pos.unrealizedPnl || 0);
+            const closeOrderId = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
+            newFills.push({
+                id: `fill-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+                orderId: closeOrderId,
+                contract: pos.symbol,
+                side: pos.side === "BUY" ? "SELL" : "BUY",
+                size: pos.size,
+                price: `$${formatNumber(pos.markPrice)}`,
+                fee: "$0.10",
+                time: dateStr,
+                type: "BATCH_CLOSE",
+            });
+            newHistory.push({
+                id: closeOrderId,
+                contract: pos.symbol,
+                side: pos.side === "BUY" ? "SELL" : "BUY",
+                type: "MARKET_CLOSE",
+                status: "FILLED",
+                price: `$${formatNumber(pos.markPrice)}`,
+                time: dateStr,
+            });
+        });
+
+        setDemoBalance((prev) => prev + portfolioSummary.totalMarginUsed + totalPnl);
+        setPositions([]);
+        setStopOrders([]);
+        setFills((prev) => [...newFills, ...prev]);
+        setOrderHistory((prev) => [...newHistory, ...prev]);
+
+        setOrderSuccessMsg(`✅ Closed all ${positions.length} position(s). Total Realized PnL: ${totalPnl >= 0 ? "+" : ""}$${formatNumber(totalPnl)}`);
+        setTimeout(() => setOrderSuccessMsg(null), 5000);
     };
 
     // Cancel a Stop Order
@@ -970,7 +1427,7 @@ export default function CryptoStrategyBuilder() {
     };
 
     return (
-        <div className="min-h-screen bg-[#0b0e14] text-gray-200 font-sans selection:bg-purple-600/40">
+        <div className="min-h-screen bg-[#0b0e14] text-gray-200 font-sans selection:bg-amber-500/30 selection:text-amber-200">
             {/* ------------------------------------------------------------- */}
             {/* 1. UNIFIED CRYPTO STRATEGY BUILDER HEADER & TOOLBAR           */}
             {/* ------------------------------------------------------------- */}
@@ -978,32 +1435,41 @@ export default function CryptoStrategyBuilder() {
                 {/* Left: Page Title, View Mode & Coin Switcher */}
                 <div className="flex flex-wrap items-center gap-3">
                     <div className="flex items-center gap-2 pr-2 border-r border-[#1f2535]">
-                        <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-purple-600 via-indigo-600 to-emerald-400 flex items-center justify-center shadow-md shadow-purple-900/40">
-                            <span className="text-white font-black text-sm">Δ</span>
+                        <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-amber-500 via-orange-500 to-yellow-400 flex items-center justify-center shadow-md shadow-amber-900/40">
+                            <span className="text-gray-950 font-black text-sm">Δ</span>
                         </div>
                         <div>
                             <div className="flex items-center gap-2">
                                 <h1 className="font-extrabold text-sm lg:text-base text-white tracking-tight">
-                                    Crypto Strategy Builder
+                                    {historical ? "Crypto Options Backtester" : "Crypto Strategy Builder"}
                                 </h1>
-                                <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[9px] font-black uppercase tracking-wider inline-flex items-center gap-1 shadow-xs">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping shrink-0" />
-                                    <span>LIVE DELTA FEED</span>
-                                </span>
+                                {historical ? (
+                                    <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/40 text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 shadow-xs">
+                                        <FiClock size={10} />
+                                        <span>Historical Replay</span>
+                                    </span>
+                                ) : (
+                                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[9px] font-black uppercase tracking-wider inline-flex items-center gap-1 shadow-xs">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping shrink-0" />
+                                        <span>LIVE DELTA FEED</span>
+                                    </span>
+                                )}
                             </div>
                             <div className="text-[10px] text-gray-400 font-medium">
-                                Delta Exchange Derivatives Feed • Real-Time Greeks & Payoff
+                                {historical
+                                    ? "Real Delta Exchange 1-min history • Payoff & Greeks at any past minute"
+                                    : "Delta Exchange Derivatives Feed • Real-Time Greeks & Payoff"}
                             </div>
                         </div>
                     </div>
 
-                    {/* Option Chain / Chart Segment View */}
-                    <div className="flex rounded-lg bg-[#151926] p-0.5 border border-[#252b3d] shadow-inner">
+                    {/* Option Chain / Chart Segment View (the chart is a live widget — hidden in the backtester) */}
+                    <div className={`${historical ? "hidden" : "flex"} rounded-lg bg-[#151926] p-0.5 border border-[#252b3d] shadow-inner`}>
                         <button
                             onClick={() => setViewMode("option_chain")}
                             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-md transition-all ${
                                 viewMode === "option_chain"
-                                    ? "bg-purple-600 text-white shadow-sm ring-1 ring-purple-400/40"
+                                    ? "bg-amber-500 text-black font-extrabold shadow-sm ring-1 ring-amber-400/50"
                                     : "text-gray-400 hover:text-gray-200 hover:bg-[#1a2030]"
                             }`}
                             title="Delta Exchange Options Matrix"
@@ -1015,7 +1481,7 @@ export default function CryptoStrategyBuilder() {
                             onClick={() => setViewMode("chart")}
                             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-md transition-all ${
                                 viewMode === "chart"
-                                    ? "bg-purple-600 text-white shadow-sm ring-1 ring-purple-400/40"
+                                    ? "bg-amber-500 text-black font-extrabold shadow-sm ring-1 ring-amber-400/50"
                                     : "text-gray-400 hover:text-gray-200 hover:bg-[#1a2030]"
                             }`}
                             title="Interactive TradingView Chart with All Tools & Indicators"
@@ -1027,13 +1493,19 @@ export default function CryptoStrategyBuilder() {
 
                     {/* Coin Selector Pills */}
                     <div className="flex items-center gap-1.5">
-                        {CRYPTO_COINS.map((coin) => (
+                        {coinList.map((coin) => (
                             <button
                                 key={coin.symbol}
-                                onClick={() => setSelectedCoin(coin.symbol)}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                                onClick={() => {
+                                    if (selectedCoin !== coin.symbol) {
+                                        setSelectedCoin(coin.symbol);
+                                        setSelectedExpiry(null);
+                                        setLoading(true);
+                                    }
+                                }}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer ${
                                     selectedCoin === coin.symbol
-                                        ? "bg-purple-500/20 text-purple-300 border-purple-500 shadow-sm ring-1 ring-purple-500/30"
+                                        ? "bg-amber-500/15 text-amber-300 border-amber-500/60 shadow-sm ring-1 ring-amber-500/40"
                                         : "bg-[#151926] text-gray-400 border-[#252b3d] hover:border-gray-600 hover:text-gray-200"
                                 }`}
                             >
@@ -1049,46 +1521,70 @@ export default function CryptoStrategyBuilder() {
                     </div>
                 </div>
 
-                {/* Middle: Expiry Date Carousel */}
+                {/* Middle: Expiry Date Carousel with Skeleton Loading */}
                 <div className="flex items-center gap-1 overflow-x-auto py-1 custom-scrollbar max-w-full lg:max-w-md">
                     <button
                         onClick={() => {
                             if (chainData.expiries.length > 0) {
                                 const idx = chainData.expiries.findIndex((e) => e.raw === selectedExpiry);
-                                if (idx > 0) setSelectedExpiry(chainData.expiries[idx - 1].raw);
+                                if (idx > 0) {
+                                    setSelectedExpiry(chainData.expiries[idx - 1].raw);
+                                    setLoading(true);
+                                }
                             }
                         }}
-                        className="p-1.5 rounded bg-[#151926] hover:bg-[#1e2336] text-gray-400"
+                        className="p-1.5 rounded bg-[#151926] hover:bg-[#1e2336] text-gray-400 cursor-pointer"
                         title="Previous Expiry"
                     >
                         <FiChevronLeft size={14} />
                     </button>
 
-                    {chainData.expiries.map((exp) => {
-                        const isSelected = exp.raw === selectedExpiry;
-                        return (
-                            <button
-                                key={exp.raw}
-                                onClick={() => setSelectedExpiry(exp.raw)}
-                                className={`shrink-0 px-3 py-1 rounded-lg text-xs font-semibold transition-all border ${
-                                    isSelected
-                                        ? "bg-[#251d3b] text-purple-300 border-purple-500 font-bold ring-1 ring-purple-500/50"
-                                        : "bg-[#151926] text-gray-400 border-[#252b3d] hover:text-gray-200"
-                                }`}
-                            >
-                                {exp.label}
-                            </button>
-                        );
-                    })}
+                    {chainData.expiries && chainData.expiries.length > 0 ? (
+                        chainData.expiries.map((exp) => {
+                            const isSelected = exp.raw === selectedExpiry;
+                            return (
+                                <button
+                                    key={exp.raw}
+                                    onClick={() => {
+                                        if (selectedExpiry !== exp.raw) {
+                                            setSelectedExpiry(exp.raw);
+                                            setLoading(true);
+                                        }
+                                    }}
+                                    className={`shrink-0 px-3 py-1 rounded-lg text-xs font-semibold transition-all border cursor-pointer ${
+                                        isSelected
+                                            ? "bg-amber-950/40 text-amber-300 border-amber-500/70 font-bold ring-1 ring-amber-500/50"
+                                            : "bg-[#151926] text-gray-400 border-[#252b3d] hover:text-gray-200"
+                                    }`}
+                                >
+                                    {exp.label}
+                                </button>
+                            );
+                        })
+                    ) : (
+                        <div className="flex items-center gap-1.5 overflow-hidden">
+                            {["17 Oct 26", "18 Oct 26", "24 Oct 26", "31 Oct 26", "07 Nov 26"].map((placeholder, idx) => (
+                                <div
+                                    key={idx}
+                                    className="shrink-0 px-3 py-1.5 rounded-lg bg-[#151926] border border-[#252b3d] animate-pulse flex items-center justify-center"
+                                >
+                                    <div className="w-14 h-3 rounded bg-gray-700/50" />
+                                </div>
+                            ))}
+                        </div>
+                    )}
 
                     <button
                         onClick={() => {
                             if (chainData.expiries.length > 0) {
                                 const idx = chainData.expiries.findIndex((e) => e.raw === selectedExpiry);
-                                if (idx < chainData.expiries.length - 1) setSelectedExpiry(chainData.expiries[idx + 1].raw);
+                                if (idx < chainData.expiries.length - 1) {
+                                    setSelectedExpiry(chainData.expiries[idx + 1].raw);
+                                    setLoading(true);
+                                }
                             }
                         }}
-                        className="p-1.5 rounded bg-[#151926] hover:bg-[#1e2336] text-gray-400"
+                        className="p-1.5 rounded bg-[#151926] hover:bg-[#1e2336] text-gray-400 cursor-pointer"
                         title="Next Expiry"
                     >
                         <FiChevronRight size={14} />
@@ -1099,18 +1595,18 @@ export default function CryptoStrategyBuilder() {
                 <div className="flex items-center gap-2 lg:gap-3">
                     {/* Live Spot Mini Badge with Reactive Price Flash */}
                     <div className={`hidden sm:flex items-center gap-2 px-3 py-1 rounded-lg border transition-all ${
-                        spotFlash === "up" 
-                            ? "bg-emerald-950/60 border-emerald-500 text-emerald-300 ring-1 ring-emerald-500/50" 
-                            : spotFlash === "down" 
-                            ? "bg-rose-950/60 border-rose-500 text-rose-300 ring-1 ring-rose-500/50" 
+                        spotFlash === "up"
+                            ? "bg-emerald-950/60 border-emerald-500 text-emerald-300 ring-1 ring-emerald-500/50"
+                            : spotFlash === "down"
+                            ? "bg-rose-950/60 border-rose-500 text-rose-300 ring-1 ring-rose-500/50"
                             : "bg-[#131722] border-[#232a3d]"
                     }`}>
-                        <span className="text-gray-400">{selectedCoin} Spot:</span>
+                        <span className="text-gray-400">{selectedCoin} {historical ? "Spot @ replay" : "Spot"}:</span>
                         <span className="font-mono font-bold text-white">{formatMoney(chainData.spotPrice, 2)}</span>
                         <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
                             chainData.spot24hChange >= 0 ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"
                         }`}>
-                            {chainData.spot24hChange >= 0 ? "+" : ""}{chainData.spot24hChange.toFixed(2)}%
+                            {chainData.spot24hChange >= 0 ? "+" : ""}{Number(chainData.spot24hChange || 0).toFixed(2)}%
                         </span>
                     </div>
 
@@ -1120,7 +1616,7 @@ export default function CryptoStrategyBuilder() {
                             onClick={() => setCurrency("USD")}
                             className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all flex items-center gap-1 cursor-pointer ${
                                 currency === "USD"
-                                    ? "bg-purple-600 text-white shadow-sm"
+                                    ? "bg-amber-500 text-black font-bold shadow-sm"
                                     : "text-gray-400 hover:text-gray-200"
                             }`}
                             title="View all prices in US Dollars ($)"
@@ -1166,7 +1662,7 @@ export default function CryptoStrategyBuilder() {
                         <div className="flex items-center gap-2">
                             <button
                                 onClick={() => navigate("/profile")}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1a1f2c] hover:bg-[#252c3e] text-purple-300 border border-purple-500/30 text-xs font-bold transition cursor-pointer"
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1a1f2c] hover:bg-[#252c3e] text-amber-300 border border-amber-500/30 text-xs font-bold transition cursor-pointer"
                                 title="My Account Profile"
                             >
                                 <span className="w-2 h-2 rounded-full bg-emerald-400" />
@@ -1176,13 +1672,13 @@ export default function CryptoStrategyBuilder() {
                     ) : (
                         <div className="flex items-center gap-1.5">
                             <button
-                                onClick={() => navigate("/login?mode=signup&redirect=/strategy-builder/crypto")}
+                                onClick={() => navigate(`/login?mode=signup&redirect=${selfPath}`)}
                                 className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md shadow-emerald-950/40 transition cursor-pointer hover:scale-[1.02]"
                             >
                                 Sign Up
                             </button>
                             <button
-                                onClick={() => navigate("/login?mode=login&redirect=/strategy-builder/crypto")}
+                                onClick={() => navigate(`/login?mode=login&redirect=${selfPath}`)}
                                 className="px-3.5 py-1.5 rounded-lg bg-[#191e2c] hover:bg-emerald-500/10 text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 text-xs font-bold transition cursor-pointer hover:scale-[1.02]"
                             >
                                 Log In
@@ -1192,12 +1688,16 @@ export default function CryptoStrategyBuilder() {
 
                     {/* Reload Wallet Button */}
                     <button
-                        onClick={() => alert(`Wallet balance: ${formatMoney(12810)} Demo Funds!`)}
-                        className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1a1f2c] hover:bg-[#252c3e] text-purple-300 border border-purple-500/30 text-xs font-bold transition-all"
-                        title="Demo Trading Balance"
+                        onClick={() => {
+                            if (window.confirm("Reset demo trading wallet balance back to $12,810?")) {
+                                setDemoBalance(12810);
+                            }
+                        }}
+                        className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1a1f2c] hover:bg-[#252c3e] text-amber-300 border border-amber-500/30 text-xs font-bold transition-all cursor-pointer shadow-xs"
+                        title="Demo Trading Balance (Click to Reset to $12,810)"
                     >
-                        <FiDollarSign size={12} className="text-purple-400" />
-                        <span>{formatMoney(12810, 0)}</span>
+                        <FiDollarSign size={12} className="text-amber-400" />
+                        <span>{formatMoney(demoBalance, 0)}</span>
                     </button>
 
                     {/* Strategy Builder Toggle Button */}
@@ -1205,7 +1705,7 @@ export default function CryptoStrategyBuilder() {
                         onClick={() => setIsStrategyBuilderOpen(!isStrategyBuilderOpen)}
                         className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-md ${
                             isStrategyBuilderOpen
-                                ? "bg-purple-600 text-white shadow-purple-900/40"
+                                ? "bg-amber-500 text-black font-bold shadow-amber-900/30"
                                 : "bg-[#1c2233] text-gray-300 hover:text-white border border-[#2d364f]"
                         }`}
                     >
@@ -1216,12 +1716,86 @@ export default function CryptoStrategyBuilder() {
                 </div>
             </div>
 
+            {/* Historical replay bar: pick a past date, scrub / play the IST clock */}
+            {historical && (
+                <div className="bg-[#0e121b] border-b border-[#1f2433] px-3 lg:px-6 py-2.5 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <label className="flex items-center gap-1.5 rounded-lg border border-[#2b344a] bg-[#131722] px-2 py-1">
+                            <span className="text-gray-400 font-semibold">Date</span>
+                            <input
+                                type="date"
+                                value={histDate}
+                                min={histMeta.minDate}
+                                max={histMeta.maxDate}
+                                onChange={(e) => {
+                                    if (!e.target.value) return;
+                                    setIsPlaying(false);
+                                    setSelectedExpiry(null);
+                                    hasChainRef.current = false;
+                                    setHistDate(e.target.value);
+                                }}
+                                className="bg-transparent font-mono font-bold text-amber-300 outline-none [color-scheme:dark]"
+                            />
+                        </label>
+
+                        <div className="flex items-center gap-1">
+                            {[[-60, "-1h"], [-15, "-15m"], [-1, "-1m"]].map(([d, l]) => (
+                                <button key={l} onClick={() => stepHistMinute(d)} className="rounded-md border border-[#2b344a] bg-[#151926] px-2 py-1 font-semibold text-gray-300 hover:text-white hover:border-gray-500 cursor-pointer">
+                                    {l}
+                                </button>
+                            ))}
+                            <span className="mx-1 rounded-md border border-amber-500/50 bg-amber-950/40 px-2.5 py-1 font-mono font-bold text-amber-300 tabular-nums">
+                                {minuteToHHMM(histMinute)} IST
+                            </span>
+                            {[[1, "+1m"], [15, "+15m"], [60, "+1h"]].map(([d, l]) => (
+                                <button key={l} onClick={() => stepHistMinute(d)} className="rounded-md border border-[#2b344a] bg-[#151926] px-2 py-1 font-semibold text-gray-300 hover:text-white hover:border-gray-500 cursor-pointer">
+                                    {l}
+                                </button>
+                            ))}
+                        </div>
+
+                        <button
+                            onClick={() => setIsPlaying((p) => !p)}
+                            disabled={histMinute >= 1439}
+                            className={`flex items-center gap-1.5 rounded-lg px-3 py-1 font-bold cursor-pointer disabled:opacity-40 ${
+                                isPlaying ? "bg-rose-600 text-white hover:bg-rose-500" : "bg-amber-500 text-black hover:bg-amber-400"
+                            }`}
+                        >
+                            {isPlaying ? "❚❚ Pause" : "▶ Play"}
+                        </button>
+                        <select
+                            value={playSpeed}
+                            onChange={(e) => setPlaySpeed(Number(e.target.value))}
+                            className="rounded-lg border border-[#2b344a] bg-[#151926] px-2 py-1 font-semibold text-gray-300 outline-none cursor-pointer"
+                            title="Replay speed (minutes per second)"
+                        >
+                            {[1, 2, 5, 10, 30].map((v) => (
+                                <option key={v} value={v}>{v}x</option>
+                            ))}
+                        </select>
+
+                        <span className="ml-auto text-[11px] text-gray-500">
+                            Source: Delta Exchange mark price (1-min) · IV/Greeks solved from mark · bid/ask/OI not recorded
+                        </span>
+                    </div>
+                    <input
+                        type="range"
+                        min={0}
+                        max={1439}
+                        value={histMinute}
+                        onChange={(e) => setHistMinute(Number(e.target.value))}
+                        className="w-full accent-amber-500 cursor-pointer"
+                        aria-label="Replay time of day (IST)"
+                    />
+                </div>
+            )}
+
             {/* Mobile Tab Navigator */}
             <div className="lg:hidden flex border-b border-[#232733] bg-[#121622] text-xs font-bold">
                 <button
                     onClick={() => setMobileTab("chain")}
                     className={`flex-1 py-2.5 text-center border-b-2 ${
-                        mobileTab === "chain" ? "border-purple-500 text-purple-400 bg-purple-500/10" : "border-transparent text-gray-400"
+                        mobileTab === "chain" ? "border-amber-500 text-amber-400 bg-amber-500/10" : "border-transparent text-gray-400"
                     }`}
                 >
                     {viewMode === "chart" ? "Chart" : "Option Chain"}
@@ -1229,7 +1803,7 @@ export default function CryptoStrategyBuilder() {
                 <button
                     onClick={() => setMobileTab("builder")}
                     className={`flex-1 py-2.5 text-center border-b-2 ${
-                        mobileTab === "builder" ? "border-purple-500 text-purple-400 bg-purple-500/10" : "border-transparent text-gray-400"
+                        mobileTab === "builder" ? "border-amber-500 text-amber-400 bg-amber-500/10" : "border-transparent text-gray-400"
                     }`}
                 >
                     Builder ({activeSelectedLegs.length})
@@ -1237,7 +1811,7 @@ export default function CryptoStrategyBuilder() {
                 <button
                     onClick={() => setMobileTab("positions")}
                     className={`flex-1 py-2.5 text-center border-b-2 ${
-                        mobileTab === "positions" ? "border-purple-500 text-purple-400 bg-purple-500/10" : "border-transparent text-gray-400"
+                        mobileTab === "positions" ? "border-amber-500 text-amber-400 bg-amber-500/10" : "border-transparent text-gray-400"
                     }`}
                 >
                     Positions
@@ -1263,7 +1837,7 @@ export default function CryptoStrategyBuilder() {
                                 {/* Left: Symbol, Spot & 24h Change */}
                                 <div className="flex items-center gap-2.5">
                                     <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0b0e14] border border-[#252b3d]">
-                                        <span className={CRYPTO_COINS.find((c) => c.symbol === selectedCoin)?.color || "text-purple-400"}>
+                                        <span className={CRYPTO_COINS.find((c) => c.symbol === selectedCoin)?.color || "text-amber-400"}>
                                             {CRYPTO_COINS.find((c) => c.symbol === selectedCoin)?.icon || "₿"}
                                         </span>
                                         <span className="font-extrabold text-white font-mono">{selectedCoin}/USDT</span>
@@ -1301,7 +1875,7 @@ export default function CryptoStrategyBuilder() {
                                             onClick={() => setChartInterval(tf.val)}
                                             className={`px-2 py-1 text-[11px] font-bold rounded transition-all ${
                                                 chartInterval === tf.val
-                                                    ? "bg-purple-600 text-white shadow-sm"
+                                                    ? "bg-amber-500 text-black font-bold shadow-sm"
                                                     : "text-gray-400 hover:text-gray-200 hover:bg-[#1a2030]"
                                             }`}
                                         >
@@ -1322,7 +1896,7 @@ export default function CryptoStrategyBuilder() {
                                             onClick={() => setChartStyle(style.val)}
                                             className={`px-2 py-1 text-[11px] font-semibold rounded transition-all ${
                                                 chartStyle === style.val
-                                                    ? "bg-purple-900/60 text-purple-200 border border-purple-500/40"
+                                                    ? "bg-amber-950/60 text-amber-200 border border-amber-500/40"
                                                     : "text-gray-400 hover:text-gray-200 hover:bg-[#1a2030]"
                                             }`}
                                         >
@@ -1336,7 +1910,7 @@ export default function CryptoStrategyBuilder() {
                             <div className="bg-[#11141f] px-3.5 py-1.5 border-b border-[#1f2535] flex flex-wrap items-center justify-between gap-2 text-[11px]">
                                 <div className="flex items-center gap-1.5 flex-wrap">
                                     <span className="text-gray-400 font-semibold flex items-center gap-1">
-                                        <FiActivity size={12} className="text-purple-400" />
+                                        <FiActivity size={12} className="text-amber-400" />
                                         <span>Quick Indicators:</span>
                                     </span>
                                     {[
@@ -1365,7 +1939,7 @@ export default function CryptoStrategyBuilder() {
                                 </div>
 
                                 <div className="flex items-center gap-1.5 text-[10px] text-gray-400">
-                                    <span className="px-2 py-0.5 rounded bg-purple-900/30 text-purple-300 border border-purple-500/30 font-medium">
+                                    <span className="px-2 py-0.5 rounded bg-amber-950/30 text-amber-300 border border-amber-500/30 font-medium">
                                         🛠 All Drawing Tools & Indicators active via TradingView
                                     </span>
                                 </div>
@@ -1391,37 +1965,66 @@ export default function CryptoStrategyBuilder() {
                             <span>Calls</span>
                         </div>
 
-                        {/* Spot Price Live Center Ticker */}
+                        {/* Spot Price Live Center Ticker with Skeleton Loading */}
                         <div className="flex items-center gap-3">
-                            <div className={`flex items-center gap-2 px-3 py-1 rounded-lg border transition-all ${
-                                spotFlash === "up" 
-                                    ? "bg-emerald-950/60 border-emerald-500 text-emerald-300 ring-1 ring-emerald-500/50" 
-                                    : spotFlash === "down" 
-                                    ? "bg-rose-950/60 border-rose-500 text-rose-300 ring-1 ring-rose-500/50" 
-                                    : "bg-[#0b0e14] border-[#232a3d]"
-                            }`}>
-                                <span className="text-gray-400 font-medium">{selectedCoin} Index:</span>
-                                <span className="font-mono font-extrabold text-white text-sm">
-                                    ${formatNumber(chainData.spotPrice, 2)}
-                                </span>
-                                <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
-                                    chainData.spot24hChange >= 0 ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"
+                            {loading && !chainData.spotPrice ? (
+                                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#232a3d] bg-[#0b0e14] animate-pulse">
+                                    <div className="w-16 h-3 rounded bg-gray-700/60" />
+                                    <div className="w-16 h-4 rounded bg-gray-600/70" />
+                                </div>
+                            ) : (
+                                <div className={`flex items-center gap-2 px-3 py-1 rounded-lg border transition-all ${
+                                    spotFlash === "up"
+                                        ? "bg-emerald-950/60 border-emerald-500 text-emerald-300 ring-1 ring-emerald-500/50"
+                                        : spotFlash === "down"
+                                        ? "bg-rose-950/60 border-rose-500 text-rose-300 ring-1 ring-rose-500/50"
+                                        : "bg-[#0b0e14] border-[#232a3d]"
                                 }`}>
-                                    {chainData.spot24hChange >= 0 ? "+" : ""}{chainData.spot24hChange.toFixed(2)}%
-                                </span>
-                            </div>
+                                    <span className="text-gray-400 font-medium">{selectedCoin} Index:</span>
+                                    <span className="font-mono font-extrabold text-white text-sm">
+                                        ${formatNumber(chainData.spotPrice, 2)}
+                                    </span>
+                                    <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
+                                        chainData.spot24hChange >= 0 ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"
+                                    }`}>
+                                        {chainData.spot24hChange >= 0 ? "+" : ""}{Number(chainData.spot24hChange || 0).toFixed(2)}%
+                                    </span>
+                                </div>
+                            )}
 
-                            <div className="hidden sm:flex items-center gap-1.5 text-gray-400 text-[11px] bg-[#0b0e14] px-2.5 py-1 rounded-lg border border-[#1f2535]">
-                                <FiClock size={12} className="text-purple-400" />
-                                <span>Time to Expiry:</span>
-                                <strong className="text-purple-300 font-mono">
-                                    {chainData.activeExpiry?.timeToExpiry || "1d:2h:27m"}
-                                </strong>
-                            </div>
+                            {loading && (!chainData.activeExpiry || !chainData.activeExpiry.timeToExpiry) ? (
+                                <div className="hidden sm:flex items-center gap-1.5 bg-[#0b0e14] px-2.5 py-1.5 rounded-lg border border-[#1f2535] animate-pulse">
+                                    <div className="w-3 h-3 rounded-full bg-amber-500/30" />
+                                    <div className="w-24 h-3 rounded bg-gray-700/50" />
+                                </div>
+                            ) : (
+                                <div className="hidden sm:flex items-center gap-1.5 text-gray-400 text-[11px] bg-[#0b0e14] px-2.5 py-1 rounded-lg border border-[#1f2535]">
+                                    <FiClock size={12} className="text-amber-400" />
+                                    <span>Time to Expiry:</span>
+                                    <strong className="text-amber-300 font-mono">
+                                        {chainData.activeExpiry?.timeToExpiry || "—"}
+                                    </strong>
+                                </div>
+                            )}
 
-                            <div className="hidden md:flex items-center gap-1.5 text-[10px] font-mono text-emerald-400 bg-emerald-950/30 px-2 py-1 rounded-lg border border-emerald-500/30">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                                <span>Live Feed (2.5s)</span>
+                            {/* Feed Status & Manual Refresh Trigger */}
+                            <div className="flex items-center gap-1.5">
+                                <div className={`hidden md:flex items-center gap-1.5 text-[10px] font-mono px-2 py-1 rounded-lg border transition-all ${
+                                    loading
+                                        ? "text-amber-300 bg-amber-950/40 border-amber-500/40 animate-pulse"
+                                        : "text-emerald-400 bg-emerald-950/30 border-emerald-500/30"
+                                }`}>
+                                    <span className={`w-1.5 h-1.5 rounded-full ${loading ? "bg-amber-400 animate-spin" : "bg-emerald-400 animate-ping"}`} />
+                                    <span>{loading ? "Syncing..." : historical ? `Replay ${histDate} ${minuteToHHMM(histMinute)} IST` : "Live Feed (2.5s)"}</span>
+                                </div>
+                                <button
+                                    onClick={() => fetchOptionChain(false)}
+                                    disabled={loading}
+                                    className="p-1 rounded-lg bg-[#0b0e14] hover:bg-[#191f2e] text-gray-400 hover:text-amber-300 border border-[#23293d] transition cursor-pointer"
+                                    title="Refresh Option Chain (Force reload live strikes)"
+                                >
+                                    <FiRefreshCw size={11} className={loading || refreshing ? "animate-spin text-amber-400" : ""} />
+                                </button>
                             </div>
                         </div>
 
@@ -1441,12 +2044,12 @@ export default function CryptoStrategyBuilder() {
                                 <tr>
                                     {/* CALLS HEADERS */}
                                     <th className="py-2 px-1 text-gray-400 font-medium">Delta</th>
-                                    <th className="py-2 px-1 text-gray-400 font-medium hidden md:table-cell">Bid Qty</th>
-                                    <th className="py-2 px-1 text-gray-400 font-medium">Bid (IV)</th>
+                                    {!historical && <th className="py-2 px-1 text-gray-400 font-medium hidden md:table-cell">Bid Qty</th>}
+                                    {!historical && <th className="py-2 px-1 text-gray-400 font-medium">Bid (IV)</th>}
                                     <th className="py-2 px-1 text-emerald-400 font-bold bg-emerald-500/5">Mark (IV)</th>
-                                    <th className="py-2 px-1 text-gray-400 font-medium">Ask (IV)</th>
-                                    <th className="py-2 px-1 text-gray-400 font-medium hidden md:table-cell">Ask Qty</th>
-                                    <th className="py-2 px-2 text-gray-400 font-medium text-right">OI</th>
+                                    {!historical && <th className="py-2 px-1 text-gray-400 font-medium">Ask (IV)</th>}
+                                    {!historical && <th className="py-2 px-1 text-gray-400 font-medium hidden md:table-cell">Ask Qty</th>}
+                                    {!historical && <th className="py-2 px-2 text-gray-400 font-medium text-right">OI</th>}
 
                                     {/* STRIKE HEADER */}
                                     <th className="py-2 px-3 bg-[#0e111a] text-amber-400 font-bold border-x border-[#23293d]">
@@ -1454,19 +2057,34 @@ export default function CryptoStrategyBuilder() {
                                     </th>
 
                                     {/* PUTS HEADERS */}
-                                    <th className="py-2 px-2 text-gray-400 font-medium text-left">OI</th>
-                                    <th className="py-2 px-1 text-gray-400 font-medium hidden md:table-cell">Bid Qty</th>
-                                    <th className="py-2 px-1 text-gray-400 font-medium">Bid (IV)</th>
+                                    {!historical && <th className="py-2 px-2 text-gray-400 font-medium text-left">OI</th>}
+                                    {!historical && <th className="py-2 px-1 text-gray-400 font-medium hidden md:table-cell">Bid Qty</th>}
+                                    {!historical && <th className="py-2 px-1 text-gray-400 font-medium">Bid (IV)</th>}
                                     <th className="py-2 px-1 text-rose-400 font-bold bg-rose-500/5">Mark (IV)</th>
-                                    <th className="py-2 px-1 text-gray-400 font-medium">Ask (IV)</th>
-                                    <th className="py-2 px-1 text-gray-400 font-medium hidden md:table-cell">Ask Qty</th>
+                                    {!historical && <th className="py-2 px-1 text-gray-400 font-medium">Ask (IV)</th>}
+                                    {!historical && <th className="py-2 px-1 text-gray-400 font-medium hidden md:table-cell">Ask Qty</th>}
                                     <th className="py-2 px-1 text-gray-400 font-medium">Delta</th>
                                 </tr>
                             </thead>
 
                             {/* Table Rows */}
                             <tbody className="divide-y divide-[#1b2030] font-mono">
-                                {chainData.chain.map((row) => {
+                                {loading ? (
+                                    <OptionChainSkeletonRows rowCount={14} />
+                                ) : !chainData.chain || chainData.chain.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={historical ? 5 : 15} className="py-14 text-center font-sans text-xs text-gray-400">
+                                            {error
+                                                ? error
+                                                : historical && chainData.historical?.hasOptions === false
+                                                ? `Delta Exchange has no ${selectedCoin} options history — pick BTC or ETH.`
+                                                : historical
+                                                ? "No option contracts were trading at this minute."
+                                                : "No option contracts listed for this expiry."}
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    chainData.chain.map((row) => {
                                     const isAtm = row.strike === atmStrike;
                                     const isCallSelected = isContractSelected(row.strike, "call");
                                     const isPutSelected = isContractSelected(row.strike, "put");
@@ -1484,22 +2102,26 @@ export default function CryptoStrategyBuilder() {
                                         >
                                             {/* CALLS CELLS */}
                                             <td className="py-2 px-1 text-gray-400">
-                                                {row.call?.delta?.toFixed(2) || "0.50"}
+                                                {row.call?.delta != null ? row.call.delta.toFixed(2) : "—"}
                                             </td>
+                                            {!historical && (
                                             <td className="py-2 px-1 text-gray-400 hidden md:table-cell">
-                                                {row.call?.bidQty?.toFixed(3) || "3.732"}
+                                                {row.call?.bidQty != null ? row.call.bidQty.toFixed(3) : "—"}
                                             </td>
+                                            )}
+                                            {!historical && (
                                             <td className="py-2 px-1 text-emerald-400/90">
-                                                <div>{formatMoney(row.call?.bidPrice, currency === "INR" ? 0 : 2)}</div>
+                                                <div>{row.call?.bidPrice ? formatMoney(row.call.bidPrice, currency === "INR" ? 0 : 2) : "—"}</div>
                                                 <div className="text-[9px] text-gray-500">{row.call?.bidIv ? `${row.call.bidIv.toFixed(1)}%` : "-"}</div>
                                             </td>
+                                            )}
 
                                             {/* CALL MARK CELL WITH HOVER BUY/SELL PILLS */}
                                             <td
                                                 onMouseEnter={() => setHoveredLeg({ strike: row.strike, type: "call" })}
                                                 onMouseLeave={() => setHoveredLeg(null)}
                                                 className={`py-1.5 px-2 relative transition-all ${
-                                                    isCallSelected ? "bg-purple-600/30 border-l-2 border-purple-500" : "bg-emerald-500/5 hover:bg-emerald-500/10"
+                                                    isCallSelected ? "bg-amber-500/20 border-l-2 border-amber-400 ring-1 ring-amber-500/30" : "bg-emerald-500/5 hover:bg-emerald-500/10"
                                                 }`}
                                             >
                                                 {hoveredLeg?.strike === row.strike && hoveredLeg?.type === "call" ? (
@@ -1524,30 +2146,36 @@ export default function CryptoStrategyBuilder() {
                                                     </div>
                                                 ) : (
                                                     <div>
-                                                        <div className="font-bold text-white tracking-tight">{formatMoney(row.call?.markPrice, currency === "INR" ? 0 : 2)}</div>
+                                                        <div className="font-bold text-white tracking-tight">{row.call?.markPrice ? formatMoney(row.call.markPrice, currency === "INR" ? 0 : 2) : "—"}</div>
                                                         <div className="text-[9px] text-emerald-400 font-mono">{row.call?.markIv ? `${row.call.markIv.toFixed(1)}%` : "-"}</div>
                                                     </div>
                                                 )}
                                             </td>
 
+                                            {!historical && (
                                             <td className="py-2 px-1 text-rose-400/90">
-                                                <div>{formatMoney(row.call?.askPrice, currency === "INR" ? 0 : 2)}</div>
+                                                <div>{row.call?.askPrice ? formatMoney(row.call.askPrice, currency === "INR" ? 0 : 2) : "—"}</div>
                                                 <div className="text-[9px] text-gray-500">{row.call?.askIv ? `${row.call.askIv.toFixed(1)}%` : "-"}</div>
                                             </td>
+                                            )}
+                                            {!historical && (
                                             <td className="py-2 px-1 text-gray-400 hidden md:table-cell">
-                                                {row.call?.askQty?.toFixed(3) || "2.488"}
+                                                {row.call?.askQty != null ? row.call.askQty.toFixed(3) : "—"}
                                             </td>
+                                            )}
 
                                             {/* CALL OI WITH VISUAL BAR */}
+                                            {!historical && (
                                             <td className="py-2 px-2 text-right relative">
                                                 <div
                                                     className="absolute inset-y-1 right-0 bg-emerald-500/10 rounded-l"
-                                                    style={{ width: `${row.call?.oiPercent || 20}%` }}
+                                                    style={{ width: `${row.call?.oiPercent || 0}%` }}
                                                 />
                                                 <span className="relative z-10 text-gray-300 font-medium">
-                                                    {formatCompactMoney(row.call?.oiValueUsd || 85000)}
+                                                    {row.call?.oiValueUsd != null ? formatCompactMoney(row.call.oiValueUsd) : "—"}
                                                 </span>
                                             </td>
+                                            )}
 
                                             {/* STRIKE PRICE (CENTER) */}
                                             <td className={`py-2 px-3 border-x border-[#23293d] font-bold transition-all ${
@@ -1569,30 +2197,36 @@ export default function CryptoStrategyBuilder() {
                                             </td>
 
                                             {/* PUT OI WITH VISUAL BAR */}
+                                            {!historical && (
                                             <td className="py-2 px-2 text-left relative">
                                                 <div
                                                     className="absolute inset-y-1 left-0 bg-rose-500/10 rounded-r"
-                                                    style={{ width: `${row.put?.oiPercent || 20}%` }}
+                                                    style={{ width: `${row.put?.oiPercent || 0}%` }}
                                                 />
                                                 <span className="relative z-10 text-gray-300 font-medium">
-                                                    {formatCompactMoney(row.put?.oiValueUsd || 85000)}
+                                                    {row.put?.oiValueUsd != null ? formatCompactMoney(row.put.oiValueUsd) : "—"}
                                                 </span>
                                             </td>
+                                            )}
 
+                                            {!historical && (
                                             <td className="py-2 px-1 text-gray-400 hidden md:table-cell">
-                                                {row.put?.bidQty?.toFixed(3) || "3.732"}
+                                                {row.put?.bidQty != null ? row.put.bidQty.toFixed(3) : "—"}
                                             </td>
+                                            )}
+                                            {!historical && (
                                             <td className="py-2 px-1 text-emerald-400/90">
-                                                <div>{formatMoney(row.put?.bidPrice, currency === "INR" ? 0 : 2)}</div>
+                                                <div>{row.put?.bidPrice ? formatMoney(row.put.bidPrice, currency === "INR" ? 0 : 2) : "—"}</div>
                                                 <div className="text-[9px] text-gray-500">{row.put?.bidIv ? `${row.put.bidIv.toFixed(1)}%` : "-"}</div>
                                             </td>
+                                            )}
 
                                             {/* PUT MARK CELL WITH HOVER BUY/SELL PILLS */}
                                             <td
                                                 onMouseEnter={() => setHoveredLeg({ strike: row.strike, type: "put" })}
                                                 onMouseLeave={() => setHoveredLeg(null)}
                                                 className={`py-1.5 px-2 relative transition-all ${
-                                                    isPutSelected ? "bg-purple-600/30 border-r-2 border-purple-500" : "bg-rose-500/5 hover:bg-rose-500/10"
+                                                    isPutSelected ? "bg-amber-500/20 border-r-2 border-amber-400 ring-1 ring-amber-500/30" : "bg-rose-500/5 hover:bg-rose-500/10"
                                                 }`}
                                             >
                                                 {hoveredLeg?.strike === row.strike && hoveredLeg?.type === "put" ? (
@@ -1617,25 +2251,30 @@ export default function CryptoStrategyBuilder() {
                                                     </div>
                                                 ) : (
                                                     <div>
-                                                        <div className="font-bold text-white tracking-tight">{formatMoney(row.put?.markPrice, currency === "INR" ? 0 : 2)}</div>
+                                                        <div className="font-bold text-white tracking-tight">{row.put?.markPrice ? formatMoney(row.put.markPrice, currency === "INR" ? 0 : 2) : "—"}</div>
                                                         <div className="text-[9px] text-rose-400 font-mono">{row.put?.markIv ? `${row.put.markIv.toFixed(1)}%` : "-"}</div>
                                                     </div>
                                                 )}
                                             </td>
 
+                                            {!historical && (
                                             <td className="py-2 px-1 text-rose-400/90">
-                                                <div>{formatMoney(row.put?.askPrice, currency === "INR" ? 0 : 1)}</div>
-                                                <div className="text-[9px] text-gray-500">{row.put?.askIv?.toFixed(1)}%</div>
+                                                <div>{row.put?.askPrice ? formatMoney(row.put.askPrice, currency === "INR" ? 0 : 2) : "—"}</div>
+                                                <div className="text-[9px] text-gray-500">{row.put?.askIv ? `${row.put.askIv.toFixed(1)}%` : "-"}</div>
                                             </td>
+                                            )}
+                                            {!historical && (
                                             <td className="py-2 px-1 text-gray-400 hidden md:table-cell">
-                                                {row.put?.askQty?.toFixed(3) || "2.488"}
+                                                {row.put?.askQty != null ? row.put.askQty.toFixed(3) : "—"}
                                             </td>
+                                            )}
                                             <td className="py-2 px-1 text-gray-400">
-                                                {row.put?.delta?.toFixed(2) || "-0.50"}
+                                                {row.put?.delta != null ? row.put.delta.toFixed(2) : "—"}
                                             </td>
                                         </tr>
                                     );
-                                })}
+                                })
+                            )}
                             </tbody>
                         </table>
                     </div>
@@ -1652,56 +2291,209 @@ export default function CryptoStrategyBuilder() {
                             mobileTab !== "builder" ? "hidden lg:flex" : "flex"
                         } flex-col gap-3`}
                     >
-                        {/* Delta Demo Mode Notification Banner for Guest Users */}
-                        {!isAuthenticated && (
-                            <div className="rounded-xl bg-gradient-to-r from-purple-900/30 via-[#131722] to-emerald-950/20 border border-purple-500/30 p-2.5 flex flex-wrap items-center justify-between gap-2 shadow-md">
-                                <div className="flex items-center gap-2">
-                                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-                                    <div className="text-xs">
-                                        <span className="font-bold text-white">Delta Demo Simulation:</span>{" "}
-                                        <span className="text-gray-400">Build multi-leg crypto strategies with live Delta feed.</span>
+                        {strategyLegs.length === 0 ? (
+                            /* ======================================================== */
+                            /* EMPTY STRATEGY STATE: LOGIN / SIGNUP & DELTA PRESETS     */
+                            /* ======================================================== */
+                            <div className="rounded-xl bg-[#11141f] border border-[#1f2535] p-4 sm:p-5 flex flex-col gap-4 shadow-xl animate-in fade-in duration-150">
+                                {/* Header Branding */}
+                                <div className="flex items-center gap-3 pb-3.5 border-b border-[#1f2535]">
+                                    <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 via-orange-500 to-yellow-400 flex items-center justify-center text-black font-black text-lg shadow-md shadow-amber-900/40">
+                                        Δ
+                                    </div>
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <h3 className="text-sm sm:text-base font-extrabold text-white tracking-tight">
+                                                Delta Strategy Studio
+                                            </h3>
+                                            <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] font-black uppercase tracking-wider">
+                                                {historical ? "Replay Greeks" : "Live Greeks"}
+                                            </span>
+                                        </div>
+                                        <p className="text-[11px] text-gray-400">
+                                            {historical ? "Build multi-leg options and replay their Payoff & Stop Loss" : "Deploy multi-leg options with real-time Payoff & Stop Loss"}
+                                        </p>
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-1.5 shrink-0">
-                                    <button
-                                        onClick={() => navigate("/login?mode=login&redirect=/strategy-builder/crypto")}
-                                        className="px-2.5 py-1 rounded-md bg-purple-600 hover:bg-purple-500 text-white font-bold text-[11px] transition cursor-pointer shadow"
-                                    >
-                                        Log In
-                                    </button>
-                                    <button
-                                        onClick={() => navigate("/login?mode=signup&redirect=/strategy-builder/crypto")}
-                                        className="px-2.5 py-1 rounded-md bg-[#181d2c] hover:bg-[#252c3e] text-purple-300 border border-purple-500/40 font-bold text-[11px] transition cursor-pointer"
-                                    >
-                                        Sign Up
-                                    </button>
+
+                                {/* Auth Callout (Login / Sign Up options prominent when no strategy is active) */}
+                                {!isAuthenticated ? (
+                                    <div className="rounded-xl bg-gradient-to-br from-amber-950/40 via-[#141926] to-[#0f131d] border border-amber-500/30 p-4 space-y-3">
+                                        <div className="flex items-center gap-2 text-amber-300">
+                                            <FiLock size={15} />
+                                            <span className="font-extrabold text-xs uppercase tracking-wider">Connect Delta Trader Account</span>
+                                        </div>
+                                        <p className="text-xs text-gray-300 leading-relaxed">
+                                            Log in or create a free account to execute simulated crypto trades, save custom strategies, and sync risk triggers.
+                                        </p>
+                                        <div className="flex items-center gap-2.5 pt-1">
+                                            <button
+                                                onClick={() => navigate(`/login?mode=login&redirect=${selfPath}`)}
+                                                className="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs shadow-lg shadow-amber-950/40 transition cursor-pointer text-center"
+                                            >
+                                                Log In
+                                            </button>
+                                            <button
+                                                onClick={() => navigate(`/login?mode=signup&redirect=${selfPath}`)}
+                                                className="flex-1 py-2.5 rounded-xl bg-[#181d2c] hover:bg-[#252c3e] text-amber-300 border border-amber-500/40 font-bold text-xs transition cursor-pointer text-center"
+                                            >
+                                                Sign Up Free
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="rounded-xl bg-[#141926] border border-[#23293d] p-3 flex items-center justify-between gap-3 text-xs">
+                                        <div className="flex items-center gap-2.5">
+                                            <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold">
+                                                <FiCheckCircle size={16} />
+                                            </div>
+                                            <div>
+                                                <div className="font-bold text-white">{user?.name || user?.email?.split("@")[0] || "Trader"}</div>
+                                                <div className="text-[10px] text-gray-400 font-mono">Demo Capital: $${formatMoney(demoBalance, 0)}</div>
+                                            </div>
+                                        </div>
+                                        <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">
+                                            Connected
+                                        </span>
+                                    </div>
+                                )}
+
+                                {/* 1-Click Delta Popular Strategy Presets */}
+                                <div className="space-y-2.5">
+                                    <div className="flex items-center justify-between">
+                                        <span className="font-extrabold text-gray-200 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
+                                            <FiZap size={13} className="text-amber-400" />
+                                            <span>1-Click Popular Strategies</span>
+                                        </span>
+                                        <span className="text-[10px] text-gray-400 font-mono">Delta Presets</span>
+                                    </div>
+
+                                    {loading && (!chainData.chain || chainData.chain.length === 0) ? (
+                                        <div className="grid grid-cols-2 gap-2">
+                                            {[1, 2, 3, 4].map((i) => (
+                                                <div
+                                                    key={i}
+                                                    className="p-3 rounded-xl bg-[#141926] border border-[#23293d] animate-pulse space-y-2"
+                                                >
+                                                    <div className="flex items-center justify-between">
+                                                        <div className="h-3.5 w-24 bg-gray-700/60 rounded" />
+                                                        <div className="h-3.5 w-3.5 bg-gray-700/40 rounded-full" />
+                                                    </div>
+                                                    <div className="h-2.5 w-32 bg-gray-800/60 rounded" />
+                                                    <div className="h-3 w-20 bg-gray-800/80 rounded" />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <button
+                                                onClick={() => handleApplyPresetStrategy("bull_call_spread")}
+                                            className="p-3 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-emerald-500/50 transition-all text-left group cursor-pointer shadow-xs"
+                                        >
+                                            <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-emerald-400">
+                                                <span>Bull Call Spread</span>
+                                                <FiTrendingUp size={13} className="text-emerald-400" />
+                                            </div>
+                                            <div className="text-[10px] text-gray-400 mt-1 font-mono">Buy ATM Call + Sell OTM Call</div>
+                                            <span className="inline-block mt-1.5 text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-400 font-bold">
+                                                Bullish • Defined Risk
+                                            </span>
+                                        </button>
+
+                                        <button
+                                            onClick={() => handleApplyPresetStrategy("bear_put_spread")}
+                                            className="p-3 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-rose-500/50 transition-all text-left group cursor-pointer shadow-xs"
+                                        >
+                                            <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-rose-400">
+                                                <span>Bear Put Spread</span>
+                                                <FiTrendingDown size={13} className="text-rose-400" />
+                                            </div>
+                                            <div className="text-[10px] text-gray-400 mt-1 font-mono">Buy ATM Put + Sell OTM Put</div>
+                                            <span className="inline-block mt-1.5 text-[9px] px-1.5 py-0.2 rounded bg-rose-500/15 text-rose-400 font-bold">
+                                                Bearish • Defined Risk
+                                            </span>
+                                        </button>
+
+                                        <button
+                                            onClick={() => handleApplyPresetStrategy("long_straddle")}
+                                            className="p-3 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-amber-500/50 transition-all text-left group cursor-pointer shadow-xs"
+                                        >
+                                            <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-amber-400">
+                                                <span>Long Straddle</span>
+                                                <FiActivity size={13} className="text-amber-400" />
+                                            </div>
+                                            <div className="text-[10px] text-gray-400 mt-1 font-mono">Buy ATM Call + Buy ATM Put</div>
+                                            <span className="inline-block mt-1.5 text-[9px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 font-bold">
+                                                Volatility Breakout
+                                            </span>
+                                        </button>
+
+                                        <button
+                                            onClick={() => handleApplyPresetStrategy("iron_condor")}
+                                            className="p-3 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-purple-500/50 transition-all text-left group cursor-pointer shadow-xs"
+                                        >
+                                            <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-purple-400">
+                                                <span>Iron Condor</span>
+                                                <FiShield size={13} className="text-purple-400" />
+                                            </div>
+                                            <div className="text-[10px] text-gray-400 mt-1 font-mono">4-Leg Range Bound Spread</div>
+                                            <span className="inline-block mt-1.5 text-[9px] px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-300 font-bold">
+                                                Neutral • Range Income
+                                            </span>
+                                        </button>
+                                    </div>
+                                    )}
+                                </div>
+
+                                {/* Custom Option Chain Step Guide */}
+                                <div className="rounded-xl bg-[#0e121b] border border-[#1f2535] p-3.5 space-y-2 text-xs">
+                                    <span className="font-bold text-white text-[11px] uppercase tracking-wider block">
+                                        Or Build Custom Strategy:
+                                    </span>
+                                    <div className="space-y-2 text-gray-400 text-[11px]">
+                                        <div className="flex items-center gap-2.5">
+                                            <span className="w-5 h-5 rounded-full bg-amber-500/20 text-amber-300 font-bold flex items-center justify-center text-[10px] shrink-0 font-mono">1</span>
+                                            <span>Hover over any <strong>Mark Price</strong> on the Option Chain table</span>
+                                        </div>
+                                        <div className="flex items-center gap-2.5">
+                                            <span className="w-5 h-5 rounded-full bg-amber-500/20 text-amber-300 font-bold flex items-center justify-center text-[10px] shrink-0 font-mono">2</span>
+                                            <span>Click <strong className="text-emerald-400">Buy</strong> or <strong className="text-rose-400">Sell</strong> to stack legs into your strategy</span>
+                                        </div>
+                                        <div className="flex items-center gap-2.5">
+                                            <span className="w-5 h-5 rounded-full bg-amber-500/20 text-amber-300 font-bold flex items-center justify-center text-[10px] shrink-0 font-mono">3</span>
+                                            <span>Instant <strong>PnL Payoff Curve, Greeks & Stop Loss</strong> will appear here!</span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
-                        )}
-
+                        ) : (
+                            /* ======================================================== */
+                            /* ACTIVE STRATEGY STATE: CONTRACTS + PAYOFF + SL/TP + ORDER */
+                            /* ======================================================== */
+                            <>
                         {/* 1. STRATEGY CONTRACTS CARD WITH DELTA EXCHANGE COIN SIZING */}
-                        <div className="rounded-xl bg-[#11141f] border border-[#1f2535] p-3.5 flex flex-col gap-3">
-                            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#1f2535]">
+                        <div className="rounded-xl bg-[#11141f] border border-[#1f2535] p-3.5 flex flex-col gap-3 shadow-lg">
+                            <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-[#1f2535]">
                                 <div className="flex items-center gap-2">
                                     <input
                                         type="checkbox"
                                         checked={strategyLegs.length > 0 && strategyLegs.every((l) => l.selected)}
                                         onChange={(e) => handleSelectAllLegs(e.target.checked)}
-                                        className="rounded bg-[#171c2b] border-[#2d364f] text-purple-600 focus:ring-0 cursor-pointer"
+                                        className="rounded bg-[#171c2b] border-[#2d364f] accent-amber-500 text-amber-500 focus:ring-0 cursor-pointer"
                                     />
-                                    <span className="font-bold text-xs text-white">
+                                    <span className="font-extrabold text-xs text-white">
                                         Strategy Contracts ({activeSelectedLegs.length}/{strategyLegs.length})
                                     </span>
                                 </div>
 
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-1.5 flex-wrap">
                                     {/* Delta Exchange Sizing Unit Selector (Contracts vs Coins) */}
                                     <div className="flex rounded-lg bg-[#151926] p-0.5 border border-[#2b344a] text-[10px] font-mono">
                                         <button
                                             onClick={() => setSizingUnit("contracts")}
                                             className={`px-2 py-0.5 rounded font-bold transition-all cursor-pointer ${
                                                 sizingUnit === "contracts"
-                                                    ? "bg-purple-600 text-white shadow"
+                                                    ? "bg-amber-500 text-black font-extrabold shadow"
                                                     : "text-gray-400 hover:text-white"
                                             }`}
                                             title="Size positions by number of contracts (1 Ctr = 0.001 BTC)"
@@ -1712,7 +2504,7 @@ export default function CryptoStrategyBuilder() {
                                             onClick={() => setSizingUnit("coins")}
                                             className={`px-2 py-0.5 rounded font-bold transition-all cursor-pointer ${
                                                 sizingUnit === "coins"
-                                                    ? "bg-purple-600 text-white shadow"
+                                                    ? "bg-amber-500 text-black font-extrabold shadow"
                                                     : "text-gray-400 hover:text-white"
                                             }`}
                                             title={`Size positions in ${selectedCoin} coins`}
@@ -1721,44 +2513,28 @@ export default function CryptoStrategyBuilder() {
                                         </button>
                                     </div>
 
-                                    {/* Small Stop Loss Trigger Button */}
-                                    <button
-                                        onClick={() => setIsSlModalOpen(true)}
-                                        className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-bold transition-all border shadow-xs cursor-pointer ${
-                                            enableStopLoss || enableTakeProfit
-                                                ? "bg-rose-500/15 border-rose-500/40 text-rose-300 hover:bg-rose-500/25"
-                                                : "bg-[#181d2c] border-[#262d42] text-gray-300 hover:text-white"
-                                        }`}
-                                        title="Configure Stop Loss & Target"
-                                    >
-                                        <FiShield size={11} className={enableStopLoss ? "text-rose-400" : "text-gray-400"} />
-                                        <span>
-                                            {enableStopLoss
-                                                ? `SL: ${slType === "mtm_loss" ? `-$${slValue}` : slType === "pct_loss" ? `-${slValue}%` : `$${slValue}`}`
-                                                : "+ SL/TP"}
-                                        </span>
-                                    </button>
-
                                     {/* Multiplier control */}
-                                    <div className="flex items-center gap-1 bg-[#181d2c] px-1.5 py-0.5 rounded border border-[#262d42] text-xs">
+                                    <div className="flex items-center gap-1 bg-[#151926] px-1.5 py-0.5 rounded-lg border border-[#2b344a] text-xs font-mono">
                                         <button
-                                            onClick={() => setGlobalMultiplier(Math.max(1, globalMultiplier - 1))}
-                                            className="text-gray-400 hover:text-white cursor-pointer"
+                                            onClick={() => setGlobalMultiplier((prev) => Math.max(1, prev - 1))}
+                                            className="text-gray-400 hover:text-white px-1 font-bold cursor-pointer"
+                                            title="Decrease multiplier"
                                         >
-                                            <FiMinus size={10} />
+                                            -
                                         </button>
-                                        <span className="font-bold text-white font-mono px-1">{globalMultiplier}x</span>
+                                        <span className="font-bold text-white px-1">{globalMultiplier}x</span>
                                         <button
-                                            onClick={() => setGlobalMultiplier(globalMultiplier + 1)}
-                                            className="text-gray-400 hover:text-white cursor-pointer"
+                                            onClick={() => setGlobalMultiplier((prev) => prev + 1)}
+                                            className="text-gray-400 hover:text-white px-1 font-bold cursor-pointer"
+                                            title="Increase multiplier"
                                         >
-                                            <FiPlus size={10} />
+                                            +
                                         </button>
                                     </div>
 
                                     <button
                                         onClick={handleClearAllLegs}
-                                        className="p-1 rounded text-gray-500 hover:text-rose-400 transition cursor-pointer"
+                                        className="p-1 rounded-md text-gray-400 hover:text-rose-400 hover:bg-rose-500/10 transition-all cursor-pointer"
                                         title="Clear All Legs"
                                     >
                                         <FiTrash2 size={13} />
@@ -1767,81 +2543,91 @@ export default function CryptoStrategyBuilder() {
                             </div>
 
                             {/* Contract Legs List */}
-                            <div className="space-y-2.5 max-h-[260px] overflow-y-auto custom-scrollbar pr-1">
+                            <div className="space-y-2.5 max-h-[300px] overflow-y-auto custom-scrollbar pr-0.5">
                                 {strategyLegs.length > 0 ? (
                                     strategyLegs.map((leg) => {
                                         const cVal = leg.contractValue || currentCoinConfig.defaultLot || 0.001;
-                                        const coinQty = (leg.lots || 1) * cVal;
+                                        const coinQty = (leg.lots || 1) * cVal * globalMultiplier;
                                         const notionalVal = (chainData.spotPrice || 83000) * coinQty;
                                         const premiumVal = (leg.markPrice || leg.price || 0) * coinQty;
 
                                         return (
                                             <div
                                                 key={leg.id}
-                                                className={`p-2.5 rounded-lg border transition-all flex flex-col gap-2 text-xs ${
+                                                className={`p-3 rounded-xl border transition-all flex flex-col gap-2.5 text-xs ${
                                                     leg.selected
-                                                        ? "bg-[#161a27] border-[#29324a]"
+                                                        ? "bg-[#141926] border-[#29324a] shadow-sm ring-1 ring-amber-500/20"
                                                         : "bg-[#0f121b] border-[#1b202e] opacity-60"
                                                 }`}
                                             >
-                                                {/* Top Row: Checkbox, B/S Pill, Strike, Expiry, Mark Price, Sizing Stepper, Trash */}
+                                                {/* ROW 1: Selection, Action (BUY/SELL), Contract Name, Expiry, SL badge & Delete */}
                                                 <div className="flex items-center justify-between gap-2">
-                                                    {/* Left: Checkbox + Action Pill + Type + Strike + Expiry */}
-                                                    <div className="flex items-center gap-2 min-w-0">
+                                                    <div className="flex items-center gap-2 flex-wrap">
                                                         <input
                                                             type="checkbox"
                                                             checked={leg.selected}
                                                             onChange={() => handleToggleLegSelection(leg.id)}
-                                                            className="rounded bg-[#171c2b] border-[#2d364f] text-purple-600 focus:ring-0 cursor-pointer"
+                                                            className="rounded bg-[#171c2b] border-[#2d364f] accent-amber-500 text-amber-500 focus:ring-0 cursor-pointer"
                                                         />
 
-                                                        {/* B/S Action Pill */}
+                                                        {/* B/S Action Toggle Pill */}
                                                         <button
                                                             onClick={() => handleUpdateLegAction(leg.id, leg.action === "BUY" ? "SELL" : "BUY")}
-                                                            className={`w-6 h-6 rounded font-black text-[11px] flex items-center justify-center shadow transition hover:scale-105 cursor-pointer ${
+                                                            className={`px-2 py-0.5 rounded font-black text-[11px] shadow transition hover:scale-105 cursor-pointer ${
                                                                 leg.action === "BUY"
                                                                     ? "bg-emerald-600 hover:bg-emerald-500 text-white"
                                                                     : "bg-rose-600 hover:bg-rose-500 text-white"
                                                             }`}
-                                                            title={`Switch to ${leg.action === "BUY" ? "SELL" : "BUY"}`}
+                                                            title={`Click to switch to ${leg.action === "BUY" ? "SELL" : "BUY"}`}
                                                         >
-                                                            {leg.action === "BUY" ? "B" : "S"}
+                                                            {leg.action}
                                                         </button>
 
-                                                        <div className="font-mono font-bold text-white truncate text-xs">
+                                                        {/* Contract Strike & Right */}
+                                                        <div className="font-mono font-bold text-white text-xs flex items-center gap-1">
                                                             <span className={leg.type === "CALL" ? "text-emerald-400" : "text-rose-400"}>
-                                                                {leg.type === "CALL" ? "C" : "P"}
-                                                            </span>{" "}
-                                                            <span>{leg.strike.toLocaleString()}</span>
+                                                                {selectedCoin} {leg.strike.toLocaleString()} {leg.type}
+                                                            </span>
                                                         </div>
 
-                                                        <span className="text-[10px] text-gray-400 shrink-0">{leg.expiry}</span>
-
-                                                        <span className="hidden sm:inline text-[9px] px-1 py-0.2 rounded bg-purple-900/40 text-purple-300 border border-purple-700/30">
-                                                            {leg.leverage}
+                                                        <span className="text-[10px] text-gray-400 font-mono px-1.5 py-0.5 rounded bg-[#10141f] border border-[#23293d]">
+                                                            {leg.expiry}
                                                         </span>
                                                     </div>
 
-                                                    {/* Right: Sizing Stepper & Delete */}
-                                                    <div className="flex items-center gap-2 shrink-0">
+                                                    <div className="flex items-center gap-2">
                                                         {/* BUY leg % SL badge */}
                                                         {leg.action === "BUY" && (
                                                             <button
                                                                 onClick={() => handleOpenLegSlModal(leg)}
-                                                                className={`px-1.5 py-0.5 rounded border text-[10px] font-mono font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                                                                className={`px-2 py-0.5 rounded-lg border text-[10px] font-mono font-bold transition-all flex items-center gap-1 cursor-pointer ${
                                                                     leg.slPct || leg.tpPct
-                                                                        ? "bg-rose-500/15 border-rose-500/40 text-rose-300"
+                                                                        ? "bg-rose-500/15 border-rose-500/40 text-rose-300 hover:bg-rose-500/25"
                                                                         : "bg-[#181d2c] border-[#2b344a] text-gray-400 hover:text-white"
                                                                 }`}
-                                                                title="Configure % SL/TP"
+                                                                title="Configure % Stop Loss / Target"
                                                             >
                                                                 <FiShield size={10} className={leg.slPct ? "text-rose-400" : "text-gray-400"} />
-                                                                <span>{leg.slPct ? `-${leg.slPct}%` : "+SL"}</span>
+                                                                <span>{leg.slPct ? `-${leg.slPct}% SL` : "+ SL"}</span>
                                                             </button>
                                                         )}
 
-                                                        {/* Stepper Controls */}
-                                                        <div className="flex items-center gap-1 bg-[#10141f] px-1.5 py-0.5 rounded border border-[#232a3d] text-xs font-mono">
+                                                        {/* Remove Leg Button */}
+                                                        <button
+                                                            onClick={() => handleRemoveLeg(leg.id)}
+                                                            className="p-1 rounded-md text-gray-500 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                                                            title="Remove leg"
+                                                        >
+                                                            <FiTrash2 size={13} />
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                {/* ROW 2: Sizing Stepper + Lot Presets + Financial Metrics */}
+                                                <div className="pt-2 border-t border-[#1f2638] flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
+                                                    {/* Left: Sizing Stepper & Quick Lot Presets */}
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="flex items-center bg-[#0d1017] px-2 py-1 rounded-lg border border-[#232a3d] text-xs font-mono">
                                                             <button
                                                                 onClick={() => handleUpdateLegLots(leg.id, -1)}
                                                                 className="text-gray-400 hover:text-white px-1 cursor-pointer font-bold"
@@ -1851,11 +2637,11 @@ export default function CryptoStrategyBuilder() {
                                                             </button>
 
                                                             {sizingUnit === "contracts" ? (
-                                                                <span className="text-white font-bold px-1">
+                                                                <span className="text-white font-bold px-1.5">
                                                                     {leg.lots || 1} <span className="text-gray-500 text-[10px]">Ctr</span>
                                                                 </span>
                                                             ) : (
-                                                                <span className="text-amber-400 font-bold px-1">
+                                                                <span className="text-amber-400 font-bold px-1.5">
                                                                     {coinQty.toFixed(3)} <span className="text-gray-500 text-[10px]">{selectedCoin}</span>
                                                                 </span>
                                                             )}
@@ -1870,61 +2656,35 @@ export default function CryptoStrategyBuilder() {
                                                         </div>
 
                                                         {/* Quick Lot Presets */}
-                                                        <div className="hidden lg:flex items-center gap-0.5 text-[9px] font-mono">
-                                                            {[1, 5, 10, 50].map((q) => (
+                                                        <div className="flex items-center gap-1 text-[10px] font-mono">
+                                                            {[1, 5, 10, 25].map((q) => (
                                                                 <button
                                                                     key={q}
                                                                     onClick={() => handleSetLegLots(leg.id, q)}
-                                                                    className={`px-1 py-0.5 rounded cursor-pointer transition ${
+                                                                    className={`px-1.5 py-0.5 rounded cursor-pointer transition ${
                                                                         leg.lots === q
-                                                                            ? "bg-purple-600 text-white font-bold"
-                                                                            : "bg-[#141926] text-gray-400 hover:text-white border border-[#242c3f]"
+                                                                            ? "bg-amber-500 text-black font-extrabold shadow"
+                                                                            : "bg-[#10141f] text-gray-400 hover:text-white border border-[#242c3f]"
                                                                     }`}
                                                                 >
                                                                     {q}
                                                                 </button>
                                                             ))}
                                                         </div>
-
-                                                        <button
-                                                            onClick={() => handleRemoveLeg(leg.id)}
-                                                            className="p-1 text-gray-500 hover:text-rose-400 transition cursor-pointer"
-                                                            title="Remove leg"
-                                                        >
-                                                            <FiTrash2 size={13} />
-                                                        </button>
-                                                    </div>
-                                                </div>
-
-                                                {/* Bottom Row: Delta Exchange Financial Breakdown ("Coin Mafik") */}
-                                                <div className="pt-1.5 border-t border-[#1b2233] flex flex-wrap items-center justify-between gap-1 text-[10px] font-mono text-gray-400">
-                                                    {/* Mark Price */}
-                                                    <div className="flex items-center gap-1">
-                                                        <span className="text-gray-500">Mark:</span>
-                                                        <strong className="text-white">${formatNumber(leg.markPrice || leg.price, 2)}</strong>
                                                     </div>
 
-                                                    {/* Coin volume equivalency */}
-                                                    <div className="flex items-center gap-1">
-                                                        <span className="text-gray-500">Size:</span>
-                                                        <strong className="text-amber-400 font-bold">
-                                                            {coinQty.toFixed(3)} {selectedCoin}
-                                                        </strong>
-                                                        <span className="text-gray-600">({leg.lots || 1} Ctr)</span>
-                                                    </div>
-
-                                                    {/* Notional Value */}
-                                                    <div className="flex items-center gap-1">
-                                                        <span className="text-gray-500">Notional:</span>
-                                                        <span className="text-gray-200">${formatNumber(notionalVal, 1)}</span>
-                                                    </div>
-
-                                                    {/* Premium Amount */}
-                                                    <div className="flex items-center gap-1">
-                                                        <span className="text-gray-500">Prem:</span>
-                                                        <strong className={leg.action === "BUY" ? "text-rose-400" : "text-emerald-400"}>
-                                                            {leg.action === "BUY" ? "-" : "+"}${formatNumber(premiumVal, 2)}
-                                                        </strong>
+                                                    {/* Right: Mark Price & Premium */}
+                                                    <div className="flex items-center gap-3 text-gray-400 text-[10px]">
+                                                        <div>
+                                                            <span className="text-gray-500">Mark: </span>
+                                                            <strong className="text-white">${formatNumber(leg.markPrice || leg.price, 2)}</strong>
+                                                        </div>
+                                                        <div>
+                                                            <span className="text-gray-500">Prem: </span>
+                                                            <strong className={leg.action === "BUY" ? "text-rose-400" : "text-emerald-400"}>
+                                                                {leg.action === "BUY" ? "-" : "+"}${formatNumber(premiumVal, 2)}
+                                                            </strong>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1939,23 +2699,42 @@ export default function CryptoStrategyBuilder() {
                         </div>
 
                         {/* 2. STRATEGY PAYOFF ENGINE & METRICS CARD */}
-                        <div className="rounded-xl bg-[#11141f] border border-[#1f2535] p-3.5 flex flex-col gap-3">
-                            {/* Payoff Header Metrics Strip */}
+                        <div className="rounded-xl bg-[#11141f] border border-[#1f2535] p-3.5 flex flex-col gap-3 shadow-lg">
+                            {/* Payoff Header Tabs */}
                             <div className="flex items-center justify-between pb-2 border-b border-[#1f2535]">
-                                <span className="font-bold text-xs text-white">Strategy PayOff</span>
-                                <div className="flex items-center gap-1 text-[11px]">
+                                <div className="flex items-center gap-2">
+                                    <span className="font-bold text-xs text-white">Strategy PayOff</span>
+                                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 font-mono font-bold">
+                                        Delta Sim
+                                    </span>
+                                </div>
+                                <div className="flex items-center bg-[#0d1017] p-0.5 rounded-lg border border-[#23293d] text-[11px]">
                                     <button
                                         onClick={() => setPayoffTab("chart")}
-                                        className={`px-2.5 py-1 rounded font-bold transition-all ${
-                                            payoffTab === "chart" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
+                                        className={`px-2.5 py-1 rounded-md font-bold transition-all cursor-pointer ${
+                                            payoffTab === "chart"
+                                                ? "bg-amber-500 text-black font-extrabold shadow"
+                                                : "text-gray-400 hover:text-gray-200"
                                         }`}
                                     >
                                         PNL Chart
                                     </button>
                                     <button
+                                        onClick={() => setPayoffTab("greeks")}
+                                        className={`px-2.5 py-1 rounded-md font-bold transition-all cursor-pointer ${
+                                            payoffTab === "greeks"
+                                                ? "bg-amber-500 text-black font-extrabold shadow"
+                                                : "text-gray-400 hover:text-gray-200"
+                                        }`}
+                                    >
+                                        Greeks
+                                    </button>
+                                    <button
                                         onClick={() => setPayoffTab("pnl_table")}
-                                        className={`px-2.5 py-1 rounded font-bold transition-all ${
-                                            payoffTab === "pnl_table" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-gray-200"
+                                        className={`px-2.5 py-1 rounded-md font-bold transition-all cursor-pointer ${
+                                            payoffTab === "pnl_table"
+                                                ? "bg-amber-500 text-black font-extrabold shadow"
+                                                : "text-gray-400 hover:text-gray-200"
                                         }`}
                                     >
                                         PNL Table
@@ -1989,9 +2768,9 @@ export default function CryptoStrategyBuilder() {
                                 </div>
                             </div>
 
-                            {/* Interactive Recharts Payoff Curve with Stop Loss & Target Markers */}
-                            {payoffTab === "chart" ? (
-                                <div className="h-[210px] w-full bg-[#0a0d14] rounded-lg p-2 relative border border-[#181e2b]">
+                            {/* TAB 1: Interactive Recharts Payoff Curve */}
+                            {payoffTab === "chart" && (
+                                <div className="h-[185px] w-full bg-[#0a0d14] rounded-lg p-2 relative border border-[#181e2b]">
                                     <ResponsiveContainer width="100%" height="100%">
                                         <ComposedChart data={payoffMetrics.chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                                             <CartesianGrid stroke="#1c2233" strokeDasharray="3 3" />
@@ -2057,12 +2836,87 @@ export default function CryptoStrategyBuilder() {
                                             <Area type="monotone" dataKey="profitArea" fill="#10b981" fillOpacity={0.2} stroke="none" />
                                             <Area type="monotone" dataKey="lossArea" fill="#ef4444" fillOpacity={0.2} stroke="none" />
                                             <Line type="monotone" dataKey="expiryPnl" stroke="#10b981" strokeWidth={2} dot={false} name="On Expiry" />
-                                            <Line type="monotone" dataKey="targetPnl" stroke="#a855f7" strokeWidth={1.5} strokeDasharray="4 4" dot={false} name="On Target" />
+                                            <Line type="monotone" dataKey="targetPnl" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="4 4" dot={false} name="On Target" />
                                         </ComposedChart>
                                     </ResponsiveContainer>
                                 </div>
-                            ) : (
-                                <div className="h-[210px] overflow-y-auto bg-[#0a0d14] rounded-lg p-2 font-mono text-[10px] text-gray-300 custom-scrollbar">
+                            )}
+
+                            {/* TAB 2: Greeks Dashboard */}
+                            {payoffTab === "greeks" && (
+                                <div className="p-3 bg-[#0a0d14] rounded-lg border border-[#181e2b] flex flex-col gap-3 font-mono">
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                        <div className="p-2.5 rounded-lg bg-[#11141f] border border-[#1f2535] text-center">
+                                            <span className="text-[10px] text-gray-400 font-sans block">Net Delta (Δ)</span>
+                                            <strong className={`text-xs font-bold ${strategyGreeks.delta >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                                                {strategyGreeks.delta >= 0 ? "+" : ""}{strategyGreeks.delta.toFixed(4)}
+                                            </strong>
+                                            <span className="text-[9px] text-gray-500 block font-sans">Directional</span>
+                                        </div>
+                                        <div className="p-2.5 rounded-lg bg-[#11141f] border border-[#1f2535] text-center">
+                                            <span className="text-[10px] text-gray-400 font-sans block">Net Theta (Θ)</span>
+                                            <strong className={`text-xs font-bold ${strategyGreeks.theta >= 0 ? "text-emerald-400" : "text-amber-400"}`}>
+                                                {strategyGreeks.theta >= 0 ? "+" : ""}${formatNumber(strategyGreeks.theta, 2)}/d
+                                            </strong>
+                                            <span className="text-[9px] text-gray-500 block font-sans">Time Decay</span>
+                                        </div>
+                                        <div className="p-2.5 rounded-lg bg-[#11141f] border border-[#1f2535] text-center">
+                                            <span className="text-[10px] text-gray-400 font-sans block">Net Gamma (Γ)</span>
+                                            <strong className="text-xs font-bold text-blue-400">
+                                                {strategyGreeks.gamma >= 0 ? "+" : ""}{strategyGreeks.gamma.toFixed(6)}
+                                            </strong>
+                                            <span className="text-[9px] text-gray-500 block font-sans">Delta Accel</span>
+                                        </div>
+                                        <div className="p-2.5 rounded-lg bg-[#11141f] border border-[#1f2535] text-center">
+                                            <span className="text-[10px] text-gray-400 font-sans block">Net Vega (ν)</span>
+                                            <strong className={`text-xs font-bold ${strategyGreeks.vega >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                                                {strategyGreeks.vega >= 0 ? "+" : ""}${formatNumber(strategyGreeks.vega, 2)}
+                                            </strong>
+                                            <span className="text-[9px] text-gray-500 block font-sans">1% IV Move</span>
+                                        </div>
+                                    </div>
+
+                                    {/* Leg-by-leg Greeks Table */}
+                                    <div className="overflow-x-auto custom-scrollbar max-h-[140px]">
+                                        <table className="w-full text-center text-[10px]">
+                                            <thead>
+                                                <tr className="text-gray-500 border-b border-[#1c2233]">
+                                                    <th className="py-1 text-left">Leg</th>
+                                                    <th className="py-1">Side</th>
+                                                    <th className="py-1">Delta</th>
+                                                    <th className="py-1">Theta</th>
+                                                    <th className="py-1">Gamma</th>
+                                                    <th className="py-1">Vega</th>
+                                                    <th className="py-1">IV</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-[#171c2a]">
+                                                {activeSelectedLegs.map((leg) => (
+                                                    <tr key={leg.id} className="hover:bg-[#131724]">
+                                                        <td className="py-1.5 text-left text-white font-bold">
+                                                            {leg.strike.toLocaleString()} {leg.type}
+                                                        </td>
+                                                        <td className="py-1.5">
+                                                            <span className={leg.action === "BUY" ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>
+                                                                {leg.action}
+                                                            </span>
+                                                        </td>
+                                                        <td className="py-1.5 text-gray-300">{Number(leg.delta || 0.5).toFixed(2)}</td>
+                                                        <td className="py-1.5 text-gray-300">{Number(leg.theta || -1.5).toFixed(1)}</td>
+                                                        <td className="py-1.5 text-gray-300">{Number(leg.gamma || 0.0002).toFixed(4)}</td>
+                                                        <td className="py-1.5 text-gray-300">{Number(leg.vega || 3.0).toFixed(1)}</td>
+                                                        <td className="py-1.5 text-amber-400">{Number(leg.iv || 22).toFixed(1)}%</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* TAB 3: PnL Table */}
+                            {payoffTab === "pnl_table" && (
+                                <div className="h-[185px] overflow-y-auto bg-[#0a0d14] rounded-lg p-2 font-mono text-[10px] text-gray-300 custom-scrollbar">
                                     <table className="w-full text-center">
                                         <thead>
                                             <tr className="text-gray-500 border-b border-[#1c2233]">
@@ -2078,7 +2932,7 @@ export default function CryptoStrategyBuilder() {
                                                     <td className={pt.expiryPnl >= 0 ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>
                                                         {formatMoney(pt.expiryPnl, currency === "INR" ? 0 : 2)}
                                                     </td>
-                                                    <td className={pt.targetPnl >= 0 ? "text-purple-400" : "text-rose-400"}>
+                                                    <td className={pt.targetPnl >= 0 ? "text-amber-400" : "text-rose-400"}>
                                                         {formatMoney(pt.targetPnl, currency === "INR" ? 0 : 2)}
                                                     </td>
                                                 </tr>
@@ -2096,7 +2950,7 @@ export default function CryptoStrategyBuilder() {
                                     </span>
                                     <button
                                         onClick={() => setTargetPrice(chainData.spotPrice || 83025.0)}
-                                        className="text-[10px] text-purple-400 hover:text-purple-300 font-bold"
+                                        className="text-[10px] text-amber-400 hover:text-amber-300 font-bold cursor-pointer"
                                     >
                                         Reset
                                     </button>
@@ -2109,7 +2963,7 @@ export default function CryptoStrategyBuilder() {
                                     step={10}
                                     value={targetPrice}
                                     onChange={(e) => setTargetPrice(Number(e.target.value))}
-                                    className="w-full accent-purple-600 cursor-pointer"
+                                    className="w-full accent-amber-500 cursor-pointer"
                                 />
 
                                 <div className="flex items-center justify-between text-[10px]">
@@ -2127,7 +2981,7 @@ export default function CryptoStrategyBuilder() {
                                         Order Margin: <strong className="text-white">{formatMoney(payoffMetrics.orderMargin, currency === "INR" ? 0 : 2)}</strong>
                                     </span>
                                     <span>
-                                        Available Margin: <strong className="text-emerald-400">{formatMoney(12810, 0)}</strong>
+                                        Available Margin: <strong className="text-emerald-400">{formatMoney(demoBalance, 0)}</strong>
                                     </span>
                                 </div>
 
@@ -2161,9 +3015,9 @@ export default function CryptoStrategyBuilder() {
                                     {/* Small Dialog Opener Button */}
                                     <button
                                         onClick={() => setIsSlModalOpen(true)}
-                                        className="px-2.5 py-1 rounded-lg bg-[#1a2030] hover:bg-[#252e46] text-purple-300 hover:text-white border border-purple-500/30 text-xs font-bold transition-all flex items-center gap-1 shadow-xs cursor-pointer"
+                                        className="px-2.5 py-1 rounded-lg bg-[#141926] hover:bg-[#1f2638] text-amber-300 hover:text-white border border-amber-500/30 text-xs font-bold transition-all flex items-center gap-1 shadow-xs cursor-pointer"
                                     >
-                                        <FiSliders size={11} />
+                                        <FiSliders size={11} className="text-amber-400" />
                                         <span>Config SL/TP</span>
                                     </button>
                                 </div>
@@ -2177,15 +3031,17 @@ export default function CryptoStrategyBuilder() {
                                 <button
                                     onClick={handlePlaceOrder}
                                     disabled={activeSelectedLegs.length === 0}
-                                    className="w-full py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg shadow-emerald-950/50 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer hover:scale-[1.01]"
+                                    className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:to-orange-400 text-black font-black text-sm shadow-lg shadow-amber-950/40 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer hover:scale-[1.01]"
                                 >
                                     <span>Execute Strategy with Stop Loss</span>
-                                    <span className="text-xs px-1.5 py-0.5 rounded bg-black/30">
+                                    <span className="text-xs px-2 py-0.5 rounded bg-black/20 font-mono">
                                         ({activeSelectedLegs.length} Legs)
                                     </span>
                                 </button>
                             </div>
                         </div>
+                            </>
+                        )}
                     </div>
                 )}
             </div>
@@ -2194,138 +3050,224 @@ export default function CryptoStrategyBuilder() {
             {/* 4. BOTTOM TABS: POSITIONS, STOP ORDERS, OPEN ORDERS, FILLS    */}
             {/* ------------------------------------------------------------- */}
             <div
+                ref={positionsPanelRef}
+                id="positions-panel"
                 className={`mx-2 lg:mx-4 mb-6 rounded-xl bg-[#11141f] border border-[#1f2535] overflow-hidden ${
                     mobileTab === "positions" ? "block" : "hidden lg:block"
                 }`}
             >
                 {/* Bottom Header Tabs */}
-                <div className="bg-[#151926] px-4 py-2 border-b border-[#23293d] flex items-center gap-4 text-xs font-bold">
-                    {[
-                        { id: "positions", label: `Positions (${positions.length})` },
-                        { id: "stop_orders", label: `Stop Orders (${stopOrders.length})` },
-                        { id: "open_orders", label: `Open Orders (${openOrders.length})` },
-                        { id: "fills", label: `Fills (${fills.length})` },
-                        { id: "order_history", label: "Order History" },
-                    ].map((tab) => (
-                        <button
-                            key={tab.id}
-                            onClick={() => setBottomTab(tab.id)}
-                            className={`pb-1 transition-all flex items-center gap-1.5 ${
-                                bottomTab === tab.id
-                                    ? "text-purple-400 border-b-2 border-purple-500 font-extrabold"
-                                    : "text-gray-400 hover:text-gray-200"
-                            }`}
-                        >
-                            <span>{tab.label}</span>
-                            {tab.id === "stop_orders" && stopOrders.length > 0 && (
-                                <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
-                            )}
-                        </button>
-                    ))}
+                <div className="bg-[#151926] px-4 py-2 border-b border-[#23293d] flex items-center justify-between gap-3 text-xs font-bold">
+                    <div className="flex items-center gap-4 overflow-x-auto custom-scrollbar py-0.5">
+                        {[
+                            { id: "positions", label: `Positions (${positions.length})` },
+                            { id: "stop_orders", label: `Stop Orders (${stopOrders.length})` },
+                            { id: "open_orders", label: `Open Orders (${openOrders.length})` },
+                            { id: "fills", label: `Fills (${fills.length})` },
+                            { id: "order_history", label: `Order History (${orderHistory.length})` },
+                        ].map((tab) => (
+                            <button
+                                key={tab.id}
+                                onClick={() => setBottomTab(tab.id)}
+                                className={`pb-1 transition-all flex items-center gap-1.5 shrink-0 cursor-pointer ${
+                                    bottomTab === tab.id
+                                        ? "text-amber-400 border-b-2 border-amber-500 font-extrabold"
+                                        : "text-gray-400 hover:text-gray-200"
+                                }`}
+                            >
+                                <span>{tab.label}</span>
+                                {tab.id === "stop_orders" && stopOrders.length > 0 && (
+                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
+                                )}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Quick status badge */}
+                    <div className="hidden sm:flex items-center gap-2 font-mono text-[11px] text-gray-400">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                        <span>Delta Derivatives Sim</span>
+                    </div>
                 </div>
 
-                {!isAuthenticated ? (
-                    <div className="p-8 sm:p-12 flex flex-col items-center justify-center text-center space-y-4 bg-[#0d1017]">
-                        <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shadow-xl shadow-emerald-950/50">
-                            <FiLock size={26} />
+                {/* Portfolio Summary KPI Bar (shown whenever there are open positions) */}
+                {positions.length > 0 && (
+                    <div className="p-3.5 bg-[#0e121b] border-b border-[#1f2535] flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-4 lg:gap-6 font-mono text-xs">
+                            {/* Total Unrealized PnL */}
+                            <div className="flex flex-col">
+                                <span className="text-[10px] text-gray-400 font-sans uppercase tracking-wider font-semibold">Total Unrealized P&L</span>
+                                <div className="flex items-center gap-1.5">
+                                    <span className={`w-2 h-2 rounded-full animate-ping ${portfolioSummary.totalUnrealizedPnl >= 0 ? "bg-emerald-400" : "bg-rose-400"}`} />
+                                    <span className={`font-black text-sm lg:text-base ${portfolioSummary.totalUnrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                                        {portfolioSummary.totalUnrealizedPnl >= 0 ? "+" : ""}{formatMoney(portfolioSummary.totalUnrealizedPnl, currency === "INR" ? 0 : 2)}
+                                    </span>
+                                    <span className={`text-[11px] font-bold px-1.5 py-0.2 rounded ${
+                                        portfolioSummary.totalUnrealizedPnl >= 0 ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"
+                                    }`}>
+                                        {portfolioSummary.totalMarginUsed > 0
+                                            ? `${portfolioSummary.totalUnrealizedPnl >= 0 ? "+" : ""}${((portfolioSummary.totalUnrealizedPnl / portfolioSummary.totalMarginUsed) * 100).toFixed(2)}%`
+                                            : "0.00%"}
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* Open Positions Count */}
+                            <div className="flex flex-col border-l border-[#222a3d] pl-4">
+                                <span className="text-[10px] text-gray-400 font-sans uppercase tracking-wider font-semibold">Open Positions</span>
+                                <span className="font-bold text-white text-xs lg:text-sm">
+                                    {positions.length} Contract{positions.length > 1 ? "s" : ""}
+                                </span>
+                            </div>
+
+                            {/* Margin in Use */}
+                            <div className="flex flex-col border-l border-[#222a3d] pl-4">
+                                <span className="text-[10px] text-gray-400 font-sans uppercase tracking-wider font-semibold">Margin Used</span>
+                                <span className="font-bold text-gray-200 text-xs lg:text-sm">
+                                    {formatMoney(portfolioSummary.totalMarginUsed, currency === "INR" ? 0 : 2)}
+                                </span>
+                            </div>
+
+                            {/* Simulated Demo Wallet */}
+                            <div className="hidden sm:flex flex-col border-l border-[#222a3d] pl-4">
+                                <span className="text-[10px] text-gray-400 font-sans uppercase tracking-wider font-semibold">Available Wallet</span>
+                                <span className="font-bold text-amber-400 text-xs lg:text-sm">
+                                    {formatMoney(demoBalance, currency === "INR" ? 0 : 0)}
+                                </span>
+                            </div>
                         </div>
-                        <div className="space-y-1.5 max-w-md">
-                            <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">
-                                Log In to View Positions & Order History
-                            </h3>
-                            <p className="text-xs text-gray-400 leading-relaxed">
-                                Positions, active Stop Loss triggers, execution fills, and complete trade history are securely linked to your account.
-                            </p>
-                        </div>
-                        <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+
+                        {/* Right side actions */}
+                        <div className="flex items-center gap-2">
+                            {!isAuthenticated && (
+                                <span className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30 text-[11px] font-medium">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                    <span>Demo Mode (Guest)</span>
+                                </span>
+                            )}
                             <button
-                                onClick={() => navigate("/login?mode=login&redirect=/strategy-builder/crypto")}
-                                className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-950/50 transition cursor-pointer flex items-center gap-2 hover:scale-[1.02]"
+                                onClick={handleCloseAllPositions}
+                                className="px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/40 text-xs font-bold transition-all cursor-pointer shadow-xs flex items-center gap-1.5"
+                                title="Market close all open positions"
                             >
-                                <FiLock size={13} />
-                                <span>Log In</span>
-                            </button>
-                            <button
-                                onClick={() => navigate("/login?mode=signup&redirect=/strategy-builder/crypto")}
-                                className="px-6 py-2.5 rounded-xl border border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10 font-bold text-xs transition cursor-pointer hover:scale-[1.02]"
-                            >
-                                <span>Create Free Account</span>
+                                <FiTrash2 size={12} />
+                                <span>Close All Positions</span>
                             </button>
                         </div>
                     </div>
-                ) : (
-                    <>
-                        {/* 1. POSITIONS TABLE */}
+                )}
+
+                {/* Guest Mode Informational Banner (Non-blocking) */}
+                {!isAuthenticated && positions.length > 0 && (
+                    <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-200">
+                        <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                            <span>
+                                <strong>Delta Derivatives Simulation Mode:</strong> 24/7 crypto demo execution with real-time mark prices and zero restrictions.
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => navigate(`/login?mode=login&redirect=${selfPath}`)}
+                                className="text-amber-300 hover:text-white font-bold underline cursor-pointer"
+                            >
+                                Log In
+                            </button>
+                            <span className="text-gray-500">•</span>
+                            <button
+                                onClick={() => navigate(`/login?mode=signup&redirect=${selfPath}`)}
+                                className="text-amber-300 hover:text-white font-bold underline cursor-pointer"
+                            >
+                                Sign Up to Save History
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* 1. POSITIONS TABLE */}
                 {bottomTab === "positions" && (
-                    <div className="p-4 overflow-x-auto custom-scrollbar">
+                    <div className="overflow-x-auto custom-scrollbar">
                         {positions.length > 0 ? (
                             <table className="w-full text-left font-mono text-xs">
-                                <thead>
-                                    <tr className="text-gray-500 border-b border-[#1e2436] text-[11px] pb-2">
-                                        <th className="py-2">Contract</th>
-                                        <th className="py-2">Side</th>
-                                        <th className="py-2">Size</th>
-                                        <th className="py-2">Entry Price</th>
-                                        <th className="py-2">Mark Price</th>
-                                        <th className="py-2">Unrealized PNL</th>
-                                        <th className="py-2">Stop Loss Trigger</th>
-                                        <th className="py-2">Take Profit Trigger</th>
-                                        <th className="py-2 text-right">Action</th>
+                                <thead className="bg-[#141926] text-gray-400 uppercase text-[10px] font-bold tracking-wider border-b border-[#232a3d]">
+                                    <tr>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Contract</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Side</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Size</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Entry Price</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Mark Price</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Unrealized P&L</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Stop Loss</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Take Profit</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap text-right">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-[#1b2030]">
                                     {positions.map((pos) => (
-                                        <tr key={pos.id} className="hover:bg-[#161a28]">
-                                            <td className="py-2.5 font-bold text-white flex items-center gap-1.5">
-                                                <span className="text-amber-400 font-black">₿</span>
-                                                <span>{pos.symbol}</span>
+                                        <tr key={pos.id} className="hover:bg-[#161a28] transition-colors">
+                                            <td className="py-2.5 px-3 whitespace-nowrap">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="w-6 h-6 rounded-md bg-[#181d2c] border border-[#2b344a] flex items-center justify-center text-xs font-bold text-amber-400">
+                                                        {pos.coinIcon || (pos.coinSymbol === "ETH" ? "Ξ" : pos.coinSymbol === "SOL" ? "◎" : "₿")}
+                                                    </span>
+                                                    <div>
+                                                        <div className="flex items-center gap-1.5 font-mono font-bold text-white text-xs">
+                                                            <span>{pos.coinSymbol || "BTC"}</span>
+                                                            <span className={`px-1.5 py-0.2 rounded text-[10px] font-black ${
+                                                                pos.type === "CALL" ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"
+                                                            }`}>
+                                                                {pos.strike?.toLocaleString()} {pos.type === "CALL" ? "CE" : "PE"}
+                                                            </span>
+                                                        </div>
+                                                        <div className="text-[10px] text-gray-400 font-mono">
+                                                            {pos.expiry}
+                                                        </div>
+                                                    </div>
+                                                </div>
                                             </td>
-                                            <td className="py-2.5">
-                                                <span
-                                                    className={`px-1.5 py-0.5 rounded font-bold text-[10px] ${
-                                                        pos.side === "BUY"
-                                                            ? "bg-emerald-500/20 text-emerald-400"
-                                                            : "bg-rose-500/20 text-rose-400"
-                                                    }`}
-                                                >
+                                            <td className="py-2.5 px-3 whitespace-nowrap">
+                                                <span className={`px-2 py-0.5 rounded font-black text-[10px] ${
+                                                    pos.side === "BUY" ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-rose-500/20 text-rose-400 border border-rose-500/30"
+                                                }`}>
                                                     {pos.side}
                                                 </span>
                                             </td>
-                                            <td className="py-2.5 text-gray-300">{pos.size}</td>
-                                            <td className="py-2.5 text-gray-300">{formatMoney(pos.entryPrice, currency === "INR" ? 0 : 2)}</td>
-                                            <td className="py-2.5 text-white font-bold">{formatMoney(pos.markPrice, currency === "INR" ? 0 : 2)}</td>
-                                            <td
-                                                className={`py-2.5 font-bold ${
-                                                    pos.unrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"
-                                                }`}
-                                            >
-                                                {pos.unrealizedPnl >= 0 ? "+" : ""}{formatMoney(pos.unrealizedPnl, currency === "INR" ? 0 : 2)} (
-                                                {pos.pnlPct >= 0 ? "+" : ""}
-                                                {pos.pnlPct.toFixed(1)}%)
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-gray-300 font-semibold">{pos.size}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-gray-300">{formatMoney(pos.entryPrice, currency === "INR" ? 0 : 2)}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-white font-bold">
+                                                {formatMoney(pos.markPrice, currency === "INR" ? 0 : 2)}
                                             </td>
-                                            <td className="py-2.5">
+                                            <td className="py-2.5 px-3 whitespace-nowrap">
+                                                <div className={`font-bold ${pos.unrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                                                    <span>{pos.unrealizedPnl >= 0 ? "+" : ""}{formatMoney(pos.unrealizedPnl, currency === "INR" ? 0 : 2)}</span>
+                                                    <span className="text-[10px] ml-1 opacity-80">
+                                                        ({pos.pnlPct >= 0 ? "+" : ""}{pos.pnlPct.toFixed(1)}%)
+                                                    </span>
+                                                </div>
+                                            </td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap">
                                                 <span className="px-2 py-0.5 rounded bg-rose-900/30 text-rose-300 border border-rose-700/40 text-[11px] font-bold inline-flex items-center gap-1">
                                                     <FiShield size={10} className="text-rose-400" />
-                                                    {pos.slTrigger}
+                                                    <span>{pos.slTrigger || "None"}</span>
                                                 </span>
                                             </td>
-                                            <td className="py-2.5">
+                                            <td className="py-2.5 px-3 whitespace-nowrap">
                                                 <span className="px-2 py-0.5 rounded bg-emerald-900/30 text-emerald-300 border border-emerald-700/40 text-[11px] font-bold inline-flex items-center gap-1">
                                                     <FiTarget size={10} className="text-emerald-400" />
-                                                    {pos.tpTrigger}
+                                                    <span>{pos.tpTrigger || "None"}</span>
                                                 </span>
                                             </td>
-                                            <td className="py-2.5 text-right space-x-2">
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-right space-x-1.5">
                                                 <button
                                                     onClick={() => handleOpenEditSlModal(pos)}
-                                                    className="px-2 py-1 rounded bg-[#232b3d] hover:bg-[#2e3952] text-gray-300 hover:text-white border border-gray-700 text-[11px] font-bold transition-colors inline-flex items-center gap-1"
+                                                    className="px-2.5 py-1 rounded bg-[#232b3d] hover:bg-[#2e3952] text-gray-300 hover:text-white border border-gray-700 text-[11px] font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
                                                 >
                                                     <FiEdit3 size={11} />
                                                     <span>Edit SL</span>
                                                 </button>
                                                 <button
                                                     onClick={() => handleClosePosition(pos.id)}
-                                                    className="px-2 py-1 rounded bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 text-[11px] font-bold transition-colors"
+                                                    className="px-2.5 py-1 rounded bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 text-[11px] font-bold transition-colors cursor-pointer"
                                                 >
                                                     Market Close
                                                 </button>
@@ -2334,8 +3276,41 @@ export default function CryptoStrategyBuilder() {
                                     ))}
                                 </tbody>
                             </table>
+                        ) : !isAuthenticated ? (
+                            <div className="p-8 sm:p-12 flex flex-col items-center justify-center text-center space-y-4 bg-[#0d1017]">
+                                <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shadow-xl shadow-amber-950/50">
+                                    <FiLayers size={26} />
+                                </div>
+                                <div className="space-y-1.5 max-w-md">
+                                    <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">
+                                        No Active Crypto Positions
+                                    </h3>
+                                    <p className="text-xs text-gray-400 leading-relaxed">
+                                        Build a multi-leg crypto strategy using the Option Chain above and click <strong>Execute Strategy with Stop Loss</strong> to test trades in the Delta Simulator.
+                                    </p>
+                                </div>
+                                <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+                                    <button
+                                        onClick={() => {
+                                            if (chainTableContainerRef.current) {
+                                                chainTableContainerRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+                                            }
+                                        }}
+                                        className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs shadow-lg shadow-amber-950/50 transition cursor-pointer flex items-center gap-2 hover:scale-[1.02]"
+                                    >
+                                        <FiGrid size={13} />
+                                        <span>Open Option Chain</span>
+                                    </button>
+                                    <button
+                                        onClick={() => navigate(`/login?mode=login&redirect=${selfPath}`)}
+                                        className="px-5 py-2.5 rounded-xl border border-[#2e374f] text-gray-300 hover:text-white hover:bg-[#161c2b] font-bold text-xs transition cursor-pointer"
+                                    >
+                                        <span>Log In to Sync Profile</span>
+                                    </button>
+                                </div>
+                            </div>
                         ) : (
-                            <div className="text-center py-6 text-gray-500 text-xs">
+                            <div className="text-center py-12 text-gray-500 text-xs">
                                 No open positions. Build a strategy above and click <strong>Execute Strategy</strong> to place orders.
                             </div>
                         )}
@@ -2344,29 +3319,29 @@ export default function CryptoStrategyBuilder() {
 
                 {/* 2. STOP ORDERS TABLE */}
                 {bottomTab === "stop_orders" && (
-                    <div className="p-4 overflow-x-auto custom-scrollbar">
+                    <div className="overflow-x-auto custom-scrollbar">
                         {stopOrders.length > 0 ? (
                             <table className="w-full text-left font-mono text-xs">
-                                <thead>
-                                    <tr className="text-gray-500 border-b border-[#1e2436] text-[11px] pb-2">
-                                        <th className="py-2">Order ID</th>
-                                        <th className="py-2">Target Contract</th>
-                                        <th className="py-2">Type</th>
-                                        <th className="py-2">Trigger Condition</th>
-                                        <th className="py-2">Order Type</th>
-                                        <th className="py-2">Status</th>
-                                        <th className="py-2">Created At</th>
-                                        <th className="py-2 text-right">Action</th>
+                                <thead className="bg-[#141926] text-gray-400 uppercase text-[10px] font-bold tracking-wider border-b border-[#232a3d]">
+                                    <tr>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Order ID</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Target Contract</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Type</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Trigger Condition</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Order Type</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Status</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Created At</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap text-right">Action</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-[#1b2030]">
                                     {stopOrders.map((so) => (
-                                        <tr key={so.id} className="hover:bg-[#161a28]">
-                                            <td className="py-2.5 font-bold text-purple-400">{so.id}</td>
-                                            <td className="py-2.5 text-white font-bold">{so.contract}</td>
-                                            <td className="py-2.5">
+                                        <tr key={so.id} className="hover:bg-[#161a28] transition-colors">
+                                            <td className="py-2.5 px-3 whitespace-nowrap font-bold text-amber-400">{so.id}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-white font-bold">{so.contract}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap">
                                                 <span
-                                                    className={`px-1.5 py-0.5 rounded font-bold text-[10px] ${
+                                                    className={`px-2 py-0.5 rounded font-black text-[10px] ${
                                                         so.type === "STOP_LOSS"
                                                             ? "bg-rose-500/20 text-rose-400 border border-rose-500/30"
                                                             : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
@@ -2375,19 +3350,19 @@ export default function CryptoStrategyBuilder() {
                                                     {so.type === "STOP_LOSS" ? "STOP LOSS" : "TAKE PROFIT"}
                                                 </span>
                                             </td>
-                                            <td className="py-2.5 font-bold text-gray-200">{so.condition}</td>
-                                            <td className="py-2.5 text-gray-400">{so.orderType}</td>
-                                            <td className="py-2.5">
+                                            <td className="py-2.5 px-3 whitespace-nowrap font-bold text-gray-200">{so.condition}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-gray-400">{so.orderType}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap">
                                                 <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold text-[10px] inline-flex items-center gap-1">
                                                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                                                     {so.status}
                                                 </span>
                                             </td>
-                                            <td className="py-2.5 text-gray-400">{so.createdAt}</td>
-                                            <td className="py-2.5 text-right">
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-gray-400">{so.createdAt}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-right">
                                                 <button
                                                     onClick={() => handleCancelStopOrder(so.id)}
-                                                    className="px-2.5 py-1 rounded bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 text-[11px] font-bold transition-colors"
+                                                    className="px-2.5 py-1 rounded bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 text-[11px] font-bold transition-colors cursor-pointer"
                                                 >
                                                     Cancel Trigger
                                                 </button>
@@ -2397,7 +3372,7 @@ export default function CryptoStrategyBuilder() {
                                 </tbody>
                             </table>
                         ) : (
-                            <div className="text-center py-6 text-gray-500 text-xs">
+                            <div className="text-center py-10 text-gray-500 text-xs font-mono">
                                 No active Stop Loss or Take Profit trigger orders.
                             </div>
                         )}
@@ -2406,103 +3381,113 @@ export default function CryptoStrategyBuilder() {
 
                 {/* 3. OPEN ORDERS TABLE */}
                 {bottomTab === "open_orders" && (
-                    <div className="p-4 text-center py-6 text-gray-500 text-xs font-mono">
-                        No pending limit orders. All market orders were immediately executed.
+                    <div className="p-8 text-center py-10 text-gray-500 text-xs font-mono">
+                        No pending limit orders. All market orders were immediately executed at best Delta price.
                     </div>
                 )}
 
                 {/* 4. FILLS TABLE */}
                 {bottomTab === "fills" && (
-                    <div className="p-4 overflow-x-auto custom-scrollbar">
-                        <table className="w-full text-left font-mono text-xs">
-                            <thead>
-                                <tr className="text-gray-500 border-b border-[#1e2436] text-[11px] pb-2">
-                                    <th className="py-2">Fill ID</th>
-                                    <th className="py-2">Order ID</th>
-                                    <th className="py-2">Contract</th>
-                                    <th className="py-2">Side</th>
-                                    <th className="py-2">Size</th>
-                                    <th className="py-2">Executed Price</th>
-                                    <th className="py-2">Fee</th>
-                                    <th className="py-2">Time</th>
-                                    <th className="py-2">Type</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-[#1b2030]">
-                                {fills.map((f) => (
-                                    <tr key={f.id} className="hover:bg-[#161a28]">
-                                        <td className="py-2 text-gray-400">{f.id}</td>
-                                        <td className="py-2 font-bold text-purple-400">{f.orderId}</td>
-                                        <td className="py-2 text-white font-bold">{f.contract}</td>
-                                        <td className="py-2">
-                                            <span
-                                                className={`px-1.5 py-0.5 rounded font-bold text-[10px] ${
-                                                    f.side === "BUY" ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"
-                                                }`}
-                                            >
-                                                {f.side}
-                                            </span>
-                                        </td>
-                                        <td className="py-2 text-gray-300">{f.size}</td>
-                                        <td className="py-2 text-white font-bold">{f.price}</td>
-                                        <td className="py-2 text-gray-400">{f.fee}</td>
-                                        <td className="py-2 text-gray-400">{f.time}</td>
-                                        <td className="py-2">
-                                            <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 text-[10px]">
-                                                {f.type}
-                                            </span>
-                                        </td>
+                    <div className="overflow-x-auto custom-scrollbar">
+                        {fills.length > 0 ? (
+                            <table className="w-full text-left font-mono text-xs">
+                                <thead className="bg-[#141926] text-gray-400 uppercase text-[10px] font-bold tracking-wider border-b border-[#232a3d]">
+                                    <tr>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Fill ID</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Order ID</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Contract</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Side</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Size</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Executed Price</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Fee</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Time</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Type</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody className="divide-y divide-[#1b2030]">
+                                    {fills.map((f) => (
+                                        <tr key={f.id} className="hover:bg-[#161a28] transition-colors">
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-gray-400">{f.id}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap font-bold text-amber-400">{f.orderId}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-white font-bold">{f.contract}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap">
+                                                <span
+                                                    className={`px-2 py-0.5 rounded font-black text-[10px] ${
+                                                        f.side === "BUY" ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"
+                                                    }`}
+                                                >
+                                                    {f.side}
+                                                </span>
+                                            </td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-gray-300">{f.size}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-white font-bold">{f.price}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-gray-400">{f.fee}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-gray-400">{f.time}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap">
+                                                <span className="px-2 py-0.5 rounded bg-gray-800 text-gray-300 text-[10px] font-bold">
+                                                    {f.type}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        ) : (
+                            <div className="text-center py-10 text-gray-500 text-xs font-mono">
+                                No execution fills recorded yet.
+                            </div>
+                        )}
                     </div>
                 )}
 
                 {/* 5. ORDER HISTORY TABLE */}
                 {bottomTab === "order_history" && (
-                    <div className="p-4 overflow-x-auto custom-scrollbar">
-                        <table className="w-full text-left font-mono text-xs">
-                            <thead>
-                                <tr className="text-gray-500 border-b border-[#1e2436] text-[11px] pb-2">
-                                    <th className="py-2">Order ID</th>
-                                    <th className="py-2">Contract</th>
-                                    <th className="py-2">Side</th>
-                                    <th className="py-2">Order Type</th>
-                                    <th className="py-2">Status</th>
-                                    <th className="py-2">Price</th>
-                                    <th className="py-2">Time</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-[#1b2030]">
-                                {orderHistory.map((oh) => (
-                                    <tr key={oh.id} className="hover:bg-[#161a28]">
-                                        <td className="py-2 font-bold text-purple-400">{oh.id}</td>
-                                        <td className="py-2 text-white font-bold">{oh.contract}</td>
-                                        <td className="py-2">
-                                            <span
-                                                className={`px-1.5 py-0.5 rounded font-bold text-[10px] ${
-                                                    oh.side === "BUY" ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"
-                                                }`}
-                                            >
-                                                {oh.side}
-                                            </span>
-                                        </td>
-                                        <td className="py-2 text-gray-400">{oh.type}</td>
-                                        <td className="py-2">
-                                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[10px] font-bold">
-                                                {oh.status}
-                                            </span>
-                                        </td>
-                                        <td className="py-2 text-white font-bold">{oh.price}</td>
-                                        <td className="py-2 text-gray-400">{oh.time}</td>
+                    <div className="overflow-x-auto custom-scrollbar">
+                        {orderHistory.length > 0 ? (
+                            <table className="w-full text-left font-mono text-xs">
+                                <thead className="bg-[#141926] text-gray-400 uppercase text-[10px] font-bold tracking-wider border-b border-[#232a3d]">
+                                    <tr>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Order ID</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Contract</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Side</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Order Type</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Status</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Price</th>
+                                        <th className="py-2.5 px-3 whitespace-nowrap">Time</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody className="divide-y divide-[#1b2030]">
+                                    {orderHistory.map((oh) => (
+                                        <tr key={oh.id} className="hover:bg-[#161a28] transition-colors">
+                                            <td className="py-2.5 px-3 whitespace-nowrap font-bold text-amber-400">{oh.id}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-white font-bold">{oh.contract}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap">
+                                                <span
+                                                    className={`px-2 py-0.5 rounded font-black text-[10px] ${
+                                                        oh.side === "BUY" ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"
+                                                    }`}
+                                                >
+                                                    {oh.side}
+                                                </span>
+                                            </td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-gray-400">{oh.type}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap">
+                                                <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[10px] font-bold">
+                                                    {oh.status}
+                                                </span>
+                                            </td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-white font-bold">{oh.price}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-gray-400">{oh.time}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        ) : (
+                            <div className="text-center py-10 text-gray-500 text-xs font-mono">
+                                No past order history.
+                            </div>
+                        )}
                     </div>
-                )}
-                    </>
                 )}
             </div>
 
@@ -2582,7 +3567,7 @@ export default function CryptoStrategyBuilder() {
                             </button>
                             <button
                                 onClick={handleSaveEditSl}
-                                className="px-4 py-2 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg transition-all"
+                                className="px-4 py-2 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black text-xs font-extrabold shadow-lg shadow-amber-900/30 transition-all"
                             >
                                 Update Trigger
                             </button>
@@ -2616,7 +3601,7 @@ export default function CryptoStrategyBuilder() {
                                                 </span>
                                             </div>
                                             <div className="text-xs text-gray-400 font-mono flex items-center gap-2 mt-0.5">
-                                                <span className="text-purple-300 font-bold">{activeBuyLegForSl.symbol}</span>
+                                                <span className="text-amber-300 font-bold">{activeBuyLegForSl.symbol}</span>
                                                 <span>•</span>
                                                 <span>Premium: <strong className="text-white">{formatMoney(activeBuyLegForSl.price || 100, currency === "INR" ? 0 : 2)}</strong></span>
                                             </div>
@@ -2795,7 +3780,7 @@ export default function CryptoStrategyBuilder() {
                                         </button>
                                         <button
                                             onClick={handleSaveLegSl}
-                                            className="px-5 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-extrabold shadow-lg shadow-purple-900/40 transition cursor-pointer"
+                                            className="px-5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black text-xs font-extrabold shadow-lg shadow-amber-900/40 transition cursor-pointer"
                                         >
                                             Save % Triggers
                                         </button>
@@ -3060,7 +4045,7 @@ export default function CryptoStrategyBuilder() {
                                                 type="checkbox"
                                                 checked={trailingSL}
                                                 onChange={(e) => setTrailingSL(e.target.checked)}
-                                                className="rounded bg-[#171c2b] border-[#2d364f] text-purple-600 focus:ring-0 cursor-pointer"
+                                                className="rounded bg-[#171c2b] border-[#2d364f] accent-amber-500 text-amber-500 focus:ring-0 cursor-pointer"
                                             />
                                             <span>Enable Trailing Stop Loss</span>
                                         </label>
@@ -3106,7 +4091,7 @@ export default function CryptoStrategyBuilder() {
                                                 setOrderSuccessMsg("✅ Stop Loss / Target triggers configured!");
                                                 setTimeout(() => setOrderSuccessMsg(null), 3000);
                                             }}
-                                            className="px-5 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-extrabold shadow-lg shadow-purple-900/40 transition cursor-pointer"
+                                            className="px-5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black text-xs font-extrabold shadow-lg shadow-amber-900/30 transition cursor-pointer"
                                         >
                                             Apply & Save
                                         </button>

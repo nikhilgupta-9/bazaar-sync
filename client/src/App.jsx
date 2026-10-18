@@ -7,7 +7,6 @@ import OptionChain from "./pages/OptionChain";
 import StrategyBuilder from "./pages/StrategyBuilder";
 import CryptoStrategyBuilder from "./pages/CryptoStrategyBuilder";
 import Simulator from "./pages/Simulator";
-import CryptoSimulator from "./pages/CryptoSimulator";
 import PaperTrade from "./pages/PaperTrade";
 import HistoricalChart from "./pages/HistoricalChart";
 import EquityData from "./pages/EquityData";
@@ -27,6 +26,8 @@ function App() {
     usePageSeo();
     const location = useLocation();
     const isChartPage = location.pathname.startsWith("/historical-chart");
+    const isStrategyBuilderPage = location.pathname.startsWith("/strategy-builder");
+    const hideFooter = isChartPage || isStrategyBuilderPage;
 
     return (
         <div className="flex min-h-screen flex-col bg-gray-50 text-gray-900 transition-colors dark:bg-[#0b1420] dark:text-gray-100">
@@ -36,10 +37,13 @@ function App() {
                     <Route path="/" element={<Home />} />
                     <Route path="/option-chain" element={<Navigate to="/option-chain/nifty" replace />} />
                     <Route path="/option-chain/:symbol" element={<OptionChain />} />
+                    <Route path="/option-chain/crypto" element={<Navigate to="/option-chain/crypto/btc" replace />} />
+                    <Route path="/option-chain/crypto/:coin" element={<OptionChain />} />
                     <Route path="/strategy-builder" element={<StrategyBuilder />} />
                     <Route path="/strategy-builder/crypto" element={<CryptoStrategyBuilder />} />
                     <Route path="/simulator" element={<Simulator />} />
-                    <Route path="/simulator/crypto" element={<CryptoSimulator />} />
+                    {/* Crypto backtester = the crypto Strategy Builder in historical-replay mode (real Delta Exchange history) */}
+                    <Route path="/simulator/crypto" element={<CryptoStrategyBuilder key="historical" historical />} />
                     <Route path="/simulator/bitcoin" element={<Navigate to="/simulator/crypto" replace />} />
                     <Route path="/paper-trade" element={<PaperTrade />} />
                     <Route path="/historical-chart" element={<HistoricalChart />} />
@@ -59,7 +63,7 @@ function App() {
                     <Route path="*" element={<Navigate to="/option-chain" replace />} />
                 </Routes>
             </div>
-            {!isChartPage && <Footer />}
+            {!hideFooter && <Footer />}
         </div>
     );
 }

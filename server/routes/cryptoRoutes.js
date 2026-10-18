@@ -2,6 +2,39 @@
 const express = require("express");
 const router = express.Router();
 const deltaService = require("../services/deltaExchangeService");
+const cryptoHistory = require("../services/cryptoHistoricalService");
+
+/**
+ * Historical (backtest) endpoints — real Delta Exchange 1-min history, no live data.
+ * GET /api/crypto/history/meta
+ * GET /api/crypto/history/chain?underlying=BTC&date=2026-09-25&time=09:15&expiry=2026-09-25T12:00:00.000Z
+ * GET /api/crypto/history/spot?underlying=BTC&date=2026-09-25
+ */
+router.get("/history/meta", (req, res) => {
+    res.json(cryptoHistory.meta());
+});
+
+router.get("/history/chain", async (req, res) => {
+    try {
+        const { underlying, date, time, expiry } = req.query;
+        res.json(await cryptoHistory.getHistoricalChain({ underlying, date, time, expiry }));
+    } catch (err) {
+        const status = err.status || 500;
+        if (status === 500) console.error("[CryptoRoutes] History Chain Error:", err);
+        res.status(status).json({ error: err.message || "Failed to load historical crypto option chain" });
+    }
+});
+
+router.get("/history/spot", async (req, res) => {
+    try {
+        const { underlying, date } = req.query;
+        res.json(await cryptoHistory.getHistoricalSpotSeries({ underlying, date }));
+    } catch (err) {
+        const status = err.status || 500;
+        if (status === 500) console.error("[CryptoRoutes] History Spot Error:", err);
+        res.status(status).json({ error: err.message || "Failed to load historical spot series" });
+    }
+});
 
 /**
  * GET /api/crypto/option-chain

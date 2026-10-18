@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 // components/Footer.jsx — Premier International-Standard Financial Market Footer
-// Responsive across Mobile, Tablet, and Desktop with SEBI-compliant Risk Disclosures,
+// Responsive across Mobile, Tablet, and Desktop with a
 // product catalog, market analytics links, dynamic admin-managed social links, and clean emerald branding.
 
 import { Link } from "react-router-dom";
@@ -148,7 +148,7 @@ export default function Footer() {
             </div>
 
             {/* Main Navigation Matrix */}
-            <div className="w-full px-4 py-12 sm:px-8 lg:px-12">
+            <div className="w-full px-4 pt-12 pb-5 sm:px-8 lg:px-12">
                 <div className="grid grid-cols-1 gap-10 sm:grid-cols-2 lg:grid-cols-5">
                     {/* Brand & Mission Column */}
                     <div className="lg:col-span-2 space-y-4">
@@ -230,24 +230,8 @@ export default function Footer() {
                     </div>
                 </div>
 
-                {/* Regulatory SEBI Risk Disclosure Notice Box */}
-                <div className="mt-10 rounded-2xl border border-amber-300/80 bg-amber-50/70 p-5 text-xs sm:text-sm leading-relaxed text-amber-950 dark:border-amber-700/40 dark:bg-amber-950/30 dark:text-amber-200 shadow-xs">
-                    <div className="flex items-center gap-2 font-bold text-amber-950 dark:text-amber-100 mb-2">
-                        <span className="rounded-md bg-amber-200 px-2 py-0.5 text-[10px] uppercase font-black tracking-wider text-amber-950 dark:bg-amber-800 dark:text-amber-100">
-                            SEBI Risk Warning
-                        </span>
-                        <span className="text-xs sm:text-sm font-bold">Important Regulatory Disclosure on Derivatives Trading:</span>
-                    </div>
-                    <p className="text-xs sm:text-sm text-amber-950/90 dark:text-amber-200/90 leading-relaxed font-normal">
-                        9 out of 10 individual traders in the equity Futures and Options (F&amp;O) segment incurred net losses as per SEBI study findings. On average, loss-makers registered net trading losses close to ₹50,000. Over and above the net trading losses, loss-makers expended an additional 28% of net trading losses in transaction costs.
-                    </p>
-                    <p className="mt-2 text-xs text-gray-600 dark:text-gray-300 font-medium">
-                        Bazaar Sync is an educational, technical analytics, and backtesting platform. We do not provide investment advice or stock tips.
-                    </p>
-                </div>
-
                 {/* Bottom Bar with Copyright, Creator Credits and Social Connect */}
-                <div className="mt-10 flex flex-col items-center justify-between gap-5 border-t border-gray-200 pt-7 text-xs sm:text-sm text-gray-600 dark:border-gray-800 dark:text-gray-300 sm:flex-row">
+                <div className="mt-8 flex flex-col items-center justify-between gap-3 border-t border-gray-200 pt-4 text-xs sm:text-sm text-gray-600 dark:border-gray-800 dark:text-gray-300 sm:flex-row">
                     <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-3 text-center sm:text-left font-medium">
                         <span className="text-gray-700 dark:text-gray-200">
                             {copyrightText || `© ${new Date().getFullYear()} Bazaar Sync Technologies. All rights reserved.`}

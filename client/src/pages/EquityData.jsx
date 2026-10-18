@@ -23,9 +23,9 @@ export default function EquityData() {
     }
 
     return (
-        <div className="mx-auto max-w-[1440px] px-3 py-4 sm:px-6 sm:py-6">
+        <div className="mx-auto w-full max-w-[1440px] px-3 py-4 sm:px-6 sm:py-6">
             {/* Top Navigation Tabs */}
-            <div className="mb-6 flex flex-wrap items-center gap-2 border-b border-gray-200 pb-3 dark:border-gray-800">
+            <div className="-mx-3 mb-5 flex items-center gap-2 overflow-x-auto border-b border-gray-200 px-3 pb-3 scrollbar-none sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 dark:border-gray-800">
                 {TABS.map((tab) => {
                     const Icon = tab.icon;
                     const isActive = tool === tab.key;
@@ -33,7 +33,7 @@ export default function EquityData() {
                         <NavLink
                             key={tab.key}
                             to={`/equity-data/${tab.key}`}
-                            className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition ${
+                            className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl px-4 py-2 text-xs font-semibold transition ${
                                 isActive
                                     ? "bg-emerald-600 text-white shadow-xs"
                                     : "bg-white text-gray-600 hover:bg-gray-100 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-800"
@@ -45,16 +45,16 @@ export default function EquityData() {
                     );
                 })}
 
-                <div className="ml-auto flex items-center gap-2">
+                <div className="ml-auto flex shrink-0 items-center gap-2">
                     <NavLink
                         to="/equity-data/sector-performance"
-                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+                        className="whitespace-nowrap rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
                     >
                         Sector Performance
                     </NavLink>
                     <NavLink
                         to="/equity-data/sector-rotation"
-                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+                        className="whitespace-nowrap rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
                     >
                         Sector Rotation (RRG)
                     </NavLink>

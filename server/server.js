@@ -30,6 +30,10 @@ const marketStart = require("./cron/marketStart");
 const marketStop = require("./cron/marketStop");
 const { marketHours } = require("./utils/marketUtils");
 
+const helmet = require("helmet");
+const compression = require("compression");
+const rateLimit = require("express-rate-limit");
+
 const optionChainRoutes = require("./routes/optionChain");
 const backtestRoutes = require("./routes/backtest");
 const authRoutes = require("./routes/auth");
@@ -65,6 +69,52 @@ const CORS_ORIGINS = process.env.CORS_ORIGINS
     ? process.env.CORS_ORIGINS.split(",").map((s) => s.trim())
     : ["http://localhost:3000", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://127.0.0.1:3000", "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175"];
 
+// Production Hardening & Performance Optimizations
+app.use(
+    helmet({
+        contentSecurityPolicy: false, // Prevents blocking TradingView widget scripts / external charting / fonts
+        crossOriginEmbedderPolicy: false,
+        crossOriginResourcePolicy: { policy: "cross-origin" },
+    })
+);
+
+app.use(
+    compression({
+        threshold: 1024, // Only compress responses over 1KB
+        filter: (req, res) => {
+            if (req.headers["x-no-compression"]) return false;
+            return compression.filter(req, res);
+        },
+    })
+);
+
+// Rate Limiting: Strict on Auth to prevent brute force; generous on general API;
+// explicitly exempting high-frequency Simulator scrubber, TradingView, and uploads.
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 40,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many authentication requests. Please try again after 15 minutes." },
+});
+
+const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 1500,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => {
+        // High-frequency endpoints: scrubber, time-replay simulator, TradingView feeds, static uploads, and health checks
+        return (
+            req.path.startsWith("/api/simulator") ||
+            req.path.startsWith("/api/tv") ||
+            req.path.startsWith("/uploads") ||
+            req.path === "/health"
+        );
+    },
+    message: { error: "Too many requests. Please slow down and try again shortly." },
+});
+
 app.use(
     cors({
         origin: CORS_ORIGINS,
@@ -76,6 +126,9 @@ app.use(
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Apply general API rate limiting to all /api routes (with exclusions handled in skip)
+app.use("/api", generalLimiter);
 
 // Admin-uploaded content images (Home page hero/about/tool-card pictures —
 // see middleware/upload.js). Plain static serving, same box as the API in
@@ -113,7 +166,7 @@ app.get("/health", async (req, res) => {
 // API Routes
 app.use("/api/option-chain", optionChainRoutes);
 app.use("/api/backtest", backtestRoutes);
-app.use("/api/auth", authRoutes);
+app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/strategies", strategyRoutes);
 app.use("/api/simulator", simulatorRoutes);
 app.use("/api/subscription", subscriptionRoutes);

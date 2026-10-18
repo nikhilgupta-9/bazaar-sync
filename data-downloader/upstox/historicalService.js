@@ -134,8 +134,8 @@ async function fetchWithTimeout(url, options = {}) {
     }
 }
 
-async function secureGet(path, label) {
-    const res = await fetchWithTimeout(`${BASE_URL}${path}`, { headers: authHeaders() });
+async function secureGet(path, label, baseUrl = BASE_URL) {
+    const res = await fetchWithTimeout(`${baseUrl}${path}`, { headers: authHeaders() });
     const body = await res.json().catch(() => null);
     if (!res.ok || !body || body.status !== "success") {
         const msg = (body && (body.errors?.[0]?.message || body.message)) || `HTTP ${res.status}`;
@@ -244,6 +244,21 @@ async function getCandles(instrumentKey, { interval = "day", fromDate, toDate })
     return mapCandles(body.data?.candles || []);
 }
 
+/**
+ * v3 historical candles for a still-active instrument (equity spot or a live,
+ * not-yet-expired F&O contract) at minute resolution. Confirmed live
+ * 2026-10-14: 1-minute equity data reaches back to at least Jan 2026, but one
+ * request may span at most ~1 calendar month ("Invalid date range" for a
+ * 3-month span) — callers chunk by month. Candles come back only for minutes
+ * that actually traded (illiquid strikes have gaps, not zero-volume rows).
+ */
+const BASE_URL_V3 = process.env.UPSTOX_API_V3_BASE_URL || "https://api.upstox.com/v3";
+async function getCandlesV3(instrumentKey, { unit = "minutes", interval = 1, fromDate, toDate }) {
+    const path = `/historical-candle/${encodeURIComponent(instrumentKey)}/${unit}/${interval}/${toDate}/${fromDate}`;
+    const body = await withRetry(() => secureGet(path, "getCandlesV3", BASE_URL_V3), `getCandlesV3 ${instrumentKey} ${fromDate}..${toDate}`);
+    return mapCandles(body.data?.candles || []);
+}
+
 // Upstox instrument keys for all 7 "the 7 indices" underlyings (CLAUDE.md
 // line 260). NIFTY/BANKNIFTY/FINNIFTY were already confirmed; the other 4
 // were VERIFIED live against getExpiries() (2026-09-11) — each returned a
@@ -267,6 +282,7 @@ module.exports = {
     resolveExpiredFutureKey,
     getExpiredCandles,
     getCandles,
+    getCandlesV3,
     splitCandleTimestamp,
     UNDERLYING_KEYS,
 };

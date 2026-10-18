@@ -7,7 +7,7 @@ import { formatOi } from "../utils/format";
 // cell's spine-side edge, growing left; put: anchored at the spine-side
 // edge, growing right) with only the OUTER edge rounded — the edge nearest
 // the spine stays square, same convention professional chain tools use.
-export default function OiBar({ value, max, side }) {
+export default function OiBar({ value, max, side, format = formatOi }) {
     const pct = max > 0 ? Math.min(100, ((value ?? 0) / max) * 100) : 0;
     const isCall = side === "ce";
     const barColor = isCall
@@ -17,7 +17,7 @@ export default function OiBar({ value, max, side }) {
     return (
         <div className="relative h-4 w-full overflow-hidden">
             <div className={`absolute inset-y-0 ${barShape} ${barColor} transition-all duration-300`} style={{ width: `${pct}%` }} />
-            <div className="relative px-2 text-right text-[11px] leading-4 tabular-nums text-gray-700 dark:text-gray-300 font-medium">{formatOi(value)}</div>
+            <div className="relative px-2 text-right text-label leading-4 font-mono tabular-nums text-fg font-medium">{format(value)}</div>
         </div>
     );
 }

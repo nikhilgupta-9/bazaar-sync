@@ -232,6 +232,48 @@ describe("Iron Condor (4 legs, fully defined risk)", () => {
         expect(margin.estMargin).toBeCloseTo(69292.73, 0);
         expect(margin.fundsRequired).toBeCloseTo(69292.73, 0);
     });
+
+    it("calculates exact Delta Exchange Buy option premium without integer rounding loss", () => {
+        // 1 contract of BTC Call at $1,250 (contract value 0.001 BTC)
+        const btcBuy = [leg({ action: "buy", type: "CE", strike: 84000, premium: 1250, qty: 1, lotSize: 0.001 })];
+        const margin = computeMarginDetails(btcBuy, 83400, "BTC", { isCrypto: true });
+        expect(margin.fundsRequired).toBe(1.25);
+        expect(margin.premiumPaid).toBe(1.25);
+        expect(margin.estMargin).toBe(0);
+    });
+
+    it("calculates exact Delta Exchange Naked Sell option Initial Margin at 20x leverage (5% notional)", () => {
+        // 1 contract of BTC Call at spot $84,000, lotSize 0.001. Notional = $84. IM @ 20x (5%) = $4.20
+        const btcSell = [leg({ action: "sell", type: "CE", strike: 84000, premium: 1200, qty: 1, lotSize: 0.001 })];
+        const margin = computeMarginDetails(btcSell, 84000, "BTC", { isCrypto: true, leverage: 20 });
+        expect(margin.estMargin).toBe(4.2);
+        expect(margin.fundsRequired).toBe(4.2);
+        expect(margin.premiumReceived).toBe(1.2);
+    });
+
+    it("calculates accurate Delta Exchange Bull Call Spread margin bounded by net debit", () => {
+        // Buy 83000 CE @ 1500, Sell 84000 CE @ 900. Net Debit = (1500 - 900) * 0.001 = $0.60
+        const bullSpread = [
+            leg({ action: "buy", type: "CE", strike: 83000, premium: 1500, qty: 1, lotSize: 0.001 }),
+            leg({ action: "sell", type: "CE", strike: 84000, premium: 900, qty: 1, lotSize: 0.001 }),
+        ];
+        const margin = computeMarginDetails(bullSpread, 83400, "BTC", { isCrypto: true, leverage: 20 });
+        expect(margin.isHedged).toBe(true);
+        expect(margin.fundsRequired).toBe(0.6);
+        expect(margin.netPremium).toBe(-0.6);
+    });
+
+    it("calculates accurate Delta Exchange Credit Spread margin bounded by strike difference", () => {
+        // Sell 83000 CE @ 1500, Buy 84000 CE @ 900. Strike diff = 1000 * 0.001 = $1.00 max risk
+        const creditSpread = [
+            leg({ action: "sell", type: "CE", strike: 83000, premium: 1500, qty: 1, lotSize: 0.001 }),
+            leg({ action: "buy", type: "CE", strike: 84000, premium: 900, qty: 1, lotSize: 0.001 }),
+        ];
+        const margin = computeMarginDetails(creditSpread, 83400, "BTC", { isCrypto: true, leverage: 20 });
+        expect(margin.isHedged).toBe(true);
+        expect(margin.fundsRequired).toBe(1.0);
+        expect(margin.netPremium).toBe(0.6);
+    });
 });
 
 describe("computePOP (Probability of Profit)", () => {

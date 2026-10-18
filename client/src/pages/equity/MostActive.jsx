@@ -1,6 +1,6 @@
 import React from "react";
 // pages/equity/MostActive.jsx — Most Active Equities & Indices (7 Indices + 210 F&O Stocks)
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { fetchMostActive } from "../../services/equityApi";
 import { formatPrice, formatPercent, formatNumber } from "../../utils/format";
 import {
@@ -28,6 +28,32 @@ const TABS = [
     { id: "turnover", label: "Highest Turnover", icon: FiDollarSign },
 ];
 
+// Skeleton placeholders shown only on the first load (refreshes keep the old data on screen).
+function Bone({ className = "" }) {
+    return <div className={`animate-pulse rounded-md bg-gray-200/80 dark:bg-gray-800 ${className}`} />;
+}
+
+function SummaryCardsSkeleton() {
+    return (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {[0, 1, 2, 3].map((i) => (
+                <div key={i} className={`${i < 2 ? "col-span-2 sm:col-span-1" : ""} rounded-xl border border-gray-200 bg-white p-4 shadow-xs dark:border-gray-800 dark:bg-gray-900`}>
+                    <Bone className="h-3 w-28" />
+                    <div className="mt-3 flex items-center justify-between gap-2">
+                        <Bone className="h-6 w-20" />
+                        <Bone className="h-6 w-14" />
+                    </div>
+                    <Bone className="mt-3 h-1.5 w-full rounded-full" />
+                </div>
+            ))}
+        </div>
+    );
+}
+
+const SKELETON_ROWS = 10;
+// Rows rendered per batch; more are appended as the user scrolls near the end.
+const PAGE_SIZE = 30;
+
 export default function MostActive() {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -37,7 +63,10 @@ export default function MostActive() {
     const [categoryFilter, setCategoryFilter] = useState("all");
     const [sortKey, setSortKey] = useState("pChange");
     const [sortDir, setSortDir] = useState("desc");
-    const [viewMode, setViewMode] = useState("table"); // 'table' | 'grid'
+    const [viewMode, setViewMode] = useState(() =>
+        typeof window !== "undefined" && window.innerWidth < 640 ? "grid" : "table"
+    ); // 'table' | 'grid'
+    const initialLoading = loading && !data;
 
     function loadData() {
         setLoading(true);
@@ -131,6 +160,32 @@ export default function MostActive() {
         return sorted;
     }, [filteredList, sortKey, sortDir]);
 
+    // Lazy rendering: the API already returned every row, but drawing ~217 rich
+    // rows at once is what makes the page heavy — render PAGE_SIZE at a time and
+    // append the next batch when the sentinel below the list scrolls into view.
+    // Any tab/filter/search/sort change starts again from the first batch.
+    const listKey = `${activeTab}|${categoryFilter}|${searchQuery}|${sortKey}|${sortDir}|${viewMode}`;
+    const [paging, setPaging] = useState({ key: listKey, count: PAGE_SIZE });
+    const visibleCount = paging.key === listKey ? paging.count : PAGE_SIZE;
+    const visibleList = useMemo(() => sortedList.slice(0, visibleCount), [sortedList, visibleCount]);
+    const hasMore = visibleCount < sortedList.length;
+    const sentinelRef = useRef(null);
+
+    useEffect(() => {
+        const el = sentinelRef.current;
+        if (!el || !hasMore) return;
+        const io = new IntersectionObserver(
+            (entries) => {
+                if (entries[0].isIntersecting) {
+                    setPaging({ key: listKey, count: visibleCount + PAGE_SIZE });
+                }
+            },
+            { rootMargin: "400px 0px" } // start rendering a little before the user reaches the end
+        );
+        io.observe(el);
+        return () => io.disconnect();
+    }, [hasMore, listKey, visibleCount]);
+
     // Export to CSV
     function exportToCsv() {
         if (!sortedList.length) return;
@@ -175,11 +230,11 @@ export default function MostActive() {
         : 50;
 
     return (
-        <div className="space-y-5 pb-12">
+        <div className="space-y-5 pb-6">
             {/* Header */}
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                    <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+                <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
                         <h2 className="text-xl font-bold tracking-tight text-gray-900 dark:text-white sm:text-2xl">
                             High Activity Options
                         </h2>
@@ -187,12 +242,12 @@ export default function MostActive() {
                             7 Indices + 210 Stocks
                         </span>
                     </div>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 sm:text-sm mt-0.5">
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 sm:text-sm">
                         High activity F&O universe analytics across 7 major indices and 210 equities, featuring turnover leaderboards, volume surges, and StockMojo intraday range metrics.
                     </p>
                 </div>
 
-                <div className="flex items-center gap-2 self-start sm:self-auto">
+                <div className="flex shrink-0 items-center gap-2">
                     <button
                         onClick={exportToCsv}
                         disabled={loading || !sortedList.length}
@@ -221,9 +276,12 @@ export default function MostActive() {
             )}
 
             {/* StockMojo Market Breadth & Summary Cards */}
+            {initialLoading ? (
+                <SummaryCardsSkeleton />
+            ) : (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 {/* Card 1: Market Breadth */}
-                <div className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-xs dark:border-gray-800 dark:bg-gray-900 transition">
+                <div className="col-span-2 sm:col-span-1 rounded-xl border border-gray-200 bg-white p-4 shadow-xs dark:border-gray-800 dark:bg-gray-900 transition">
                     <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
                         <span className="font-medium">Market Breadth (F&O)</span>
                         <button
@@ -237,7 +295,7 @@ export default function MostActive() {
                             {summary.totalStocks} Stocks
                         </button>
                     </div>
-                    <div className="mt-2 flex items-center justify-between gap-1">
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-1">
                         {/* Advances Button */}
                         <button
                             onClick={() => {
@@ -253,7 +311,7 @@ export default function MostActive() {
                             title="Click to show all Advancing stocks"
                         >
                             <span className="text-base font-bold sm:text-lg">{summary.advances}</span>
-                            <span className="text-[11px] font-semibold">Advances</span>
+                            <span className="text-label font-semibold">Advances</span>
                         </button>
 
                         {/* Declines Button */}
@@ -271,7 +329,7 @@ export default function MostActive() {
                             title="Click to show all Declining stocks"
                         >
                             <span className="text-base font-bold sm:text-lg">{summary.declines}</span>
-                            <span className="text-[11px] font-semibold">Declines</span>
+                            <span className="text-label font-semibold">Declines</span>
                         </button>
 
                         {/* Unchanged Button */}
@@ -279,7 +337,7 @@ export default function MostActive() {
                             onClick={() => {
                                 setActiveTab("unchanged");
                             }}
-                            className={`flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] transition ${
+                            className={`flex items-center gap-1 rounded-lg px-1.5 py-1 text-label transition ${
                                 activeTab === "unchanged"
                                     ? "bg-gray-200 text-gray-900 ring-1 ring-gray-400 dark:bg-gray-800 dark:text-white"
                                     : "text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
@@ -310,15 +368,15 @@ export default function MostActive() {
                 </div>
 
                 {/* Card 2: Total Market Turnover */}
-                <div className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-xs dark:border-gray-800 dark:bg-gray-900">
-                    <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Total F&O Turnover</span>
-                    <div className="mt-1 flex items-baseline gap-1">
+                <div className="col-span-2 sm:col-span-1 rounded-xl border border-gray-200 bg-white p-4 shadow-xs dark:border-gray-800 dark:bg-gray-900">
+                    <span className="block text-xs font-medium text-gray-500 dark:text-gray-400">Total F&O Turnover</span>
+                    <div className="mt-2 flex items-baseline gap-1">
                         <span className="text-base font-bold text-gray-900 dark:text-white sm:text-lg">
                             ₹{formatNumber(summary.totalTurnoverCr || 0)}
                         </span>
                         <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Cr</span>
                     </div>
-                    <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
+                    <p className="mt-1 text-label text-gray-400 dark:text-gray-500">
                         Vol: {formatNumber(summary.totalVolume || 0)} shares
                     </p>
                 </div>
@@ -330,17 +388,17 @@ export default function MostActive() {
                             setSearchQuery(summary.topGainer.symbol);
                         }
                     }}
-                    className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-xs dark:border-gray-800 dark:bg-gray-900 cursor-pointer hover:border-emerald-300 dark:hover:border-emerald-800 transition"
+                    className="rounded-xl border border-gray-200 bg-white p-4 shadow-xs dark:border-gray-800 dark:bg-gray-900 cursor-pointer hover:border-emerald-300 dark:hover:border-emerald-800 transition"
                     title="Click to search this stock"
                 >
-                    <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Top Gainer Today</span>
+                    <span className="block text-xs font-medium text-gray-500 dark:text-gray-400">Top Gainer Today</span>
                     {summary.topGainer ? (
-                        <div className="mt-1 flex items-center justify-between">
-                            <div>
-                                <span className="font-bold text-gray-900 dark:text-white text-sm sm:text-base">
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                                <span className="block truncate font-bold text-gray-900 dark:text-white text-sm sm:text-base">
                                     {summary.topGainer.symbol}
                                 </span>
-                                <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                                <div className="text-label text-gray-500 dark:text-gray-400">
                                     ₹{formatPrice(summary.topGainer.price)}
                                 </div>
                             </div>
@@ -349,7 +407,7 @@ export default function MostActive() {
                             </span>
                         </div>
                     ) : (
-                        <div className="mt-1 text-xs text-gray-400">-</div>
+                        <div className="mt-2 text-xs text-gray-400">-</div>
                     )}
                 </div>
 
@@ -360,17 +418,17 @@ export default function MostActive() {
                             setSearchQuery(summary.topLoser.symbol);
                         }
                     }}
-                    className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-xs dark:border-gray-800 dark:bg-gray-900 cursor-pointer hover:border-rose-300 dark:hover:border-rose-800 transition"
+                    className="rounded-xl border border-gray-200 bg-white p-4 shadow-xs dark:border-gray-800 dark:bg-gray-900 cursor-pointer hover:border-rose-300 dark:hover:border-rose-800 transition"
                     title="Click to search this stock"
                 >
-                    <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Top Loser Today</span>
+                    <span className="block text-xs font-medium text-gray-500 dark:text-gray-400">Top Loser Today</span>
                     {summary.topLoser ? (
-                        <div className="mt-1 flex items-center justify-between">
-                            <div>
-                                <span className="font-bold text-gray-900 dark:text-white text-sm sm:text-base">
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                                <span className="block truncate font-bold text-gray-900 dark:text-white text-sm sm:text-base">
                                     {summary.topLoser.symbol}
                                 </span>
-                                <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                                <div className="text-label text-gray-500 dark:text-gray-400">
                                     ₹{formatPrice(summary.topLoser.price)}
                                 </div>
                             </div>
@@ -379,16 +437,17 @@ export default function MostActive() {
                             </span>
                         </div>
                     ) : (
-                        <div className="mt-1 text-xs text-gray-400">-</div>
+                        <div className="mt-2 text-xs text-gray-400">-</div>
                     )}
                 </div>
             </div>
+            )}
 
             {/* Filter, Tabs, & Search Bar */}
             <div className="flex flex-col gap-3">
                 {/* Primary Tabs */}
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 pb-3 dark:border-gray-800">
-                    <div className="flex flex-wrap gap-1.5 sm:gap-2">
+                <div className="flex items-center justify-between gap-2 border-b border-gray-200 pb-3 dark:border-gray-800">
+                    <div className="-mx-3 flex min-w-0 gap-1.5 overflow-x-auto px-3 scrollbar-none sm:mx-0 sm:flex-wrap sm:gap-2 sm:overflow-visible sm:px-0">
                         {TABS.map((t) => {
                             const Icon = t.icon;
                             const isActive = activeTab === t.id;
@@ -409,7 +468,7 @@ export default function MostActive() {
                                         // Reset category filter if switching tabs to avoid empty tables
                                         if (t.id === "indices") setCategoryFilter("all");
                                     }}
-                                    className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
+                                    className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
                                         isActive
                                             ? "bg-emerald-600 text-white shadow-xs"
                                             : "border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -419,7 +478,7 @@ export default function MostActive() {
                                     <span>{t.label}</span>
                                     {count > 0 && (
                                         <span
-                                            className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                                            className={`rounded-full px-1.5 py-0.2 text-micro ${
                                                 isActive
                                                     ? "bg-white/20 text-white"
                                                     : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
@@ -434,7 +493,7 @@ export default function MostActive() {
                     </div>
 
                     {/* View mode toggle (table vs mobile card) */}
-                    <div className="hidden sm:flex items-center gap-1 rounded-lg border border-gray-200 bg-white p-0.5 dark:border-gray-800 dark:bg-gray-900">
+                    <div className="hidden sm:flex shrink-0 items-center gap-1 rounded-lg border border-gray-200 bg-white p-0.5 dark:border-gray-800 dark:bg-gray-900">
                         <button
                             onClick={() => setViewMode("table")}
                             className={`rounded-md p-1.5 transition ${
@@ -463,8 +522,8 @@ export default function MostActive() {
                 {/* Sub Filters & Search */}
                 <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
                     {/* Category Filter Pills */}
-                    <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-xs font-medium text-gray-400 dark:text-gray-500 mr-1">Filter:</span>
+                    <div className="-mx-3 flex items-center gap-1.5 overflow-x-auto px-3 scrollbar-none sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0">
+                        <span className="mr-1 shrink-0 text-xs font-medium text-gray-400 dark:text-gray-500">Filter:</span>
                         {[
                             { id: "all", label: "All" },
                             { id: "indices", label: "Indices" },
@@ -475,7 +534,7 @@ export default function MostActive() {
                             <button
                                 key={c.id}
                                 onClick={() => setCategoryFilter(c.id)}
-                                className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
+                                className={`shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-medium transition ${
                                     categoryFilter === c.id
                                         ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
                                         : "border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400 dark:hover:bg-gray-800"
@@ -513,7 +572,7 @@ export default function MostActive() {
                 <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xs dark:border-gray-800 dark:bg-gray-900">
                     <div className="overflow-x-auto">
                         <table className="w-full text-left text-xs min-w-[700px]">
-                            <thead className="border-b border-gray-200 bg-gray-50/75 text-gray-500 dark:border-gray-800 dark:bg-gray-800/50 dark:text-gray-400">
+                            <thead className="whitespace-nowrap border-b border-gray-200 bg-gray-50/75 text-gray-500 dark:border-gray-800 dark:bg-gray-800/50 dark:text-gray-400">
                                 <tr>
                                     <th
                                         onClick={() => handleSort("symbol")}
@@ -584,14 +643,33 @@ export default function MostActive() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100 dark:divide-gray-800/60">
-                                {sortedList.length === 0 ? (
+                                {initialLoading ? (
+                                    Array.from({ length: SKELETON_ROWS }, (_, i) => (
+                                        <tr key={i}>
+                                            <td className="px-4 py-3">
+                                                <div className="flex items-center gap-2.5">
+                                                    <Bone className="h-5 w-5 rounded-full" />
+                                                    <div className="space-y-1.5">
+                                                        <Bone className="h-3.5 w-24" />
+                                                        <Bone className="h-2.5 w-16" />
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td className="px-4 py-3"><Bone className="ml-auto h-3.5 w-16" /></td>
+                                            <td className="px-4 py-3"><Bone className="ml-auto h-5 w-14" /></td>
+                                            <td className="px-4 py-3 hidden md:table-cell"><Bone className="mx-auto h-1.5 w-32 rounded-full" /></td>
+                                            <td className="px-4 py-3"><Bone className="ml-auto h-3.5 w-20" /></td>
+                                            <td className="px-4 py-3"><Bone className="ml-auto h-3.5 w-14" /></td>
+                                        </tr>
+                                    ))
+                                ) : sortedList.length === 0 ? (
                                     <tr>
                                         <td colSpan={6} className="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
-                                            {loading ? "Loading live universe quotes..." : "No matching securities found."}
+                                            No matching securities found.
                                         </td>
                                     </tr>
                                 ) : (
-                                    sortedList.map((item, idx) => {
+                                    visibleList.map((item, idx) => {
                                         const isPos = item.pChange >= 0;
                                         const isIndex = item.type === "index";
 
@@ -605,7 +683,7 @@ export default function MostActive() {
                                                 {/* Asset & Sector */}
                                                 <td className="px-4 py-3">
                                                     <div className="flex items-center gap-2.5">
-                                                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[10px] font-bold text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                                                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-100 text-micro font-bold text-gray-500 dark:bg-gray-800 dark:text-gray-400">
                                                             {idx + 1}
                                                         </span>
                                                         <div>
@@ -614,16 +692,16 @@ export default function MostActive() {
                                                                     {item.symbol}
                                                                 </span>
                                                                 {isIndex ? (
-                                                                    <span className="rounded-sm bg-blue-100 px-1 py-0.2 text-[9px] font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                                                                    <span className="rounded-sm bg-blue-100 px-1 py-0.2 text-micro font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">
                                                                         INDEX
                                                                     </span>
                                                                 ) : (
-                                                                    <span className="rounded-sm bg-gray-100 px-1 py-0.2 text-[9px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
+                                                                    <span className="whitespace-nowrap rounded-sm bg-gray-100 px-1 py-0.2 text-micro font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
                                                                         {item.mcapTier}
                                                                     </span>
                                                                 )}
                                                             </div>
-                                                            <div className="text-[11px] text-gray-400 dark:text-gray-500 truncate max-w-[160px] sm:max-w-[220px]">
+                                                            <div className="text-label text-gray-400 dark:text-gray-500 truncate max-w-[160px] sm:max-w-[220px]">
                                                                 {item.name !== item.symbol ? item.name : item.sector}
                                                             </div>
                                                         </div>
@@ -631,12 +709,12 @@ export default function MostActive() {
                                                 </td>
 
                                                 {/* LTP */}
-                                                <td className="px-4 py-3 text-right font-mono font-bold text-gray-900 dark:text-white">
+                                                <td className="px-4 py-3 text-right font-mono tabular-nums font-bold text-gray-900 dark:text-white">
                                                     ₹{formatPrice(item.price)}
                                                 </td>
 
                                                 {/* Change (%) */}
-                                                <td className="px-4 py-3 text-right font-mono bg-emerald-50/10 dark:bg-emerald-950/5">
+                                                <td className="px-4 py-3 text-right font-mono tabular-nums bg-emerald-50/10 dark:bg-emerald-950/5">
                                                     <div
                                                         className={`inline-flex items-center gap-0.5 font-bold ${
                                                             isPos
@@ -646,7 +724,7 @@ export default function MostActive() {
                                                     >
                                                         {isPos ? "+" : ""}{item.pChange}%
                                                     </div>
-                                                    <div className="text-[10px] text-gray-400">
+                                                    <div className="text-micro text-gray-400">
                                                         {isPos ? "+" : ""}{formatPrice(item.change)}
                                                     </div>
                                                 </td>
@@ -654,7 +732,7 @@ export default function MostActive() {
                                                 {/* Intraday Range (StockMojo Low-High Bar) */}
                                                 <td className="px-4 py-3 text-center hidden md:table-cell">
                                                     <div className="mx-auto w-36">
-                                                        <div className="flex items-center justify-between text-[10px] text-gray-400 font-mono mb-1">
+                                                        <div className="flex items-center justify-between text-micro text-gray-400 font-mono tabular-nums mb-1">
                                                             <span>₹{formatPrice(item.low)}</span>
                                                             <span>₹{formatPrice(item.high)}</span>
                                                         </div>
@@ -674,12 +752,12 @@ export default function MostActive() {
                                                 </td>
 
                                                 {/* Traded Volume */}
-                                                <td className="px-4 py-3 text-right font-mono text-gray-700 dark:text-gray-300">
+                                                <td className="px-4 py-3 text-right font-mono tabular-nums text-gray-700 dark:text-gray-300">
                                                     {formatNumber(item.volume)}
                                                 </td>
 
                                                 {/* Turnover (Cr) */}
-                                                <td className="px-4 py-3 text-right font-mono font-bold text-gray-900 dark:text-white">
+                                                <td className="px-4 py-3 text-right font-mono tabular-nums font-bold text-gray-900 dark:text-white">
                                                     ₹{item.turnoverCr > 0 ? formatNumber(item.turnoverCr) : "-"} Cr
                                                 </td>
                                             </tr>
@@ -693,7 +771,27 @@ export default function MostActive() {
             ) : (
                 /* Grid Cards View (Optimized for Mobile/Cards) */
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {sortedList.map((item, idx) => {
+                    {initialLoading &&
+                        Array.from({ length: 6 }, (_, i) => (
+                            <div key={i} className="rounded-xl border border-gray-200 bg-white p-4 shadow-xs dark:border-gray-800 dark:bg-gray-900">
+                                <div className="flex items-start justify-between">
+                                    <div className="flex items-center gap-2">
+                                        <Bone className="h-5 w-5 rounded-full" />
+                                        <div className="space-y-1.5">
+                                            <Bone className="h-3.5 w-24" />
+                                            <Bone className="h-2.5 w-16" />
+                                        </div>
+                                    </div>
+                                    <Bone className="h-6 w-14" />
+                                </div>
+                                <Bone className="mt-4 h-1.5 w-full rounded-full" />
+                                <div className="mt-4 grid grid-cols-2 gap-3">
+                                    <Bone className="h-8" />
+                                    <Bone className="h-8" />
+                                </div>
+                            </div>
+                        ))}
+                    {visibleList.map((item, idx) => {
                         const isPos = item.pChange >= 0;
                         const isIndex = item.type === "index";
 
@@ -706,7 +804,7 @@ export default function MostActive() {
                             >
                                 <div className="flex items-start justify-between">
                                     <div className="flex items-center gap-2">
-                                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[10px] font-bold text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-100 text-micro font-bold text-gray-500 dark:bg-gray-800 dark:text-gray-400">
                                             {idx + 1}
                                         </span>
                                         <div>
@@ -715,11 +813,11 @@ export default function MostActive() {
                                                     {item.symbol}
                                                 </span>
                                                 {isIndex ? (
-                                                    <span className="rounded-sm bg-blue-100 px-1.5 py-0.2 text-[9px] font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                                                    <span className="rounded-sm bg-blue-100 px-1.5 py-0.2 text-micro font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">
                                                         INDEX
                                                     </span>
                                                 ) : (
-                                                    <span className="rounded-sm bg-gray-100 px-1.5 py-0.2 text-[9px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
+                                                    <span className="whitespace-nowrap rounded-sm bg-gray-100 px-1.5 py-0.2 text-micro font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
                                                         {item.mcapTier}
                                                     </span>
                                                 )}
@@ -731,11 +829,11 @@ export default function MostActive() {
                                     </div>
 
                                     <div className="text-right">
-                                        <div className="font-mono font-bold text-gray-900 dark:text-white text-sm">
+                                        <div className="font-mono tabular-nums font-bold text-gray-900 dark:text-white text-sm">
                                             ₹{formatPrice(item.price)}
                                         </div>
                                         <div
-                                            className={`font-mono text-xs font-semibold ${
+                                            className={`font-mono tabular-nums text-xs font-semibold ${
                                                 isPos ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
                                             }`}
                                         >
@@ -746,7 +844,7 @@ export default function MostActive() {
 
                                 {/* Low-High Progress Bar */}
                                 <div className="mt-3.5">
-                                    <div className="flex items-center justify-between text-[10px] text-gray-400 font-mono mb-1">
+                                    <div className="flex items-center justify-between text-micro text-gray-400 font-mono tabular-nums mb-1">
                                         <span>L: ₹{formatPrice(item.low)}</span>
                                         <span>H: ₹{formatPrice(item.high)}</span>
                                     </div>
@@ -761,12 +859,27 @@ export default function MostActive() {
                                 </div>
 
                                 <div className="mt-3 flex items-center justify-between border-t border-gray-100 pt-2.5 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
-                                    <span>Vol: <strong className="font-mono text-gray-700 dark:text-gray-300">{formatNumber(item.volume)}</strong></span>
-                                    <span>Turnover: <strong className="font-mono text-gray-900 dark:text-white">₹{formatNumber(item.turnoverCr)} Cr</strong></span>
+                                    <span>Vol: <strong className="font-mono tabular-nums text-gray-700 dark:text-gray-300">{formatNumber(item.volume)}</strong></span>
+                                    <span>Turnover: <strong className="font-mono tabular-nums text-gray-900 dark:text-white">₹{formatNumber(item.turnoverCr)} Cr</strong></span>
                                 </div>
                             </div>
                         );
                     })}
+                </div>
+            )}
+
+            {!initialLoading && sortedList.length > 0 && (
+                <div ref={sentinelRef} className="flex items-center justify-center gap-2 py-3 text-xs text-gray-400 dark:text-gray-500">
+                    {hasMore ? (
+                        <>
+                            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-300 border-t-emerald-500 dark:border-gray-700 dark:border-t-emerald-400" />
+                            <span>
+                                Showing {visibleList.length} of {sortedList.length} — loading more…
+                            </span>
+                        </>
+                    ) : (
+                        <span>Showing all {sortedList.length} securities</span>
+                    )}
                 </div>
             )}
         </div>

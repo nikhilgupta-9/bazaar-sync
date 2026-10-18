@@ -309,8 +309,16 @@ async function pruneLocalDb(dataType, symbol, year) {
         deleteParams = [symbol, startDate, endDate];
     }
 
-    const deleteRes = await db.query(deleteSql, deleteParams);
-    const deletedCount = deleteRes?.affectedRows || 0;
+    // Chunked: one DELETE over millions of rows overflows InnoDB's lock table
+    // ("The total number of locks exceeds the lock table size", hit for real
+    // pruning LUPIN 2026's 2.7M option rows).
+    let deletedCount = 0;
+    for (;;) {
+        const deleteRes = await db.query(`${deleteSql} LIMIT 50000`, deleteParams);
+        const n = deleteRes?.affectedRows || 0;
+        deletedCount += n;
+        if (n < 50000) break;
+    }
 
     appendLog(`✅ Pruned ${deletedCount.toLocaleString()} local DB rows for ${symbol || dataType} (${year}). Disk space reclaimed.`);
     return deletedCount;
@@ -342,6 +350,8 @@ function getStrikeStepForSymbol(symbol, sampleStrikes = []) {
 }
 
 /**
+ * trade_date column of one exported CSV line (futures puts expiry before trade_date)
+ */
 function extractTradeDateFromLine(line, dataType) {
     if (!line) return "";
     const parts = line.split(",");
@@ -493,16 +503,11 @@ async function smartMergeAndPolishDataset({ dataType, symbol, year, localGzipPat
             polishStats: { totalSnapshots: 0, fullAtm30CoverageSnapshots: 0, averageStrikesPerSnapshot: 0 },
         };
     } catch (err) {
-        appendLog(`[SmartMerge] Notice: Cloud streaming merge error (${err.message}). Using clean local DB export directly.`, "warn");
-        const stat = fs.existsSync(localGzipPath) ? fs.statSync(localGzipPath) : { size: 0 };
-        return {
-            finalGzipPath: localGzipPath,
-            finalFileName,
-            fileSizeBytes: stat.size,
-            totalRecords: totalRecords || 0,
-            duplicatesMerged: 0,
-            polishStats: { totalSnapshots: 0, fullAtm30CoverageSnapshots: 0, averageStrikesPerSnapshot: 0 },
-        };
+        // Never fall back to uploading the local export alone here: processBatch
+        // deletes the existing cloud file after upload, so any cloud-only dates
+        // would be lost permanently. Fail the batch and leave Drive untouched.
+        appendLog(`[SmartMerge] Cloud streaming merge failed (${err.message}). Aborting upload — existing Drive file left untouched.`, "error");
+        throw err;
     } finally {
         if (tempCloudDownloadPath && fs.existsSync(tempCloudDownloadPath)) {
             try { fs.unlinkSync(tempCloudDownloadPath); } catch (_) {}

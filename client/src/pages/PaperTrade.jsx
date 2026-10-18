@@ -3,7 +3,7 @@
 // Refill: +₹5,00,000 Virtual Capital for ₹100 via Razorpay.
 // Live WebSocket Tick Streaming across 7 Indices & 210+ Stocks, instant Hedging with margin discounts.
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useOptionChain } from "../hooks/useOptionChain";
@@ -16,6 +16,10 @@ import {
     closePosition,
     closeAllPositions,
     fetchPaperLeaderboard,
+    updatePositionBracket,
+    fetchPaperOrders,
+    placePaperOrder,
+    cancelPaperOrder,
 } from "../services/paperTradeApi";
 import { createProOrder, verifyProPayment } from "../services/subscriptionApi";
 import { loadRazorpayCheckout } from "../utils/loadRazorpayCheckout";
@@ -53,7 +57,47 @@ import {
     FiAlertCircle,
     FiZap,
     FiBarChart2,
+    FiTarget,
+    FiClock,
+    FiActivity,
+    FiSettings,
+    FiList,
+    FiXCircle,
+    FiSliders,
 } from "react-icons/fi";
+
+// Option-chain columns the user can toggle from the chain's settings menu.
+// Listed outermost → innermost for the CALL side (the PUT side mirrors it), and
+// `markets` lists where the field really exists in that market's chain data —
+// Indian rows (optionChainService) carry Chg%/OI Chg, Delta Exchange carries Bid/Ask.
+const CHAIN_COLUMNS = [
+    { id: "oi", label: "OI", markets: ["indian", "crypto"] },
+    { id: "oiChange", label: "OI Chg", markets: ["indian"] },
+    { id: "volume", label: "Volume", markets: ["indian", "crypto"] },
+    { id: "iv", label: "IV", markets: ["indian", "crypto"] },
+    { id: "vega", label: "Vega", markets: ["indian", "crypto"] },
+    { id: "theta", label: "Theta", markets: ["indian", "crypto"] },
+    { id: "gamma", label: "Gamma", markets: ["indian", "crypto"] },
+    { id: "delta", label: "Delta", markets: ["indian", "crypto"] },
+    { id: "bid", label: "Bid", markets: ["crypto"] },
+    { id: "ask", label: "Ask", markets: ["crypto"] },
+    { id: "changePercent", label: "Chg %", markets: ["indian"] },
+    { id: "ltp", label: "LTP", markets: ["indian", "crypto"], locked: true },
+];
+const DEFAULT_CHAIN_COLS_BY_MARKET = {
+    indian: ["oi", "oiChange", "volume", "iv", "delta"],
+    crypto: ["bid", "ask", "iv", "delta", "volume"],
+};
+const CHAIN_COLS_KEY_PREFIX = "bazaar_sync_pt_chain_cols_";
+
+function loadChainCols(market) {
+    try {
+        const raw = localStorage.getItem(CHAIN_COLS_KEY_PREFIX + market);
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (Array.isArray(parsed) && parsed.length) return parsed;
+    } catch {}
+    return DEFAULT_CHAIN_COLS_BY_MARKET[market] || ["delta"];
+}
 
 const FALLBACK_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"];
 const STRIKE_RANGES = [
@@ -75,6 +119,21 @@ const GUEST_WALLET_KEY = "bazaar_sync_guest_wallet";
 const GUEST_CRYPTO_WALLET_KEY = "bazaar_sync_guest_crypto_wallet";
 const GUEST_POSITIONS_KEY = "bazaar_sync_guest_positions";
 const GUEST_CLOSED_KEY = "bazaar_sync_guest_closed";
+const GUEST_ORDERS_KEY = "bazaar_sync_guest_orders";
+
+function loadGuestOrders() {
+    try {
+        const raw = localStorage.getItem(GUEST_ORDERS_KEY);
+        if (raw) return JSON.parse(raw);
+    } catch {}
+    return [];
+}
+
+function saveGuestOrders(orders) {
+    try {
+        localStorage.setItem(GUEST_ORDERS_KEY, JSON.stringify(orders));
+    } catch {}
+}
 
 function loadGuestCryptoWallet() {
     try {
@@ -135,13 +194,49 @@ function saveGuestClosed(c) {
 function formatExpiryShort(sqlDate) {
     if (!sqlDate) return "";
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const parts = sqlDate.split("-");
+    // crypto expiries arrive as ISO timestamps ("2026-10-16T12:00:00Z") — keep the date part
+    const parts = String(sqlDate).slice(0, 10).split("-");
     if (parts.length < 3) return sqlDate;
     const [, m, d] = parts.map(Number);
     return `${d} ${months[m - 1] || ""}`;
 }
 
 let legIdCounter = Date.now();
+
+// Stop-loss / target are option-premium prices. A BUY's SL sits below entry and
+// its target above; a SELL (short) is the mirror image. Returns a message or null.
+function bracketError(side, entry, sl, tgt) {
+    const isLong = side === "long" || side === "buy";
+    const e = Number(entry);
+    const check = (raw, kind) => {
+        if (raw === "" || raw == null) return null;
+        const v = Number(raw);
+        if (!(v > 0)) return `${kind} must be a positive price`;
+        const belowWanted = kind === "SL" ? isLong : !isLong;
+        if (belowWanted && v >= e) return `${kind} must be below the current price (${e}) for a ${isLong ? "Buy" : "Sell"}`;
+        if (!belowWanted && v <= e) return `${kind} must be above the current price (${e}) for a ${isLong ? "Buy" : "Sell"}`;
+        return null;
+    };
+    return check(sl, "SL") || check(tgt, "Target");
+}
+
+const toBracket = (v) => (v === "" || v == null || !(Number(v) > 0) ? null : Number(v));
+
+// Same trigger rule the backend uses in paperPositionService.handleLiveTicks.
+function bracketHit(pos, ltp) {
+    const sl = pos.stop_loss_price != null ? Number(pos.stop_loss_price) : null;
+    const tgt = pos.target_price != null ? Number(pos.target_price) : null;
+    if (pos.side === "long") {
+        if (sl != null && ltp <= sl) return "stop_loss";
+        if (tgt != null && ltp >= tgt) return "target";
+    } else {
+        if (sl != null && ltp >= sl) return "stop_loss";
+        if (tgt != null && ltp <= tgt) return "target";
+    }
+    return null;
+}
+
+const EXIT_REASON_LABELS = { stop_loss: "SL hit", target: "Target hit", manual: "Manual", close_all: "Square-off all" };
 
 export default function PaperTrade() {
     const { token, user, isPro, refreshUser } = useAuth();
@@ -169,6 +264,7 @@ export default function PaperTrade() {
     const [selectedCryptoExpiry, setSelectedCryptoExpiry] = useState(null);
     const [currency, setCurrency] = useState("USD"); // "USD" | "INR"
     const [usdtInrRate, setUsdtInrRate] = useState(86.5);
+    const [cryptoLeverage, setCryptoLeverage] = useState(20); // Delta Exchange default options leverage: 20x (5% IM)
     const [chartViewTab, setChartViewTab] = useState("presets"); // "presets" | "payoff" | "tradingview" (default to presets matching StockMojo)
     const [positionsViewTab, setPositionsViewTab] = useState("payoff"); // "payoff" | "tradingview"
     const [cryptoWallet, setCryptoWallet] = useState(loadGuestCryptoWallet);
@@ -229,24 +325,31 @@ export default function PaperTrade() {
 
             let rows = [];
             if (Array.isArray(data.chain) && data.chain.length > 0) {
+                // Delta Exchange reports OI/volume in coin units (e.g. 0.001 BTC);
+                // show them as contract counts, and leave fields it didn't send
+                // as null ("—") instead of filling in made-up defaults.
+                const posOrNull = (v) => (Number(v) > 0 ? Number(v) : null);
+                const mapSide = (o) => {
+                    if (!o) return null;
+                    const cv = Number(o.contractValue) || CRYPTO_COINS.find((c) => c.symbol === coin)?.defaultLot || 1;
+                    const toContracts = (v) => (v == null ? null : Math.round(Number(v) / cv));
+                    return {
+                        ltp: o.markPrice ?? o.askPrice ?? o.bidPrice ?? 0,
+                        iv: posOrNull(o.markIv),
+                        delta: o.delta != null ? Number(o.delta) : null,
+                        oi: toContracts(o.oi),
+                        volume: toContracts(o.volume),
+                        gamma: o.gamma ?? null,
+                        theta: o.theta ?? null,
+                        vega: o.vega ?? null,
+                        bid: posOrNull(o.bidPrice),
+                        ask: posOrNull(o.askPrice),
+                    };
+                };
                 rows = data.chain.map((r) => ({
                     strike: Number(r.strike),
-                    ce: {
-                        ltp: r.call?.markPrice ?? r.call?.askPrice ?? r.call?.bidPrice ?? 0,
-                        iv: r.call?.markIv ?? 24,
-                        delta: r.call?.delta != null ? Number(r.call.delta) : 0.5,
-                        oi: r.call?.oi ?? 0,
-                        bid: r.call?.bidPrice,
-                        ask: r.call?.askPrice,
-                    },
-                    pe: {
-                        ltp: r.put?.markPrice ?? r.put?.askPrice ?? r.put?.bidPrice ?? 0,
-                        iv: r.put?.markIv ?? 24,
-                        delta: r.put?.delta != null ? Number(r.put.delta) : -0.5,
-                        oi: r.put?.oi ?? 0,
-                        bid: r.put?.bidPrice,
-                        ask: r.put?.askPrice,
-                    },
+                    ce: mapSide(r.call),
+                    pe: mapSide(r.put),
                 }));
             } else {
                 for (let i = -15; i <= 15; i++) {
@@ -369,6 +472,18 @@ export default function PaperTrade() {
     const [closingId, setClosingId] = useState(null);
     const [closingAll, setClosingAll] = useState(false);
 
+    // Orders Management State (Delta Exchange / StockMojo Parity)
+    const [orders, setOrders] = useState([]);
+    const [ordersLoading, setOrdersLoading] = useState(false);
+    const [orderFilter, setOrderFilter] = useState("all"); // 'all' | 'pending' | 'executed' | 'cancelled'
+    const [cancellingOrderId, setCancellingOrderId] = useState(null);
+
+    // Target Date / Time-Decay Slider (StockMojo Parity)
+    const [targetDaysOffset, setTargetDaysOffset] = useState(0);
+
+    // Direct Quick Order Slip Modal (Delta Exchange & StockMojo Parity)
+    const [orderModal, setOrderModal] = useState(null);
+
     // Refresh wallet
     const loadWallet = useCallback(async () => {
         if (token) {
@@ -383,50 +498,295 @@ export default function PaperTrade() {
         }
     }, [token]);
 
+    // Load Orders
+    const loadOrders = useCallback(async () => {
+        if (token) {
+            try {
+                setOrdersLoading(true);
+                const res = await fetchPaperOrders(token);
+                const serverOrders = (res.orders || []).map((o) => ({
+                    ...o,
+                    market: o.market || "indian",
+                    optRight: o.opt_right || o.optRight || o.option_type,
+                    price: o.price != null ? Number(o.price) : null,
+                    executed_price: o.executed_price != null ? Number(o.executed_price) : null,
+                }));
+                const guestCryptoOrders = loadGuestOrders().filter((o) => o.market === "crypto");
+                const merged = [...serverOrders, ...guestCryptoOrders].sort(
+                    (a, b) => new Date(b.placed_at || b.created_at || 0) - new Date(a.placed_at || a.created_at || 0)
+                );
+                setOrders(merged);
+            } catch (err) {
+                console.error("[PaperTrade] loadOrders failed:", err);
+            } finally {
+                setOrdersLoading(false);
+            }
+        } else {
+            setOrders(loadGuestOrders().sort((a, b) => new Date(b.placed_at || b.created_at || 0) - new Date(a.placed_at || a.created_at || 0)));
+        }
+    }, [token]);
+
+    // Cancel Order
+    const handleCancelOrder = async (order) => {
+        try {
+            setCancellingOrderId(order.id);
+            if (token && order.market !== "crypto") {
+                await cancelPaperOrder(token, order.id);
+                await loadWallet();
+                await loadOrders();
+            } else {
+                const allOrders = loadGuestOrders();
+                const updated = allOrders.map((o) =>
+                    o.id === order.id ? { ...o, status: "CANCELLED", cancelled_at: new Date().toISOString() } : o
+                );
+                saveGuestOrders(updated);
+                setOrders(updated);
+
+                // Refund reserved funds
+                const refund = Number(order.required_funds || 0);
+                if (order.market === "crypto") {
+                    const cw = loadGuestCryptoWallet();
+                    const nextW = {
+                        balance: Number(cw.balance) + refund,
+                        margin_utilized: Math.max(0, (cw.margin_utilized || 0) - refund),
+                    };
+                    saveGuestCryptoWallet(nextW);
+                    setCryptoWallet(nextW);
+                } else {
+                    const gw = loadGuestWallet();
+                    const nextW = {
+                        balance: Number(gw.balance) + refund,
+                        margin_utilized: Math.max(0, (gw.margin_utilized || 0) - refund),
+                    };
+                    saveGuestWallet(nextW);
+                    setWallet(nextW);
+                }
+            }
+            setFeedback({ type: "success", text: `Order #${order.id} cancelled successfully.` });
+        } catch (err) {
+            setFeedback({ type: "error", text: err.message || "Failed to cancel order." });
+        } finally {
+            setCancellingOrderId(null);
+        }
+    };
+
+    // Close positions that live only in this browser (crypto trades, and every
+    // trade of a logged-out guest): book P&L, release margin, move to history.
+    // Reads storage as the source of truth so it's safe to call from callbacks.
+    const closeLocalPositions = useCallback((toClose, defaultReason = "manual") => {
+        if (!toClose.length) return;
+        const ids = new Set(toClose.map((p) => p.id));
+        const now = new Date().toISOString();
+        let inr = { delta: 0, margin: 0 };
+        let usd = { delta: 0, margin: 0 };
+        const closedNow = toClose.map((pos) => {
+            const exitPrice = Number(pos.current_price ?? pos.entry_price);
+            const shares = pos.lots * pos.lot_size;
+            const realized = (pos.side === "long" ? exitPrice - pos.entry_price : pos.entry_price - exitPrice) * shares;
+            const margin = Number(pos.margin_blocked || 0);
+            const bucket = pos.market === "crypto" ? usd : inr;
+            bucket.delta += margin + realized;
+            bucket.margin += margin;
+            const { _reason, ...rest } = pos;
+            return { ...rest, exit_price: exitPrice, realized_pnl: realized, closed_at: now, exit_reason: _reason || defaultReason };
+        });
+
+        saveGuestPositions(loadGuestPositions().filter((p) => !ids.has(p.id)));
+        saveGuestClosed([...closedNow, ...loadGuestClosed()]);
+        setOpenPositions((prev) => prev.filter((p) => !ids.has(p.id)));
+        setClosedPositions((prev) => [...closedNow, ...prev.filter((p) => !ids.has(p.id))]);
+
+        if (usd.margin || usd.delta) {
+            const cw = loadGuestCryptoWallet();
+            const next = { balance: Number(cw.balance) + usd.delta, margin_utilized: Math.max(0, (cw.margin_utilized || 0) - usd.margin) };
+            saveGuestCryptoWallet(next);
+            setCryptoWallet(next);
+        }
+        if (inr.margin || inr.delta) {
+            const gw = loadGuestWallet();
+            const next = { balance: Number(gw.balance) + inr.delta, margin_utilized: Math.max(0, (gw.margin_utilized || 0) - inr.margin) };
+            saveGuestWallet(next);
+            setWallet(next);
+        }
+    }, []);
+
+    // SL/Target popup, shared by basket legs and open positions:
+    // { kind: "leg" | "position", id, pos?, side, ref, label, sl, target } while open.
+    const [slModal, setSlModal] = useState(null);
+    const [savingBracket, setSavingBracket] = useState(false);
+
+    // Server positions closed by a stop-loss/target since the last refresh get a banner.
+    const serverOpenIdsRef = useRef(null);
+
     // Refresh positions
     const loadPositions = useCallback(async () => {
+        const sameExpiry = (a, b) => String(a || "").slice(0, 10) === String(b || "").slice(0, 10);
+        // Mark browser-held positions to the loaded chain (only when symbol AND expiry
+        // match — another expiry's premium isn't this contract's price) and collect
+        // any whose stop-loss/target that fresh price has crossed.
+        const markLocal = (list) => {
+            const hits = [];
+            const marked = list.map((pos) => {
+                let liveLtp = null;
+                if (chainData && chainData.symbol === pos.symbol && sameExpiry(chainData.selectedExpiry, pos.expiry) && chainData.rows) {
+                    const row = chainData.rows.find((r) => Number(r.strike) === Number(pos.strike));
+                    const side = row && (pos.option_type === "CE" ? row.ce : row.pe);
+                    if (side && side.ltp != null && Number(side.ltp) > 0) liveLtp = Number(side.ltp);
+                }
+                const price = liveLtp ?? Number(pos.current_price ?? pos.entry_price);
+                const diff = pos.side === "long" ? price - pos.entry_price : pos.entry_price - price;
+                const next = { ...pos, current_price: price, unrealizedPnl: diff * pos.lots * pos.lot_size };
+                if (liveLtp != null) {
+                    const reason = bracketHit(pos, liveLtp);
+                    if (reason) hits.push({ ...next, _reason: reason });
+                }
+                return next;
+            });
+            return { marked, hits };
+        };
+        const announce = (hits) => {
+            if (!hits.length) return;
+            const h = hits[0];
+            const what = h._reason === "stop_loss" ? "🛑 Stop loss hit" : "🎯 Target hit";
+            const more = hits.length > 1 ? ` (+${hits.length - 1} more)` : "";
+            setFeedback({
+                type: h._reason === "stop_loss" ? "error" : "success",
+                text: `${what}: ${h.symbol} ${h.strike} ${h.option_type} closed at ${
+                    h.market === "crypto" ? `$${Number(h.current_price).toFixed(2)}` : formatPrice(h.current_price)
+                }${more}.`,
+            });
+        };
+
+        // Match guest pending orders against live ticks
+        const guestOrders = loadGuestOrders();
+        const pending = guestOrders.filter((o) => o.status === "PENDING");
+        if (pending.length && chainData?.rows?.length) {
+            let updatedOrders = [...guestOrders];
+            let newPositions = [];
+            let filledCount = 0;
+
+            for (const ord of pending) {
+                if (ord.symbol === chainData.symbol && sameExpiry(ord.expiry, chainData.selectedExpiry)) {
+                    const row = chainData.rows.find((r) => Number(r.strike) === Number(ord.strike));
+                    const side = row && (ord.optRight === "CE" ? row.ce : row.pe);
+                    if (side && side.ltp != null && Number(side.ltp) > 0) {
+                        const currentLtp = Number(side.ltp);
+                        let isFilled = false;
+                        if (ord.orderType === "MARKET") {
+                            isFilled = true;
+                        } else if (ord.orderType === "LIMIT") {
+                            if (ord.side === "buy" && currentLtp <= Number(ord.price)) isFilled = true;
+                            if (ord.side === "sell" && currentLtp >= Number(ord.price)) isFilled = true;
+                        }
+
+                        if (isFilled) {
+                            filledCount++;
+                            updatedOrders = updatedOrders.map((o) =>
+                                o.id === ord.id
+                                    ? { ...o, status: "EXECUTED", executed_price: currentLtp, executed_at: new Date().toISOString() }
+                                    : o
+                            );
+                            const totalShares = ord.lots * ord.lot_size;
+                            const allocatedMargin = ord.side === "buy"
+                                ? currentLtp * totalShares
+                                : (ord.market === "crypto"
+                                    ? ((chainData.spotPrice || ord.strike) * totalShares / (ord.leverage || 20))
+                                    : ((chainData.spotPrice || ord.strike) * totalShares * 0.113));
+
+                            newPositions.push({
+                                id: ++legIdCounter,
+                                symbol: ord.symbol,
+                                market: ord.market || (["BTC", "ETH", "SOL"].includes(ord.symbol) ? "crypto" : "indian"),
+                                expiry: ord.expiry,
+                                strategy_name: ord.strategyName || `${ord.symbol} ${ord.strike} ${ord.optRight}`,
+                                option_type: ord.optRight,
+                                strike: ord.strike,
+                                side: ord.side === "buy" ? "long" : "short",
+                                lots: ord.lots,
+                                lot_size: ord.lot_size,
+                                entry_price: currentLtp,
+                                current_price: currentLtp,
+                                unrealizedPnl: 0,
+                                margin_blocked: allocatedMargin,
+                                stop_loss_price: ord.stopLossPrice,
+                                target_price: ord.targetPrice,
+                                created_at: new Date().toISOString(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            if (filledCount > 0) {
+                saveGuestOrders(updatedOrders);
+                setOrders(updatedOrders);
+                const updatedOpens = [...loadGuestPositions(), ...newPositions];
+                saveGuestPositions(updatedOpens);
+                setOpenPositions(updatedOpens);
+                setFeedback({
+                    type: "success",
+                    text: `⚡ ${filledCount} Pending Limit Order(s) filled against live market ticks!`,
+                });
+            }
+        }
+
         if (token) {
             try {
                 const [openRes, closedRes] = await Promise.all([
                     fetchPositions(token, "open"),
                     fetchPositions(token, "closed"),
                 ]);
-                setOpenPositions(openRes.positions || []);
-                setClosedPositions(closedRes.positions || []);
+                // server rows use opt_right / livePrice / exit_time — map to the names this page renders
+                const norm = (p) => ({
+                    ...p,
+                    market: "indian",
+                    option_type: p.option_type || p.opt_right,
+                    current_price: p.livePrice ?? p.current_price ?? null,
+                    closed_at: p.closed_at || p.exit_time || null,
+                });
+                const serverOpen = (openRes.positions || []).map(norm);
+                const serverClosed = (closedRes.positions || []).map(norm);
+                // crypto trades are browser-held even when logged in — keep them in the lists
+                const { marked, hits } = markLocal(loadGuestPositions().filter((p) => p.market === "crypto"));
+                const localClosed = loadGuestClosed().filter((p) => p.market === "crypto");
+
+                setOpenPositions([...serverOpen, ...marked]);
+                setClosedPositions(
+                    [...serverClosed, ...localClosed].sort((a, b) => String(b.closed_at || "").localeCompare(String(a.closed_at || "")))
+                );
+
+                const prevOpen = serverOpenIdsRef.current;
+                if (prevOpen) {
+                    const fired = serverClosed
+                        .filter((p) => prevOpen.has(p.id) && (p.exit_reason === "stop_loss" || p.exit_reason === "target"))
+                        .map((p) => ({ ...p, current_price: p.exit_price, _reason: p.exit_reason }));
+                    announce(fired);
+                }
+                serverOpenIdsRef.current = new Set(serverOpen.map((p) => p.id));
+
+                if (hits.length) {
+                    closeLocalPositions(hits);
+                    announce(hits);
+                }
             } catch (err) {
                 console.error("[PaperTrade] loadPositions failed:", err);
             }
         } else {
-            const guestOpens = loadGuestPositions();
-            const guestClosed = loadGuestClosed();
-
-            const updatedOpens = guestOpens.map((pos) => {
-                let liveLtp = pos.entry_price;
-                if (chainData && chainData.symbol === pos.symbol && chainData.rows) {
-                    const row = chainData.rows.find((r) => Number(r.strike) === Number(pos.strike));
-                    if (row) {
-                        const side = pos.option_type === "CE" ? row.ce : row.pe;
-                        if (side && side.ltp != null) liveLtp = Number(side.ltp);
-                    }
-                }
-                const totalShares = pos.lots * pos.lot_size;
-                const diff = pos.side === "long" ? liveLtp - pos.entry_price : pos.entry_price - liveLtp;
-                const unrealizedPnl = diff * totalShares;
-                return {
-                    ...pos,
-                    current_price: liveLtp,
-                    unrealizedPnl,
-                };
-            });
-            setOpenPositions(updatedOpens);
-            setClosedPositions(guestClosed);
+            const { marked, hits } = markLocal(loadGuestPositions());
+            setOpenPositions(marked);
+            setClosedPositions(loadGuestClosed());
+            if (hits.length) {
+                closeLocalPositions(hits);
+                announce(hits);
+            }
         }
-    }, [token, chainData]);
+    }, [token, chainData, closeLocalPositions]);
 
     useEffect(() => {
         loadWallet();
         loadPositions();
-    }, [token, loadWallet, loadPositions]);
+        loadOrders();
+    }, [token, loadWallet, loadPositions, loadOrders]);
 
     // Load Leaderboard Data
     const loadLeaderboard = useCallback(async () => {
@@ -473,6 +833,83 @@ export default function PaperTrade() {
         return formatPrice(val);
     }, [isCrypto, currency, usdtInrRate]);
 
+    // User-chosen option-chain columns, remembered per market in localStorage.
+    const [chainColsByMarket, setChainColsByMarket] = useState(() => ({
+        indian: loadChainCols("indian"),
+        crypto: loadChainCols("crypto"),
+    }));
+    const [chainSettingsOpen, setChainSettingsOpen] = useState(false);
+    // Sum of call + put volume across every strike of the selected expiry (null if no strike reports volume).
+    const chainTotalVolume = useMemo(() => {
+        let total = 0;
+        let seen = false;
+        for (const r of chainData?.rows || []) {
+            for (const v of [r.ce?.volume, r.pe?.volume]) {
+                if (v != null && !Number.isNaN(Number(v))) {
+                    total += Number(v);
+                    seen = true;
+                }
+            }
+        }
+        return seen ? total : null;
+    }, [chainData]);
+    const chainColIds = chainColsByMarket[marketMode] || DEFAULT_CHAIN_COLS;
+    const marketChainColumns = CHAIN_COLUMNS.filter((c) => c.markets.includes(marketMode));
+    const visibleChainCols = marketChainColumns.filter((c) => c.locked || chainColIds.includes(c.id));
+    const toggleChainCol = (id) => {
+        setChainColsByMarket((prev) => {
+            const cur = prev[marketMode] || DEFAULT_CHAIN_COLS;
+            const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+            try {
+                localStorage.setItem(CHAIN_COLS_KEY_PREFIX + marketMode, JSON.stringify(next));
+            } catch {
+                // storage unavailable (private mode) — keep the choice for this session only
+            }
+            return { ...prev, [marketMode]: next };
+        });
+    };
+    const resetChainCols = () => {
+        try {
+            localStorage.removeItem(CHAIN_COLS_KEY_PREFIX + marketMode);
+        } catch {
+            // ignore
+        }
+        setChainColsByMarket((prev) => ({ ...prev, [marketMode]: DEFAULT_CHAIN_COLS }));
+    };
+    const signedClass = (v) =>
+        v > 0 ? "text-emerald-600 dark:text-emerald-400" : v < 0 ? "text-rose-600 dark:text-rose-400" : "text-gray-400";
+    const fmtCount = (v) =>
+        isCrypto ? Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 }) : formatOi(Number(v));
+    // Renders one option-chain cell for a CE/PE side; "—" whenever the field is missing.
+    const renderChainCell = (sideData, colId) => {
+        const v = sideData?.[colId];
+        if (v == null || Number.isNaN(Number(v))) return { text: "—", cls: "text-gray-400" };
+        const n = Number(v);
+        switch (colId) {
+            case "ltp":
+                return { text: formatActivePrice(n), cls: "font-black text-gray-900 dark:text-white text-[11px]" };
+            case "bid":
+            case "ask":
+                return { text: formatActivePrice(n), cls: "text-gray-600 dark:text-gray-300" };
+            case "changePercent":
+                return { text: `${n > 0 ? "+" : ""}${n.toFixed(2)}%`, cls: signedClass(n) };
+            case "oiChange":
+                return { text: `${n > 0 ? "+" : ""}${fmtCount(n)}`, cls: signedClass(n) };
+            case "oi":
+            case "volume":
+                return { text: fmtCount(n), cls: "text-gray-600 dark:text-gray-300" };
+            case "iv":
+                return { text: n.toFixed(1), cls: "text-gray-600 dark:text-gray-300" };
+            case "gamma":
+                return { text: n.toFixed(4), cls: "text-gray-400" };
+            case "theta":
+            case "vega":
+                return { text: n.toFixed(2), cls: "text-gray-400" };
+            default:
+                return { text: n.toFixed(2), cls: "text-gray-400" };
+        }
+    };
+
     // Display rows based on strike range around ATM
     const displayRows = useMemo(() => {
         const rows = chainData?.rows || [];
@@ -483,6 +920,183 @@ export default function PaperTrade() {
         const end = Math.min(rows.length, atmIndex + strikeRange + 1);
         return rows.slice(start, end);
     }, [chainData, strikeRange, atmStrike]);
+
+    // Days to expiry for Black-Scholes and Target Date Slider
+    const daysToExpiry = useMemo(() => {
+        if (!chainData?.selectedExpiry) return 1;
+        const expDate = new Date(chainData.selectedExpiry);
+        const now = new Date();
+        const diff = Math.max(1, Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+        return isNaN(diff) ? 1 : diff;
+    }, [chainData?.selectedExpiry]);
+
+    function openOrderSlip(row, optRight, side = "buy") {
+        const sData = optRight === "CE" ? row.ce : row.pe;
+        if (!sData || sData.ltp == null) return;
+        const currentPrice = Number(sData.ltp);
+        const bestBid = sData.bid ? Number(sData.bid) : currentPrice;
+        const bestAsk = sData.ask ? Number(sData.ask) : currentPrice;
+        const defaultOrderPrice = side === "buy" ? bestAsk : bestBid;
+
+        setOrderModal({
+            symbol: activeSymbol,
+            expiry: chainData?.selectedExpiry,
+            strike: Number(row.strike),
+            optRight,
+            side, // 'buy' | 'sell'
+            orderType: "MARKET", // 'MARKET' | 'LIMIT'
+            price: defaultOrderPrice,
+            ltp: currentPrice,
+            bid: bestBid,
+            ask: bestAsk,
+            iv: sData.iv ? Number(sData.iv) : null,
+            delta: sData.delta ? Number(sData.delta) : null,
+            lots: 1,
+            lotSize,
+            isCrypto,
+            spotPrice,
+            leverage: cryptoLeverage || 20,
+            sl: "",
+            target: "",
+        });
+    }
+
+    async function handleExecuteDirectOrder(m) {
+        if (!m) return;
+        const totalShares = m.lots * m.lotSize;
+        const orderPrice = m.orderType === "LIMIT" ? Number(m.price) : Number(m.ltp);
+        const notional = (spotPrice || m.strike) * totalShares;
+        const reqFunds = m.side === "buy"
+            ? orderPrice * totalShares
+            : (m.isCrypto ? (notional / (m.leverage || 20)) : (notional * 0.113));
+
+        const curBal = m.isCrypto
+            ? Number(cryptoWallet.balance)
+            : (wallet ? Number(wallet.balance) : 100000);
+
+        if (curBal < reqFunds) {
+            setFeedback({
+                type: "error",
+                text: m.isCrypto
+                    ? `Insufficient Virtual USDT Balance. Required: $${reqFunds.toFixed(2)}, Available: $${curBal.toFixed(2)}.`
+                    : `Insufficient Virtual Cash. Required: ${formatRupees(reqFunds)}, Available: ${formatRupees(curBal)}.`
+            });
+            return;
+        }
+
+        try {
+            setIsExecuting(true);
+            setFeedback(null);
+
+            if (token && !m.isCrypto) {
+                await placePaperOrder(token, {
+                    symbol: m.symbol,
+                    expiry: m.expiry,
+                    strike: m.strike,
+                    optRight: m.optRight,
+                    side: m.side,
+                    orderType: m.orderType,
+                    price: m.orderType === "LIMIT" ? m.price : null,
+                    lots: m.lots,
+                    stopLossPrice: toBracket(m.sl),
+                    targetPrice: toBracket(m.target),
+                });
+                await loadWallet();
+                await loadPositions();
+                await loadOrders();
+            } else {
+                const isMarket = m.orderType === "MARKET";
+                const orderId = ++legIdCounter;
+                const newOrder = {
+                    id: orderId,
+                    symbol: m.symbol,
+                    market: m.isCrypto ? "crypto" : "indian",
+                    expiry: m.expiry,
+                    strike: m.strike,
+                    optRight: m.optRight,
+                    side: m.side,
+                    orderType: m.orderType,
+                    status: isMarket ? "EXECUTED" : "PENDING",
+                    lots: m.lots,
+                    lot_size: m.lotSize,
+                    price: orderPrice,
+                    executed_price: isMarket ? orderPrice : null,
+                    required_funds: reqFunds,
+                    stopLossPrice: toBracket(m.sl),
+                    targetPrice: toBracket(m.target),
+                    leverage: m.leverage || 20,
+                    placed_at: new Date().toISOString(),
+                    executed_at: isMarket ? new Date().toISOString() : null,
+                };
+
+                const allOrders = [newOrder, ...loadGuestOrders()];
+                saveGuestOrders(allOrders);
+                setOrders(allOrders);
+
+                if (isMarket) {
+                    const newPos = {
+                        id: ++legIdCounter,
+                        symbol: m.symbol,
+                        market: m.isCrypto ? "crypto" : "indian",
+                        expiry: m.expiry,
+                        strategy_name: `${m.symbol} ${m.strike} ${m.optRight}`,
+                        option_type: m.optRight,
+                        strike: m.strike,
+                        side: m.side === "buy" ? "long" : "short",
+                        lots: m.lots,
+                        lot_size: m.lotSize,
+                        entry_price: orderPrice,
+                        current_price: orderPrice,
+                        unrealizedPnl: 0,
+                        margin_blocked: reqFunds,
+                        stop_loss_price: toBracket(m.sl),
+                        target_price: toBracket(m.target),
+                        created_at: new Date().toISOString(),
+                    };
+                    const updatedOpens = [...loadGuestPositions(), newPos];
+                    saveGuestPositions(updatedOpens);
+                    setOpenPositions(updatedOpens);
+
+                    if (m.isCrypto) {
+                        const nextW = { balance: curBal - reqFunds, margin_utilized: (cryptoWallet?.margin_utilized || 0) + reqFunds };
+                        saveGuestCryptoWallet(nextW);
+                        setCryptoWallet(nextW);
+                    } else {
+                        const nextW = { balance: curBal - reqFunds, margin_utilized: (wallet?.margin_utilized || 0) + reqFunds };
+                        saveGuestWallet(nextW);
+                        setWallet(nextW);
+                    }
+                } else {
+                    if (m.isCrypto) {
+                        const nextW = { balance: curBal - reqFunds, margin_utilized: (cryptoWallet?.margin_utilized || 0) + reqFunds };
+                        saveGuestCryptoWallet(nextW);
+                        setCryptoWallet(nextW);
+                    } else {
+                        const nextW = { balance: curBal - reqFunds, margin_utilized: (wallet?.margin_utilized || 0) + reqFunds };
+                        saveGuestWallet(nextW);
+                        setWallet(nextW);
+                    }
+                }
+            }
+
+            setFeedback({
+                type: "success",
+                text: m.orderType === "MARKET"
+                    ? `Trade executed: ${m.side.toUpperCase()} ${m.lots} ${m.isCrypto ? "Ctr" : "Lots"} ${m.symbol} ${m.strike} ${m.optRight}!`
+                    : `Limit order placed: ${m.side.toUpperCase()} ${m.lots} ${m.isCrypto ? "Ctr" : "Lots"} ${m.symbol} ${m.strike} ${m.optRight} at ${m.price}!`,
+            });
+            setOrderModal(null);
+            if (m.orderType === "MARKET") {
+                setActiveTab("positions");
+            } else {
+                setActiveTab("orders");
+            }
+        } catch (err) {
+            setFeedback({ type: "error", text: err.message || "Failed to place order." });
+        } finally {
+            setIsExecuting(false);
+        }
+    }
 
     // 4. Live Hedge / Strategy Basket
     const [basketLegs, setBasketLegs] = useState([]);
@@ -505,6 +1119,7 @@ export default function PaperTrade() {
                         i === existingIdx ? { ...l, action, premium: Number(side.ltp) } : l
                     )
                 );
+                setChartViewTab("payoff");
                 return;
             }
         }
@@ -522,6 +1137,8 @@ export default function PaperTrade() {
             expiry: chainData?.selectedExpiry,
         };
         setBasketLegs((prev) => [...prev, newLeg]);
+        // show the payoff as soon as a trade is added to the basket
+        setChartViewTab("payoff");
     }
 
     function removeBasketLeg(id) {
@@ -581,6 +1198,7 @@ export default function PaperTrade() {
             delta: l.delta ? Number(l.delta) : null,
         }));
         setBasketLegs(formatted);
+        setChartViewTab("payoff");
         setShowPresetsModal(false);
     }
 
@@ -649,6 +1267,7 @@ export default function PaperTrade() {
         }
 
         setBasketLegs(newLegs);
+        if (newLegs.length) setChartViewTab("payoff");
     }
 
     // 5. Full Strategy Payoff & Analytics Engine for Basket
@@ -683,7 +1302,10 @@ export default function PaperTrade() {
             const { maxProfit: mxProf, maxLoss: mxLoss } = computeMaxProfitLoss(basketLegs, curveData);
             const rReward = computeRiskRewardRatio(mxProf, mxLoss);
             const netGrks = computeNetGreeks(basketLegs);
-            const marginCalc = computeMarginDetails(basketLegs, spotPrice, symbol);
+            const marginCalc = computeMarginDetails(basketLegs, spotPrice, activeSymbol, {
+                isCrypto,
+                leverage: isCrypto ? cryptoLeverage : 1,
+            });
 
             const evaluationExpiry = evaluationExpiryOf(basketLegs) || chainData?.selectedExpiry;
             const yearsRemaining = evaluationExpiry ? yearsToExpiry(evaluationExpiry) : null;
@@ -691,7 +1313,9 @@ export default function PaperTrade() {
             const atmIv = atmRow?.ce?.iv ? Number(atmRow.ce.iv) : (atmRow?.pe?.iv ? Number(atmRow.pe.iv) : null);
 
             if (atmIv && yearsRemaining) {
-                curveData = addMarkToMarketCurve(curveData, basketLegs, yearsRemaining, Date.now());
+                const targetDateMs = Date.now() + (targetDaysOffset || 0) * 86400000;
+                const targetYearsRemaining = Math.max(0.0001, yearsRemaining - ((targetDaysOffset || 0) / 365));
+                curveData = addMarkToMarketCurve(curveData, basketLegs, targetYearsRemaining, targetDateMs);
             }
             const expMv = (atmIv && yearsRemaining) ? computeExpectedMove(spotPrice, atmIv, yearsRemaining) : null;
             const popVal = (atmIv && yearsRemaining) ? computePOP(curveData, spotPrice, atmIv, yearsRemaining) : null;
@@ -729,7 +1353,7 @@ export default function PaperTrade() {
                 yearsRemaining: null,
             };
         }
-    }, [basketLegs, spotPrice, symbol, chainData, atmStrike]);
+    }, [basketLegs, spotPrice, activeSymbol, isCrypto, cryptoLeverage, chainData, atmStrike, targetDaysOffset]);
 
     // Backward-compatible alias for execution logic
     const hedgeStats = payoffData;
@@ -785,7 +1409,9 @@ export default function PaperTrade() {
             const atmIv = atmRow?.ce?.iv ? Number(atmRow.ce.iv) : (atmRow?.pe?.iv ? Number(atmRow.pe.iv) : null);
 
             if (atmIv && yearsRemaining) {
-                curveData = addMarkToMarketCurve(curveData, openPositionLegs, yearsRemaining, Date.now());
+                const targetDateMs = Date.now() + (targetDaysOffset || 0) * 86400000;
+                const targetYearsRemaining = Math.max(0.0001, yearsRemaining - ((targetDaysOffset || 0) / 365));
+                curveData = addMarkToMarketCurve(curveData, openPositionLegs, targetYearsRemaining, targetDateMs);
             }
             const expMv = (atmIv && yearsRemaining) ? computeExpectedMove(spotPrice, atmIv, yearsRemaining) : null;
             const popVal = (atmIv && yearsRemaining) ? computePOP(curveData, spotPrice, atmIv, yearsRemaining) : null;
@@ -817,11 +1443,113 @@ export default function PaperTrade() {
                 yearsRemaining: null,
             };
         }
-    }, [openPositionLegs, spotPrice, chainData, atmStrike]);
+    }, [openPositionLegs, spotPrice, chainData, atmStrike, targetDaysOffset]);
+
+    function renderTargetDateSlider() {
+        return (
+            <div className="mb-2 p-2.5 rounded-xl border border-gray-200/80 dark:border-white/10 bg-gray-50/80 dark:bg-[#070e17]/80 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2 shrink-0">
+                    <span className="p-1.5 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 font-bold text-xs">
+                        ⏱
+                    </span>
+                    <div>
+                        <div className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">
+                            Target Date (Theta Simulation)
+                        </div>
+                        <div className="text-xs font-black font-mono text-gray-900 dark:text-white flex items-center gap-1.5">
+                            <span>
+                                {(() => {
+                                    const d = new Date(Date.now() + (targetDaysOffset || 0) * 86400000);
+                                    return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+                                })()}
+                            </span>
+                            <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300">
+                                {targetDaysOffset === 0 ? "Today (T+0)" : targetDaysOffset >= daysToExpiry ? "At Expiry" : `T+${targetDaysOffset}d`}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="flex-1 max-w-md flex items-center gap-2">
+                    <span className="text-[10px] font-mono text-gray-400 shrink-0">T+0</span>
+                    <input
+                        type="range"
+                        min={0}
+                        max={Math.max(1, daysToExpiry)}
+                        step={1}
+                        value={Math.min(targetDaysOffset, daysToExpiry)}
+                        onChange={(e) => setTargetDaysOffset(Number(e.target.value))}
+                        className="w-full accent-blue-600 dark:accent-blue-500 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg cursor-pointer"
+                    />
+                    <span className="text-[10px] font-mono text-gray-400 shrink-0">Exp ({daysToExpiry}d)</span>
+                </div>
+
+                <div className="flex items-center gap-1 shrink-0">
+                    <button
+                        type="button"
+                        onClick={() => setTargetDaysOffset(0)}
+                        className={`px-2 py-0.5 rounded text-[10.5px] font-bold font-mono transition cursor-pointer ${
+                            targetDaysOffset === 0
+                                ? "bg-blue-600 text-white shadow-xs"
+                                : "bg-gray-200/70 dark:bg-white/5 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                        }`}
+                    >
+                        Today
+                    </button>
+                    {daysToExpiry > 1 && (
+                        <button
+                            type="button"
+                            onClick={() => setTargetDaysOffset(Math.min(daysToExpiry, 1))}
+                            className={`px-2 py-0.5 rounded text-[10.5px] font-bold font-mono transition cursor-pointer ${
+                                targetDaysOffset === 1
+                                    ? "bg-blue-600 text-white shadow-xs"
+                                    : "bg-gray-200/70 dark:bg-white/5 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                            }`}
+                        >
+                            +1D
+                        </button>
+                    )}
+                    {daysToExpiry > 3 && (
+                        <button
+                            type="button"
+                            onClick={() => setTargetDaysOffset(Math.min(daysToExpiry, 3))}
+                            className={`px-2 py-0.5 rounded text-[10.5px] font-bold font-mono transition cursor-pointer ${
+                                targetDaysOffset === 3
+                                    ? "bg-blue-600 text-white shadow-xs"
+                                    : "bg-gray-200/70 dark:bg-white/5 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                            }`}
+                        >
+                            +3D
+                        </button>
+                    )}
+                    <button
+                        type="button"
+                        onClick={() => setTargetDaysOffset(daysToExpiry)}
+                        className={`px-2 py-0.5 rounded text-[10.5px] font-bold font-mono transition cursor-pointer ${
+                            targetDaysOffset === daysToExpiry
+                                ? "bg-blue-600 text-white shadow-xs"
+                                : "bg-gray-200/70 dark:bg-white/5 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                        }`}
+                    >
+                        Expiry
+                    </button>
+                </div>
+            </div>
+        );
+    }
 
     // Execute Live Paper Trade
     async function handleExecuteHedge() {
         if (!basketLegs.length) return;
+
+        const badLeg = basketLegs.find((l) => bracketError(l.action, l.premium, l.sl, l.target));
+        if (badLeg) {
+            setFeedback({
+                type: "error",
+                text: `${badLeg.strike} ${badLeg.type}: ${bracketError(badLeg.action, badLeg.premium, badLeg.sl, badLeg.target)}`,
+            });
+            return;
+        }
 
         const currentBalance = isCrypto
             ? Number(cryptoWallet.balance)
@@ -863,15 +1591,29 @@ export default function PaperTrade() {
                         entry_price: l.premium,
                         lot_size: l.lotSize || lotSize,
                         expiry: l.expiry || chainData?.selectedExpiry,
+                        stopLossPrice: toBracket(l.sl),
+                        targetPrice: toBracket(l.target),
                     })),
                 });
                 await loadWallet();
                 await loadPositions();
             } else {
-                const newPositions = basketLegs.map((l) => {
+                // Compute proportional margin blocked per leg so the sum matches hedgeStats.fundsRequired exactly
+                const rawLegMargins = basketLegs.map((l) => {
                     const totalShares = l.qty * (l.lotSize || lotSize);
-                    const premiumTotal = l.premium * totalShares;
-                    const margin = l.action === "sell" ? (spotPrice || l.strike) * totalShares * 0.12 : premiumTotal;
+                    if (l.action === "buy") {
+                        return l.premium * totalShares;
+                    }
+                    const notional = (spotPrice || l.strike) * totalShares;
+                    return isCrypto ? (notional / (cryptoLeverage || 20)) : (notional * 0.113);
+                });
+                const sumRawMargins = rawLegMargins.reduce((a, b) => a + b, 0);
+                const scale = sumRawMargins > 0 ? (hedgeStats.fundsRequired / sumRawMargins) : 1;
+
+                const newPositions = basketLegs.map((l, idx) => {
+                    const totalShares = l.qty * (l.lotSize || lotSize);
+                    const precision = isCrypto ? 10000 : 100;
+                    const allocatedMargin = Math.round(rawLegMargins[idx] * scale * precision) / precision;
                     return {
                         id: ++legIdCounter,
                         symbol: activeSymbol,
@@ -886,7 +1628,9 @@ export default function PaperTrade() {
                         entry_price: l.premium,
                         current_price: l.premium,
                         unrealizedPnl: 0,
-                        margin_blocked: margin,
+                        margin_blocked: allocatedMargin,
+                        stop_loss_price: toBracket(l.sl),
+                        target_price: toBracket(l.target),
                         created_at: new Date().toISOString(),
                     };
                 });
@@ -933,41 +1677,7 @@ export default function PaperTrade() {
                 await loadWallet();
                 await loadPositions();
             } else {
-                const liveLtp = pos.current_price || pos.entry_price;
-                const totalShares = pos.lots * pos.lot_size;
-                const diff = pos.side === "long" ? liveLtp - pos.entry_price : pos.entry_price - liveLtp;
-                const realizedPnl = diff * totalShares;
-
-                const closedPos = {
-                    ...pos,
-                    exit_price: liveLtp,
-                    realized_pnl: realizedPnl,
-                    closed_at: new Date().toISOString(),
-                };
-
-                const updatedOpens = openPositions.filter((p) => p.id !== pos.id);
-                const updatedClosed = [closedPos, ...closedPositions];
-                saveGuestPositions(updatedOpens);
-                saveGuestClosed(updatedClosed);
-                setOpenPositions(updatedOpens);
-                setClosedPositions(updatedClosed);
-
-                const marginReleased = Number(pos.margin_blocked || 0);
-                if (pos.market === "crypto") {
-                    const updatedCryptoWallet = {
-                        balance: (cryptoWallet?.balance || 10000) + marginReleased + realizedPnl,
-                        margin_utilized: Math.max(0, (cryptoWallet?.margin_utilized || 0) - marginReleased),
-                    };
-                    saveGuestCryptoWallet(updatedCryptoWallet);
-                    setCryptoWallet(updatedCryptoWallet);
-                } else {
-                    const updatedWallet = {
-                        balance: (wallet?.balance || 100000) + marginReleased + realizedPnl,
-                        margin_utilized: Math.max(0, (wallet?.margin_utilized || 0) - marginReleased),
-                    };
-                    saveGuestWallet(updatedWallet);
-                    setWallet(updatedWallet);
-                }
+                closeLocalPositions([pos], "manual");
             }
 
             setFeedback({ type: "success", text: `Position ${pos.symbol} ${pos.strike} ${pos.option_type} closed.` });
@@ -975,6 +1685,70 @@ export default function PaperTrade() {
             setFeedback({ type: "error", text: err.message || "Failed to close position." });
         } finally {
             setClosingId(null);
+        }
+    }
+
+    function openLegSl(leg) {
+        setSlModal({
+            kind: "leg",
+            id: leg.id,
+            side: leg.action,
+            ref: Number(leg.premium),
+            label: `${leg.action === "buy" ? "BUY" : "SELL"} ${leg.strike} ${leg.type}`,
+            sl: leg.sl ?? "",
+            target: leg.target ?? "",
+        });
+    }
+
+    function openPositionSl(pos) {
+        setSlModal({
+            kind: "position",
+            id: pos.id,
+            pos,
+            side: pos.side,
+            ref: Number(pos.current_price ?? pos.entry_price),
+            label: `${pos.side === "long" ? "BUY" : "SELL"} ${pos.symbol} ${pos.strike} ${pos.option_type}`,
+            sl: pos.stop_loss_price != null ? String(Number(pos.stop_loss_price)) : "",
+            target: pos.target_price != null ? String(Number(pos.target_price)) : "",
+        });
+    }
+
+    async function saveSlModal(clear = false) {
+        if (!slModal) return;
+        const slRaw = clear ? "" : slModal.sl;
+        const tgtRaw = clear ? "" : slModal.target;
+        if (bracketError(slModal.side, slModal.ref, slRaw, tgtRaw)) return; // popup shows the error inline
+
+        if (slModal.kind === "leg") {
+            setBasketLegs((prev) => prev.map((l) => (l.id === slModal.id ? { ...l, sl: slRaw, target: tgtRaw } : l)));
+            setSlModal(null);
+            return;
+        }
+
+        const pos = slModal.pos;
+        const sl = toBracket(slRaw);
+        const target = toBracket(tgtRaw);
+        try {
+            setSavingBracket(true);
+            if (token && pos.market !== "crypto") {
+                await updatePositionBracket(token, pos.id, { stopLossPrice: sl, targetPrice: target, trailingSl: pos.trailing_sl ?? null });
+                await loadPositions();
+            } else {
+                const apply = (p) => (p.id === pos.id ? { ...p, stop_loss_price: sl, target_price: target } : p);
+                saveGuestPositions(loadGuestPositions().map(apply));
+                setOpenPositions((prev) => prev.map(apply));
+            }
+            setSlModal(null);
+            setFeedback({
+                type: "success",
+                text: sl == null && target == null
+                    ? `SL/Target removed for ${pos.symbol} ${pos.strike} ${pos.option_type}.`
+                    : `SL/Target set for ${pos.symbol} ${pos.strike} ${pos.option_type}.`,
+            });
+        } catch (e) {
+            setFeedback({ type: "error", text: e.message || "Failed to update SL/Target." });
+        } finally {
+            setSavingBracket(false);
         }
     }
 
@@ -986,57 +1760,14 @@ export default function PaperTrade() {
             setFeedback(null);
 
             if (token) {
-                try {
-                    await closeAllPositions(token);
-                } catch {}
+                await closeAllPositions(token);
+            }
+            // browser-held positions: crypto always, everything for a guest
+            closeLocalPositions(openPositions.filter((p) => !token || p.market === "crypto"), "close_all");
+            if (token) {
                 await loadWallet();
                 await loadPositions();
             }
-            
-            let netRealized = 0;
-            let totalMarginReleased = 0;
-            let cryptoNetRealized = 0;
-            let cryptoMarginReleased = 0;
-
-            const newlyClosed = openPositions.map((pos) => {
-                const liveLtp = pos.current_price || pos.entry_price;
-                const totalShares = pos.lots * pos.lot_size;
-                const diff = pos.side === "long" ? liveLtp - pos.entry_price : pos.entry_price - liveLtp;
-                const realizedPnl = diff * totalShares;
-                if (pos.market === "crypto") {
-                    cryptoNetRealized += realizedPnl;
-                    cryptoMarginReleased += Number(pos.margin_blocked || 0);
-                } else {
-                    netRealized += realizedPnl;
-                    totalMarginReleased += Number(pos.margin_blocked || 0);
-                }
-                return {
-                    ...pos,
-                    exit_price: liveLtp,
-                    realized_pnl: realizedPnl,
-                    closed_at: new Date().toISOString(),
-                };
-            });
-
-            saveGuestPositions([]);
-            const updatedClosed = [...newlyClosed, ...closedPositions];
-            saveGuestClosed(updatedClosed);
-            setOpenPositions([]);
-            setClosedPositions(updatedClosed);
-
-            const updatedWallet = {
-                balance: (wallet?.balance || 100000) + totalMarginReleased + netRealized,
-                margin_utilized: 0,
-            };
-            saveGuestWallet(updatedWallet);
-            setWallet(updatedWallet);
-
-            const updatedCryptoWallet = {
-                balance: (cryptoWallet?.balance || 10000) + cryptoMarginReleased + cryptoNetRealized,
-                margin_utilized: 0,
-            };
-            saveGuestCryptoWallet(updatedCryptoWallet);
-            setCryptoWallet(updatedCryptoWallet);
 
             setFeedback({ type: "success", text: "All open paper positions squared off." });
         } catch (err) {
@@ -1132,69 +1863,153 @@ export default function PaperTrade() {
         }
     }
 
-    // Portfolio Totals
+    // ATM Row Reference for Smooth Quick Scroll. Scrolls only the chain's own
+    // container (scrollIntoView would also drag the whole page down).
+    const atmRowRef = useRef(null);
+    const chainScrollRef = useRef(null);
+    const centerAtm = useCallback((behavior = "smooth") => {
+        const box = chainScrollRef.current;
+        const row = atmRowRef.current;
+        if (!box || !row || box.clientHeight === 0) return false;
+        const boxRect = box.getBoundingClientRect();
+        const rowRect = row.getBoundingClientRect();
+        // centre within the area below the sticky column header, not the whole box
+        const headH = box.querySelector("thead")?.offsetHeight || 0;
+        const visibleH = box.clientHeight - headH;
+        const target = box.scrollTop + (rowRect.top - boxRect.top) - headH - visibleH / 2 + rowRect.height / 2;
+        box.scrollTo({ top: Math.max(0, target), behavior });
+        return true;
+    }, []);
+    const scrollToAtm = () => centerAtm("smooth");
+
+    // Desktop: stretch the chain's scroll box from where it sits on load down to
+    // the bottom of the viewport. Measured against the document (not the current
+    // scroll position) so the sticky TopNav can't feed back into the height.
+    useLayoutEffect(() => {
+        if (activeTab !== "trade") return;
+        const fit = () => {
+            const box = chainScrollRef.current;
+            if (!box) return;
+            if (window.innerWidth < 1024) {
+                box.style.maxHeight = "";
+                return;
+            }
+            const docTop = box.getBoundingClientRect().top + window.scrollY;
+            box.style.maxHeight = `${Math.max(320, window.innerHeight - docTop - 16)}px`;
+        };
+        fit();
+        window.addEventListener("resize", fit);
+        return () => window.removeEventListener("resize", fit);
+    }, [activeTab, mobileTradeTab, isCrypto]);
+
+    // Auto-center ATM once per chain view (load, symbol/expiry/range switch, tab
+    // back to the chain) — not on every live tick, so manual scrolling sticks.
+    const lastCenteredKeyRef = useRef(null);
+    const atmCenterKey = `${marketMode}|${activeSymbol}|${chainData?.selectedExpiry ?? ""}|${strikeRange}|${activeTab}|${mobileTradeTab}|${displayRows.length}`;
+    useEffect(() => {
+        if (activeTab !== "trade" || atmStrike == null || displayRows.length === 0) return;
+        if (lastCenteredKeyRef.current === atmCenterKey) return;
+        let cancelled = false;
+        const raf = requestAnimationFrame(() => {
+            if (!centerAtm("auto")) return;
+            lastCenteredKeyRef.current = atmCenterKey;
+            // web fonts landing late change row heights — re-centre once they're in
+            document.fonts?.ready.then(() => {
+                if (!cancelled) requestAnimationFrame(() => centerAtm("auto"));
+            });
+        });
+        return () => {
+            cancelled = true;
+            cancelAnimationFrame(raf);
+        };
+    }, [atmCenterKey, activeTab, atmStrike, displayRows, centerAtm]);
+
+    // Portfolio Totals for Open Positions
     const totalUnrealized = useMemo(
         () => openPositions.reduce((sum, p) => sum + (Number(p.unrealizedPnl) || 0), 0),
         [openPositions]
     );
+    const totalMarginBlocked = useMemo(
+        () => openPositions.reduce((sum, p) => sum + (Number(p.margin_blocked) || 0), 0),
+        [openPositions]
+    );
+
+    // History Totals for Closed Positions
+    const totalRealizedPnl = useMemo(
+        () => closedPositions.reduce((sum, p) => sum + (Number(p.realized_pnl) || 0), 0),
+        [closedPositions]
+    );
+    const winningTrades = useMemo(
+        () => closedPositions.filter((p) => Number(p.realized_pnl) > 0).length,
+        [closedPositions]
+    );
+    const losingTrades = useMemo(
+        () => closedPositions.filter((p) => Number(p.realized_pnl) < 0).length,
+        [closedPositions]
+    );
+    const winRate = useMemo(
+        () => (closedPositions.length > 0 ? ((winningTrades / closedPositions.length) * 100).toFixed(1) : 0),
+        [closedPositions, winningTrades]
+    );
+    const bestTradePnl = useMemo(
+        () => (closedPositions.length > 0 ? Math.max(...closedPositions.map((p) => Number(p.realized_pnl) || 0)) : 0),
+        [closedPositions]
+    );
     const virtualCash = wallet ? Number(wallet.balance) : 100000;
 
     return (
-        <div className="min-h-screen bg-gray-50 dark:bg-[#0b1420] text-gray-900 dark:text-gray-100 pb-20 font-sans transition-colors">
+        <div className="min-h-screen bg-gray-50/70 dark:bg-[#070a11] text-gray-900 dark:text-gray-100 font-sans pb-16 transition-colors">
             {/* --------------------------------------------------------------------- */}
-            {/* Top Responsive Full-Width Header Bar */}
+            {/* 1. Primary Unified Trading Header Bar (Sticky Top-0) */}
             {/* --------------------------------------------------------------------- */}
-            {/* Top Responsive Full-Width Header Bar */}
-            {/* --------------------------------------------------------------------- */}
-            <div className="sticky top-0 z-40 bg-white/95 dark:bg-[#111c2a]/95 backdrop-blur-md border-b border-gray-200 dark:border-gray-800 px-3 sm:px-6 py-2.5 shadow-xs">
-                <div className="w-full max-w-[1920px] mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
-                    {/* Market Switcher & Symbol Selector & Spot Ticker */}
-                    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                        {/* Market Mode Switcher: Indian Market vs Crypto */}
-                        <div className="flex items-center bg-gray-200/90 dark:bg-[#152132] p-1 rounded-xl border border-gray-300 dark:border-gray-700 shadow-inner">
+            <header className="sticky top-0 z-40 bg-white/95 dark:bg-[#0b1420]/95 backdrop-blur-md border-b border-gray-200 dark:border-white/10 px-3 sm:px-6 py-2 shadow-xs transition-colors">
+                <div className="w-full max-w-[1720px] mx-auto flex flex-wrap xl:flex-nowrap items-center justify-between gap-3 text-xs">
+                    {/* Left Group: Market Mode, Asset Button, Spot Ticker, Expiry */}
+                    <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap xl:flex-nowrap">
+                        {/* Market Switcher: Indian Market vs Crypto */}
+                        <div className="flex items-center bg-gray-100 dark:bg-[#121c2b] p-0.5 rounded-xl border border-gray-200 dark:border-white/10 shadow-2xs">
                             <button
                                 onClick={() => {
                                     setMarketMode("indian");
                                     setBasketLegs([]);
                                 }}
-                                className={`px-2.5 sm:px-3 py-1 rounded-lg font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                                className={`px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
                                     !isCrypto
                                         ? "bg-emerald-600 text-white shadow-xs"
                                         : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
                                 }`}
                             >
                                 <span>🇮🇳</span>
-                                <span className="hidden xs:inline">Indian Market</span>
-                                <span className="xs:hidden">NSE</span>
+                                <span className="hidden 2xl:inline">NSE F&amp;O</span>
+                                <span className="2xl:hidden">NSE</span>
                             </button>
                             <button
                                 onClick={() => {
                                     setMarketMode("crypto");
                                     setBasketLegs([]);
                                 }}
-                                className={`px-2.5 sm:px-3 py-1 rounded-lg font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                                className={`px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
                                     isCrypto
                                         ? "bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-xs"
                                         : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
                                 }`}
                             >
                                 <span>⚡</span>
-                                <span className="hidden xs:inline">Crypto</span>
-                                <span className="xs:hidden">Crypto</span>
+                                <span>Crypto</span>
                             </button>
                         </div>
 
-                        {/* Symbol Selector */}
+                        {/* Symbol Button */}
                         {!isCrypto ? (
                             <button
                                 onClick={() => setSearchOpen(true)}
-                                className="flex items-center gap-1.5 sm:gap-2 bg-gray-100 hover:bg-gray-200 dark:bg-[#18263a] dark:hover:bg-[#20324c] border border-gray-300 dark:border-gray-700 px-2.5 sm:px-3 py-1.5 rounded-xl font-black text-xs sm:text-sm text-gray-900 dark:text-white transition cursor-pointer shadow-2xs"
+                                className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 dark:bg-[#121c2b] dark:hover:bg-[#1a273b] border border-gray-200 dark:border-white/10 px-3 py-1.5 rounded-xl font-black text-xs sm:text-sm text-gray-900 dark:text-white transition cursor-pointer shadow-2xs"
                             >
                                 <span className="text-emerald-600 dark:text-emerald-400 font-extrabold">{symbol}</span>
                                 <FiChevronDown className="text-gray-400" />
                             </button>
                         ) : (
-                            <div className="flex items-center gap-1 bg-gray-100 dark:bg-[#18263a] p-1 rounded-xl border border-gray-300 dark:border-gray-700">
+                            <div className="flex items-center gap-1 bg-gray-100 dark:bg-[#121c2b] p-0.5 rounded-xl border border-gray-200 dark:border-white/10">
                                 {CRYPTO_COINS.map((c) => (
                                     <button
                                         key={c.symbol}
@@ -1202,7 +2017,7 @@ export default function PaperTrade() {
                                             setCryptoSymbol(c.symbol);
                                             setBasketLegs([]);
                                         }}
-                                        className={`px-2 py-0.8 rounded-lg font-bold text-xs transition cursor-pointer flex items-center gap-1 ${
+                                        className={`px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer flex items-center gap-1 ${
                                             cryptoSymbol === c.symbol
                                                 ? "bg-amber-500 text-white shadow-xs"
                                                 : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
@@ -1215,21 +2030,54 @@ export default function PaperTrade() {
                             </div>
                         )}
 
-                        <div className="flex items-center gap-1.5 sm:gap-2 font-mono">
-                            <span className="text-gray-500 dark:text-gray-400 font-sans text-[11px] hidden xs:inline">Spot:</span>
+                        {/* Spot Price & Change */}
+                        <div className="flex items-center gap-2 font-mono bg-gray-50/80 dark:bg-[#070e17]/80 px-2.5 py-1 rounded-xl border border-gray-200/80 dark:border-white/5">
+                            <span className="relative flex h-1.5 w-1.5" title={isCrypto ? "24/7 live feed" : "Live feed"}>
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                            </span>
+                            <span className="text-gray-400 font-sans text-[11px] font-semibold">SPOT</span>
                             <span className="font-extrabold text-gray-900 dark:text-white text-xs sm:text-sm tabular-nums">
                                 {formatActivePrice(spotPrice)}
                             </span>
                             {chainData?.spotChange != null && (
-                                <span className={`text-[10px] sm:text-[11px] font-bold ${Number(chainData.spotChange) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                <span className={`text-[11px] font-bold ${Number(chainData.spotChange) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
                                     ({Number(chainData.spotChange) >= 0 ? "+" : ""}{Number(chainData.spotChangePercent || 0).toFixed(2)}%)
                                 </span>
                             )}
                         </div>
 
-                        {/* USD <-> INR Currency Switcher for Crypto */}
+                        {/* VIX (Indian mode) */}
+                        {!isCrypto && chainData?.vix != null && (
+                            <div className="hidden md:flex xl:hidden 2xl:flex items-center gap-1 font-mono bg-gray-50/80 dark:bg-[#070e17]/80 px-2 py-1 rounded-xl border border-gray-200/80 dark:border-white/5 text-[11px] shrink-0">
+                                <span className="text-gray-400 font-sans text-[10px] font-bold">VIX</span>
+                                <span className="font-bold text-gray-800 dark:text-gray-200 tabular-nums">
+                                    {Number(chainData.vix).toFixed(2)}
+                                </span>
+                            </div>
+                        )}
+
+                        {/* Expiry Selector */}
+                        {chainData?.expiries?.length > 0 && (
+                            <div className="flex items-center gap-1 bg-gray-100 dark:bg-[#121c2b] px-2 py-0.5 rounded-xl border border-gray-200 dark:border-white/10">
+                                <span className="text-gray-400 text-[10px] font-bold uppercase hidden 2xl:inline">Exp:</span>
+                                <select
+                                    value={chainData.selectedExpiry || ""}
+                                    onChange={(e) => changeExpiry(activeSymbol, e.target.value)}
+                                    className="bg-transparent font-bold text-gray-800 dark:text-gray-200 text-xs outline-none cursor-pointer py-1"
+                                >
+                                    {chainData.expiries.map((exp) => (
+                                        <option key={exp} value={exp} className="bg-white dark:bg-[#121c2b] text-gray-900 dark:text-white">
+                                            {formatExpiryShort(exp)}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+
+                        {/* USD <-> INR for Crypto */}
                         {isCrypto && (
-                            <div className="flex items-center bg-gray-200/80 dark:bg-[#18263a] p-0.5 rounded-lg border border-gray-300 dark:border-gray-700">
+                            <div className="flex items-center bg-gray-100 dark:bg-[#121c2b] p-0.5 rounded-lg border border-gray-200 dark:border-white/10">
                                 <button
                                     onClick={() => setCurrency("USD")}
                                     className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
@@ -1250,42 +2098,95 @@ export default function PaperTrade() {
                             </div>
                         )}
 
-                        {/* Live Stream Status Pill */}
-                        <div className="flex items-center gap-1.5 px-2 py-0.8 rounded-full bg-emerald-100 dark:bg-emerald-950/70 border border-emerald-300 dark:border-emerald-800/50 text-[10px] sm:text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
-                            <span className="relative flex h-2 w-2">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                            </span>
-                            <span className="hidden sm:inline">{isCrypto ? "24/7 Live Feed" : "Live Stream"}</span>
-                            <span className="sm:hidden">Live</span>
-                        </div>
                     </div>
 
-                    {/* Expiry Selector & Wallet Balance */}
-                    <div className="flex items-center gap-2 sm:gap-3">
-                        {chainData?.expiries?.length > 0 && (
-                            <div className="flex items-center gap-1">
-                                <span className="text-gray-500 dark:text-gray-400 text-[11px] hidden sm:inline">Expiry:</span>
-                                <select
-                                    value={chainData.selectedExpiry || ""}
-                                    onChange={(e) => changeExpiry(activeSymbol, e.target.value)}
-                                    className="bg-gray-100 dark:bg-[#18263a] border border-gray-300 dark:border-gray-700 rounded-lg px-2 py-1 font-bold text-gray-800 dark:text-gray-200 text-xs outline-none cursor-pointer"
-                                >
-                                    {chainData.expiries.map((exp) => (
-                                        <option key={exp} value={exp}>
-                                            {formatExpiryShort(exp)}
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
-                        )}
+                    {/* Page Tabs */}
+                    <div className="flex items-center shrink-0 bg-gray-100 dark:bg-[#121c2b] p-1 rounded-xl text-xs font-bold border border-gray-200 dark:border-white/10 shadow-2xs">
+                        <button
+                            onClick={() => setActiveTab("trade")}
+                            className={`px-2.5 py-1 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                                activeTab === "trade"
+                                    ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 shadow-xs"
+                                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                            }`}
+                        >
+                            <FiLayers size={13} />
+                            <span>Trade<span className="hidden min-[1680px]:inline"> &amp; Strategy</span></span>
+                        </button>
+                        <button
+                            onClick={() => setActiveTab("positions")}
+                            className={`px-2.5 py-1 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                                activeTab === "positions"
+                                    ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 shadow-xs"
+                                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                            }`}
+                        >
+                            <span>Positions</span>
+                            {openPositions.length > 0 && (
+                                <span className="rounded-full bg-emerald-600 text-white text-[10px] px-1.5 py-0.2 font-mono">
+                                    {openPositions.length}
+                                </span>
+                            )}
+                        </button>
+                        <button
+                            onClick={() => {
+                                setActiveTab("orders");
+                                loadOrders();
+                            }}
+                            className={`px-2.5 py-1 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                                activeTab === "orders"
+                                    ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 shadow-xs"
+                                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                            }`}
+                        >
+                            <FiList size={13} />
+                            <span>Orders</span>
+                            {orders.filter((o) => o.status === "PENDING").length > 0 ? (
+                                <span className="rounded-full bg-amber-500 text-white text-[10px] px-1.5 py-0.2 font-mono font-black animate-pulse">
+                                    {orders.filter((o) => o.status === "PENDING").length}
+                                </span>
+                            ) : orders.length > 0 ? (
+                                <span className="text-[10px] text-gray-400 font-mono">({orders.length})</span>
+                            ) : null}
+                        </button>
+                        <button
+                            onClick={() => setActiveTab("history")}
+                            className={`px-2.5 py-1 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                                activeTab === "history"
+                                    ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 shadow-xs"
+                                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                            }`}
+                        >
+                            <span>History</span>
+                            {closedPositions.length > 0 && (
+                                <span className="text-[10px] text-gray-400 font-mono">({closedPositions.length})</span>
+                            )}
+                        </button>
+                        <button
+                            onClick={() => setActiveTab("leaderboard")}
+                            className={`px-2.5 py-1 rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                                activeTab === "leaderboard"
+                                    ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 shadow-xs"
+                                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                            }`}
+                        >
+                            <span>🏆</span>
+                            <span className="hidden min-[1680px]:inline">Leaderboard</span>
+                        </button>
+                    </div>
 
-                        <div className="flex items-center gap-2 sm:gap-3 pl-2 sm:pl-3 border-l border-gray-200 dark:border-gray-800">
+
+                    {/* Right: Virtual Capital Card & Pro */}
+                    <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+                        <div
+                            className="bg-gray-100 dark:bg-[#121c2b] px-3 py-1 rounded-xl border border-gray-200 dark:border-white/10 flex items-center gap-3"
+                            title={!isCrypto && !isPro ? "Free trial: practicing with ₹1,00,000 virtual capital. Pro gives ₹5,00,000 + full platform access." : undefined}
+                        >
                             <div>
-                                <div className="text-[9px] sm:text-[10px] text-gray-400 font-bold uppercase">
-                                    {isCrypto ? "Virtual USDT" : "Virtual Cash"}
+                                <div className="text-[9px] text-gray-400 font-extrabold uppercase tracking-wider">
+                                    {isCrypto ? "Virtual USDT" : isPro ? "Virtual Cash" : "Trial Cash"}
                                 </div>
-                                <div className="font-mono font-black text-[11px] sm:text-xs text-gray-900 dark:text-white tabular-nums">
+                                <div className="font-mono font-black text-xs text-gray-900 dark:text-white tabular-nums">
                                     {isCrypto ? (
                                         currency === "INR" ? (
                                             `₹${Number(cryptoWallet.balance * usdtInrRate).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`
@@ -1298,15 +2199,14 @@ export default function PaperTrade() {
                                 </div>
                             </div>
 
-                            {/* Refill / Reset Button */}
                             {!isCrypto ? (
                                 <button
                                     onClick={() => setRefillModalOpen(true)}
-                                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] shadow-xs cursor-pointer transition flex items-center gap-1"
+                                    className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10.5px] shadow-xs cursor-pointer transition flex items-center gap-1 shrink-0"
                                     title="Add +₹5,00,000 Virtual Capital for ₹100"
                                 >
-                                    <FiPlusCircle className="text-xs" />
-                                    <span>+₹5L (₹100)</span>
+                                    <FiPlusCircle size={11} />
+                                    <span>Refill</span>
                                 </button>
                             ) : (
                                 <button
@@ -1316,149 +2216,36 @@ export default function PaperTrade() {
                                         setCryptoWallet(resetW);
                                         setFeedback({ type: "success", text: "Crypto Virtual Capital reset to $10,000 USDT!" });
                                     }}
-                                    className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-[11px] shadow-xs cursor-pointer transition flex items-center gap-1"
-                                    title="Reset Virtual USDT Balance to $10,000"
+                                    className="px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-[10.5px] shadow-xs cursor-pointer transition flex items-center gap-1 shrink-0"
                                 >
-                                    <FiRefreshCw className="text-xs" />
-                                    <span>$10k USDT</span>
+                                    <FiRefreshCw size={11} />
+                                    <span>Reset</span>
                                 </button>
                             )}
-
-                            {/* Pro Membership Badge / Button */}
-                            {!isPro ? (
-                                <button
-                                    onClick={() => setProModalOpen(true)}
-                                    className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-extrabold text-[11px] shadow-xs cursor-pointer transition flex items-center gap-1"
-                                >
-                                    <FiAward className="text-xs" />
-                                    <span>Pro (₹499/mo)</span>
-                                </button>
-                            ) : (
-                                <span className="px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 text-amber-700 dark:text-amber-400 font-black text-[10px]">
-                                    ⭐ Pro Active
-                                </span>
-                            )}
                         </div>
-                    </div>
-                </div>
-            </div>
 
-            {/* --------------------------------------------------------------------- */}
-            {/* Quick Indices / Crypto Bar & View Navigation */}
-            {/* --------------------------------------------------------------------- */}
-            <div className="bg-white/80 dark:bg-[#101926]/90 border-b border-gray-200 dark:border-gray-800 px-3 sm:px-6 py-2 overflow-x-auto">
-                <div className="w-full max-w-[1920px] mx-auto flex flex-wrap items-center justify-between gap-2.5 text-xs">
-                    {!isCrypto ? (
-                        <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 max-w-full">
-                            <span className="text-[11px] text-gray-400 font-bold mr-1 shrink-0 hidden md:inline">7 Indices:</span>
-                            {symbolList.indices.map((sym) => (
-                                <button
-                                    key={sym}
-                                    onClick={() => setSymbol(sym)}
-                                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer shrink-0 ${
-                                        symbol === sym
-                                            ? "bg-emerald-600 text-white shadow-xs"
-                                            : "bg-gray-100 dark:bg-[#182333] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#223348]"
-                                    }`}
-                                >
-                                    {sym}
-                                </button>
-                            ))}
-                        </div>
-                    ) : (
-                        <div className="flex items-center gap-2 overflow-x-auto py-0.5 max-w-full">
-                            <span className="text-[11px] text-gray-400 font-bold mr-1 shrink-0 hidden md:inline">Crypto Assets:</span>
-                            {CRYPTO_COINS.map((c) => (
-                                <button
-                                    key={c.symbol}
-                                    onClick={() => {
-                                        setCryptoSymbol(c.symbol);
-                                        setBasketLegs([]);
-                                    }}
-                                    className={`px-3 py-1 rounded-lg font-bold text-xs transition cursor-pointer shrink-0 flex items-center gap-1.5 ${
-                                        cryptoSymbol === c.symbol
-                                            ? "bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-xs"
-                                            : "bg-gray-100 dark:bg-[#182333] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#223348]"
-                                    }`}
-                                >
-                                    <span className="text-sm">{c.icon}</span>
-                                    <span>{c.name} ({c.symbol})</span>
-                                </button>
-                            ))}
-                        </div>
-                    )}
-
-                    <div className="flex items-center bg-gray-200/80 dark:bg-[#182333] p-1 rounded-xl text-xs font-bold shrink-0 shadow-inner">
-                        <button
-                            onClick={() => setActiveTab("trade")}
-                            className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
-                                activeTab === "trade" ? "bg-white dark:bg-gray-900 text-emerald-600 dark:text-emerald-400 shadow-xs" : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
-                            }`}
-                        >
-                            Option Chain & Hedge
-                        </button>
-                        <button
-                            onClick={() => setActiveTab("positions")}
-                            className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
-                                activeTab === "positions" ? "bg-white dark:bg-gray-900 text-emerald-600 dark:text-emerald-400 shadow-xs" : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
-                            }`}
-                        >
-                            <span>Positions</span>
-                            {openPositions.length > 0 && (
-                                <span className="rounded-full bg-blue-600 text-white text-[10px] px-1.5 py-0.2">
-                                    {openPositions.length}
-                                </span>
-                            )}
-                        </button>
-                        <button
-                            onClick={() => setActiveTab("history")}
-                            className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
-                                activeTab === "history" ? "bg-white dark:bg-gray-900 text-emerald-600 dark:text-emerald-400 shadow-xs" : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
-                            }`}
-                        >
-                            History ({closedPositions.length})
-                        </button>
-                        <button
-                            onClick={() => setActiveTab("leaderboard")}
-                            className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 ${
-                                activeTab === "leaderboard" ? "bg-white dark:bg-gray-900 text-emerald-600 dark:text-emerald-400 shadow-xs" : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
-                            }`}
-                        >
-                            <span>🏆</span>
-                            <span>Leaderboard</span>
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            <div className="w-full max-w-[1920px] mx-auto px-2 sm:px-4 lg:px-6 pt-3 space-y-3">
-                {/* 2-Day Trial / Pro Commercial Banner */}
-                {!isPro && (
-                    <div className="rounded-2xl border border-emerald-300 dark:border-emerald-800/60 bg-emerald-50/70 dark:bg-emerald-950/30 p-3 text-xs text-emerald-900 dark:text-emerald-200 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
-                        <div className="flex items-center gap-2">
-                            <span className="text-lg">🎁</span>
-                            <div>
-                                <span className="font-extrabold">2-Day Free Trial Active: </span>
-                                You have <span className="font-mono font-bold">₹1,00,000</span> virtual capital. Join Pro for ₹499/mo to get <span className="font-bold">₹5,00,000</span> capital & full platform access!
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <button
-                                onClick={() => setRefillModalOpen(true)}
-                                className="px-3 py-1 rounded-lg bg-emerald-600 text-white font-bold hover:bg-emerald-700 transition cursor-pointer"
-                            >
-                                Refill +₹5L (₹100)
-                            </button>
+                        {!isPro ? (
                             <button
                                 onClick={() => setProModalOpen(true)}
-                                className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-black transition cursor-pointer"
+                                className="px-2.5 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-black text-[11px] shadow-xs cursor-pointer transition flex items-center gap-1"
                             >
-                                Get Pro (₹499/mo)
+                                <FiAward size={12} />
+                                <span className="hidden min-[1680px]:inline">Upgrade to Pro (₹499/mo)</span>
+                                <span className="hidden sm:max-[1679px]:inline">Pro ₹499/mo</span>
+                                <span className="sm:hidden">Pro</span>
                             </button>
-                        </div>
+                        ) : (
+                            <span className="px-2.5 py-1 rounded-full bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 text-amber-700 dark:text-amber-400 font-black text-[10px] flex items-center gap-1">
+                                <span>⭐</span>
+                                <span className="hidden sm:inline">Pro Active</span>
+                            </span>
+                        )}
                     </div>
-                )}
+                </div>
+            </header>
 
+            {/* Main Content Workspace */}
+            <main className="w-full max-w-[1720px] mx-auto px-3 sm:px-6 pt-3 space-y-3">
                 {/* Feedback Alerts */}
                 {feedback && (
                     <div className={`p-3 rounded-xl text-xs flex items-center justify-between shadow-xs ${
@@ -1472,19 +2259,19 @@ export default function PaperTrade() {
                             ) : (
                                 <FiAlertCircle className="text-rose-600 text-sm shrink-0" />
                             )}
-                            <span>{feedback.text}</span>
+                            <span className="font-semibold">{feedback.text}</span>
                         </div>
                         <button onClick={() => setFeedback(null)} className="cursor-pointer font-bold ml-2 text-gray-500 hover:text-gray-800 dark:hover:text-white">✕</button>
                     </div>
                 )}
 
                 {/* ----------------------------------------------------------------- */}
-                {/* 1. TRADE TAB: SIDE-BY-SIDE OPTION CHAIN & PAYOFF WORKBENCH */}
+                {/* 1. TRADE & STRATEGY WORKBENCH TAB */}
                 {/* ----------------------------------------------------------------- */}
                 {activeTab === "trade" && (
                     <div className="space-y-3">
                         {/* Mobile Sub-Tab Navigation (< lg screens) */}
-                        <div className="flex lg:hidden items-center justify-between bg-white dark:bg-[#121c2b] p-1.5 rounded-xl border border-gray-200 dark:border-gray-800 shadow-2xs">
+                        <div className="flex lg:hidden items-center justify-between bg-white dark:bg-[#121c2b] p-1.5 rounded-xl border border-gray-200 dark:border-white/10 shadow-2xs">
                             <div className="grid grid-cols-2 gap-1 w-full text-xs font-bold">
                                 <button
                                     onClick={() => setMobileTradeTab("chain")}
@@ -1494,7 +2281,7 @@ export default function PaperTrade() {
                                             : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
                                     }`}
                                 >
-                                    <FiLayers className="text-xs" />
+                                    <FiLayers size={12} />
                                     <span>Option Chain</span>
                                 </button>
                                 <button
@@ -1505,8 +2292,8 @@ export default function PaperTrade() {
                                             : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
                                     }`}
                                 >
-                                    <FiBarChart2 className="text-xs" />
-                                    <span>Payoff & Hedge</span>
+                                    <FiBarChart2 size={12} />
+                                    <span>Strategy &amp; Payoff</span>
                                     {basketLegs.length > 0 && (
                                         <span className="ml-1 px-1.5 py-0.2 rounded-full bg-white/20 text-[10px]">
                                             {basketLegs.length}
@@ -1516,139 +2303,179 @@ export default function PaperTrade() {
                             </div>
                         </div>
 
-                        {/* Split Workstation Grid (Desktop: Left Option Chain 40%, Right StockMojo Strategy Workbench 60%) */}
-                        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+                        {/* Split Workstation Layout on Desktop (Left: Option Chain ~500px, Right: Strategy Workspace ~flex-1) */}
+                        <div className="flex flex-col lg:flex-row gap-4 items-start">
                             {/* ========================================================= */}
-                            {/* LEFT PANEL: STOCKMOJO OPTION CHAIN WINDOW (40% width) */}
+                            {/* LEFT PANEL: STOCKMOJO OPTION CHAIN WINDOW */}
                             {/* ========================================================= */}
-                            <div className={`lg:col-span-5 xl:col-span-5 2xl:col-span-5 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden flex flex-col lg:sticky lg:top-[70px] ${
+                            <div style={{ "--chain-extra": `${Math.max(0, visibleChainCols.length - 2) * 110}px` }} className={`w-full lg:w-[calc(490px+var(--chain-extra))] xl:w-[calc(530px+var(--chain-extra))] 2xl:w-[calc(560px+var(--chain-extra))] lg:max-w-[62vw] shrink-0 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden flex flex-col lg:sticky lg:top-[72px] ${
                                 mobileTradeTab !== "chain" ? "hidden lg:flex" : "flex"
                             }`}>
-                                {/* StockMojo 3-Cell Status Bar: SPOT | VIX | LOT / FUT */}
-                                <div className="grid grid-cols-3 divide-x divide-gray-100 dark:divide-white/10 border-b border-gray-100 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70 text-center py-2 px-1 text-xs">
-                                    <div>
-                                        <span className="text-[10px] text-gray-400 font-bold uppercase block">SPOT</span>
-                                        <span className="font-extrabold font-mono text-gray-900 dark:text-white tabular-nums text-[11.5px]">
-                                            {formatActivePrice(spotPrice)}
+                                {/* Option Chain Mini Bar: Expiry & ATM Info */}
+                                <div className="px-3 py-2 border-b border-gray-100 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70 flex flex-wrap items-center justify-between gap-2 text-xs font-semibold">
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="font-extrabold text-gray-900 dark:text-white uppercase tracking-wider text-[11px]">
+                                            Option Chain
                                         </span>
+                                        {chainData?.selectedExpiry && (
+                                            <span className="px-2 py-0.5 rounded-md bg-gray-200/80 dark:bg-white/10 text-gray-700 dark:text-gray-300 text-[10.5px] font-bold">
+                                                {formatExpiryShort(chainData.selectedExpiry)}
+                                            </span>
+                                        )}
+                                        {isCrypto ? (
+                                            <>
+                                                <span className="text-[10.5px] text-gray-400 font-mono" title="Contract Value on Delta Exchange">
+                                                    1 Ctr = <strong className="text-gray-800 dark:text-gray-200">{lotSize} {activeSymbol}</strong>
+                                                </span>
+                                                <span className="text-[10.5px] text-gray-400 font-mono" title="Total option volume for this expiry, in contracts (calls + puts)">
+                                                    Vol <strong className="text-gray-800 dark:text-gray-200">{chainTotalVolume != null ? chainTotalVolume.toLocaleString("en-US") : "—"}</strong>
+                                                </span>
+                                            </>
+                                        ) : (
+                                            <span className="text-[10.5px] text-gray-400 font-mono">Lot <strong className="text-gray-800 dark:text-gray-200">{lotSize}</strong></span>
+                                        )}
                                     </div>
-                                    <div>
-                                        <span className="text-[10px] text-gray-400 font-bold uppercase block">VIX</span>
-                                        <span className="font-extrabold font-mono text-gray-900 dark:text-white tabular-nums text-[11.5px]">
-                                            {chainData?.vix != null ? Number(chainData.vix).toFixed(2) : "13.40"}
-                                        </span>
+
+                                    <div className="flex items-center gap-1 ml-auto">
+                                            {STRIKE_RANGES.map((r) => (
+                                                <button
+                                                    key={r.label}
+                                                    type="button"
+                                                    onClick={() => setStrikeRange(r.value)}
+                                                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                                                        strikeRange === r.value
+                                                            ? "bg-emerald-600 text-white shadow-xs"
+                                                            : "bg-gray-100 dark:bg-[#121c2b] text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-white/10 hover:border-emerald-500"
+                                                    }`}
+                                                >
+                                                    {r.label}
+                                                </button>
+                                            ))}
                                     </div>
-                                    <div>
-                                        <span className="text-[10px] text-gray-400 font-bold uppercase block">
-                                            {isCrypto ? "24h VOL" : "LOT SIZE"}
-                                        </span>
-                                        <span className="font-extrabold font-mono text-emerald-600 dark:text-emerald-400 tabular-nums text-[11.5px]">
-                                            {isCrypto ? "Active" : lotSize}
-                                        </span>
+
+                                    {atmStrike && !isCrypto && (
+                                        <button
+                                            type="button"
+                                            onClick={scrollToAtm}
+                                            className="flex items-center gap-1 text-[10.5px] text-amber-600 dark:text-amber-400 font-bold hover:underline cursor-pointer"
+                                        >
+                                            <span>ATM: {atmStrike}</span>
+                                            <span>🎯</span>
+                                        </button>
+                                    )}
+
+                                    <div className="relative">
+                                        <button
+                                            type="button"
+                                            onClick={() => setChainSettingsOpen((o) => !o)}
+                                            className={`w-7 h-7 rounded-lg flex items-center justify-center border transition cursor-pointer ${
+                                                chainSettingsOpen
+                                                    ? "bg-emerald-600 text-white border-emerald-600"
+                                                    : "bg-white dark:bg-[#121c2b] text-gray-500 dark:text-gray-400 border-gray-200 dark:border-white/10 hover:text-emerald-600 hover:border-emerald-500"
+                                            }`}
+                                            title="Choose option chain columns"
+                                        >
+                                            <FiSettings size={13} />
+                                        </button>
+                                        {chainSettingsOpen && (
+                                            <>
+                                                <div className="fixed inset-0 z-30" onClick={() => setChainSettingsOpen(false)} />
+                                                <div className="absolute right-0 top-9 z-40 w-56 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0f1a29] shadow-lg p-3 text-xs font-sans">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <span className="font-extrabold text-gray-900 dark:text-white">Chain Columns</span>
+                                                        <span className="text-[10px] font-bold text-gray-400 uppercase">{isCrypto ? "Crypto" : "NSE F&O"}</span>
+                                                    </div>
+                                                    <div className="space-y-0.5 max-h-72 overflow-y-auto custom-scrollbar">
+                                                        {[...marketChainColumns].reverse().map((c) => {
+                                                            const checked = c.locked || chainColIds.includes(c.id);
+                                                            return (
+                                                                <label
+                                                                    key={c.id}
+                                                                    className={`flex items-center gap-2 px-2 py-1.5 rounded-lg ${
+                                                                        c.locked ? "opacity-60 cursor-not-allowed" : "cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5"
+                                                                    }`}
+                                                                >
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={checked}
+                                                                        disabled={c.locked}
+                                                                        onChange={() => toggleChainCol(c.id)}
+                                                                        className="accent-emerald-600 w-3.5 h-3.5"
+                                                                    />
+                                                                    <span className="font-semibold text-gray-800 dark:text-gray-200">{c.label}</span>
+                                                                    {c.locked && <span className="ml-auto text-[10px] text-gray-400">always</span>}
+                                                                </label>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={resetChainCols}
+                                                        className="mt-2 w-full text-center text-[11px] font-bold text-gray-500 hover:text-emerald-600 cursor-pointer"
+                                                    >
+                                                        Reset to default
+                                                    </button>
+                                                </div>
+                                            </>
+                                        )}
                                     </div>
                                 </div>
 
-                                {/* StockMojo Scrollable Expiry Pills Bar */}
-                                {chainData?.expiries?.length > 0 && (
-                                    <div className="px-2.5 py-1.5 border-b border-gray-100 dark:border-white/10 flex items-center gap-1.5 overflow-x-auto no-scrollbar bg-white dark:bg-[#0b1420]">
-                                        <span className="text-[10px] font-bold text-gray-400 shrink-0">EXPIRY:</span>
-                                        {chainData.expiries.map((exp) => {
-                                            const active = exp === chainData.selectedExpiry;
-                                            return (
-                                                <button
-                                                    key={exp}
-                                                    type="button"
-                                                    onClick={() => changeExpiry(activeSymbol, exp)}
-                                                    className={`px-2 py-0.8 rounded-md text-[11px] font-bold shrink-0 transition cursor-pointer ${
-                                                        active
-                                                            ? "bg-emerald-600 text-white shadow-xs"
-                                                            : "bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-white/10"
-                                                    }`}
-                                                >
-                                                    {formatExpiryShort(exp)}
-                                                </button>
-                                            );
-                                        })}
+                                {!isCrypto && (
+                                    <div className="px-3 py-1.5 border-b border-gray-100 dark:border-white/10 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                                    {symbolList.indices.map((sym) => (
+                                        <button
+                                            key={sym}
+                                            onClick={() => setSymbol(sym)}
+                                            className={`px-2.5 py-0.8 rounded-lg font-bold text-[11px] transition cursor-pointer shrink-0 ${
+                                                symbol === sym
+                                                    ? "bg-emerald-600 text-white shadow-xs"
+                                                    : "bg-gray-100 dark:bg-[#121c2b] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#18263a]"
+                                            }`}
+                                        >
+                                            {sym}
+                                        </button>
+                                    ))}
                                     </div>
                                 )}
 
-                                {/* Strike Filter Bar */}
-                                <div className="px-3 py-1.5 bg-gray-50/50 dark:bg-[#070e17]/50 border-b border-gray-100 dark:border-white/10 flex flex-wrap items-center justify-between gap-1.5 text-xs">
-                                    <div className="flex items-center gap-1">
-                                        <span className="text-gray-400 font-bold text-[10.5px]">Strikes:</span>
-                                        {STRIKE_RANGES.map((r) => (
-                                            <button
-                                                key={r.label}
-                                                type="button"
-                                                onClick={() => setStrikeRange(r.value)}
-                                                className={`px-1.5 py-0.5 rounded text-[10.5px] font-bold transition cursor-pointer ${
-                                                    strikeRange === r.value
-                                                        ? "bg-emerald-600 text-white shadow-xs"
-                                                        : "bg-white dark:bg-[#121c2b] text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-white/10 hover:border-emerald-500"
-                                                }`}
-                                            >
-                                                {r.label}
-                                            </button>
-                                        ))}
-                                    </div>
-
-                                    {/* Mobile View Toggle (Calls | Both | Puts) */}
-                                    <div className="flex md:hidden items-center bg-gray-100 dark:bg-[#121c2b] p-0.5 rounded-lg text-xs font-bold border border-gray-200 dark:border-white/10">
-                                        <button
-                                            type="button"
-                                            onClick={() => setMobileSide("calls")}
-                                            className={`px-2 py-0.5 rounded text-[10px] ${mobileSide === "calls" ? "bg-white dark:bg-[#0b1420] text-blue-600 dark:text-blue-400 shadow-xs" : "text-gray-500"}`}
-                                        >
-                                            Calls
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setMobileSide("both")}
-                                            className={`px-2 py-0.5 rounded text-[10px] ${mobileSide === "both" ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 shadow-xs" : "text-gray-500"}`}
-                                        >
-                                            Both
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setMobileSide("puts")}
-                                            className={`px-2 py-0.5 rounded text-[10px] ${mobileSide === "puts" ? "bg-white dark:bg-[#0b1420] text-purple-600 dark:text-purple-400 shadow-xs" : "text-gray-500"}`}
-                                        >
-                                            Puts
-                                        </button>
-                                    </div>
-
-                                    <div className="text-gray-400 text-[10.5px] font-mono hidden sm:block">
-                                        <span className="text-emerald-600 dark:text-emerald-400 font-bold">{displayRows.length}</span> strikes
-                                    </div>
-                                </div>
-
-                                {/* Fast Responsive Option Chain Table with Independent Scroll */}
-                                <div className="overflow-x-auto max-h-[calc(100vh-250px)] overflow-y-auto custom-scrollbar">
+                                {/* Option Chain Table with Independent Scroll */}
+                                <div ref={chainScrollRef} className="overflow-x-auto max-h-[calc(100vh-280px)] overflow-y-auto custom-scrollbar">
                                     <table className="w-full text-xs text-center border-collapse">
-                                        <thead className="sticky top-0 z-10">
-                                            <tr className="bg-gray-100/90 dark:bg-[#070e17]/95 backdrop-blur-xs text-gray-500 dark:text-gray-400 text-[10px] font-bold border-b border-gray-200 dark:border-white/10">
+                                        <thead className="sticky top-0 z-10 shadow-2xs">
+                                            <tr className="bg-gray-100/95 dark:bg-[#070e17]/95 backdrop-blur-xs text-[10px] font-extrabold border-b border-gray-200 dark:border-white/10">
                                                 {(mobileSide === "both" || mobileSide === "calls") && (
-                                                    <th colSpan={3} className="py-1 bg-blue-50/50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 uppercase tracking-wider text-[9.5px] font-extrabold">CALLS</th>
+                                                    <th colSpan={visibleChainCols.length + 1} className="py-1.5 bg-blue-50/70 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 uppercase tracking-wider text-[10px] font-black border-r border-gray-200/60 dark:border-white/10">
+                                                        CALLS (CE)
+                                                    </th>
                                                 )}
-                                                <th className="py-1 w-16 min-w-[62px] max-w-[70px] bg-gray-100 dark:bg-[#0b1420] text-gray-800 dark:text-gray-200 font-extrabold text-[10px]">STRIKE</th>
+                                                <th className="py-1.5 w-24 min-w-[76px] bg-gray-100 dark:bg-[#0b1420] text-gray-900 dark:text-white font-black text-[10.5px]">
+                                                    STRIKE
+                                                </th>
                                                 {(mobileSide === "both" || mobileSide === "puts") && (
-                                                    <th colSpan={3} className="py-1 bg-purple-50/50 dark:bg-purple-950/20 text-purple-600 dark:text-purple-400 uppercase tracking-wider text-[9.5px] font-extrabold">PUTS</th>
+                                                    <th colSpan={visibleChainCols.length + 1} className="py-1.5 bg-purple-50/70 dark:bg-purple-950/30 text-purple-600 dark:text-purple-400 uppercase tracking-wider text-[10px] font-black border-l border-gray-200/60 dark:border-white/10">
+                                                        PUTS (PE)
+                                                    </th>
                                                 )}
                                             </tr>
-                                            <tr className="bg-gray-50 dark:bg-[#0b1420] backdrop-blur-xs text-gray-400 text-[9.5px] border-b border-gray-100 dark:border-white/10 font-semibold">
+                                            <tr className="bg-gray-50/90 dark:bg-[#0b1420]/90 backdrop-blur-xs text-gray-400 text-[9.5px] border-b border-gray-200 dark:border-white/10 font-bold">
                                                 {(mobileSide === "both" || mobileSide === "calls") && (
                                                     <>
-                                                        <th className="py-1 px-1 text-right font-medium">CallΔ</th>
-                                                        <th className="py-1 px-1 text-right font-medium">LTP</th>
-                                                        <th className="py-1 px-1 text-center w-11 font-medium">Trade</th>
+                                                        {visibleChainCols.map((c) => (
+                                                            <th key={c.id} className="py-1 px-1.5 text-right font-semibold whitespace-nowrap">{c.label}</th>
+                                                        ))}
+                                                        <th className="py-1 px-1 text-center w-14">Trade</th>
                                                     </>
                                                 )}
-                                                <th className="py-1 px-1 w-16 min-w-[62px] max-w-[70px] bg-gray-50/50 dark:bg-[#070e17]/50 text-gray-700 dark:text-gray-300 font-bold text-[10px]">Strike</th>
+                                                <th className="py-1 px-1 w-24 min-w-[76px] bg-gray-50/50 dark:bg-[#070e17]/50 text-gray-800 dark:text-gray-200 font-extrabold text-[10px]">
+                                                    Strike
+                                                </th>
                                                 {(mobileSide === "both" || mobileSide === "puts") && (
                                                     <>
-                                                        <th className="py-1 px-1 text-center w-11 font-medium">Trade</th>
-                                                        <th className="py-1 px-1 text-left font-medium">LTP</th>
-                                                        <th className="py-1 px-1 text-left font-medium">PutΔ</th>
+                                                        <th className="py-1 px-1 text-center w-14">Trade</th>
+                                                        {[...visibleChainCols].reverse().map((c) => (
+                                                            <th key={c.id} className="py-1 px-1.5 text-left font-semibold whitespace-nowrap">{c.label}</th>
+                                                        ))}
                                                     </>
                                                 )}
                                             </tr>
@@ -1656,8 +2483,8 @@ export default function PaperTrade() {
                                         <tbody className="divide-y divide-gray-100 dark:divide-white/5 font-mono text-xs">
                                             {displayRows.length === 0 ? (
                                                 <tr>
-                                                    <td colSpan={7} className="py-10 text-center text-xs text-gray-400 dark:text-gray-500">
-                                                        No strikes available for {activeSymbol} on this expiry.
+                                                    <td colSpan={visibleChainCols.length * 2 + 3} className="py-12 text-center text-xs text-gray-400 dark:text-gray-500 font-sans">
+                                                        {chainLoading ? "Loading live option chain…" : `No strikes available for ${activeSymbol} on this expiry.`}
                                                     </td>
                                                 </tr>
                                             ) : (
@@ -1670,26 +2497,29 @@ export default function PaperTrade() {
                                                     return (
                                                         <tr
                                                             key={row.strike}
-                                                            className={`hover:bg-gray-50/80 dark:hover:bg-white/[0.03] transition-colors ${
-                                                                isAtm ? "bg-amber-50/50 dark:bg-amber-950/20 font-bold" : ""
+                                                            ref={isAtm ? atmRowRef : null}
+                                                            className={`hover:bg-gray-50/90 dark:hover:bg-white/[0.04] transition-colors ${
+                                                                isAtm ? "bg-amber-500/10 dark:bg-amber-500/10 font-bold" : ""
                                                             }`}
                                                         >
                                                             {/* CE Side */}
                                                             {(mobileSide === "both" || mobileSide === "calls") && (
                                                                 <>
-                                                                    <td className="py-1 px-1 text-right text-gray-400 tabular-nums text-[10px]">
-                                                                        {row.ce?.delta != null ? Number(row.ce.delta).toFixed(2) : "—"}
-                                                                    </td>
-                                                                    <td className="py-1 px-1 text-right font-bold tabular-nums text-gray-900 dark:text-white text-[10.5px]">
-                                                                        {row.ce?.ltp != null ? formatActivePrice(row.ce.ltp) : "—"}
-                                                                    </td>
-                                                                    <td className="py-1 px-1 text-center w-11">
+                                                                    {visibleChainCols.map((c) => {
+                                                                        const cell = renderChainCell(row.ce, c.id);
+                                                                        return (
+                                                                            <td key={c.id} className={`py-1.5 px-1.5 text-right tabular-nums text-[10.5px] whitespace-nowrap ${cell.cls}`}>
+                                                                                {cell.text}
+                                                                            </td>
+                                                                        );
+                                                                    })}
+                                                                    <td className="py-1.5 px-0.5 text-center w-14">
                                                                         {row.ce?.ltp != null && (
                                                                             <div className="flex items-center justify-center gap-0.5">
                                                                                 <button
                                                                                     type="button"
                                                                                     onClick={() => handleToggleLeg(row, "CE", "buy")}
-                                                                                    className={`px-1 py-0.5 min-w-[17px] rounded text-[9px] font-black border transition cursor-pointer ${
+                                                                                    className={`px-1.5 py-0.5 min-w-[18px] rounded text-[9.5px] font-black border transition cursor-pointer ${
                                                                                         ceLeg?.action === "buy"
                                                                                             ? "bg-emerald-600 text-white border-emerald-500 shadow-xs"
                                                                                             : "border-emerald-500/60 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
@@ -1701,7 +2531,7 @@ export default function PaperTrade() {
                                                                                 <button
                                                                                     type="button"
                                                                                     onClick={() => handleToggleLeg(row, "CE", "sell")}
-                                                                                    className={`px-1 py-0.5 min-w-[17px] rounded text-[9px] font-black border transition cursor-pointer ${
+                                                                                    className={`px-1.5 py-0.5 min-w-[18px] rounded text-[9.5px] font-black border transition cursor-pointer ${
                                                                                         ceLeg?.action === "sell"
                                                                                             ? "bg-rose-600 text-white border-rose-500 shadow-xs"
                                                                                             : "border-rose-500/60 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40"
@@ -1710,6 +2540,14 @@ export default function PaperTrade() {
                                                                                 >
                                                                                     S
                                                                                 </button>
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => openOrderSlip(row, "CE", "buy")}
+                                                                                    className="px-1 py-0.5 rounded text-[9px] border border-blue-500/50 text-blue-600 dark:text-blue-400 hover:bg-blue-600 hover:text-white transition cursor-pointer font-bold"
+                                                                                    title="Delta Trade Ticket / Limit Order"
+                                                                                >
+                                                                                    ⚡
+                                                                                </button>
                                                                             </div>
                                                                         )}
                                                                     </td>
@@ -1717,13 +2555,15 @@ export default function PaperTrade() {
                                                             )}
 
                                                             {/* Strike Column */}
-                                                            <td className={`py-1 px-1.5 w-20 min-w-[70px] text-center bg-gray-50/70 dark:bg-[#070e17]/80 font-black tabular-nums border-x border-gray-100 dark:border-white/5 text-[11px] ${
-                                                                isAtm ? "text-amber-600 dark:text-amber-400" : "text-gray-900 dark:text-white"
+                                                            <td className={`py-1.5 px-1 w-24 min-w-[76px] text-center font-black tabular-nums border-x border-gray-200/60 dark:border-white/5 text-[11.5px] ${
+                                                                isAtm
+                                                                    ? "text-amber-600 dark:text-amber-400 bg-amber-500/15"
+                                                                    : "text-gray-900 dark:text-white bg-gray-50/60 dark:bg-[#070e17]/60"
                                                             }`}>
                                                                 <div className="flex items-center justify-center gap-1">
-                                                                    <span>{row.strike}</span>
+                                                                    <span>{strikeNum}</span>
                                                                     {isAtm && (
-                                                                        <span className="text-[7.5px] px-1 py-0 rounded bg-amber-500 text-black font-extrabold leading-tight">
+                                                                        <span className="text-[8px] px-1 py-0 rounded bg-amber-500 text-black font-black uppercase leading-tight">
                                                                             ATM
                                                                         </span>
                                                                     )}
@@ -1733,13 +2573,21 @@ export default function PaperTrade() {
                                                             {/* PE Side */}
                                                             {(mobileSide === "both" || mobileSide === "puts") && (
                                                                 <>
-                                                                    <td className="py-1 px-1 text-center w-11">
+                                                                    <td className="py-1.5 px-0.5 text-center w-14">
                                                                         {row.pe?.ltp != null && (
                                                                             <div className="flex items-center justify-center gap-0.5">
                                                                                 <button
                                                                                     type="button"
+                                                                                    onClick={() => openOrderSlip(row, "PE", "buy")}
+                                                                                    className="px-1 py-0.5 rounded text-[9px] border border-blue-500/50 text-blue-600 dark:text-blue-400 hover:bg-blue-600 hover:text-white transition cursor-pointer font-bold"
+                                                                                    title="Delta Trade Ticket / Limit Order"
+                                                                                >
+                                                                                    ⚡
+                                                                                </button>
+                                                                                <button
+                                                                                    type="button"
                                                                                     onClick={() => handleToggleLeg(row, "PE", "buy")}
-                                                                                    className={`px-1 py-0.5 min-w-[17px] rounded text-[9px] font-black border transition cursor-pointer ${
+                                                                                    className={`px-1.5 py-0.5 min-w-[18px] rounded text-[9.5px] font-black border transition cursor-pointer ${
                                                                                         peLeg?.action === "buy"
                                                                                             ? "bg-emerald-600 text-white border-emerald-500 shadow-xs"
                                                                                             : "border-emerald-500/60 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
@@ -1751,7 +2599,7 @@ export default function PaperTrade() {
                                                                                 <button
                                                                                     type="button"
                                                                                     onClick={() => handleToggleLeg(row, "PE", "sell")}
-                                                                                    className={`px-1 py-0.5 min-w-[17px] rounded text-[9px] font-black border transition cursor-pointer ${
+                                                                                    className={`px-1.5 py-0.5 min-w-[18px] rounded text-[9.5px] font-black border transition cursor-pointer ${
                                                                                         peLeg?.action === "sell"
                                                                                             ? "bg-rose-600 text-white border-rose-500 shadow-xs"
                                                                                             : "border-rose-500/60 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40"
@@ -1763,12 +2611,14 @@ export default function PaperTrade() {
                                                                             </div>
                                                                         )}
                                                                     </td>
-                                                                    <td className="py-1 px-1 text-left font-bold tabular-nums text-gray-900 dark:text-white text-[10.5px]">
-                                                                        {row.pe?.ltp != null ? formatActivePrice(row.pe.ltp) : "—"}
-                                                                    </td>
-                                                                    <td className="py-1 px-1 text-left text-gray-400 tabular-nums text-[10px]">
-                                                                        {row.pe?.delta != null ? Number(row.pe.delta).toFixed(2) : "—"}
-                                                                    </td>
+                                                                    {[...visibleChainCols].reverse().map((c) => {
+                                                                        const cell = renderChainCell(row.pe, c.id);
+                                                                        return (
+                                                                            <td key={c.id} className={`py-1.5 px-1.5 text-left tabular-nums text-[10.5px] whitespace-nowrap ${cell.cls}`}>
+                                                                                {cell.text}
+                                                                            </td>
+                                                                        );
+                                                                    })}
                                                                 </>
                                                             )}
                                                         </tr>
@@ -1781,206 +2631,256 @@ export default function PaperTrade() {
                             </div>
 
                             {/* ========================================================= */}
-                            {/* RIGHT PANEL: STOCKMOJO STRATEGY BUILDER WORKBENCH (60% width) */}
+                            {/* RIGHT PANEL: STRATEGY BUILDER, PAYOFF, & EXECUTION */}
                             {/* ========================================================= */}
-                            <div className={`lg:col-span-7 xl:col-span-7 2xl:col-span-7 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden flex flex-col ${
+                            <div className={`flex-1 min-w-0 flex flex-col gap-3.5 ${
                                 mobileTradeTab !== "payoff" ? "hidden lg:flex" : "flex"
                             }`}>
-                                {/* StockMojo Top Navigation & Presets Bar */}
-                                <div className="border-b border-gray-100 dark:border-white/10 bg-gray-50/50 dark:bg-[#070e17]/50 px-3 py-2 flex flex-wrap items-center justify-between gap-2">
-                                    <div className="flex items-center gap-1.5">
-                                        <button
-                                            type="button"
-                                            onClick={() => setChartViewTab("payoff")}
-                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                                                chartViewTab === "payoff"
-                                                    ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 border border-gray-200 dark:border-white/10 shadow-xs"
-                                                    : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
-                                            }`}
-                                        >
-                                            <span>📊 Payoff</span>
-                                            {basketLegs.length > 0 && (
-                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                {/* Strategy Terminal Top Controls Card */}
+                                <div className="rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden">
+                                    <div className="border-b border-gray-100 dark:border-white/10 bg-gray-50/60 dark:bg-[#070e17]/60 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2.5">
+                                        {/* Main View Switcher Tabs */}
+                                        <div className="flex items-center gap-1.5 bg-gray-100 dark:bg-[#121c2b] p-1 rounded-xl text-xs font-bold border border-gray-200 dark:border-white/10">
+                                            <button
+                                                type="button"
+                                                onClick={() => setChartViewTab("presets")}
+                                                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+                                                    chartViewTab === "presets"
+                                                        ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 shadow-xs"
+                                                        : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                                                }`}
+                                            >
+                                                <span>⚡ Strategies</span>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setChartViewTab("payoff")}
+                                                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+                                                    chartViewTab === "payoff"
+                                                        ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 shadow-xs"
+                                                        : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                                                }`}
+                                            >
+                                                <span>📊 Payoff &amp; Risk</span>
+                                                {basketLegs.length > 0 && (
+                                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                                )}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setChartViewTab("tradingview")}
+                                                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+                                                    chartViewTab === "tradingview"
+                                                        ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 shadow-xs"
+                                                        : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                                                }`}
+                                            >
+                                                <span>📈 Technical Chart</span>
+                                            </button>
+                                        </div>
+
+                                        {/* Quick 1-Click Strategy Presets Bar & Delta Exchange Leverage */}
+                                        <div className="flex items-center gap-2 overflow-x-auto text-[11px] font-semibold py-0.5 no-scrollbar">
+                                            {isCrypto && (
+                                                <div className="flex items-center gap-1 bg-gray-100 dark:bg-[#121c2b] p-0.5 rounded-lg border border-gray-200 dark:border-white/10 text-[10px] font-bold shrink-0">
+                                                    <span className="text-gray-400 px-1 uppercase tracking-wider text-[9px]">Leverage:</span>
+                                                    {[10, 20, 50, 100].map((lev) => (
+                                                        <button
+                                                            key={lev}
+                                                            type="button"
+                                                            onClick={() => setCryptoLeverage(lev)}
+                                                            className={`px-1.5 py-0.5 rounded transition cursor-pointer text-[10px] ${
+                                                                cryptoLeverage === lev
+                                                                    ? "bg-emerald-600 text-white shadow-2xs font-black"
+                                                                    : "text-gray-500 hover:text-gray-900 dark:hover:text-white"
+                                                            }`}
+                                                            title={`Delta Exchange Option Margin: ${lev}x (${(100/lev).toFixed(0)}% Initial Margin)`}
+                                                        >
+                                                            {lev}x
+                                                        </button>
+                                                    ))}
+                                                </div>
                                             )}
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setChartViewTab("tradingview")}
-                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                                                chartViewTab === "tradingview"
-                                                    ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 border border-gray-200 dark:border-white/10 shadow-xs"
-                                                    : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
-                                            }`}
-                                        >
-                                            <span>📈 TradingView</span>
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setChartViewTab("presets")}
-                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                                                chartViewTab === "presets"
-                                                    ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 border border-gray-200 dark:border-white/10 shadow-xs"
-                                                    : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
-                                            }`}
-                                        >
-                                            <span>⚡ Ready-Made Strategies</span>
-                                        </button>
+
+                                            {chartViewTab !== "presets" && (
+                                                <div className="flex items-center gap-1">
+                                                    <span className="text-[10px] uppercase font-bold text-gray-400 mr-1 hidden sm:inline">Presets:</span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => applyPresetHedge("BULL_CALL_SPREAD")}
+                                                        className="px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-[#121c2b] dark:hover:bg-[#1a273b] border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:text-emerald-600 dark:hover:text-emerald-400 shrink-0 transition cursor-pointer"
+                                                    >
+                                                        Bull Call
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => applyPresetHedge("BEAR_PUT_SPREAD")}
+                                                        className="px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-[#121c2b] dark:hover:bg-[#1a273b] border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:text-rose-600 dark:hover:text-rose-400 shrink-0 transition cursor-pointer"
+                                                    >
+                                                        Bear Put
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => applyPresetHedge("IRON_CONDOR")}
+                                                        className="px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-[#121c2b] dark:hover:bg-[#1a273b] border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:text-purple-600 dark:hover:text-purple-400 shrink-0 transition cursor-pointer"
+                                                    >
+                                                        Iron Condor
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => applyPresetHedge("STRADDLE")}
+                                                        className="px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-[#121c2b] dark:hover:bg-[#1a273b] border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:text-amber-600 dark:hover:text-amber-400 shrink-0 transition cursor-pointer"
+                                                    >
+                                                        Straddle
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => applyPresetHedge("SHORT_STRANGLE")}
+                                                        className="px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-[#121c2b] dark:hover:bg-[#1a273b] border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:text-teal-600 dark:hover:text-teal-400 shrink-0 transition cursor-pointer"
+                                                    >
+                                                        Strangle
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
                                     </div>
 
-                                    {/* Quick Preset Pills */}
-                                    <div className="flex items-center gap-1 overflow-x-auto text-[10.5px] font-semibold py-0.5 no-scrollbar text-gray-600 dark:text-gray-400">
-                                        <button
-                                            type="button"
-                                            onClick={() => applyPresetHedge("BULL_CALL_SPREAD")}
-                                            className="px-2 py-0.8 rounded-md bg-white dark:bg-[#121c2b] border border-gray-200 dark:border-white/10 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 shrink-0 transition cursor-pointer"
-                                        >
-                                            Bull Call
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => applyPresetHedge("BEAR_PUT_SPREAD")}
-                                            className="px-2 py-0.8 rounded-md bg-white dark:bg-[#121c2b] border border-gray-200 dark:border-white/10 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 shrink-0 transition cursor-pointer"
-                                        >
-                                            Bear Put
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => applyPresetHedge("IRON_CONDOR")}
-                                            className="px-2 py-0.8 rounded-md bg-white dark:bg-[#121c2b] border border-gray-200 dark:border-white/10 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 shrink-0 transition cursor-pointer"
-                                        >
-                                            Iron Condor
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => applyPresetHedge("STRADDLE")}
-                                            className="px-2 py-0.8 rounded-md bg-white dark:bg-[#121c2b] border border-gray-200 dark:border-white/10 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 shrink-0 transition cursor-pointer"
-                                        >
-                                            Straddle
-                                        </button>
-                                    </div>
-                                </div>
+                                    {/* Visual Area 1: Ready-Made Strategy Matrix */}
+                                    {chartViewTab === "presets" && (
+                                        <div className="bg-white dark:bg-[#0b1420] min-h-[420px] max-h-[calc(100vh-300px)] overflow-y-auto custom-scrollbar">
+                                            <PresetStrategies
+                                                bare
+                                                data={chainData}
+                                                onApply={(pLegs) => {
+                                                    applyFullPreset(pLegs);
+                                                    setChartViewTab("payoff");
+                                                }}
+                                            />
+                                        </div>
+                                    )}
 
-                                {/* Active Visual View (Payoff Chart, TradingView, or StockMojo Presets Matrix) */}
-                                {chartViewTab === "presets" ? (
-                                    <div className="p-3 bg-white dark:bg-[#0b1420] min-h-[360px] overflow-y-auto max-h-[500px]">
-                                        <PresetStrategies
-                                            data={chainData}
-                                            onApply={(pLegs) => {
-                                                applyFullPreset(pLegs);
-                                                setChartViewTab("payoff");
-                                            }}
-                                        />
-                                    </div>
-                                ) : chartViewTab === "payoff" ? (
-                                    <div className="p-3 sm:p-4 space-y-3">
-                                        {/* StockMojo 2-Column Split: Stats Left + Chart Right */}
-                                        <div className="flex flex-col sm:flex-row gap-3">
-                                            {/* StockMojo Stat Cards Column */}
-                                            <div className="w-full sm:w-[170px] xl:w-[190px] shrink-0 space-y-1.5 text-xs">
-                                                <div className="p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
-                                                    <div className="text-[9.5px] uppercase font-bold text-gray-500 dark:text-gray-400">Required Funds</div>
-                                                    <div className="text-sm font-black tabular-nums text-emerald-600 dark:text-emerald-400 font-mono">
+                                    {/* Visual Area 2: Payoff Chart & Strategy Analytics */}
+                                    {chartViewTab === "payoff" && (
+                                        <div className="p-4 space-y-3.5">
+                                            {/* Horizontal Strategy Analytics KPI Ribbon (6 Clean Cards) */}
+                                            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2.5">
+                                                <div className="p-2.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
+                                                    <div className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Funds Required</div>
+                                                    <div className="text-sm font-black tabular-nums text-emerald-600 dark:text-emerald-400 font-mono mt-0.5">
                                                         {formatActivePrice(payoffData.fundsRequired)}
                                                     </div>
                                                 </div>
 
-                                                <div className="p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
-                                                    <div className="text-[9.5px] uppercase font-bold text-gray-500 dark:text-gray-400">Max Profit</div>
-                                                    <div className="text-xs font-black tabular-nums text-emerald-600 dark:text-emerald-400 truncate">
+                                                <div className="p-2.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
+                                                    <div className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Max Profit</div>
+                                                    <div className="text-sm font-black tabular-nums text-emerald-600 dark:text-emerald-400 font-mono mt-0.5 truncate">
                                                         {payoffData.maxProfit == null ? "—" : typeof payoffData.maxProfit === "number" ? `+${formatActivePrice(payoffData.maxProfit)}` : payoffData.maxProfit}
                                                     </div>
                                                 </div>
 
-                                                <div className="p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
-                                                    <div className="text-[9.5px] uppercase font-bold text-gray-500 dark:text-gray-400">Max Loss</div>
-                                                    <div className="text-xs font-black tabular-nums text-rose-600 dark:text-rose-400 truncate">
+                                                <div className="p-2.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
+                                                    <div className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Max Loss</div>
+                                                    <div className="text-sm font-black tabular-nums text-rose-600 dark:text-rose-400 font-mono mt-0.5 truncate">
                                                         {payoffData.maxLoss == null ? "—" : typeof payoffData.maxLoss === "number" ? formatActivePrice(payoffData.maxLoss) : payoffData.maxLoss}
                                                     </div>
                                                 </div>
 
-                                                <div className="p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70 flex justify-between items-center">
-                                                    <div className="text-[9.5px] uppercase font-bold text-gray-500 dark:text-gray-400">POP</div>
-                                                    <div className="text-xs font-black tabular-nums text-gray-800 dark:text-gray-200">
-                                                        {payoffData.pop != null ? `${payoffData.pop}%` : "—"}
-                                                    </div>
-                                                </div>
-
-                                                <div className="p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70 flex justify-between items-center">
-                                                    <div className="text-[9.5px] uppercase font-bold text-gray-500 dark:text-gray-400">Reward : Risk</div>
-                                                    <div className="text-xs font-black tabular-nums text-gray-800 dark:text-gray-200">
+                                                <div className="p-2.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
+                                                    <div className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Reward : Risk</div>
+                                                    <div className="text-sm font-black tabular-nums text-gray-800 dark:text-gray-200 font-mono mt-0.5">
                                                         {payoffData.riskReward || "—"}
                                                     </div>
                                                 </div>
 
-                                                {payoffData.breakevens?.length > 0 && (
-                                                    <div className="p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
-                                                        <div className="text-[9px] uppercase font-bold text-gray-500 dark:text-gray-400">Breakeven</div>
-                                                        <div className="text-[10.5px] font-bold tabular-nums text-purple-600 dark:text-purple-400 truncate">
-                                                            {payoffData.breakevens.map((b) => (isCrypto ? Number(b).toFixed(1) : Math.round(b))).join(" | ")}
+                                                <div className="p-2.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
+                                                    <div className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">POP (Est.)</div>
+                                                    <div className="text-sm font-black tabular-nums text-purple-600 dark:text-purple-400 font-mono mt-0.5">
+                                                        {payoffData.pop != null ? `${payoffData.pop}%` : "—"}
+                                                    </div>
+                                                </div>
+
+                                                <div className="p-2.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70">
+                                                    <div className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Breakevens</div>
+                                                    <div className="text-xs font-black tabular-nums text-blue-600 dark:text-blue-400 font-mono mt-0.5 truncate">
+                                                        {payoffData.breakevens?.length > 0
+                                                            ? payoffData.breakevens.map((b) => (isCrypto ? Number(b).toFixed(1) : Math.round(b))).join(" | ")
+                                                            : "—"}
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* Full-Width Payoff Curve Chart */}
+                                            <div className="bg-white dark:bg-[#070e17] rounded-xl border border-gray-200 dark:border-white/10 p-3 min-h-[300px] flex flex-col justify-center">
+                                                {basketLegs.length > 0 ? (
+                                                    <>
+                                                        {renderTargetDateSlider()}
+                                                        <PayoffChart
+                                                            curve={payoffData.curve}
+                                                            spotPrice={spotPrice}
+                                                            breakevens={payoffData.breakevens}
+                                                            expectedMove={payoffData.expectedMove}
+                                                            atmIv={payoffData.atmIv}
+                                                            yearsRemaining={payoffData.yearsRemaining}
+                                                            height={290}
+                                                        />
+                                                    </>
+                                                ) : (
+                                                    <div className="py-14 px-4 text-center text-xs text-gray-400 dark:text-gray-500 space-y-3">
+                                                        <div className="text-4xl">📊</div>
+                                                        <div className="font-extrabold text-base text-gray-800 dark:text-gray-200">
+                                                            No Strategy Selected
+                                                        </div>
+                                                        <p className="text-xs max-w-sm mx-auto text-gray-500 dark:text-gray-400">
+                                                            Click <strong>B</strong> (Buy) or <strong>S</strong> (Sell) on strikes in the Option Chain on the left, or select from Ready-Made Strategies.
+                                                        </p>
+                                                        <div className="pt-2">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setChartViewTab("presets")}
+                                                                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-md shadow-emerald-600/20 transition cursor-pointer inline-flex items-center gap-1.5"
+                                                            >
+                                                                <span>⚡ Browse Ready-Made Strategies</span>
+                                                            </button>
                                                         </div>
                                                     </div>
                                                 )}
                                             </div>
+                                        </div>
+                                    )}
 
-                                            {/* Payoff Curve Canvas */}
-                                            <div className="flex-1 min-w-0 bg-white dark:bg-[#070e17] rounded-xl border border-gray-200 dark:border-white/10 p-2 flex flex-col justify-center">
-                                                {basketLegs.length > 0 ? (
-                                                    <PayoffChart
-                                                        curve={payoffData.curve}
-                                                        spotPrice={spotPrice}
-                                                        breakevens={payoffData.breakevens}
-                                                        expectedMove={payoffData.expectedMove}
-                                                        atmIv={payoffData.atmIv}
-                                                        yearsRemaining={payoffData.yearsRemaining}
-                                                        height={220}
-                                                    />
-                                                ) : (
-                                                    <div className="py-8 px-4 text-center text-xs text-gray-400 dark:text-gray-500 space-y-3">
-                                                        <div className="text-3xl">📊</div>
-                                                        <div className="font-bold text-gray-700 dark:text-gray-300">No strategy legs selected</div>
-                                                        <p className="text-[11px] max-w-[240px] mx-auto text-gray-500 dark:text-gray-400">
-                                                            Click B (Buy) or S (Sell) on option chain strikes, or pick from ready-made presets below.
-                                                        </p>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => setChartViewTab("presets")}
-                                                            className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-xs transition cursor-pointer inline-flex items-center gap-1.5"
-                                                        >
-                                                            <span>⚡ Pick Ready-Made Strategy</span>
-                                                        </button>
-                                                    </div>
-                                                )}
+                                    {/* Visual Area 3: TradingView Technical Terminal */}
+                                    {chartViewTab === "tradingview" && (
+                                        <div className="p-4 space-y-2">
+                                            <div className="flex items-center justify-between text-xs text-gray-500 px-1">
+                                                <span className="font-extrabold text-gray-900 dark:text-white flex items-center gap-1.5">
+                                                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                                                    {activeSymbol} Interactive Chart
+                                                </span>
+                                                <span className="font-mono text-xs">
+                                                    Spot: <strong className="text-gray-900 dark:text-white">{formatActivePrice(spotPrice)}</strong>
+                                                </span>
+                                            </div>
+                                            <div className="h-[420px] w-full rounded-xl overflow-hidden border border-gray-200 dark:border-white/10 bg-[#0b1420]">
+                                                <TradingViewChart
+                                                    symbol={isCrypto ? cryptoSymbol : symbol}
+                                                    height="100%"
+                                                />
                                             </div>
                                         </div>
-                                    </div>
-                                ) : (
-                                    /* Standalone Local TradingView Chart */
-                                    <div className="p-3 sm:p-4 space-y-2">
-                                        <div className="flex items-center justify-between text-xs text-gray-500 px-1">
-                                            <span className="font-extrabold text-gray-900 dark:text-white flex items-center gap-1.5">
-                                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                                                {activeSymbol} Technical Terminal
-                                            </span>
-                                            <span className="font-mono text-[11px]">
-                                                Spot: <strong className="text-gray-900 dark:text-white">{formatActivePrice(spotPrice)}</strong>
-                                            </span>
-                                        </div>
-                                        <div className="h-[340px] w-full rounded-xl overflow-hidden border border-gray-200 dark:border-white/10 bg-[#0b1420]">
-                                            <TradingViewChart
-                                                symbol={isCrypto ? cryptoSymbol : symbol}
-                                                height="100%"
-                                            />
-                                        </div>
-                                    </div>
-                                )}
+                                    )}
+                                </div>
 
-                                {/* StockMojo Clean Positions & Basket Table */}
-                                <div className="border-t border-gray-100 dark:border-white/10 bg-white dark:bg-[#0b1420] p-3 sm:p-4 space-y-2.5">
-                                    <div className="flex items-center justify-between text-xs">
+                                {/* ===================================================== */}
+                                {/* STRATEGY BASKET & ORDER EXECUTION PANEL */}
+                                {/* ===================================================== */}
+                                <div className="rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm p-4 space-y-3">
+                                    <div className="flex items-center justify-between text-xs border-b border-gray-100 dark:border-white/10 pb-2.5">
                                         <div className="flex items-center gap-2">
-                                            <span className="font-black text-gray-900 dark:text-white">Selected Strategy Legs</span>
-                                            <span className="rounded-full bg-emerald-100 dark:bg-emerald-950/60 px-2 py-0.2 text-[10px] font-black text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-800">
-                                                {basketLegs.length} Active
+                                            <span className="font-black text-sm text-gray-900 dark:text-white">
+                                                Strategy Legs Basket
+                                            </span>
+                                            <span className="rounded-full bg-emerald-100 dark:bg-emerald-950/60 px-2.5 py-0.5 text-[11px] font-black text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-800">
+                                                {basketLegs.length} Active {basketLegs.length === 1 ? "Leg" : "Legs"}
                                             </span>
                                         </div>
 
@@ -1988,103 +2888,145 @@ export default function PaperTrade() {
                                             <button
                                                 type="button"
                                                 onClick={() => setBasketLegs([])}
-                                                className="text-[11px] font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+                                                className="text-[11px] font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer flex items-center gap-1"
                                             >
-                                                Clear All
+                                                <FiTrash2 size={12} />
+                                                <span>Clear Basket</span>
                                             </button>
                                         )}
                                     </div>
 
+                                    {/* Legs List / Table */}
                                     {basketLegs.length === 0 ? (
-                                        <div className="p-3 rounded-xl bg-gray-50 dark:bg-[#070e17] border border-dashed border-gray-200 dark:border-white/10 text-center text-xs text-gray-400 dark:text-gray-500">
-                                            Click <strong>B</strong> or <strong>S</strong> on any strike in Option Chain on the left to add legs.
+                                        <div className="p-4 rounded-xl bg-gray-50/70 dark:bg-[#070e17]/70 border border-dashed border-gray-200 dark:border-white/10 text-center text-xs text-gray-400 dark:text-gray-500">
+                                            Click <strong>B</strong> (Buy) or <strong>S</strong> (Sell) on any strike in the Option Chain on the left to add legs to your strategy.
                                         </div>
                                     ) : (
-                                        <div className="space-y-1.5 max-h-[160px] overflow-y-auto pr-0.5 custom-scrollbar">
-                                            {basketLegs.map((leg) => (
-                                                <div
-                                                    key={leg.id}
-                                                    className="flex items-center justify-between p-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/60 dark:bg-[#070e17]/60 text-xs shadow-2xs hover:border-emerald-500/40 transition"
-                                                >
-                                                    <div className="flex items-center gap-2">
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => toggleBasketLegAction(leg.id)}
-                                                            className={`px-2 py-0.5 rounded text-[10px] font-black uppercase text-white cursor-pointer shadow-xs transition ${
-                                                                leg.action === "buy" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700"
-                                                            }`}
-                                                            title="Toggle Buy / Sell"
-                                                        >
-                                                            {leg.action}
-                                                        </button>
+                                        <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1 custom-scrollbar">
+                                            {basketLegs.map((leg) => {
+                                                const legTotalShares = leg.qty * (leg.lotSize || lotSize);
+                                                const legTotalValue = leg.premium * legTotalShares;
 
-                                                        <div className="flex items-center gap-1">
+                                                return (
+                                                    <div
+                                                        key={leg.id}
+                                                        className="flex flex-wrap items-center justify-between p-2.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/70 dark:bg-[#070e17]/70 text-xs shadow-2xs hover:border-emerald-500/40 transition gap-2"
+                                                    >
+                                                        {/* Left: Action Toggle, Strike, Type */}
+                                                        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                                                             <button
                                                                 type="button"
-                                                                onClick={() => rollBasketLegStrike(leg.id, -1)}
-                                                                className="w-5 h-5 rounded flex items-center justify-center bg-gray-200 dark:bg-white/10 hover:bg-gray-300 dark:hover:bg-white/20 text-gray-700 dark:text-gray-300 text-[10px] font-bold transition cursor-pointer"
-                                                                title="Shift Strike Down"
+                                                                onClick={() => toggleBasketLegAction(leg.id)}
+                                                                className={`px-2.5 py-1 rounded-md text-[10.5px] font-black uppercase text-white cursor-pointer shadow-xs transition ${
+                                                                    leg.action === "buy" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700"
+                                                                }`}
+                                                                title="Click to toggle Buy/Sell"
                                                             >
-                                                                ↓
+                                                                {leg.action}
                                                             </button>
-                                                            <span className="font-extrabold font-mono text-gray-900 dark:text-white px-1">
-                                                                {leg.strike} {leg.type}
+
+                                                            {/* Strike Stepper */}
+                                                            <div className="flex items-center gap-1 bg-white dark:bg-[#121c2b] p-0.5 rounded-lg border border-gray-200 dark:border-white/10">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => rollBasketLegStrike(leg.id, -1)}
+                                                                    className="w-5 h-5 rounded flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-300 text-[10px] font-bold cursor-pointer"
+                                                                    title="Shift Strike Down"
+                                                                >
+                                                                    ↓
+                                                                </button>
+                                                                <span className="font-black font-mono text-gray-900 dark:text-white px-1.5 text-xs">
+                                                                    {leg.strike} {leg.type}
+                                                                </span>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => rollBasketLegStrike(leg.id, 1)}
+                                                                    className="w-5 h-5 rounded flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-300 text-[10px] font-bold cursor-pointer"
+                                                                    title="Shift Strike Up"
+                                                                >
+                                                                    ↑
+                                                                </button>
+                                                            </div>
+
+                                                            <span className="text-xs font-mono text-gray-500 dark:text-gray-400">
+                                                                @{formatActivePrice(leg.premium)}
                                                             </span>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => rollBasketLegStrike(leg.id, 1)}
-                                                                className="w-5 h-5 rounded flex items-center justify-center bg-gray-200 dark:bg-white/10 hover:bg-gray-300 dark:hover:bg-white/20 text-gray-700 dark:text-gray-300 text-[10px] font-bold transition cursor-pointer"
-                                                                title="Shift Strike Up"
-                                                            >
-                                                                ↑
-                                                            </button>
                                                         </div>
 
-                                                        <span className="text-[11px] font-mono text-gray-500 dark:text-gray-400">
-                                                            @{formatActivePrice(leg.premium)}
-                                                        </span>
-                                                    </div>
+                                                        {/* Right: Lots Stepper, Total Value, Delete */}
+                                                        <div className="flex items-center gap-2.5">
+                                                            <div className="flex items-center bg-white dark:bg-[#121c2b] rounded-lg border border-gray-200 dark:border-white/10 shadow-2xs">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => updateBasketLegLots(leg.id, -1)}
+                                                                    className="px-2 py-0.5 text-gray-500 hover:text-gray-900 dark:hover:text-white font-bold cursor-pointer"
+                                                                >
+                                                                    −
+                                                                </button>
+                                                                <span className="px-1.5 text-xs font-black tabular-nums text-gray-900 dark:text-white font-mono">
+                                                                    {leg.qty}{isCrypto ? " Ctr" : "L"}
+                                                                </span>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => updateBasketLegLots(leg.id, 1)}
+                                                                    className="px-2 py-0.5 text-gray-500 hover:text-gray-900 dark:hover:text-white font-bold cursor-pointer"
+                                                                >
+                                                                    +
+                                                                </button>
+                                                            </div>
 
-                                                    <div className="flex items-center gap-2">
-                                                        <div className="flex items-center bg-white dark:bg-[#121c2b] rounded-lg border border-gray-200 dark:border-white/10 shadow-2xs">
+                                                            {isCrypto && (
+                                                                <span className="text-[10px] text-gray-400 font-mono hidden md:inline">
+                                                                    ({(leg.qty * (leg.lotSize || 0.001)).toFixed(3)} {activeSymbol})
+                                                                </span>
+                                                            )}
+
                                                             <button
                                                                 type="button"
-                                                                onClick={() => updateBasketLegLots(leg.id, -1)}
-                                                                className="px-2 py-0.5 text-gray-500 hover:text-gray-900 dark:hover:text-white font-bold cursor-pointer"
+                                                                onClick={() => openLegSl(leg)}
+                                                                className={`px-2 py-0.5 rounded-md border text-[10.5px] font-bold font-mono transition cursor-pointer whitespace-nowrap ${
+                                                                    toBracket(leg.sl) != null || toBracket(leg.target) != null
+                                                                        ? "border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300"
+                                                                        : "border-gray-200 dark:border-white/10 bg-white dark:bg-[#121c2b] text-gray-500 dark:text-gray-400 hover:text-rose-600 hover:border-rose-400"
+                                                                }`}
+                                                                title="Set stop loss / target"
                                                             >
-                                                                −
+                                                                {toBracket(leg.sl) != null || toBracket(leg.target) != null
+                                                                    ? `SL ${leg.sl || "—"} · T ${leg.target || "—"}`
+                                                                    : "+ SL"}
                                                             </button>
-                                                            <span className="px-1 text-[11px] font-bold tabular-nums text-gray-900 dark:text-white">
-                                                                {leg.qty}L
+
+                                                            <span className="text-[11px] font-mono font-bold text-gray-700 dark:text-gray-300 hidden sm:inline tabular-nums">
+                                                                {formatActivePrice(legTotalValue)}
                                                             </span>
+
                                                             <button
                                                                 type="button"
-                                                                onClick={() => updateBasketLegLots(leg.id, 1)}
-                                                                className="px-2 py-0.5 text-gray-500 hover:text-gray-900 dark:hover:text-white font-bold cursor-pointer"
+                                                                onClick={() => removeBasketLeg(leg.id)}
+                                                                className="text-gray-400 hover:text-rose-600 p-1 cursor-pointer transition"
+                                                                title="Delete Leg"
                                                             >
-                                                                +
+                                                                <FiTrash2 size={13} />
                                                             </button>
                                                         </div>
-
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => removeBasketLeg(leg.id)}
-                                                            className="text-gray-400 hover:text-rose-600 p-1 cursor-pointer transition"
-                                                            title="Delete Leg"
-                                                        >
-                                                            <FiTrash2 size={13} />
-                                                        </button>
                                                     </div>
-                                                </div>
-                                            ))}
+                                                );
+                                            })}
                                         </div>
                                     )}
 
-                                    {/* Execute Trade Action Bar */}
-                                    <div className="pt-2 border-t border-gray-100 dark:border-white/10 flex items-center justify-between gap-3">
+                                    {/* Action & Execute Footer */}
+                                    <div className="pt-3 border-t border-gray-100 dark:border-white/10 flex flex-wrap items-center justify-between gap-3">
                                         <div className="text-xs">
-                                            <div className="text-[10px] font-bold uppercase text-gray-400">Virtual Funds Req.</div>
-                                            <div className="text-sm font-black font-mono text-emerald-600 dark:text-emerald-400 tabular-nums">
+                                            <div className="text-[10px] font-bold uppercase text-gray-400 flex items-center gap-1.5">
+                                                <span>Virtual Funds Required</span>
+                                                {isCrypto && (
+                                                    <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400">
+                                                        (Delta {cryptoLeverage}x)
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <div className="text-base font-black font-mono text-emerald-600 dark:text-emerald-400 tabular-nums">
                                                 {formatActivePrice(payoffData.fundsRequired)}
                                             </div>
                                         </div>
@@ -2093,9 +3035,9 @@ export default function PaperTrade() {
                                             type="button"
                                             onClick={handleExecuteHedge}
                                             disabled={isExecuting || basketLegs.length === 0}
-                                            className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-extrabold text-xs shadow-md shadow-emerald-600/20 transition flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
+                                            className="py-2.5 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-black text-xs sm:text-sm shadow-md shadow-emerald-600/25 transition flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
                                         >
-                                            <FiCheck size={14} />
+                                            <FiCheck size={16} />
                                             <span>{isExecuting ? "Executing Live…" : "⚡ Execute Paper Trade"}</span>
                                         </button>
                                     </div>
@@ -2103,21 +3045,21 @@ export default function PaperTrade() {
                             </div>
                         </div>
 
-                        {/* Floating Mobile Bar when legs are selected and viewing Option Chain on mobile */}
+                        {/* Floating Mobile Bar (< lg) */}
                         {basketLegs.length > 0 && mobileTradeTab === "chain" && (
                             <div className="lg:hidden fixed bottom-4 inset-x-3 z-30 bg-gray-900/95 text-white p-3 rounded-2xl shadow-2xl border border-gray-700 flex items-center justify-between backdrop-blur-md">
                                 <div>
                                     <div className="text-[10px] text-gray-400 font-bold uppercase">{basketLegs.length} Legs in Basket</div>
                                     <div className="font-mono font-black text-xs text-emerald-400">
-                                        Req: {formatRupees(payoffData.fundsRequired)}
+                                        Req: {formatActivePrice(payoffData.fundsRequired)}
                                     </div>
                                 </div>
                                 <button
                                     onClick={() => setMobileTradeTab("payoff")}
                                     className="px-3.5 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-black shadow-md flex items-center gap-1.5 cursor-pointer"
                                 >
-                                    <FiBarChart2 className="text-sm" />
-                                    <span>View Payoff & Execute →</span>
+                                    <FiBarChart2 size={13} />
+                                    <span>View Strategy →</span>
                                 </button>
                             </div>
                         )}
@@ -2125,98 +3067,95 @@ export default function PaperTrade() {
                 )}
 
                 {/* ----------------------------------------------------------------- */}
-                {/* 3. OPEN POSITIONS & REAL-TIME MTM */}
+                {/* 2. OPEN POSITIONS & REAL-TIME MTM TAB */}
                 {/* ----------------------------------------------------------------- */}
                 {activeTab === "positions" && (
-                    <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#121c2b] shadow-sm overflow-hidden space-y-0">
-                        <div className="px-4 py-3.5 bg-gray-50 dark:bg-[#162234] border-b border-gray-200 dark:border-gray-800 flex flex-wrap items-center justify-between gap-3 text-xs font-bold">
-                            <div className="flex items-center gap-2">
-                                <span className="text-gray-900 dark:text-white text-sm">Open Paper Positions</span>
-                                <span className="text-gray-500 dark:text-gray-400 font-normal">({openPositions.length} active)</span>
+                    <div className="space-y-4">
+                        {/* Summary KPI Ribbon for Open Positions */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            <div className="p-4 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs">
+                                <div className="text-[10.5px] uppercase font-bold text-gray-400">Active Positions</div>
+                                <div className="text-xl font-black font-mono text-gray-900 dark:text-white mt-1">
+                                    {openPositions.length}
+                                </div>
                             </div>
 
-                            <div className="flex items-center gap-2">
-                                {openPositions.length > 0 && (
-                                    <>
-                                        <button
-                                            onClick={() => setShowPositionsPayoff(!showPositionsPayoff)}
-                                            className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
-                                                showPositionsPayoff
-                                                    ? "bg-emerald-600 text-white border-emerald-500 shadow-xs"
-                                                    : "bg-white dark:bg-[#18263a] text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-[#20324c]"
-                                            }`}
-                                        >
-                                            <FiBarChart2 />
-                                            <span>{showPositionsPayoff ? "Hide Payoff Chart" : "Portfolio Payoff Chart"}</span>
-                                        </button>
-                                        <button
-                                            onClick={handleCloseAllPositions}
-                                            disabled={closingAll}
-                                            className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs transition cursor-pointer disabled:opacity-50"
-                                        >
-                                            {closingAll ? "Exiting All…" : "Exit All Positions"}
-                                        </button>
-                                    </>
-                                )}
+                            <div className="p-4 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs">
+                                <div className="text-[10.5px] uppercase font-bold text-gray-400">Overall Unrealized P&amp;L</div>
+                                <div className={`text-xl font-black font-mono mt-1 ${totalUnrealized >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                    {totalUnrealized >= 0 ? "+" : ""}{formatActivePrice(totalUnrealized)}
+                                </div>
+                            </div>
+
+                            <div className="p-4 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs">
+                                <div className="text-[10.5px] uppercase font-bold text-gray-400">Margin Blocked</div>
+                                <div className="text-xl font-black font-mono text-gray-900 dark:text-white mt-1">
+                                    {formatActivePrice(totalMarginBlocked)}
+                                </div>
+                            </div>
+
+                            <div className="p-4 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs">
+                                <div className="text-[10.5px] uppercase font-bold text-gray-400">Available Capital</div>
+                                <div className="text-xl font-black font-mono text-emerald-600 dark:text-emerald-400 mt-1">
+                                    {formatActivePrice(virtualCash)}
+                                </div>
                             </div>
                         </div>
 
-                        {/* Collapsible Portfolio Payoff / TradingView Chart for Open Positions */}
-                        {showPositionsPayoff && openPositions.length > 0 && (
-                            <div className="p-4 bg-gray-50/70 dark:bg-[#101926]/70 border-b border-gray-200 dark:border-gray-800 space-y-3">
-                                <div className="flex flex-wrap items-center justify-between gap-2.5">
-                                    <div className="flex flex-wrap items-center gap-2 text-xs">
-                                        <div className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#121c2b] p-0.5 shadow-xs">
-                                            <button
-                                                type="button"
-                                                onClick={() => setPositionsViewTab("payoff")}
-                                                className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition cursor-pointer ${
-                                                    positionsViewTab === "payoff"
-                                                        ? "bg-emerald-600 text-white shadow-xs"
-                                                        : "text-gray-600 dark:text-gray-300 hover:text-emerald-500"
-                                                }`}
-                                            >
-                                                📊 Risk Curve
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => setPositionsViewTab("tradingview")}
-                                                className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition cursor-pointer ${
-                                                    positionsViewTab === "tradingview"
-                                                        ? "bg-emerald-600 text-white shadow-xs"
-                                                        : "text-gray-600 dark:text-gray-300 hover:text-emerald-500"
-                                                }`}
-                                            >
-                                                📈 TradingView
-                                            </button>
-                                        </div>
-
-                                        <span className="font-extrabold text-xs text-gray-900 dark:text-white ml-1">
-                                            {activeSymbol} Portfolio:
-                                        </span>
-                                        {positionsPayoffData.maxProfit != null && (
-                                            <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 font-bold">
-                                                Max Profit: {typeof positionsPayoffData.maxProfit === "number" ? `+${formatActivePrice(positionsPayoffData.maxProfit)}` : positionsPayoffData.maxProfit}
-                                            </span>
-                                        )}
-                                        {positionsPayoffData.maxLoss != null && (
-                                            <span className="px-2 py-0.5 rounded bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 font-bold">
-                                                Max Loss: {typeof positionsPayoffData.maxLoss === "number" ? formatActivePrice(positionsPayoffData.maxLoss) : positionsPayoffData.maxLoss}
-                                            </span>
-                                        )}
-                                        {positionsPayoffData.breakevens?.length > 0 && (
-                                            <span className="px-2 py-0.5 rounded bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-300 font-bold">
-                                                Breakeven: {positionsPayoffData.breakevens.map((b) => (isCrypto ? Number(b).toFixed(1) : Math.round(b))).join(" | ")}
-                                            </span>
-                                        )}
-                                    </div>
-                                    <div className="text-[11px] text-gray-400">
-                                        Spot: <strong className="text-gray-900 dark:text-white">{spotPrice ? formatActivePrice(spotPrice) : "—"}</strong>
-                                    </div>
+                        {/* Positions Table Card */}
+                        <div className="rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden">
+                            <div className="px-4 py-3 bg-gray-50/70 dark:bg-[#070e17]/70 border-b border-gray-100 dark:border-white/10 flex flex-wrap items-center justify-between gap-3 text-xs font-bold">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-sm font-black text-gray-900 dark:text-white">Active Positions Ledger</span>
+                                    <span className="text-gray-400 font-normal">({openPositions.length} Contracts)</span>
                                 </div>
 
-                                {positionsViewTab === "payoff" ? (
-                                    <div className="bg-white dark:bg-[#121c2b] p-3 rounded-xl border border-gray-200 dark:border-gray-800 shadow-inner">
+                                <div className="flex items-center gap-2">
+                                    {openPositions.length > 0 && (
+                                        <>
+                                            <button
+                                                onClick={() => setShowPositionsPayoff(!showPositionsPayoff)}
+                                                className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                                                    showPositionsPayoff
+                                                        ? "bg-emerald-600 text-white border-emerald-500 shadow-xs"
+                                                        : "bg-white dark:bg-[#121c2b] text-gray-700 dark:text-gray-300 border-gray-200 dark:border-white/10 hover:bg-gray-100 dark:hover:bg-[#18263a]"
+                                                }`}
+                                            >
+                                                <FiBarChart2 size={13} />
+                                                <span>{showPositionsPayoff ? "Hide Risk Curve" : "Portfolio Risk Curve"}</span>
+                                            </button>
+                                            <button
+                                                onClick={handleCloseAllPositions}
+                                                disabled={closingAll}
+                                                className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs transition cursor-pointer disabled:opacity-50 shadow-xs"
+                                            >
+                                                {closingAll ? "Exiting All…" : "Square Off All Positions"}
+                                            </button>
+                                        </>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Collapsible Portfolio Risk Curve */}
+                            {showPositionsPayoff && openPositions.length > 0 && (
+                                <div className="p-4 bg-gray-50/50 dark:bg-[#070e17]/50 border-b border-gray-100 dark:border-white/10 space-y-3">
+                                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-extrabold text-gray-900 dark:text-white">Portfolio Curve:</span>
+                                            {positionsPayoffData.maxProfit != null && (
+                                                <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 font-bold font-mono">
+                                                    Max Profit: {typeof positionsPayoffData.maxProfit === "number" ? `+${formatActivePrice(positionsPayoffData.maxProfit)}` : positionsPayoffData.maxProfit}
+                                                </span>
+                                            )}
+                                            {positionsPayoffData.maxLoss != null && (
+                                                <span className="px-2 py-0.5 rounded bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300 font-bold font-mono">
+                                                    Max Loss: {typeof positionsPayoffData.maxLoss === "number" ? formatActivePrice(positionsPayoffData.maxLoss) : positionsPayoffData.maxLoss}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <div className="bg-white dark:bg-[#0b1420] p-3 rounded-xl border border-gray-200 dark:border-white/10">
+                                        {renderTargetDateSlider()}
                                         <PayoffChart
                                             curve={positionsPayoffData.curve}
                                             spotPrice={spotPrice}
@@ -2227,243 +3166,545 @@ export default function PaperTrade() {
                                             height={260}
                                         />
                                     </div>
-                                ) : (
-                                    <div className="h-[420px] w-full rounded-xl overflow-hidden border border-gray-200 dark:border-gray-800 shadow-inner bg-white dark:bg-[#121c2b]">
-                                        <TradingViewChart
-                                            symbol={activeSymbol}
-                                            theme="dark"
-                                            height="100%"
-                                        />
+                                </div>
+                            )}
+
+                            {/* Positions Table */}
+                            {openPositions.length === 0 ? (
+                                <div className="py-16 text-center text-gray-400 text-xs space-y-2">
+                                    <div className="text-4xl mb-1">📋</div>
+                                    <p className="font-bold text-base text-gray-700 dark:text-gray-300">No Open Positions</p>
+                                    <p className="text-gray-500">Pick strikes from the Option Chain or a Ready-Made Strategy to start live paper trading.</p>
+                                    <div className="pt-2">
+                                        <button
+                                            onClick={() => setActiveTab("trade")}
+                                            className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-extrabold text-xs hover:bg-emerald-700 cursor-pointer shadow-xs"
+                                        >
+                                            Go to Trade Workstation →
+                                        </button>
                                     </div>
-                                )}
-                            </div>
-                        )}
+                                </div>
+                            ) : (
+                                <div className="overflow-x-auto custom-scrollbar">
+                                    <table className="w-full text-xs text-left">
+                                        <thead className="bg-gray-100/70 dark:bg-[#070e17]/80 text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-white/10 text-[11px] font-extrabold uppercase">
+                                            <tr>
+                                                <th className="px-4 py-3">Symbol / Strategy</th>
+                                                <th className="px-3 py-3 text-center">Side</th>
+                                                <th className="px-3 py-3 text-center">Lots</th>
+                                                <th className="px-3 py-3">Expiry</th>
+                                                <th className="px-3 py-3 text-center">Strike</th>
+                                                <th className="px-3 py-3 text-center">Type</th>
+                                                <th className="px-4 py-3 text-right">Entry LTP</th>
+                                                <th className="px-4 py-3 text-right">Live LTP</th>
+                                                <th className="px-4 py-3 text-right">Unrealized P&amp;L</th>
+                                                <th className="px-4 py-3 text-center">SL / Target</th>
+                                                <th className="px-4 py-3 text-right">Margin Blocked</th>
+                                                <th className="px-4 py-3 text-center">Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-100 dark:divide-white/5 font-mono text-xs">
+                                            {openPositions.map((pos) => {
+                                                const pnl = Number(pos.unrealizedPnl || 0);
+                                                const isProfit = pnl >= 0;
+                                                const entry = Number(pos.entry_price || 0);
+                                                const current = Number(pos.current_price || entry);
+                                                const pnlPercent = entry > 0 ? ((current - entry) / entry) * 100 : 0;
 
-                        {openPositions.length === 0 ? (
-                            <div className="py-16 text-center text-gray-400 text-xs">
-                                <div className="text-3xl mb-2">📑</div>
-                                <p className="font-bold text-gray-700 dark:text-gray-300">No active positions</p>
-                                <p className="mt-1 text-gray-500">
-                                    Click B or S on the Option Chain to build a live paper trade or hedge.
-                                </p>
-                                <button
-                                    onClick={() => setActiveTab("trade")}
-                                    className="mt-4 px-4 py-2 rounded-xl bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700 cursor-pointer"
-                                >
-                                    Go to Option Chain →
-                                </button>
-                            </div>
-                        ) : (
-                            <div className="overflow-x-auto">
-                                <table className="w-full text-xs text-left">
-                                    <thead className="bg-gray-100/70 dark:bg-[#101926] text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-800 text-[11px]">
-                                        <tr>
-                                            <th className="px-3 py-2.5">Symbol</th>
-                                            <th className="px-3 py-2.5 text-center">Side</th>
-                                            <th className="px-3 py-2.5 text-center">Lots</th>
-                                            <th className="px-3 py-2.5">Expiry</th>
-                                            <th className="px-3 py-2.5 text-center">Strike</th>
-                                            <th className="px-3 py-2.5 text-center">Type</th>
-                                            <th className="px-3 py-2.5 text-right">Entry</th>
-                                            <th className="px-3 py-2.5 text-right">Live LTP</th>
-                                            <th className="px-3 py-2.5 text-right">Unrealized P&L</th>
-                                            <th className="px-3 py-2.5 text-right">Margin</th>
-                                            <th className="px-3 py-2.5 text-center">Action</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800/80 font-medium font-mono">
-                                        {openPositions.map((pos) => {
-                                            const pnl = Number(pos.unrealizedPnl || 0);
-                                            const isProfit = pnl >= 0;
-                                            const isCryptoPos = pos.market === "crypto" || ["BTC", "ETH", "SOL"].includes(pos.symbol);
-                                            const formatPosCurrency = (val) => {
-                                                if (val == null) return "—";
-                                                if (isCryptoPos) {
-                                                    return currency === "INR"
-                                                        ? `₹${Number(val * usdtInrRate).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                                                        : `$${Number(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                                                }
-                                                return `₹${Math.round(val).toLocaleString("en-IN")}`;
-                                            };
-                                            const formatPosPrice = (val) => {
-                                                if (val == null) return "—";
-                                                if (isCryptoPos) {
-                                                    return currency === "INR"
-                                                        ? `₹${Number(val * usdtInrRate).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                                                        : `$${Number(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                                                }
-                                                return formatPrice(val);
-                                            };
-
-                                            return (
-                                                <tr key={pos.id} className="hover:bg-gray-50 dark:hover:bg-[#18263a] transition">
-                                                    <td className="px-3 py-2.5 font-bold text-gray-900 dark:text-white">
-                                                        <div className="flex items-center gap-1.5">
-                                                            <span>{pos.symbol}</span>
-                                                            {isCryptoPos && (
-                                                                <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-amber-500/10 text-amber-500 border border-amber-500/30">
-                                                                    ⚡ CRYPTO
-                                                                </span>
-                                                            )}
-                                                        </div>
-                                                        {pos.strategy_name && (
-                                                            <div className="text-[10px] text-gray-500 dark:text-gray-400 font-sans font-normal truncate max-w-[120px]">
-                                                                {pos.strategy_name}
+                                                return (
+                                                    <tr key={pos.id} className="hover:bg-gray-50/80 dark:hover:bg-white/[0.03] transition">
+                                                        <td className="px-4 py-3 font-bold text-gray-900 dark:text-white">
+                                                            <div className="flex items-center gap-1.5">
+                                                                <span>{pos.symbol}</span>
+                                                                {pos.market === "crypto" && (
+                                                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-amber-500/10 text-amber-500 border border-amber-500/30">
+                                                                        CRYPTO
+                                                                    </span>
+                                                                )}
                                                             </div>
-                                                        )}
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-center">
-                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
-                                                            pos.side === "long" ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800" : "bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800"
+                                                            {pos.strategy_name && (
+                                                                <div className="text-[10px] text-gray-400 font-sans font-normal truncate max-w-[140px]">
+                                                                    {pos.strategy_name}
+                                                                </div>
+                                                            )}
+                                                        </td>
+                                                        <td className="px-3 py-3 text-center">
+                                                            <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                                                                pos.side === "long"
+                                                                    ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800"
+                                                                    : "bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800"
+                                                            }`}>
+                                                                {pos.side === "long" ? "BUY" : "SELL"}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-3 py-3 text-center font-bold tabular-nums">
+                                                            {pos.lots}
+                                                        </td>
+                                                        <td className="px-3 py-3 font-sans text-gray-700 dark:text-gray-300">
+                                                            {formatExpiryShort(pos.expiry)}
+                                                        </td>
+                                                        <td className="px-3 py-3 text-center font-bold text-gray-900 dark:text-white">
+                                                            {pos.strike}
+                                                        </td>
+                                                        <td className="px-3 py-3 text-center">
+                                                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                                                pos.option_type === "CE"
+                                                                    ? "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400"
+                                                                    : "bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-400"
+                                                            }`}>
+                                                                {pos.option_type}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-4 py-3 text-right font-bold tabular-nums text-gray-700 dark:text-gray-300">
+                                                            {formatActivePrice(pos.entry_price)}
+                                                        </td>
+                                                        <td className="px-4 py-3 text-right font-black tabular-nums text-gray-900 dark:text-white">
+                                                            {pos.current_price != null ? formatActivePrice(pos.current_price) : "—"}
+                                                        </td>
+                                                        <td className={`px-4 py-3 text-right font-black tabular-nums ${
+                                                            isProfit ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
                                                         }`}>
-                                                            {pos.side === "long" ? "BUY" : "SELL"}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-center font-bold tabular-nums">
-                                                        {pos.lots}
-                                                    </td>
-                                                    <td className="px-3 py-2.5 font-sans text-gray-700 dark:text-gray-300">
-                                                        {formatExpiryShort(pos.expiry)}
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-center font-bold text-gray-900 dark:text-white">
-                                                        {pos.strike}
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-center">
-                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                                            pos.option_type === "CE" ? "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" : "bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-400"
-                                                        }`}>
-                                                            {pos.option_type}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-right font-bold tabular-nums text-gray-700 dark:text-gray-300">
-                                                        {formatPosPrice(pos.entry_price)}
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-right font-bold tabular-nums text-gray-900 dark:text-white">
-                                                        {pos.current_price != null ? formatPosPrice(pos.current_price) : "—"}
-                                                    </td>
-                                                    <td className={`px-3 py-2.5 text-right font-black tabular-nums ${
-                                                        isProfit ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
-                                                    }`}>
-                                                        {isProfit ? "+" : ""}{formatPosCurrency(pnl)}
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-right text-gray-500 dark:text-gray-400 tabular-nums">
-                                                        {formatPosCurrency(pos.margin_blocked || 0)}
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-center">
-                                                        <button
-                                                            onClick={() => handleClosePosition(pos)}
-                                                            disabled={closingId === pos.id}
-                                                            className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 dark:bg-rose-950 dark:hover:bg-rose-900 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 font-bold text-[11px] transition cursor-pointer disabled:opacity-50"
-                                                        >
-                                                            {closingId === pos.id ? "Closing…" : "Exit"}
-                                                        </button>
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                    </tbody>
-                                </table>
-                            </div>
-                        )}
+                                                            {isProfit ? "+" : ""}{formatActivePrice(pnl)}
+                                                            <span className="block text-[10px] font-normal opacity-80">
+                                                                ({isProfit ? "+" : ""}{pnlPercent.toFixed(1)}%)
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-4 py-3 text-center font-sans">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => openPositionSl(pos)}
+                                                                    className="group inline-flex flex-col items-center gap-0.5 px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-white/5 cursor-pointer font-mono text-[11px]"
+                                                                    title="Set or change stop loss / target"
+                                                                >
+                                                                    {pos.stop_loss_price == null && pos.target_price == null ? (
+                                                                        <span className="font-sans font-bold text-emerald-600 dark:text-emerald-400 group-hover:underline">+ Add SL</span>
+                                                                    ) : (
+                                                                        <>
+                                                                            <span className="text-rose-600 dark:text-rose-400">
+                                                                                SL {pos.stop_loss_price != null ? formatActivePrice(pos.stop_loss_price) : "—"}
+                                                                            </span>
+                                                                            <span className="text-emerald-600 dark:text-emerald-400">
+                                                                                TGT {pos.target_price != null ? formatActivePrice(pos.target_price) : "—"}
+                                                                            </span>
+                                                                            <span className="font-sans text-[9.5px] text-gray-400 group-hover:text-gray-600">✎ edit</span>
+                                                                        </>
+                                                                    )}
+                                                                </button>
+                                                        </td>
+                                                        <td className="px-4 py-3 text-right text-gray-500 dark:text-gray-400 tabular-nums">
+                                                            {formatActivePrice(pos.margin_blocked || 0)}
+                                                        </td>
+                                                        <td className="px-4 py-3 text-center">
+                                                            <button
+                                                                onClick={() => handleClosePosition(pos)}
+                                                                disabled={closingId === pos.id}
+                                                                className="px-3 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 font-extrabold text-[11px] transition cursor-pointer disabled:opacity-50"
+                                                            >
+                                                                {closingId === pos.id ? "Closing…" : "Exit"}
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 )}
 
                 {/* ----------------------------------------------------------------- */}
-                {/* 4. CLOSED TRADES & REALIZED P&L */}
+                {/* 2.5 ORDERS & LIMIT ORDER BOOK TAB (Delta Exchange & StockMojo Parity) */}
                 {/* ----------------------------------------------------------------- */}
-                {activeTab === "history" && (
-                    <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#121c2b] shadow-sm overflow-hidden">
-                        <div className="px-4 py-3.5 bg-gray-50 dark:bg-[#162234] border-b border-gray-200 dark:border-gray-800 flex items-center justify-between text-xs font-bold">
-                            <span className="text-gray-900 dark:text-white text-sm">Closed Paper Trades</span>
-                            <span className="text-gray-500 dark:text-gray-400 font-normal">Realized P&L Ledger</span>
+                {activeTab === "orders" && (
+                    <div className="space-y-4">
+                        {/* Summary KPI Ribbon for Orders */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            <div className="p-4 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs">
+                                <div className="text-[10.5px] uppercase font-bold text-gray-400">Total Orders</div>
+                                <div className="text-xl font-black font-mono text-gray-900 dark:text-white mt-1">
+                                    {orders.length}
+                                </div>
+                            </div>
+
+                            <div className="p-4 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs">
+                                <div className="text-[10.5px] uppercase font-bold text-gray-400">Active Pending</div>
+                                <div className="text-xl font-black font-mono text-amber-500 mt-1 flex items-center gap-1.5">
+                                    {orders.filter((o) => o.status === "PENDING").length > 0 && (
+                                        <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                                    )}
+                                    <span>{orders.filter((o) => o.status === "PENDING").length}</span>
+                                </div>
+                            </div>
+
+                            <div className="p-4 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs">
+                                <div className="text-[10.5px] uppercase font-bold text-gray-400">Executed</div>
+                                <div className="text-xl font-black font-mono text-emerald-600 dark:text-emerald-400 mt-1">
+                                    {orders.filter((o) => o.status === "EXECUTED").length}
+                                </div>
+                            </div>
+
+                            <div className="p-4 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs">
+                                <div className="text-[10.5px] uppercase font-bold text-gray-400">Cancelled / Rejected</div>
+                                <div className="text-xl font-black font-mono text-gray-600 dark:text-gray-400 mt-1">
+                                    {orders.filter((o) => o.status === "CANCELLED" || o.status === "REJECTED").length}
+                                </div>
+                            </div>
                         </div>
 
-                        {closedPositions.length === 0 ? (
-                            <div className="py-16 text-center text-gray-400 text-xs">
-                                <div className="text-3xl mb-2">📜</div>
-                                <p className="font-bold text-gray-700 dark:text-gray-300">No closed trades yet</p>
-                            </div>
-                        ) : (
-                            <div className="overflow-x-auto">
-                                <table className="w-full text-xs text-left">
-                                    <thead className="bg-gray-100/70 dark:bg-[#101926] text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-800 text-[11px]">
-                                        <tr>
-                                            <th className="px-3 py-2.5">Symbol</th>
-                                            <th className="px-3 py-2.5 text-center">Side</th>
-                                            <th className="px-3 py-2.5 text-center">Lots</th>
-                                            <th className="px-3 py-2.5">Expiry</th>
-                                            <th className="px-3 py-2.5 text-center">Strike</th>
-                                            <th className="px-3 py-2.5 text-center">Type</th>
-                                            <th className="px-3 py-2.5 text-right">Entry</th>
-                                            <th className="px-3 py-2.5 text-right">Exit</th>
-                                            <th className="px-3 py-2.5 text-right">Realized P&L</th>
-                                            <th className="px-3 py-2.5 text-right">Time</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800/80 font-medium font-mono">
-                                        {closedPositions.map((pos) => {
-                                            const pnl = Number(pos.realized_pnl || 0);
-                                            const isProfit = pnl >= 0;
-                                            const isCryptoPos = pos.market === "crypto" || ["BTC", "ETH", "SOL"].includes(pos.symbol);
-                                            const formatPosCurrency = (val) => {
-                                                if (val == null) return "—";
-                                                if (isCryptoPos) {
-                                                    return currency === "INR"
-                                                        ? `₹${Number(val * usdtInrRate).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                                                        : `$${Number(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                                                }
-                                                return `₹${Math.round(val).toLocaleString("en-IN")}`;
-                                            };
-                                            const formatPosPrice = (val) => {
-                                                if (val == null) return "—";
-                                                if (isCryptoPos) {
-                                                    return currency === "INR"
-                                                        ? `₹${Number(val * usdtInrRate).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                                                        : `$${Number(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                                                }
-                                                return formatPrice(val);
-                                            };
+                        {/* Orders Table Container */}
+                        <div className="rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs overflow-hidden">
+                            {/* Filter Bar */}
+                            <div className="p-3 sm:p-4 border-b border-gray-100 dark:border-white/10 flex flex-wrap items-center justify-between gap-3">
+                                <div className="flex items-center gap-1.5 bg-gray-100 dark:bg-[#121c2b] p-1 rounded-xl text-xs font-bold">
+                                    {["ALL", "PENDING", "EXECUTED", "CANCELLED"].map((filter) => {
+                                        const count =
+                                            filter === "ALL"
+                                                ? orders.length
+                                                : filter === "CANCELLED"
+                                                ? orders.filter((o) => o.status === "CANCELLED" || o.status === "REJECTED").length
+                                                : orders.filter((o) => o.status === filter).length;
+                                        return (
+                                            <button
+                                                key={filter}
+                                                type="button"
+                                                onClick={() => setOrderFilter(filter)}
+                                                className={`px-3 py-1 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                                                    orderFilter === filter
+                                                        ? "bg-white dark:bg-[#0b1420] text-emerald-600 dark:text-emerald-400 shadow-xs"
+                                                        : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                                                }`}
+                                            >
+                                                <span>{filter}</span>
+                                                <span className="text-[10px] text-gray-400 font-mono">({count})</span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
 
-                                            return (
-                                                <tr key={pos.id} className="hover:bg-gray-50 dark:hover:bg-[#18263a] transition">
-                                                    <td className="px-3 py-2.5 font-bold text-gray-900 dark:text-white">
-                                                        <div className="flex items-center gap-1.5">
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={loadOrders}
+                                        disabled={ordersLoading}
+                                        className="p-1.5 rounded-lg border border-gray-200 dark:border-white/10 text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/5 transition cursor-pointer"
+                                        title="Refresh Orders"
+                                    >
+                                        <FiRefreshCw size={13} className={ordersLoading ? "animate-spin" : ""} />
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Orders Table */}
+                            {(() => {
+                                const filteredOrders = orders.filter((o) => {
+                                    if (orderFilter === "ALL") return true;
+                                    if (orderFilter === "CANCELLED") return o.status === "CANCELLED" || o.status === "REJECTED";
+                                    return o.status === orderFilter;
+                                });
+
+                                if (filteredOrders.length === 0) {
+                                    return (
+                                        <div className="py-16 text-center text-gray-400 text-xs space-y-2">
+                                            <div className="text-4xl mb-1">📑</div>
+                                            <p className="font-bold text-base text-gray-700 dark:text-gray-300">
+                                                No {orderFilter !== "ALL" ? orderFilter.toLowerCase() : ""} orders
+                                            </p>
+                                            <p className="text-gray-500 max-w-sm mx-auto">
+                                                Use the fast trade ticket (⚡) in the Option Chain to place Limit and Stop-Loss orders driven by live market ticks.
+                                            </p>
+                                        </div>
+                                    );
+                                }
+
+                                return (
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-left text-xs">
+                                            <thead className="bg-gray-50 dark:bg-[#070e17] text-gray-400 font-bold uppercase text-[10px] border-b border-gray-100 dark:border-white/5 tracking-wider">
+                                                <tr>
+                                                    <th className="px-4 py-3">Order / Time</th>
+                                                    <th className="px-4 py-3">Contract</th>
+                                                    <th className="px-4 py-3">Side / Type</th>
+                                                    <th className="px-4 py-3 text-right">Quantity</th>
+                                                    <th className="px-4 py-3 text-right">Order Price</th>
+                                                    <th className="px-4 py-3 text-right">Live LTP</th>
+                                                    <th className="px-4 py-3 text-center">SL / Target</th>
+                                                    <th className="px-4 py-3 text-center">Status</th>
+                                                    <th className="px-4 py-3 text-center">Action</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100 dark:divide-white/5 font-mono">
+                                                {filteredOrders.map((ord) => {
+                                                    const isPending = ord.status === "PENDING";
+                                                    const isExecuted = ord.status === "EXECUTED";
+                                                    const isCancelled = ord.status === "CANCELLED" || ord.status === "REJECTED";
+                                                    const isBuy = (ord.side || "").toLowerCase() === "buy";
+                                                    const orderTime = ord.created_at ? new Date(ord.created_at) : new Date();
+
+                                                    // Calculate current LTP for contract if available
+                                                    let liveLtp = null;
+                                                    if (chainData?.rows?.length && ord.strike) {
+                                                        const row = chainData.rows.find((r) => Number(r.strike) === Number(ord.strike));
+                                                        if (row) {
+                                                            const opt = ord.option_type === "PE" ? row.pe : row.ce;
+                                                            if (opt?.ltp) liveLtp = Number(opt.ltp);
+                                                        }
+                                                    }
+
+                                                    return (
+                                                        <tr key={ord.id} className="hover:bg-gray-50/50 dark:hover:bg-white/2 transition">
+                                                            <td className="px-4 py-3">
+                                                                <div className="font-bold text-gray-900 dark:text-white">
+                                                                    #{String(ord.id).slice(-6)}
+                                                                </div>
+                                                                <div className="text-[10px] text-gray-400 font-sans">
+                                                                    {orderTime.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                                                                </div>
+                                                            </td>
+                                                            <td className="px-4 py-3 font-sans">
+                                                                <div className="font-extrabold text-gray-900 dark:text-white flex items-center gap-1.5">
+                                                                    <span>{ord.symbol || activeSymbol}</span>
+                                                                    <span className="text-gray-400 font-mono text-[11px]">{ord.strike}</span>
+                                                                    <span className={`px-1 rounded text-[9.5px] font-black font-mono ${
+                                                                        ord.option_type === "CE"
+                                                                            ? "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300"
+                                                                            : "bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300"
+                                                                    }`}>
+                                                                        {ord.option_type || "CE"}
+                                                                    </span>
+                                                                </div>
+                                                                <div className="text-[10.5px] text-gray-400">
+                                                                    {ord.expiry || chainData?.selectedExpiry || "—"}
+                                                                </div>
+                                                            </td>
+                                                            <td className="px-4 py-3">
+                                                                <div className="flex items-center gap-1.5 font-bold">
+                                                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-black uppercase ${
+                                                                        isBuy
+                                                                            ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400"
+                                                                            : "bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400"
+                                                                    }`}>
+                                                                        {ord.side?.toUpperCase()}
+                                                                    </span>
+                                                                    <span className="text-[10.5px] text-gray-500 dark:text-gray-400 font-mono">
+                                                                        {ord.order_type || "LIMIT"}
+                                                                    </span>
+                                                                </div>
+                                                            </td>
+                                                            <td className="px-4 py-3 text-right">
+                                                                <div className="font-bold text-gray-900 dark:text-white">
+                                                                    {ord.quantity != null ? ord.quantity : (ord.lots || 1) * (ord.lot_size || lotSize)}
+                                                                    <span className="text-[10px] text-gray-400 ml-1 font-sans">
+                                                                        {isCrypto ? "Ctr" : "Qty"}
+                                                                    </span>
+                                                                </div>
+                                                                <div className="text-[10px] text-gray-400 font-sans">
+                                                                    {ord.lots || 1} {isCrypto ? "contracts" : `lot (${ord.lot_size || lotSize})`}
+                                                                </div>
+                                                            </td>
+                                                            <td className="px-4 py-3 text-right font-bold text-gray-900 dark:text-white">
+                                                                {ord.order_type === "MARKET" ? (
+                                                                    <span className="text-gray-400 font-sans text-xs">Market</span>
+                                                                ) : (
+                                                                    formatActivePrice(ord.price)
+                                                                )}
+                                                            </td>
+                                                            <td className="px-4 py-3 text-right">
+                                                                {liveLtp != null ? (
+                                                                    <div>
+                                                                        <div className="font-bold text-gray-900 dark:text-white">
+                                                                            {formatActivePrice(liveLtp)}
+                                                                        </div>
+                                                                        {isPending && ord.price != null && (
+                                                                            <div className={`text-[10px] ${
+                                                                                (isBuy && liveLtp <= ord.price) || (!isBuy && liveLtp >= ord.price)
+                                                                                    ? "text-emerald-500 font-bold"
+                                                                                    : "text-gray-400"
+                                                                            }`}>
+                                                                                {(((liveLtp - ord.price) / ord.price) * 100).toFixed(1)}% to trg
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                ) : (
+                                                                    <span className="text-gray-400">—</span>
+                                                                )}
+                                                            </td>
+                                                            <td className="px-4 py-3 text-center text-[10.5px]">
+                                                                {ord.stop_loss_price != null || ord.target_price != null ? (
+                                                                    <div className="space-y-0.5">
+                                                                        {ord.stop_loss_price != null && (
+                                                                            <div className="text-rose-500 font-mono">
+                                                                                SL: {formatActivePrice(ord.stop_loss_price)}
+                                                                            </div>
+                                                                        )}
+                                                                        {ord.target_price != null && (
+                                                                            <div className="text-emerald-500 font-mono">
+                                                                                TP: {formatActivePrice(ord.target_price)}
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                ) : (
+                                                                    <span className="text-gray-400">—</span>
+                                                                )}
+                                                            </td>
+                                                            <td className="px-4 py-3 text-center">
+                                                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                                                                    isPending
+                                                                        ? "bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800"
+                                                                        : isExecuted
+                                                                        ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800"
+                                                                        : "bg-gray-100 dark:bg-white/5 text-gray-500 border border-gray-200 dark:border-white/10"
+                                                                }`}>
+                                                                    {isPending && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />}
+                                                                    {ord.status}
+                                                                </span>
+                                                            </td>
+                                                            <td className="px-4 py-3 text-center">
+                                                                {isPending ? (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleCancelOrder(ord.id)}
+                                                                        disabled={cancellingOrderId === ord.id}
+                                                                        className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 font-extrabold text-[10.5px] transition cursor-pointer disabled:opacity-50"
+                                                                    >
+                                                                        {cancellingOrderId === ord.id ? "Cancelling…" : "Cancel"}
+                                                                    </button>
+                                                                ) : (
+                                                                    <span className="text-gray-400 text-xs">—</span>
+                                                                )}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                );
+                            })()}
+                        </div>
+                    </div>
+                )}
+
+                {/* ----------------------------------------------------------------- */}
+                {/* 3. CLOSED TRADES & REALIZED P&L TAB */}
+                {/* ----------------------------------------------------------------- */}
+                {activeTab === "history" && (
+                    <div className="space-y-4">
+                        {/* Summary KPI Ribbon for Closed Positions */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            <div className="p-4 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs">
+                                <div className="text-[10.5px] uppercase font-bold text-gray-400">Total Closed Trades</div>
+                                <div className="text-xl font-black font-mono text-gray-900 dark:text-white mt-1">
+                                    {closedPositions.length}
+                                </div>
+                            </div>
+
+                            <div className="p-4 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs">
+                                <div className="text-[10.5px] uppercase font-bold text-gray-400">Win Rate</div>
+                                <div className={`text-xl font-black font-mono mt-1 ${Number(winRate) >= 50 ? "text-emerald-600 dark:text-emerald-400" : "text-gray-700 dark:text-gray-300"}`}>
+                                    {winRate}%
+                                    <span className="text-xs font-normal text-gray-400 ml-1.5 font-sans">
+                                        ({winningTrades}W / {losingTrades}L)
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div className="p-4 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs">
+                                <div className="text-[10.5px] uppercase font-bold text-gray-400">Net Realized P&amp;L</div>
+                                <div className={`text-xl font-black font-mono mt-1 ${totalRealizedPnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                    {totalRealizedPnl >= 0 ? "+" : ""}{formatActivePrice(totalRealizedPnl)}
+                                </div>
+                            </div>
+
+                            <div className="p-4 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs">
+                                <div className="text-[10.5px] uppercase font-bold text-gray-400">Best Trade P&amp;L</div>
+                                <div className="text-xl font-black font-mono text-emerald-600 dark:text-emerald-400 mt-1">
+                                    {bestTradePnl > 0 ? `+${formatActivePrice(bestTradePnl)}` : "—"}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* History Table Card */}
+                        <div className="rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden">
+                            <div className="px-4 py-3 bg-gray-50/70 dark:bg-[#070e17]/70 border-b border-gray-100 dark:border-white/10 flex items-center justify-between text-xs font-bold">
+                                <span className="text-sm font-black text-gray-900 dark:text-white">Realized P&amp;L History Ledger</span>
+                                <span className="text-gray-400 font-normal">({closedPositions.length} Closed Trades)</span>
+                            </div>
+
+                            {closedPositions.length === 0 ? (
+                                <div className="py-16 text-center text-gray-400 text-xs space-y-1">
+                                    <div className="text-4xl mb-1">📜</div>
+                                    <p className="font-bold text-base text-gray-700 dark:text-gray-300">No Closed Trades Yet</p>
+                                    <p className="text-gray-500">Your squared-off positions and realized returns will appear here.</p>
+                                </div>
+                            ) : (
+                                <div className="overflow-x-auto custom-scrollbar">
+                                    <table className="w-full text-xs text-left">
+                                        <thead className="bg-gray-100/70 dark:bg-[#070e17]/80 text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-white/10 text-[11px] font-extrabold uppercase">
+                                            <tr>
+                                                <th className="px-4 py-3">Symbol</th>
+                                                <th className="px-3 py-3 text-center">Side</th>
+                                                <th className="px-3 py-3 text-center">Lots</th>
+                                                <th className="px-3 py-3">Expiry</th>
+                                                <th className="px-3 py-3 text-center">Strike</th>
+                                                <th className="px-3 py-3 text-center">Type</th>
+                                                <th className="px-4 py-3 text-right">Entry Price</th>
+                                                <th className="px-4 py-3 text-right">Exit Price</th>
+                                                <th className="px-4 py-3 text-right">Realized Net P&amp;L</th>
+                                                <th className="px-4 py-3 text-right">Closed At</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-100 dark:divide-white/5 font-mono text-xs">
+                                            {closedPositions.map((pos) => {
+                                                const pnl = Number(pos.realized_pnl || 0);
+                                                const isProfit = pnl >= 0;
+
+                                                return (
+                                                    <tr key={pos.id} className="hover:bg-gray-50/80 dark:hover:bg-white/[0.03] transition">
+                                                        <td className="px-4 py-3 font-bold text-gray-900 dark:text-white">
                                                             <span>{pos.symbol}</span>
-                                                            {isCryptoPos && (
-                                                                <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-amber-500/10 text-amber-500 border border-amber-500/30">
-                                                                    ⚡ CRYPTO
+                                                        </td>
+                                                        <td className="px-3 py-3 text-center">
+                                                            <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                                                                pos.side === "long"
+                                                                    ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300"
+                                                                    : "bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300"
+                                                            }`}>
+                                                                {pos.side === "long" ? "BUY" : "SELL"}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-3 py-3 text-center font-bold tabular-nums">{pos.lots}</td>
+                                                        <td className="px-3 py-3 font-sans text-gray-700 dark:text-gray-300">{formatExpiryShort(pos.expiry)}</td>
+                                                        <td className="px-3 py-3 text-center font-bold text-gray-900 dark:text-white">{pos.strike}</td>
+                                                        <td className="px-3 py-3 text-center font-bold text-blue-600 dark:text-blue-400">{pos.option_type}</td>
+                                                        <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">{formatActivePrice(pos.entry_price)}</td>
+                                                        <td className="px-4 py-3 text-right tabular-nums text-gray-900 dark:text-white">
+                                                            {pos.exit_price != null ? formatActivePrice(pos.exit_price) : "—"}
+                                                            {pos.exit_reason && (
+                                                                <span className={`block mt-0.5 font-sans text-[9.5px] font-black uppercase ${
+                                                                    pos.exit_reason === "stop_loss" ? "text-rose-500" : pos.exit_reason === "target" ? "text-emerald-500" : "text-gray-400"
+                                                                }`}>
+                                                                    {EXIT_REASON_LABELS[pos.exit_reason] || pos.exit_reason}
                                                                 </span>
                                                             )}
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-center">
-                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
-                                                            pos.side === "long" ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300" : "bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300"
+                                                        </td>
+                                                        <td className={`px-4 py-3 text-right font-black tabular-nums ${
+                                                            isProfit ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
                                                         }`}>
-                                                            {pos.side === "long" ? "BUY" : "SELL"}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-center font-bold tabular-nums">{pos.lots}</td>
-                                                    <td className="px-3 py-2.5 font-sans text-gray-700 dark:text-gray-300">{formatExpiryShort(pos.expiry)}</td>
-                                                    <td className="px-3 py-2.5 text-center font-bold text-gray-900 dark:text-white">{pos.strike}</td>
-                                                    <td className="px-3 py-2.5 text-center font-bold text-blue-600 dark:text-blue-400">{pos.option_type}</td>
-                                                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-700 dark:text-gray-300">{formatPosPrice(pos.entry_price)}</td>
-                                                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-900 dark:text-white">{pos.exit_price != null ? formatPosPrice(pos.exit_price) : "—"}</td>
-                                                    <td className={`px-3 py-2.5 text-right font-black tabular-nums ${
-                                                        isProfit ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
-                                                    }`}>
-                                                        {isProfit ? "+" : ""}{formatPosCurrency(pnl)}
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-right text-gray-500 font-sans text-[11px]">
-                                                        {pos.closed_at ? formatDateTime(pos.closed_at) : "—"}
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                    </tbody>
-                                </table>
-                            </div>
-                        )}
+                                                            {isProfit ? "+" : ""}{formatActivePrice(pnl)}
+                                                        </td>
+                                                        <td className="px-4 py-3 text-right text-gray-500 font-sans text-[11px]">
+                                                            {pos.closed_at ? formatDateTime(pos.closed_at) : "—"}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 )}
 
@@ -2472,8 +3713,7 @@ export default function PaperTrade() {
                 {/* --------------------------------------------------------------------- */}
                 {activeTab === "leaderboard" && (
                     <div className="space-y-6 pb-8">
-                        {/* Header & Description */}
-                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-gray-200 dark:border-gray-800 pb-4">
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-gray-200 dark:border-white/10 pb-4">
                             <div>
                                 <h2 className="text-xl font-black text-gray-900 dark:text-white flex items-center gap-2">
                                     <span>🏆</span>
@@ -2487,14 +3727,14 @@ export default function PaperTrade() {
                             <button
                                 type="button"
                                 onClick={loadLeaderboard}
-                                className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#121c2b] px-3.5 py-1.5 text-xs font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-[#18263a] transition shadow-xs"
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#121c2b] px-3.5 py-1.5 text-xs font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-[#18263a] transition shadow-xs cursor-pointer"
                             >
                                 <FiRefreshCw size={12} className={leaderboardLoading ? "animate-spin" : ""} />
                                 <span>Refresh Ranking</span>
                             </button>
                         </div>
 
-                        {/* Logged in User's Current Rank Card */}
+                        {/* Logged in User's Rank Card */}
                         {leaderboardData?.myRank && (
                             <div className="relative overflow-hidden rounded-2xl border border-emerald-500/40 bg-gradient-to-r from-emerald-500/15 via-teal-500/10 to-transparent p-4 sm:p-5 dark:border-emerald-500/30 dark:from-emerald-950/40 dark:via-teal-950/20 shadow-sm">
                                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -2542,7 +3782,6 @@ export default function PaperTrade() {
                         {/* Top 3 Podium */}
                         {leaderboardData?.leaderboard && leaderboardData.leaderboard.length >= 3 && (
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                {/* Rank 2 */}
                                 <div className="rounded-2xl border border-slate-300 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 p-5 text-center space-y-2 order-2 md:order-1 shadow-xs">
                                     <span className="text-3xl">🥈</span>
                                     <div className="text-[11px] font-black uppercase tracking-wider text-slate-600 dark:text-slate-400">Rank #2</div>
@@ -2555,7 +3794,6 @@ export default function PaperTrade() {
                                     </div>
                                 </div>
 
-                                {/* Rank 1 (Gold / Crown) */}
                                 <div className="rounded-2xl border border-amber-300 dark:border-amber-700/60 bg-gradient-to-b from-amber-100/60 to-amber-50 dark:from-amber-950/40 dark:to-amber-950/10 p-6 text-center space-y-2 order-1 md:order-2 shadow-md shadow-amber-500/5">
                                     <span className="text-4xl">👑 🥇</span>
                                     <div className="text-[11px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">Rank #1 Leader</div>
@@ -2571,7 +3809,6 @@ export default function PaperTrade() {
                                     </div>
                                 </div>
 
-                                {/* Rank 3 */}
                                 <div className="rounded-2xl border border-amber-300/60 dark:border-amber-900/60 bg-amber-50/50 dark:bg-amber-950/20 p-5 text-center space-y-2 order-3 shadow-xs">
                                     <span className="text-3xl">🥉</span>
                                     <div className="text-[11px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-400">Rank #3</div>
@@ -2587,8 +3824,8 @@ export default function PaperTrade() {
                         )}
 
                         {/* Leaderboard Table */}
-                        <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#121c2b] shadow-xs overflow-hidden">
-                            <div className="p-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+                        <div className="rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs overflow-hidden">
+                            <div className="p-4 border-b border-gray-100 dark:border-white/10 flex items-center justify-between">
                                 <span className="text-sm font-bold text-gray-900 dark:text-white">
                                     Top Rated Options Traders
                                 </span>
@@ -2607,7 +3844,7 @@ export default function PaperTrade() {
                                 <div className="overflow-x-auto custom-scrollbar">
                                     <table className="w-full text-xs text-left border-collapse">
                                         <thead>
-                                            <tr className="bg-gray-50/80 dark:bg-[#182333] border-b border-gray-200 dark:border-gray-800 text-gray-500 font-bold uppercase text-[10px]">
+                                            <tr className="bg-gray-50/80 dark:bg-[#070e17]/80 border-b border-gray-200 dark:border-white/10 text-gray-500 font-bold uppercase text-[10px]">
                                                 <th className="px-4 py-3">Rank</th>
                                                 <th className="px-4 py-3">Trader</th>
                                                 <th className="px-4 py-3">Badge / Style</th>
@@ -2617,7 +3854,7 @@ export default function PaperTrade() {
                                                 <th className="px-4 py-3 text-right">Realized Net P&amp;L</th>
                                             </tr>
                                         </thead>
-                                        <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                                        <tbody className="divide-y divide-gray-100 dark:divide-white/5">
                                             {leaderboardData.leaderboard.map((trader) => {
                                                 const isProfit = trader.netPnl >= 0;
                                                 const isMe = leaderboardData?.myRank?.userId === trader.userId;
@@ -2625,7 +3862,7 @@ export default function PaperTrade() {
                                                 return (
                                                     <tr
                                                         key={trader.userId}
-                                                        className={`hover:bg-gray-50/70 dark:hover:bg-[#18263a] transition ${
+                                                        className={`hover:bg-gray-50/70 dark:hover:bg-white/[0.03] transition ${
                                                             isMe ? "bg-emerald-50/50 dark:bg-emerald-950/20 font-bold" : ""
                                                         }`}
                                                     >
@@ -2652,7 +3889,7 @@ export default function PaperTrade() {
                                                             </div>
                                                         </td>
                                                         <td className="px-4 py-3.5">
-                                                            <span className="inline-flex items-center rounded-lg bg-gray-100 dark:bg-gray-800 px-2.5 py-0.5 text-[10px] font-semibold text-gray-700 dark:text-gray-300">
+                                                            <span className="inline-flex items-center rounded-lg bg-gray-100 dark:bg-[#121c2b] px-2.5 py-0.5 text-[10px] font-semibold text-gray-700 dark:text-gray-300">
                                                                 {trader.badge}
                                                             </span>
                                                         </td>
@@ -2682,7 +3919,7 @@ export default function PaperTrade() {
                         </div>
                     </div>
                 )}
-            </div>
+            </main>
 
             {/* --------------------------------------------------------------------- */}
             {/* Symbol Search Modal (7 Indices & 210+ Stocks) */}
@@ -2691,7 +3928,7 @@ export default function PaperTrade() {
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
                     <div className="w-full max-w-lg rounded-2xl bg-white dark:bg-[#121c2b] border border-gray-200 dark:border-gray-700 shadow-2xl p-5 space-y-4 max-h-[85vh] flex flex-col">
                         <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-3">
-                            <span className="font-extrabold text-gray-900 dark:text-white text-base">Select Asset (7 Indices & 210+ Stocks)</span>
+                            <span className="font-extrabold text-gray-900 dark:text-white text-base">Select Asset (7 Indices &amp; 210+ Stocks)</span>
                             <button onClick={() => setSearchOpen(false)} className="text-gray-400 hover:text-gray-700 dark:hover:text-white cursor-pointer text-lg">✕</button>
                         </div>
 
@@ -2708,7 +3945,6 @@ export default function PaperTrade() {
                         </div>
 
                         <div className="overflow-y-auto space-y-3 flex-1 pr-1 custom-scrollbar">
-                            {/* Indices */}
                             {filteredIndices.length > 0 && (
                                 <div>
                                     <div className="text-[11px] font-bold uppercase text-gray-400 mb-1.5">Indices (7)</div>
@@ -2734,10 +3970,9 @@ export default function PaperTrade() {
                                 </div>
                             )}
 
-                            {/* Stocks */}
                             {filteredStocks.length > 0 && (
                                 <div>
-                                    <div className="text-[11px] font-bold uppercase text-gray-400 mb-1.5">F&O Stocks ({filteredStocks.length})</div>
+                                    <div className="text-[11px] font-bold uppercase text-gray-400 mb-1.5">F&amp;O Stocks ({filteredStocks.length})</div>
                                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                                         {filteredStocks.map((sym) => (
                                             <button
@@ -2851,15 +4086,15 @@ export default function PaperTrade() {
                             </li>
                             <li className="flex items-center gap-2">
                                 <FiCheck className="text-emerald-500 shrink-0 font-bold" />
-                                <span>Unlimited Live WebSocket Option Chain (7 Indices & 210+ Stocks)</span>
+                                <span>Unlimited Live WebSocket Option Chain (7 Indices &amp; 210+ Stocks)</span>
                             </li>
                             <li className="flex items-center gap-2">
                                 <FiCheck className="text-emerald-500 shrink-0 font-bold" />
-                                <span>StockMojo Payoff Chart & Advanced Greek Analytics</span>
+                                <span>StockMojo Payoff Chart &amp; Advanced Greek Analytics</span>
                             </li>
                             <li className="flex items-center gap-2">
                                 <FiCheck className="text-emerald-500 shrink-0 font-bold" />
-                                <span>Multi-leg Historical Simulator & Strategy Replay</span>
+                                <span>Multi-leg Historical Simulator &amp; Strategy Replay</span>
                             </li>
                         </ul>
 
@@ -2883,7 +4118,120 @@ export default function PaperTrade() {
             )}
 
             {/* --------------------------------------------------------------------- */}
-            {/* 15+ Ready-Made Strategies Matrix Modal (Simulator Hedging Parity) */}
+            {/* Stop Loss / Target popup (basket legs + open positions) */}
+            {/* --------------------------------------------------------------------- */}
+            {slModal && (() => {
+                const isLong = slModal.side === "long" || slModal.side === "buy";
+                const ref = slModal.ref;
+                const err = bracketError(slModal.side, ref, slModal.sl, slModal.target);
+                const hasExisting = toBracket(slModal.sl) != null || toBracket(slModal.target) != null;
+                const round = (v) => String(Math.max(0.05, Math.round(v * 100) / 100));
+                // quick picks as % of the current premium, in the direction that's valid for this side
+                const slPicks = [10, 20, 30].map((pct) => ({ pct, v: round(ref * (isLong ? 1 - pct / 100 : 1 + pct / 100)) }));
+                const tgtPicks = [25, 50, 100].map((pct) => ({ pct, v: round(isLong ? ref * (1 + pct / 100) : ref * Math.max(0.05, 1 - pct / 200)) }));
+                const field = (key, label, tone, picks, hint) => (
+                    <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                            <label className={`text-[11px] font-extrabold uppercase ${tone}`}>{label}</label>
+                            <span className="text-[10px] text-gray-400">{hint}</span>
+                        </div>
+                        <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={slModal[key]}
+                            autoFocus={key === "sl"}
+                            onChange={(e) => setSlModal((m) => ({ ...m, [key]: e.target.value }))}
+                            onKeyDown={(e) => e.key === "Enter" && saveSlModal()}
+                            placeholder="Not set"
+                            className={`w-full px-3 py-2 rounded-lg border bg-white dark:bg-[#121c2b] font-mono text-sm text-gray-900 dark:text-white outline-none focus:border-emerald-500 ${
+                                err && err.startsWith(key === "sl" ? "SL" : "Target") ? "border-rose-500" : "border-gray-200 dark:border-white/10"
+                            }`}
+                        />
+                        <div className="flex gap-1.5">
+                            {picks.map((p) => (
+                                <button
+                                    key={p.pct}
+                                    type="button"
+                                    onClick={() => setSlModal((m) => ({ ...m, [key]: p.v }))}
+                                    className="px-2 py-0.5 rounded-md bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-[10.5px] font-bold text-gray-600 dark:text-gray-300 cursor-pointer"
+                                >
+                                    {key === "sl" ? "−" : "+"}{p.pct}%
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                );
+                return (
+                    <div
+                        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4"
+                        onClick={() => setSlModal(null)}
+                        onKeyDown={(e) => e.key === "Escape" && setSlModal(null)}
+                    >
+                        <div
+                            className="w-full max-w-sm rounded-2xl bg-white dark:bg-[#0b1420] border border-gray-200 dark:border-white/10 shadow-2xl p-5 space-y-4 text-xs"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex items-start justify-between gap-3">
+                                <div>
+                                    <h3 className="text-base font-black text-gray-900 dark:text-white">Stop Loss / Target</h3>
+                                    <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                        <span className="font-bold text-gray-700 dark:text-gray-200">{slModal.label}</span> · current premium{" "}
+                                        <span className="font-mono font-bold text-gray-900 dark:text-white">{formatActivePrice(ref)}</span>
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setSlModal(null)}
+                                    className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/5 cursor-pointer text-base font-bold"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+
+                            {field("sl", "Stop Loss", "text-rose-500", slPicks, isLong ? "below current premium" : "above current premium")}
+                            {field("target", "Target", "text-emerald-600", tgtPicks, isLong ? "above current premium" : "below current premium")}
+
+                            <p className={`text-[11px] ${err ? "text-rose-500 font-semibold" : "text-gray-400"}`}>
+                                {err || "Both are optional. The position exits automatically when the premium reaches either price."}
+                            </p>
+
+                            <div className="flex items-center justify-between gap-2 pt-1">
+                                {hasExisting ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => saveSlModal(true)}
+                                        disabled={savingBracket}
+                                        className="text-[11px] font-bold text-gray-500 hover:text-rose-600 cursor-pointer disabled:opacity-50"
+                                    >
+                                        Remove SL/Target
+                                    </button>
+                                ) : <span />}
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setSlModal(null)}
+                                        className="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-white/10 text-gray-600 dark:text-gray-300 font-bold hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => saveSlModal()}
+                                        disabled={!!err || savingBracket}
+                                        className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-black cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                        {savingBracket ? "Saving…" : "Save"}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+
+            {/* --------------------------------------------------------------------- */}
+            {/* Ready-Made Strategies Matrix Modal (Simulator Hedging Parity) */}
             {/* --------------------------------------------------------------------- */}
             {showPresetsModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-6">
@@ -2898,7 +4246,7 @@ export default function PaperTrade() {
                                         Ready-Made Hedging Strategy Matrix ({symbol})
                                     </h3>
                                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                                        15+ professional multi-leg option strategies with live strike mapping & risk profiles
+                                        15+ professional multi-leg option strategies with live strike mapping &amp; risk profiles
                                     </p>
                                 </div>
                             </div>
@@ -2919,6 +4267,386 @@ export default function PaperTrade() {
                     </div>
                 </div>
             )}
+
+            {/* --------------------------------------------------------------------- */}
+            {/* Fast Trade Ticket Modal (Delta Exchange & StockMojo Parity) */}
+            {/* --------------------------------------------------------------------- */}
+            {orderModal && (() => {
+                const isBuy = orderModal.side === "buy";
+                const isMarket = orderModal.orderType === "MARKET";
+                const orderPrice = isMarket ? Number(orderModal.ltp || 0) : Number(orderModal.price || 0);
+                const totalQty = (orderModal.lots || 1) * (orderModal.lotSize || 1);
+                const orderValue = orderPrice * totalQty;
+                const notionalUsd = orderModal.isCrypto
+                    ? totalQty * (orderModal.spotPrice || orderModal.strike || 0)
+                    : totalQty * (orderModal.strike || 0);
+
+                let reqFunds = 0;
+                if (isBuy) {
+                    reqFunds = orderValue;
+                } else {
+                    if (orderModal.isCrypto) {
+                        reqFunds = Math.max(orderValue, notionalUsd / (orderModal.leverage || 20));
+                    } else {
+                        reqFunds = Math.max(orderValue, notionalUsd * 0.14);
+                    }
+                }
+
+                const estFee = orderModal.isCrypto ? notionalUsd * 0.0003 : 20;
+                const curBalance = orderModal.isCrypto
+                    ? Number(cryptoWallet.balance)
+                    : (wallet ? Number(wallet.balance) : 100000);
+                const isInsufficient = curBalance < reqFunds;
+                const bError = bracketError(orderModal.side, orderPrice, orderModal.sl, orderModal.target);
+
+                return (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-4">
+                        <div className="w-full max-w-lg rounded-2xl bg-white dark:bg-[#0b1420] border border-gray-200 dark:border-white/10 shadow-2xl p-4 sm:p-5 space-y-4 max-h-[92vh] overflow-y-auto custom-scrollbar">
+                            {/* Modal Header */}
+                            <div className="flex items-center justify-between border-b border-gray-100 dark:border-white/10 pb-3">
+                                <div className="flex items-center gap-2">
+                                    <span className={`px-2 py-0.5 rounded text-[10.5px] font-black uppercase font-mono ${
+                                        orderModal.optRight === "CE"
+                                            ? "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300"
+                                            : "bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300"
+                                    }`}>
+                                        {orderModal.optRight}
+                                    </span>
+                                    <div>
+                                        <h3 className="font-black text-sm text-gray-900 dark:text-white flex items-center gap-1.5">
+                                            <span>{orderModal.symbol}</span>
+                                            <span className="font-mono text-emerald-600 dark:text-emerald-400">{orderModal.strike}</span>
+                                            <span>{orderModal.optRight}</span>
+                                        </h3>
+                                        <div className="text-[10px] text-gray-400 font-mono">
+                                            Exp: {orderModal.expiry || "—"} · Spot: {formatActivePrice(orderModal.spotPrice || spotPrice)}
+                                        </div>
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setOrderModal(null)}
+                                    className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/5 cursor-pointer text-sm font-bold transition"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+
+                            {/* BUY / SELL Switcher */}
+                            <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-gray-100 dark:bg-[#121c2b]">
+                                <button
+                                    type="button"
+                                    onClick={() => setOrderModal((m) => ({ ...m, side: "buy", price: m.ask || m.ltp }))}
+                                    className={`py-2 rounded-lg text-xs font-black transition cursor-pointer flex flex-col items-center ${
+                                        isBuy
+                                            ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/30"
+                                            : "text-gray-500 hover:text-gray-900 dark:hover:text-white"
+                                    }`}
+                                >
+                                    <span>BUY (LONG)</span>
+                                    <span className="text-[9.5px] font-normal opacity-85">Pay Premium</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setOrderModal((m) => ({ ...m, side: "sell", price: m.bid || m.ltp }))}
+                                    className={`py-2 rounded-lg text-xs font-black transition cursor-pointer flex flex-col items-center ${
+                                        !isBuy
+                                            ? "bg-rose-600 text-white shadow-md shadow-rose-600/30"
+                                            : "text-gray-500 hover:text-gray-900 dark:hover:text-white"
+                                    }`}
+                                >
+                                    <span>SELL (SHORT)</span>
+                                    <span className="text-[9.5px] font-normal opacity-85">Block Margin</span>
+                                </button>
+                            </div>
+
+                            {/* Order Type: MARKET vs LIMIT */}
+                            <div className="space-y-1.5">
+                                <label className="text-[10.5px] uppercase font-bold text-gray-400">Order Execution Type</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setOrderModal((m) => ({ ...m, orderType: "MARKET" }))}
+                                        className={`py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                                            isMarket
+                                                ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400"
+                                                : "border-gray-200 dark:border-white/10 text-gray-500 hover:text-gray-900 dark:hover:text-white"
+                                        }`}
+                                    >
+                                        Market Order (Instant)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setOrderModal((m) => ({ ...m, orderType: "LIMIT" }))}
+                                        className={`py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                                            !isMarket
+                                                ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400"
+                                                : "border-gray-200 dark:border-white/10 text-gray-500 hover:text-gray-900 dark:hover:text-white"
+                                        }`}
+                                    >
+                                        Limit Order (Order Book)
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Limit Price Input */}
+                            {!isMarket && (
+                                <div className="space-y-1.5">
+                                    <div className="flex items-center justify-between text-xs">
+                                        <label className="text-[10.5px] uppercase font-bold text-gray-400">Limit Price</label>
+                                        <div className="flex items-center gap-1.5 text-[10px] font-mono">
+                                            {orderModal.bid != null && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setOrderModal((m) => ({ ...m, price: m.bid }))}
+                                                    className="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-emerald-600 dark:text-emerald-400 cursor-pointer"
+                                                >
+                                                    Bid: {orderModal.bid}
+                                                </button>
+                                            )}
+                                            {orderModal.ask != null && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setOrderModal((m) => ({ ...m, price: m.ask }))}
+                                                    className="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-rose-600 dark:text-rose-400 cursor-pointer"
+                                                >
+                                                    Ask: {orderModal.ask}
+                                                </button>
+                                            )}
+                                            <button
+                                                type="button"
+                                                onClick={() => setOrderModal((m) => ({ ...m, price: m.ltp }))}
+                                                className="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-300 cursor-pointer"
+                                            >
+                                                LTP: {orderModal.ltp}
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                        value={orderModal.price}
+                                        onChange={(e) => setOrderModal((m) => ({ ...m, price: Number(e.target.value) }))}
+                                        className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#121c2b] font-mono text-sm text-gray-900 dark:text-white outline-none focus:border-emerald-500"
+                                    />
+                                </div>
+                            )}
+
+                            {/* Quantity / Contracts Input */}
+                            <div className="space-y-1.5">
+                                <div className="flex items-center justify-between text-xs">
+                                    <label className="text-[10.5px] uppercase font-bold text-gray-400">
+                                        {orderModal.isCrypto ? "Contracts (Ctr)" : "Lots"}
+                                    </label>
+                                    <span className="text-[10.5px] text-gray-500 dark:text-gray-400 font-mono">
+                                        {orderModal.isCrypto
+                                            ? `= ${(totalQty * (orderModal.lotSize || 0.001)).toFixed(3)} ${orderModal.symbol}`
+                                            : `= ${totalQty} Shares`}
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setOrderModal((m) => ({ ...m, lots: Math.max(1, (m.lots || 1) - 1) }))}
+                                        className="w-9 h-9 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 hover:bg-gray-100 dark:hover:bg-white/10 font-bold text-gray-700 dark:text-gray-300 flex items-center justify-center cursor-pointer"
+                                    >
+                                        −
+                                    </button>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        value={orderModal.lots}
+                                        onChange={(e) => setOrderModal((m) => ({ ...m, lots: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
+                                        className="flex-1 px-3 py-2 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#121c2b] font-mono text-sm text-center text-gray-900 dark:text-white outline-none focus:border-emerald-500 font-black"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => setOrderModal((m) => ({ ...m, lots: (m.lots || 1) + 1 }))}
+                                        className="w-9 h-9 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 hover:bg-gray-100 dark:hover:bg-white/10 font-bold text-gray-700 dark:text-gray-300 flex items-center justify-center cursor-pointer"
+                                    >
+                                        +
+                                    </button>
+                                </div>
+                                <div className="flex items-center gap-1.5 pt-1">
+                                    {[1, 2, 5, 10, 25, 50].map((num) => (
+                                        <button
+                                            key={num}
+                                            type="button"
+                                            onClick={() => setOrderModal((m) => ({ ...m, lots: num }))}
+                                            className={`flex-1 py-1 rounded-lg text-[10.5px] font-bold font-mono transition cursor-pointer ${
+                                                orderModal.lots === num
+                                                    ? "bg-emerald-600 text-white shadow-xs"
+                                                    : "bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-600 dark:text-gray-300"
+                                            }`}
+                                        >
+                                            {num}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Delta Leverage Slider (If Crypto Seller) */}
+                            {orderModal.isCrypto && !isBuy && (
+                                <div className="p-3 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/50 dark:bg-[#070e17]/50 space-y-2">
+                                    <div className="flex items-center justify-between text-xs">
+                                        <span className="text-[10.5px] font-bold uppercase text-gray-400">Delta Short Leverage</span>
+                                        <span className="font-mono font-black text-emerald-600 dark:text-emerald-400 text-xs">
+                                            {orderModal.leverage || 20}x
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                        {[10, 20, 50, 100].map((lev) => (
+                                            <button
+                                                key={lev}
+                                                type="button"
+                                                onClick={() => setOrderModal((m) => ({ ...m, leverage: lev }))}
+                                                className={`flex-1 py-1 rounded-lg text-xs font-mono font-black transition cursor-pointer ${
+                                                    (orderModal.leverage || 20) === lev
+                                                        ? "bg-emerald-600 text-white shadow-xs"
+                                                        : "bg-gray-200/60 dark:bg-white/5 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                                                }`}
+                                            >
+                                                {lev}x
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <div className="text-[10px] text-gray-400">
+                                        Initial Margin: {(100 / (orderModal.leverage || 20)).toFixed(1)}% of Notional Value
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Stop-Loss & Target Brackets */}
+                            <div className="grid grid-cols-2 gap-2.5">
+                                <div className="space-y-1">
+                                    <label className="text-[10.5px] uppercase font-bold text-rose-500">Stop-Loss Price</label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                        value={orderModal.sl}
+                                        onChange={(e) => setOrderModal((m) => ({ ...m, sl: e.target.value }))}
+                                        placeholder="Optional"
+                                        className="w-full px-3 py-1.5 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#121c2b] font-mono text-xs text-gray-900 dark:text-white outline-none focus:border-rose-500"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-[10.5px] uppercase font-bold text-emerald-500">Target Price</label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                        value={orderModal.target}
+                                        onChange={(e) => setOrderModal((m) => ({ ...m, target: e.target.value }))}
+                                        placeholder="Optional"
+                                        className="w-full px-3 py-1.5 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#121c2b] font-mono text-xs text-gray-900 dark:text-white outline-none focus:border-emerald-500"
+                                    />
+                                </div>
+                            </div>
+                            {bError && (
+                                <div className="p-2 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-[11px] text-rose-600 dark:text-rose-400 font-medium">
+                                    {bError}
+                                </div>
+                            )}
+
+                            {/* Telemetry Matrix: Notional, Value, Required Funds, Available Cash */}
+                            <div className="p-3 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-[#070e17] space-y-2">
+                                <div className="grid grid-cols-2 gap-2 text-xs">
+                                    <div>
+                                        <div className="text-[10px] uppercase font-bold text-gray-400">Contract Notional</div>
+                                        <div className="font-mono font-bold text-gray-900 dark:text-white mt-0.5">
+                                            {formatActivePrice(notionalUsd)}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="text-[10px] uppercase font-bold text-gray-400">Order Premium Value</div>
+                                        <div className="font-mono font-bold text-gray-900 dark:text-white mt-0.5">
+                                            {formatActivePrice(orderValue)}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="text-[10px] uppercase font-bold text-gray-400">Virtual Funds Required</div>
+                                        <div className={`font-mono font-black text-sm mt-0.5 ${
+                                            isInsufficient ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"
+                                        }`}>
+                                            {formatActivePrice(reqFunds)}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="text-[10px] uppercase font-bold text-gray-400">Available Virtual Funds</div>
+                                        <div className="font-mono font-bold text-gray-700 dark:text-gray-300 mt-0.5">
+                                            {formatActivePrice(curBalance)}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="pt-2 border-t border-gray-200/60 dark:border-white/5 flex items-center justify-between text-[10.5px] text-gray-400">
+                                    <span>Est. Exchange Fee:</span>
+                                    <span className="font-mono text-gray-700 dark:text-gray-300">
+                                        {formatActivePrice(estFee)}
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* Insufficient funds warning */}
+                            {isInsufficient && (
+                                <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 font-bold flex items-center gap-2">
+                                    <FiAlertCircle size={15} />
+                                    <span>Insufficient Virtual Funds. Required: {formatActivePrice(reqFunds)}, Available: {formatActivePrice(curBalance)}.</span>
+                                </div>
+                            )}
+
+                            {/* Dual Action Footer */}
+                            <div className="flex items-center gap-2.5 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const newLeg = {
+                                            id: ++legIdCounter,
+                                            action: orderModal.side,
+                                            type: orderModal.optRight,
+                                            strike: orderModal.strike,
+                                            premium: Number(orderModal.ltp),
+                                            qty: orderModal.lots,
+                                            lotSize: orderModal.lotSize,
+                                            expiry: orderModal.expiry,
+                                            iv: orderModal.iv,
+                                            delta: orderModal.delta,
+                                            sl: orderModal.sl || null,
+                                            target: orderModal.target || null,
+                                        };
+                                        setBasketLegs((prev) => [...prev, newLeg]);
+                                        setOrderModal(null);
+                                        setChartViewTab("payoff");
+                                    }}
+                                    className="flex-1 py-2.5 px-3 rounded-xl border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 font-extrabold text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
+                                >
+                                    <FiPlusCircle size={14} />
+                                    <span>+ Add to Basket</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => handleExecuteDirectOrder(orderModal)}
+                                    disabled={isExecuting || isInsufficient || !!bError}
+                                    className={`flex-1 py-2.5 px-4 rounded-xl text-white font-black text-xs shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                                        isBuy ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/25" : "bg-rose-600 hover:bg-rose-700 shadow-rose-600/25"
+                                    }`}
+                                >
+                                    <FiZap size={14} />
+                                    <span>
+                                        {isExecuting
+                                            ? "Placing…"
+                                            : isMarket
+                                            ? `⚡ Market ${orderModal.side.toUpperCase()}`
+                                            : `⚡ Place Limit Order`}
+                                    </span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 }

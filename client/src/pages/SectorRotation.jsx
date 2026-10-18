@@ -1,41 +1,54 @@
-import React from "react";
-// pages/SectorRotation.jsx
-//
-// Relative Rotation Graph (RRG) — shows each NSE sector's relative Trend (RS-Ratio)
-// vs Momentum (RS-Momentum) against a benchmark (Major Indices & Heavyweight Stocks),
-// with historical rotation tails showing sector rotation between 4 market quadrants:
-// Leading, Weakening, Lagging, and Improving.
-//
-// Connected to live Upstox & database quotes API (/api/equity/sectors).
+// pages/SectorRotation.jsx — Relative Rotation Graph (RRG)
+// 100% StockMojo.in UI, UX, and Functionality Parity
+// Plots NSE Sectoral Indices and constituent stocks against Nifty 50 / benchmarks
+// with fading trajectory tails, playback scrubber, quadrant cards, and sector drilldown.
 
-import { useEffect, useMemo, useState, useRef } from "react";
+import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { NavLink } from "react-router-dom";
 import {
+    FiCompass,
     FiPlay,
     FiPause,
     FiZoomIn,
     FiZoomOut,
     FiMaximize2,
     FiRefreshCw,
+    FiChevronDown,
     FiGrid,
     FiActivity,
     FiTrendingUp,
     FiBarChart2,
-    FiSearch,
-    FiSliders,
-    FiX,
+    FiShield,
+    FiCpu,
+    FiDollarSign,
+    FiHeart,
+    FiTv,
+    FiZap,
+    FiDroplet,
+    FiLayers,
+    FiHome,
+    FiShoppingBag,
+    FiCheck,
     FiHelpCircle,
+    FiX,
+    FiPieChart,
+    FiPackage,
 } from "react-icons/fi";
 import {
-    BENCHMARKS,
-    SECTOR_CATEGORIES,
-    buildLiveRrgDataset,
-    classifyQuadrant,
-    QUADRANT_COLORS,
-    TAIL_LENGTH,
+    RRG_CONFIG,
+    SECTOR_COLORS,
+    PRIMARY_INDICES,
+    ALL_SECTORS,
+    QUADRANT_CONFIG,
+    QUADRANT_DISPLAY_ORDER,
+    cleanSymbol,
+    getSymbolMeta,
+    getQuadrant,
+    sortIndices,
+    buildRrgSnapshot,
+    getCatmullRomSplinePath,
 } from "../utils/rrgData";
 import { fetchSectorIndices } from "../services/equityApi";
-import { formatPrice } from "../utils/format";
 
 const EQUITY_TABS = [
     { to: "/equity-data/market-map", label: "Market Map", icon: FiGrid },
@@ -46,93 +59,121 @@ const EQUITY_TABS = [
     { to: "/equity-data/sector-rotation", label: "Sector Rotation (RRG)", icon: FiActivity, active: true },
 ];
 
-const QUADRANT_ORDER = ["Leading", "Weakening", "Lagging", "Improving"];
-
-const QUADRANT_CONFIG = {
-    Leading: {
-        badge: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700",
-        pill: "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800",
-        action: "Bullish Outperformer • Look for continuation & long setups",
-        tag: "Leading ↗",
-        direction: "↗",
-    },
-    Weakening: {
-        badge: "bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 border-amber-300 dark:border-amber-700",
-        pill: "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800",
-        action: "Mature Trend • Momentum slowing, tighten trailing stop-loss",
-        tag: "Weakening ↘",
-        direction: "↘",
-    },
-    Lagging: {
-        badge: "bg-rose-100 text-rose-800 dark:bg-rose-950/80 dark:text-rose-300 border-rose-300 dark:border-rose-700",
-        pill: "text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800",
-        action: "Underperformer • Avoid fresh longs / hedge downside",
-        tag: "Lagging ↙",
-        direction: "↙",
-    },
-    Improving: {
-        badge: "bg-blue-100 text-blue-800 dark:bg-blue-950/80 dark:text-blue-300 border-blue-300 dark:border-blue-700",
-        pill: "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800",
-        action: "Early Turnaround • Accumulate quality leaders on dips",
-        tag: "Improving ↖",
-        direction: "↖",
-    },
-};
-
-function niceTicks(min, max, targetCount) {
-    const span = max - min;
-    if (!Number.isFinite(span) || span <= 0) return [min];
-    const rawStep = span / targetCount;
-    const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
-    const norm = rawStep / mag;
-    const step = (norm >= 5 ? 5 : norm >= 2 ? 2 : norm >= 1 ? 1 : 0.5) * mag;
-    const start = Math.ceil(min / step) * step;
-    const ticks = [];
-    for (let v = start; v <= max + step * 1e-6; v += step) ticks.push(Number(v.toFixed(6)));
-    return ticks;
+// Visual Icon helper for each sector index matching StockMojo (All 24 Sectors)
+function SectorIcon({ name, className = "w-4 h-4" }) {
+    const clean = cleanSymbol(name).toUpperCase();
+    if (clean === "NIFTY") {
+        return (
+            <span className="w-5 h-5 rounded-full bg-blue-900 text-white text-micro font-bold flex items-center justify-center shrink-0">
+                50
+            </span>
+        );
+    }
+    if (clean === "SENSEX") {
+        return (
+            <span className="w-5 h-5 rounded-full bg-sky-600 text-white text-micro font-bold flex items-center justify-center shrink-0 tracking-tighter">
+                BSE
+            </span>
+        );
+    }
+    if (clean === "MIDCAP") {
+        return (
+            <span className="w-5 h-5 rounded-full overflow-hidden flex flex-col shrink-0 border border-gray-300 dark:border-gray-700 shadow-2xs">
+                <span className="h-1/3 bg-amber-500 w-full" />
+                <span className="h-1/3 bg-white dark:bg-gray-100 w-full flex items-center justify-center">
+                    <span className="w-1 h-1 rounded-full bg-blue-900" />
+                </span>
+                <span className="h-1/3 bg-emerald-600 w-full" />
+            </span>
+        );
+    }
+    if (clean === "BANKNIFTY") {
+        return (
+            <span className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                <FiDollarSign className="w-3 h-3 text-white" />
+            </span>
+        );
+    }
+    if (clean === "FINNIFTY") {
+        return (
+            <span className="w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center shrink-0">
+                <FiTrendingUp className="w-3 h-3 text-white" />
+            </span>
+        );
+    }
+    if (clean === "AUTO") {
+        return (
+            <svg className="w-4 h-4 text-orange-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 17a2 2 0 11-4 0 2 2 0 014 0zM19 17a2 2 0 11-4 0 2 2 0 014 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1M5 17a2 2 0 104 0m-4 0a2 2 0 114 0m6 0a2 2 0 104 0m-4 0a2 2 0 114 0" />
+            </svg>
+        );
+    }
+    if (clean.includes("CAPITAL MRKT")) {
+        return <FiHelpCircle className="w-4 h-4 text-gray-500 shrink-0" />;
+    }
+    if (clean.includes("CHEMICALS")) {
+        return (
+            <svg className="w-4 h-4 text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+            </svg>
+        );
+    }
+    if (clean.includes("COMMODITIES")) return <FiGrid className="w-4 h-4 text-gray-500 shrink-0" />;
+    if (clean.includes("CONSR") || clean.includes("DURBL")) return <FiPackage className="w-4 h-4 text-amber-500 shrink-0" />;
+    if (clean.includes("PSU BANK")) return <FiDollarSign className="w-4 h-4 text-cyan-600 shrink-0" />;
+    if (clean.includes("PVT BANK")) return <FiDollarSign className="w-4 h-4 text-indigo-500 shrink-0" />;
+    if (clean.includes("IT")) return <FiCpu className="w-4 h-4 text-blue-500 shrink-0" />;
+    if (clean.includes("PHARMA") || clean.includes("HEALTHCARE")) return <FiHeart className="w-4 h-4 text-emerald-500 shrink-0" />;
+    if (clean.includes("FMCG") || clean.includes("CONSUMPTION")) return <FiShoppingBag className="w-4 h-4 text-lime-500 shrink-0" />;
+    if (clean.includes("METAL")) return <FiLayers className="w-4 h-4 text-gray-500 shrink-0" />;
+    if (clean.includes("REALTY") || clean.includes("INFRA")) return <FiHome className="w-4 h-4 text-purple-500 shrink-0" />;
+    if (clean.includes("ENERGY")) return <FiZap className="w-4 h-4 text-rose-500 shrink-0" />;
+    if (clean.includes("OIL")) return <FiDroplet className="w-4 h-4 text-rose-600 shrink-0" />;
+    if (clean.includes("DEFENCE")) return <FiShield className="w-4 h-4 text-violet-600 shrink-0" />;
+    if (clean.includes("MEDIA")) return <FiTv className="w-4 h-4 text-pink-500 shrink-0" />;
+    if (clean.includes("SERVICES")) return <FiActivity className="w-4 h-4 text-sky-500 shrink-0" />;
+    return <FiCompass className={`${className} text-purple-600 shrink-0`} />;
 }
 
-function computeDomain(dataset) {
-    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
-    dataset.forEach((s) => s.path.forEach((p) => {
-        xMin = Math.min(xMin, p.x); xMax = Math.max(xMax, p.x);
-        yMin = Math.min(yMin, p.y); yMax = Math.max(yMax, p.y);
-    }));
-    // Center domain nicely around 100 with adequate visual breathing room
-    xMin = Math.min(xMin, 98.2);
-    xMax = Math.max(xMax, 101.8);
-    yMin = Math.min(yMin, 98.2);
-    yMax = Math.max(yMax, 101.8);
-
-    const padX = (xMax - xMin) * 0.15 || 2;
-    const padY = (yMax - yMin) * 0.15 || 2;
-    return { xMin: xMin - padX, xMax: xMax + padX, yMin: yMin - padY, yMax: yMax + padY };
+// Format period date for display
+function formatPeriodDate(dateStr, format = "short") {
+    if (!dateStr) return "—";
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    if (format === "full") {
+        return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+    }
+    return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "2-digit" });
 }
 
 export default function SectorRotation() {
     const [liveSectors, setLiveSectors] = useState([]);
     const [loading, setLoading] = useState(false);
     const [lastUpdated, setLastUpdated] = useState(null);
-    const [benchmark, setBenchmark] = useState("NIFTY_50");
-    const [timeframe, setTimeframe] = useState("daily"); // 'daily' | 'weekly' | 'monthly'
-    const [categoryFilter, setCategoryFilter] = useState("ALL");
-    const [tailWindow, setTailWindow] = useState(8);
-    const [scrubIndex, setScrubIndex] = useState(TAIL_LENGTH - 1);
-    const [playing, setPlaying] = useState(false);
-    const [playSpeed, setPlaySpeed] = useState(1); // 1x, 2x
-    const [zoom, setZoom] = useState(1);
-    const [searchQuery, setSearchQuery] = useState("");
-    const [quadrantFilter, setQuadrantFilter] = useState("ALL");
-    const [focusKey, setFocusKey] = useState(null);
-    const [hoveredSector, setHoveredSector] = useState(null);
-    const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
-    const [viewMode, setViewMode] = useState("chart"); // 'chart' | 'matrix' | 'both'
-    const [guideOpen, setGuideOpen] = useState(false);
 
-    const refreshTimerRef = useRef(null);
+    // StockMojo RRG State
+    const [timeframe, setTimeframe] = useState("weekly"); // 'daily' | 'weekly'
+    const [benchmark, setBenchmark] = useState("NIFTY-INDEX");
+    const [selectedIndex, setSelectedIndex] = useState(null); // null = "All Sectors", or "BANKNIFTY-INDEX", "IT-INDEX", etc.
+    const [tailLength, setTailLength] = useState(RRG_CONFIG.DEFAULT_TAIL); // default 8
+    const [frameIndex, setFrameIndex] = useState(0);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [hiddenSymbols, setHiddenSymbols] = useState(() => new Set());
+    const [pinnedSymbol, setPinnedSymbol] = useState(null);
+    const [viewport, setViewport] = useState(null); // { cx, cy, xHalfSpan, yHalfSpan }
+    const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
-    // Fetch live quotes from backend API
-    function loadData() {
+    // Tooltip State
+    const [tooltip, setTooltip] = useState({ open: false, sym: null, x: 0, y: 0 });
+
+    const chartSvgRef = useRef(null);
+    const chartContainerRef = useRef(null);
+    const isDraggingRef = useRef(false);
+    const dragStartRef = useRef({ x: 0, y: 0 });
+
+    // Load Live Market Quotes for Sectors
+    const loadLiveData = useCallback(() => {
         setLoading(true);
         fetchSectorIndices()
             .then((res) => {
@@ -142,958 +183,1479 @@ export default function SectorRotation() {
                 }
             })
             .catch((err) => {
-                console.error("[SectorRotation] Failed to load sector data:", err);
+                console.error("[SectorRotation] Failed to load sector quotes:", err);
             })
             .finally(() => setLoading(false));
-    }
-
-    useEffect(() => {
-        loadData();
-        refreshTimerRef.current = setInterval(loadData, 45000);
-        return () => clearInterval(refreshTimerRef.current);
     }, []);
 
-    // Generate dynamic RRG dataset
-    const fullDataset = useMemo(() => {
-        return buildLiveRrgDataset(liveSectors, benchmark, timeframe);
-    }, [liveSectors, benchmark, timeframe]);
-
-    const [visibleKeys, setVisibleKeys] = useState(() => new Set(fullDataset.map((s) => s.key)));
-
     useEffect(() => {
-        setVisibleKeys((prev) => {
-            const next = new Set(prev);
-            fullDataset.forEach((s) => {
-                if (!prev.size) next.add(s.key);
-            });
-            return next;
+        loadLiveData();
+        const timer = setInterval(loadLiveData, 60000);
+        return () => clearInterval(timer);
+    }, [loadLiveData]);
+
+    // Build Current Snapshot (matching StockMojo API response)
+    const snapshot = useMemo(() => {
+        return buildRrgSnapshot({
+            timeframe,
+            index: selectedIndex,
+            benchmark,
+            liveSectors,
         });
-    }, [fullDataset]);
+    }, [timeframe, selectedIndex, benchmark, liveSectors]);
 
-    const domain = useMemo(() => computeDomain(fullDataset), [fullDataset]);
+    const periods = useMemo(() => snapshot?.periods || [], [snapshot]);
+    const maxFrameIndex = Math.max(0, periods.length - 1);
 
-    // Replay scrubber animation loop
+    // Set frameIndex to latest session on initial snapshot load
     useEffect(() => {
-        if (!playing) return;
-        const intervalMs = Math.round(650 / playSpeed);
-        const id = setInterval(() => {
-            setScrubIndex((i) => (i >= TAIL_LENGTH - 1 ? 0 : i + 1));
+        if (periods.length > 0) {
+            setFrameIndex(periods.length - 1);
+            setIsPlaying(false);
+            setPinnedSymbol(null);
+            setHiddenSymbols(new Set());
+            setTooltip({ open: false, sym: null, x: 0, y: 0 });
+        }
+    }, [periods.length, selectedIndex, timeframe]);
+
+    // Animation loop for playback scrubber
+    useEffect(() => {
+        if (!isPlaying) return;
+        const intervalMs = Math.round(1000 / RRG_CONFIG.PLAY_FPS);
+        const timer = setInterval(() => {
+            setFrameIndex((prev) => {
+                if (prev >= maxFrameIndex) {
+                    setIsPlaying(false);
+                    return maxFrameIndex;
+                }
+                return prev + 1;
+            });
         }, intervalMs);
-        return () => clearInterval(id);
-    }, [playing, playSpeed]);
+        return () => clearInterval(timer);
+    }, [isPlaying, maxFrameIndex]);
 
-    function toggleSector(key) {
-        setVisibleKeys((prev) => {
+    const togglePlay = useCallback(() => {
+        setIsPlaying((prev) => {
+            if (!prev && frameIndex >= maxFrameIndex) {
+                setFrameIndex(0);
+                return true;
+            }
+            return !prev;
+        });
+    }, [frameIndex, maxFrameIndex]);
+
+    // Toggle symbol visibility
+    const toggleSymbol = useCallback((sym) => {
+        setHiddenSymbols((prev) => {
             const next = new Set(prev);
-            if (next.has(key)) next.delete(key);
-            else next.add(key);
+            if (next.has(sym)) next.delete(sym);
+            else next.add(sym);
             return next;
         });
-    }
+    }, []);
 
-    function showAll() {
-        setVisibleKeys(new Set(fullDataset.map((s) => s.key)));
-    }
+    const showAll = useCallback(() => {
+        setHiddenSymbols(new Set());
+    }, []);
 
-    function hideAll() {
-        setVisibleKeys(new Set());
-    }
+    const hideAll = useCallback(() => {
+        if (!snapshot?.symbols) return;
+        setHiddenSymbols(new Set(Object.keys(snapshot.symbols)));
+    }, [snapshot]);
 
-    // Filtered sectors for chart
-    const filteredDataset = useMemo(() => {
-        return fullDataset.filter((s) => {
-            const matchesSearch = s.label.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                (s.category && s.category.toLowerCase().includes(searchQuery.toLowerCase()));
-            const matchesCategory = categoryFilter === "ALL" || s.category === categoryFilter;
-            const matchesQuadrant = quadrantFilter === "ALL" || s.quadrant === quadrantFilter;
-            const matchesFocus = !focusKey || s.key === focusKey;
-            const isVisible = visibleKeys.has(s.key);
-            return matchesSearch && matchesCategory && matchesQuadrant && matchesFocus && isVisible;
+    // List of active symbols sorted
+    const activeSymbolsList = useMemo(() => {
+        if (!snapshot?.symbols) return [];
+        return Object.keys(snapshot.symbols).sort(sortIndices);
+    }, [snapshot]);
+
+    // Benchmark dropdown options
+    const benchmarkOptions = useMemo(() => {
+        return [
+            { value: "NIFTY-INDEX", label: "Nifty 50" },
+            { value: "NIFTY 500-INDEX", label: "NIFTY 500" },
+            ...[...ALL_SECTORS].filter((s) => s !== "NIFTY-INDEX").sort(sortIndices).map((s) => ({
+                value: s,
+                label: cleanSymbol(s),
+            })),
+        ];
+    }, []);
+
+    // Natural Domain Calculation
+    const naturalDomain = useMemo(() => {
+        let xMin = RRG_CONFIG.CENTER - RRG_CONFIG.MIN_AXIS_HALF_SPAN;
+        let xMax = RRG_CONFIG.CENTER + RRG_CONFIG.MIN_AXIS_HALF_SPAN;
+        let yMin = RRG_CONFIG.CENTER - RRG_CONFIG.MIN_AXIS_HALF_SPAN;
+        let yMax = RRG_CONFIG.CENTER + RRG_CONFIG.MIN_AXIS_HALF_SPAN;
+
+        if (!snapshot?.symbols) return { xMin, xMax, yMin, yMax };
+
+        const startIdx = Math.max(0, frameIndex - tailLength);
+        const endIdx = frameIndex;
+
+        let foundPoints = false;
+        Object.keys(snapshot.symbols).forEach((sym) => {
+            if (hiddenSymbols.has(sym)) return;
+            const { rs_ratio, rs_momentum } = snapshot.symbols[sym];
+            for (let i = startIdx; i <= endIdx; i++) {
+                const x = rs_ratio[i];
+                const y = rs_momentum[i];
+                if (Number.isFinite(x) && Number.isFinite(y)) {
+                    if (!foundPoints) {
+                        xMin = x; xMax = x; yMin = y; yMax = y;
+                        foundPoints = true;
+                    } else {
+                        xMin = Math.min(xMin, x);
+                        xMax = Math.max(xMax, x);
+                        yMin = Math.min(yMin, y);
+                        yMax = Math.max(yMax, y);
+                    }
+                }
+            }
         });
-    }, [fullDataset, searchQuery, categoryFilter, quadrantFilter, focusKey, visibleKeys]);
 
-    // Benchmark metadata
-    const selectedBenchmarkObj = useMemo(() => {
-        return BENCHMARKS.find((b) => b.key === benchmark) || BENCHMARKS[0];
-    }, [benchmark]);
+        // Always ensure center (100, 100) is included
+        xMin = Math.min(xMin, RRG_CONFIG.CENTER);
+        xMax = Math.max(xMax, RRG_CONFIG.CENTER);
+        yMin = Math.min(yMin, RRG_CONFIG.CENTER);
+        yMax = Math.max(yMax, RRG_CONFIG.CENTER);
 
-    // Layout coordinate mapping (1000x560 viewBox)
-    const W = 1000, H = 560, PAD = 56;
-    const plotW = W - PAD * 2, plotH = H - PAD * 2;
-    const vbX = W / 2 - (W / 2) / zoom;
-    const vbY = H / 2 - (H / 2) / zoom;
-    const viewBox = `${vbX} ${vbY} ${W / zoom} ${H / zoom}`;
+        // Add padding
+        const padX = Math.max((xMax - xMin) * RRG_CONFIG.AXIS_PADDING_PCT, 0.4);
+        const padY = Math.max((yMax - yMin) * RRG_CONFIG.AXIS_PADDING_PCT, 0.4);
 
-    function sx(x) { return PAD + ((x - domain.xMin) / (domain.xMax - domain.xMin)) * plotW; }
-    function sy(y) { return PAD + plotH - ((y - domain.yMin) / (domain.yMax - domain.yMin)) * plotH; }
-    const zeroX = sx(100), zeroY = sy(100);
-    const xTicks = useMemo(() => niceTicks(domain.xMin, domain.xMax, 8), [domain]);
-    const yTicks = useMemo(() => niceTicks(domain.yMin, domain.yMax, 7), [domain]);
-    const tickDecimals = (v) => (Number.isInteger(v) ? 0 : 1);
+        xMin -= padX;
+        xMax += padX;
+        yMin -= padY;
+        yMax += padY;
 
-    // Current quadrant groups based on active scrub position
-    const currentQuadrants = useMemo(() => {
-        const groups = { Leading: [], Weakening: [], Lagging: [], Improving: [] };
-        fullDataset.forEach((s) => {
-            const pt = s.path[scrubIndex] || s.currentPoint;
-            const q = classifyQuadrant(pt);
-            groups[q].push({
-                ...s,
-                scrubPoint: pt,
+        // Minimum span guarantee
+        const minSpan = RRG_CONFIG.MIN_AXIS_HALF_SPAN * 2;
+        if (xMax - xMin < minSpan) {
+            const mid = (xMin + xMax) / 2;
+            xMin = mid - minSpan / 2;
+            xMax = mid + minSpan / 2;
+        }
+        if (yMax - yMin < minSpan) {
+            const mid = (yMin + yMax) / 2;
+            yMin = mid - minSpan / 2;
+            yMax = mid + minSpan / 2;
+        }
+
+        // In "All Sectors" mode (default matching StockMojo), calibrate the domain so integer ticks
+        // show exactly 96..111 on X-axis and 95..105 on Y-axis with (100, 100) centered vertically.
+        if (selectedIndex === null && !viewport) {
+            return {
+                xMin: 95.2,
+                xMax: 111.8,
+                yMin: 94.7,
+                yMax: 105.7,
+            };
+        }
+
+        return { xMin, xMax, yMin, yMax };
+    }, [snapshot, frameIndex, tailLength, hiddenSymbols, selectedIndex, viewport]);
+
+    // Active domain factoring user zoom/pan
+    const activeDomain = useMemo(() => {
+        if (!viewport) return naturalDomain;
+        return {
+            xMin: viewport.cx - viewport.xHalfSpan,
+            xMax: viewport.cx + viewport.xHalfSpan,
+            yMin: viewport.cy - viewport.yHalfSpan,
+            yMax: viewport.cy + viewport.yHalfSpan,
+        };
+    }, [naturalDomain, viewport]);
+
+    // Integer Tick marks for X and Y axes matching StockMojo
+    const xTicks = useMemo(() => {
+        const min = Math.ceil(activeDomain.xMin);
+        const max = Math.floor(activeDomain.xMax);
+        const list = [];
+        for (let i = min; i <= max; i++) {
+            list.push(i);
+        }
+        return list;
+    }, [activeDomain.xMin, activeDomain.xMax]);
+
+    const yTicks = useMemo(() => {
+        const min = Math.ceil(activeDomain.yMin);
+        const max = Math.floor(activeDomain.yMax);
+        const list = [];
+        for (let i = min; i <= max; i++) {
+            list.push(i);
+        }
+        return list;
+    }, [activeDomain.yMin, activeDomain.yMax]);
+
+    // Chart SVG Dimensions (ViewBox 960 x 540)
+    const W = 960;
+    const H = 540;
+    const padLeft = 54;
+    const padRight = 16;
+    const padTop = 14;
+    const padBottom = 40;
+    const innerW = W - padLeft - padRight;
+    const innerH = H - padTop - padBottom;
+
+    // Zoom constraints
+    const MIN_X_HALF_SPAN = 1.8; // Max zoom-in ~4.5x
+    const MIN_Y_HALF_SPAN = 1.2;
+    const MAX_X_HALF_SPAN = 14.0; // Max zoom-out ~1.7x
+    const MAX_Y_HALF_SPAN = 9.5;
+
+    // Zoom Handlers
+    const handleZoomIn = () => {
+        const cur = viewport || {
+            cx: (naturalDomain.xMin + naturalDomain.xMax) / 2,
+            cy: (naturalDomain.yMin + naturalDomain.yMax) / 2,
+            xHalfSpan: (naturalDomain.xMax - naturalDomain.xMin) / 2,
+            yHalfSpan: (naturalDomain.yMax - naturalDomain.yMin) / 2,
+        };
+        const factor = 0.88; // Gentle ~12% step per click
+        setViewport({
+            ...cur,
+            xHalfSpan: Math.max(MIN_X_HALF_SPAN, cur.xHalfSpan * factor),
+            yHalfSpan: Math.max(MIN_Y_HALF_SPAN, cur.yHalfSpan * factor),
+        });
+    };
+
+    const handleZoomOut = () => {
+        const cur = viewport || {
+            cx: (naturalDomain.xMin + naturalDomain.xMax) / 2,
+            cy: (naturalDomain.yMin + naturalDomain.yMax) / 2,
+            xHalfSpan: (naturalDomain.xMax - naturalDomain.xMin) / 2,
+            yHalfSpan: (naturalDomain.yMax - naturalDomain.yMin) / 2,
+        };
+        const factor = 1.14; // Gentle ~14% step per click
+        setViewport({
+            ...cur,
+            xHalfSpan: Math.min(MAX_X_HALF_SPAN, cur.xHalfSpan * factor),
+            yHalfSpan: Math.min(MAX_Y_HALF_SPAN, cur.yHalfSpan * factor),
+        });
+    };
+
+    const handleZoomReset = () => {
+        setViewport(null);
+    };
+
+    // Pan & Mouse Drag
+    const onMouseDown = (e) => {
+        if (e.button !== 0) return;
+        isDraggingRef.current = true;
+        dragStartRef.current = { x: e.clientX, y: e.clientY };
+    };
+
+    const onMouseMove = (e) => {
+        if (!isDraggingRef.current) return;
+        const dx = e.clientX - dragStartRef.current.x;
+        const dy = e.clientY - dragStartRef.current.y;
+        if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+
+        dragStartRef.current = { x: e.clientX, y: e.clientY };
+
+        const cur = viewport || {
+            cx: (naturalDomain.xMin + naturalDomain.xMax) / 2,
+            cy: (naturalDomain.yMin + naturalDomain.yMax) / 2,
+            xHalfSpan: (naturalDomain.xMax - naturalDomain.xMin) / 2,
+            yHalfSpan: (naturalDomain.yMax - naturalDomain.yMin) / 2,
+        };
+
+        const spanX = cur.xHalfSpan * 2;
+        const spanY = cur.yHalfSpan * 2;
+        const rect = chartContainerRef.current?.getBoundingClientRect();
+        if (!rect) return;
+
+        const shiftX = (dx / rect.width) * spanX;
+        const shiftY = (dy / rect.height) * spanY;
+
+        setViewport({
+            ...cur,
+            cx: cur.cx - shiftX,
+            cy: cur.cy + shiftY,
+        });
+    };
+
+    const onMouseUp = () => {
+        isDraggingRef.current = false;
+    };
+
+    // Native non-passive Wheel listener to guarantee screen/page does NOT scroll up/down
+    useEffect(() => {
+        const el = chartContainerRef.current;
+        if (!el) return;
+
+        const handleWheel = (e) => {
+            // Stop outer window / page from scrolling
+            e.preventDefault();
+            e.stopPropagation();
+
+            const rect = el.getBoundingClientRect();
+            if (!rect) return;
+
+            // Controlled smooth zoom factor proportional to wheel delta
+            const clampedDelta = Math.max(-40, Math.min(40, e.deltaY));
+            const factor = 1 + clampedDelta * 0.001;
+
+            setViewport((prev) => {
+                const cur = prev || {
+                    cx: (naturalDomain.xMin + naturalDomain.xMax) / 2,
+                    cy: (naturalDomain.yMin + naturalDomain.yMax) / 2,
+                    xHalfSpan: (naturalDomain.xMax - naturalDomain.xMin) / 2,
+                    yHalfSpan: (naturalDomain.yMax - naturalDomain.yMin) / 2,
+                };
+
+                const nextXHalfSpan = Math.max(MIN_X_HALF_SPAN, Math.min(MAX_X_HALF_SPAN, cur.xHalfSpan * factor));
+                const nextYHalfSpan = Math.max(MIN_Y_HALF_SPAN, Math.min(MAX_Y_HALF_SPAN, cur.yHalfSpan * factor));
+
+                // If at boundary already, avoid re-render
+                if (Math.abs(nextXHalfSpan - cur.xHalfSpan) < 0.0005) return prev;
+
+                // Focal point zooming: zoom towards cursor position
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                // Normalized [0, 1] position within inner plot box
+                const normX = Math.max(0, Math.min(1, (mouseX - padLeft) / innerW));
+                const normY = Math.max(0, Math.min(1, (mouseY - padTop) / innerH));
+
+                // Data coordinates under current mouse position
+                const curDataX = (cur.cx - cur.xHalfSpan) + normX * (cur.xHalfSpan * 2);
+                const curDataY = (cur.cy + cur.yHalfSpan) - normY * (cur.yHalfSpan * 2);
+
+                // Calculate new center so the point under cursor remains stationary
+                const nextCx = curDataX + (0.5 - normX) * (nextXHalfSpan * 2);
+                const nextCy = curDataY - (0.5 - normY) * (nextYHalfSpan * 2);
+
+                return {
+                    cx: nextCx,
+                    cy: nextCy,
+                    xHalfSpan: nextXHalfSpan,
+                    yHalfSpan: nextYHalfSpan,
+                };
             });
+        };
+
+        el.addEventListener("wheel", handleWheel, { passive: false });
+        return () => {
+            el.removeEventListener("wheel", handleWheel);
+        };
+    }, [naturalDomain, padLeft, innerW, padTop, innerH]);
+
+    const scaleX = useCallback((val) => {
+        return padLeft + ((val - activeDomain.xMin) / (activeDomain.xMax - activeDomain.xMin)) * innerW;
+    }, [activeDomain, innerW, padLeft]);
+
+    const scaleY = useCallback((val) => {
+        return padTop + innerH - ((val - activeDomain.yMin) / (activeDomain.yMax - activeDomain.yMin)) * innerH;
+    }, [activeDomain, innerH, padTop]);
+
+    const midX = scaleX(RRG_CONFIG.CENTER);
+    const midY = scaleY(RRG_CONFIG.CENTER);
+
+    // Group symbols into 4 Quadrants at the current frameIndex
+    const quadrantGroups = useMemo(() => {
+        const groups = { Leading: [], Weakening: [], Lagging: [], Improving: [] };
+        if (!snapshot?.symbols) return groups;
+
+        Object.keys(snapshot.symbols).forEach((sym) => {
+            const { rs_ratio, rs_momentum } = snapshot.symbols[sym];
+            const r = rs_ratio[frameIndex];
+            const m = rs_momentum[frameIndex];
+            if (Number.isFinite(r) && Number.isFinite(m)) {
+                const q = getQuadrant(r, m);
+                groups[q].push({
+                    sym,
+                    rsRatio: r,
+                    rsMomentum: m,
+                    isHidden: hiddenSymbols.has(sym),
+                });
+            }
         });
+
+        // Sort descending by RS-Ratio within each quadrant
+        Object.keys(groups).forEach((q) => {
+            groups[q].sort((a, b) => b.rsRatio - a.rsRatio);
+        });
+
         return groups;
-    }, [fullDataset, scrubIndex]);
+    }, [snapshot, frameIndex, hiddenSymbols]);
 
-    const daysAgo = TAIL_LENGTH - 1 - scrubIndex;
-    const timelineLabel = daysAgo === 0
-        ? "Current (Latest Session)"
-        : `${daysAgo} ${timeframe === "daily" ? "days" : timeframe === "weekly" ? "weeks" : "months"} ago`;
+    // Active hovered symbol data for tooltip
+    const hoveredData = useMemo(() => {
+        if (!tooltip.open || !tooltip.sym || !snapshot?.symbols?.[tooltip.sym]) return null;
+        const sym = tooltip.sym;
+        const { rs_ratio, rs_momentum } = snapshot.symbols[sym];
+        const r = rs_ratio[frameIndex];
+        const m = rs_momentum[frameIndex];
+        const meta = getSymbolMeta(sym, snapshot.mode);
+        const dateStr = periods[frameIndex];
+        return {
+            sym,
+            label: meta.label,
+            color: meta.color,
+            date: formatPeriodDate(dateStr, "full"),
+            rsRatio: Number.isFinite(r) ? r.toFixed(4) : "—",
+            rsMomentum: Number.isFinite(m) ? m.toFixed(4) : "—",
+            quadrant: Number.isFinite(r) && Number.isFinite(m) ? getQuadrant(r, m) : "—",
+        };
+    }, [tooltip, snapshot, frameIndex, periods]);
 
-    const isLiveConnected = liveSectors.length > 0;
+    // Format last updated string
+    const lastUpdatedFormatted = useMemo(() => {
+        if (!snapshot?.maxts) return null;
+        const d = new Date(snapshot.maxts);
+        return d.toLocaleDateString("en-IN", {
+            day: "numeric",
+            month: "short",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: true,
+        });
+    }, [snapshot?.maxts]);
 
     return (
-        <div className="mx-auto max-w-[1600px] px-3 py-4 sm:px-6 sm:py-6">
-            {/* Top Equity Hub Navigation Ribbon */}
-            <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 pb-3.5 dark:border-gray-800">
-                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                    {EQUITY_TABS.map((tab) => {
-                        const Icon = tab.icon;
-                        const isActive = tab.active;
-                        return (
-                            <NavLink
-                                key={tab.to}
-                                to={tab.to}
-                                className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold transition-all sm:px-3.5 sm:text-xs ${
-                                    isActive
-                                        ? "bg-emerald-600 text-white shadow-xs"
-                                        : "bg-white text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-800"
-                                }`}
-                            >
-                                <Icon size={14} />
-                                <span>{tab.label}</span>
-                            </NavLink>
-                        );
-                    })}
-                </div>
-
-                {/* Live Status & Controls */}
-                <div className="flex items-center gap-2">
-                    <div className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 shadow-2xs dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300">
-                        <span className={`h-2 w-2 rounded-full ${isLiveConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
-                        <span className="font-bold">{isLiveConnected ? "Live Market Stream" : "Market Data"}</span>
-                        {lastUpdated && (
-                            <span className="hidden text-[10px] text-gray-400 sm:inline">
-                                ({new Date(lastUpdated).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })})
-                            </span>
-                        )}
-                    </div>
-
-                    <button
-                        onClick={loadData}
-                        disabled={loading}
-                        className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs font-bold text-gray-700 hover:bg-gray-50 active:scale-95 transition-all dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 disabled:opacity-50"
-                        title="Refresh live quotes"
-                    >
-                        <FiRefreshCw size={13} className={loading ? "animate-spin text-emerald-600" : ""} />
-                        <span className="hidden sm:inline">Refresh</span>
-                    </button>
-
-                    <button
-                        onClick={() => setGuideOpen(!guideOpen)}
-                        className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition-all ${
-                            guideOpen
-                                ? "bg-emerald-50 border-emerald-500 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
-                                : "bg-white border-gray-200 text-gray-700 dark:bg-gray-900 dark:border-gray-800 dark:text-gray-300"
-                        }`}
-                        title="How to read RRG chart"
-                    >
-                        <FiHelpCircle size={13} />
-                        <span className="hidden md:inline">How to Read RRG</span>
-                    </button>
-
-                    <button
-                        onClick={() => setMobileControlsOpen(!mobileControlsOpen)}
-                        className="flex items-center gap-1.5 rounded-xl bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-800 dark:bg-gray-800 dark:text-gray-200 lg:hidden"
-                    >
-                        <FiSliders size={13} />
-                        <span>Sectors</span>
-                    </button>
-                </div>
-            </div>
-
-            {/* Collapsible Educational Guide */}
-            {guideOpen && (
-                <div className="mb-5 rounded-2xl border border-emerald-200 bg-gradient-to-r from-emerald-50/70 via-teal-50/50 to-blue-50/70 p-4 shadow-xs dark:border-emerald-800/60 dark:from-emerald-950/40 dark:via-teal-950/30 dark:to-blue-950/40">
-                    <div className="flex items-center justify-between pb-2 border-b border-emerald-200/60 dark:border-emerald-800/40 mb-3">
-                        <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
-                            <FiHelpCircle size={15} />
-                            <span>How to Read Relative Rotation Graph (RRG)</span>
-                        </div>
-                        <button onClick={() => setGuideOpen(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
-                            <FiX size={16} />
-                        </button>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
-                        <div className="rounded-xl border border-emerald-200 bg-white/80 p-3 dark:border-emerald-800/50 dark:bg-gray-900/80">
-                            <div className="font-black text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 mb-1">
-                                <span>1. LEADING ↗</span>
-                                <span className="text-[10px] font-mono">(Top-Right)</span>
-                            </div>
-                            <p className="text-gray-600 dark:text-gray-300 text-[11px] leading-relaxed">
-                                RS-Ratio &gt; 100 &amp; RS-Momentum &gt; 100. Strong trend outperforming the benchmark with rising speed. High probability long momentum leaders.
-                            </p>
-                        </div>
-
-                        <div className="rounded-xl border border-amber-200 bg-white/80 p-3 dark:border-amber-800/50 dark:bg-gray-900/80">
-                            <div className="font-black text-amber-600 dark:text-amber-400 flex items-center gap-1.5 mb-1">
-                                <span>2. WEAKENING ↘</span>
-                                <span className="text-[10px] font-mono">(Bottom-Right)</span>
-                            </div>
-                            <p className="text-gray-600 dark:text-gray-300 text-[11px] leading-relaxed">
-                                RS-Ratio &gt; 100 &amp; RS-Momentum &lt; 100. Outperforming trend but losing velocity. Mature rallies — consider profit booking or trailing stop loss.
-                            </p>
-                        </div>
-
-                        <div className="rounded-xl border border-rose-200 bg-white/80 p-3 dark:border-rose-800/50 dark:bg-gray-900/80">
-                            <div className="font-black text-rose-600 dark:text-rose-400 flex items-center gap-1.5 mb-1">
-                                <span>3. LAGGING ↙</span>
-                                <span className="text-[10px] font-mono">(Bottom-Left)</span>
-                            </div>
-                            <p className="text-gray-600 dark:text-gray-300 text-[11px] leading-relaxed">
-                                RS-Ratio &lt; 100 &amp; RS-Momentum &lt; 100. Underperforming benchmark with falling momentum. Avoid fresh longs or use for defensive hedging.
-                            </p>
-                        </div>
-
-                        <div className="rounded-xl border border-blue-200 bg-white/80 p-3 dark:border-blue-800/50 dark:bg-gray-900/80">
-                            <div className="font-black text-blue-600 dark:text-blue-400 flex items-center gap-1.5 mb-1">
-                                <span>4. IMPROVING ↖</span>
-                                <span className="text-[10px] font-mono">(Top-Left)</span>
-                            </div>
-                            <p className="text-gray-600 dark:text-gray-300 text-[11px] leading-relaxed">
-                                RS-Ratio &lt; 100 &amp; RS-Momentum &gt; 100. Underperforming base but gaining upward momentum. Early reversal turnarounds ready to enter Leading.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* Main Content Layout */}
-            <div className="flex flex-col gap-5 lg:flex-row items-start">
-                {/* Left Sidebar Controls */}
-                <aside
-                    className={`w-full shrink-0 flex-col rounded-2xl border border-gray-200 bg-white/95 p-4 shadow-xs backdrop-blur-md dark:border-gray-800 dark:bg-gray-900/95 lg:w-72 ${
-                        mobileControlsOpen ? "flex" : "hidden lg:flex"
-                    }`}
-                >
-                    <div className="flex items-center justify-between pb-3 border-b border-gray-100 dark:border-gray-800 mb-3">
-                        <h2 className="text-xs font-black uppercase tracking-wider text-gray-900 dark:text-gray-100 flex items-center gap-1.5">
-                            <FiSliders className="text-emerald-600 dark:text-emerald-400" />
-                            <span>Configuration</span>
-                        </h2>
-                        <button
-                            onClick={() => setMobileControlsOpen(false)}
-                            className="text-gray-400 hover:text-gray-600 lg:hidden"
-                        >
-                            <FiX size={18} />
-                        </button>
-                    </div>
-
-                    {/* Benchmark Selector: Indices & Top Stocks */}
-                    <div className="mb-4">
-                        <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 flex items-center justify-between">
-                            <span>Benchmark Reference</span>
-                            <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
-                                {selectedBenchmarkObj.type === "stock" ? "Heavyweight Stock" : "Index"}
-                            </span>
-                        </label>
-                        <select
-                            value={benchmark}
-                            onChange={(e) => setBenchmark(e.target.value)}
-                            className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-bold text-gray-800 outline-none transition focus:border-emerald-500 focus:bg-white dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
-                        >
-                            <optgroup label="Major Market Indices">
-                                {BENCHMARKS.filter((b) => b.type === "index").map((b) => (
-                                    <option key={b.key} value={b.key}>{b.label}</option>
-                                ))}
-                            </optgroup>
-                            <optgroup label="Top Heavyweight Equities (Stock Benchmark)">
-                                {BENCHMARKS.filter((b) => b.type === "stock").map((b) => (
-                                    <option key={b.key} value={b.key}>{b.label}</option>
-                                ))}
-                            </optgroup>
-                        </select>
-                    </div>
-
-                    {/* Timeframe Selector */}
-                    <div className="mb-4">
-                        <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                            Calculation Horizon
-                        </label>
-                        <div className="grid grid-cols-3 gap-1 rounded-xl border border-gray-200 bg-gray-50 p-1 dark:border-gray-800 dark:bg-gray-850">
-                            {[
-                                { key: "daily", label: "Daily (1D)" },
-                                { key: "weekly", label: "Weekly (1W)" },
-                                { key: "monthly", label: "Monthly (1M)" },
-                            ].map((tf) => (
-                                <button
-                                    key={tf.key}
-                                    onClick={() => setTimeframe(tf.key)}
-                                    className={`rounded-lg py-1.5 text-[11px] font-bold transition ${
-                                        timeframe === tf.key
-                                            ? "bg-emerald-600 text-white shadow-2xs"
-                                            : "text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
-                                    }`}
-                                >
-                                    {tf.label}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-
-                    {/* Tail Length Slider */}
-                    <div className="mb-4">
-                        <div className="mb-1.5 flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                            <span>Tail Length</span>
-                            <span className="rounded-md bg-gray-100 px-2 py-0.5 font-mono text-emerald-600 dark:bg-gray-800 dark:text-emerald-400">
-                                {tailWindow} periods
-                            </span>
-                        </div>
-                        <input
-                            type="range"
-                            min={2}
-                            max={TAIL_LENGTH}
-                            value={tailWindow}
-                            onChange={(e) => setTailWindow(Number(e.target.value))}
-                            className="w-full accent-emerald-600 cursor-pointer"
-                        />
-                    </div>
-
-                    {/* Quadrant Quick Filter */}
-                    <div className="mb-4">
-                        <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                            Quadrant Focus
-                        </label>
-                        <div className="grid grid-cols-2 gap-1.5">
-                            {["ALL", ...QUADRANT_ORDER].map((q) => {
-                                const isSelected = quadrantFilter === q;
-                                return (
-                                    <button
-                                        key={q}
-                                        onClick={() => setQuadrantFilter(q)}
-                                        className={`rounded-lg px-2 py-1.5 text-[11px] font-bold transition text-left flex items-center justify-between border ${
-                                            isSelected
-                                                ? "bg-emerald-50 border-emerald-500 text-emerald-700 dark:bg-emerald-950/60 dark:border-emerald-500 dark:text-emerald-300"
-                                                : "bg-gray-50/70 border-gray-200 text-gray-600 hover:bg-gray-100 dark:bg-gray-800/60 dark:border-gray-700/60 dark:text-gray-400"
-                                        }`}
-                                    >
-                                        <span>{q}</span>
-                                        {q !== "ALL" && (
-                                            <span className="text-[10px] font-mono opacity-80">
-                                                ({currentQuadrants[q]?.length || 0})
-                                            </span>
-                                        )}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    </div>
-
-                    {/* Sector Search & Checklist */}
-                    <div className="flex flex-col flex-1 min-h-0">
-                        <div className="mb-2 flex items-center justify-between">
-                            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                                Sectors ({visibleKeys.size}/{fullDataset.length})
-                            </span>
-                            <div className="flex items-center gap-2 text-[11px]">
-                                <button onClick={showAll} className="font-semibold text-emerald-600 hover:underline dark:text-emerald-400">
-                                    All
-                                </button>
-                                <span className="text-gray-300 dark:text-gray-700">|</span>
-                                <button onClick={hideAll} className="font-semibold text-gray-400 hover:underline">
-                                    None
-                                </button>
-                            </div>
-                        </div>
-
-                        {/* Search Input */}
-                        <div className="relative mb-2">
-                            <FiSearch className="absolute left-2.5 top-2.5 text-gray-400" size={13} />
-                            <input
-                                type="text"
-                                placeholder="Filter sector index..."
-                                value={searchQuery}
-                                onChange={(e) => setSearchQuery(e.target.value)}
-                                className="w-full rounded-xl border border-gray-200 bg-gray-50 pl-8 pr-3 py-1.5 text-xs text-gray-800 outline-none focus:border-emerald-500 focus:bg-white dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
-                            />
-                        </div>
-
-                        {/* Sector Checklist */}
-                        <div className="max-h-60 overflow-y-auto pr-1 space-y-1 custom-scrollbar">
-                            <button
-                                onClick={() => setFocusKey(null)}
-                                className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs font-bold transition ${
-                                    !focusKey
-                                        ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
-                                        : "text-gray-700 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
-                                }`}
-                            >
-                                <div className="flex items-center gap-2">
-                                    <span className="text-xs">▦</span>
-                                    <span>All Active Sectors</span>
-                                </div>
-                            </button>
-
-                            {fullDataset.map((s) => {
-                                const isVisible = visibleKeys.has(s.key);
-                                const isFocused = focusKey === s.key;
-                                return (
-                                    <div
-                                        key={s.key}
-                                        className={`group flex items-center justify-between rounded-lg px-2 py-1.5 transition ${
-                                            isFocused
-                                                ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
-                                                : "hover:bg-gray-50 dark:hover:bg-gray-850 text-gray-700 dark:text-gray-300"
-                                        }`}
-                                    >
-                                        <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0 pr-1">
-                                            <input
-                                                type="checkbox"
-                                                checked={isVisible}
-                                                onChange={() => toggleSector(s.key)}
-                                                className="rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600"
-                                            />
-                                            <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: s.color }} />
-                                            <span className="text-xs font-medium truncate">{s.label}</span>
-                                        </label>
-                                        <button
-                                            onClick={() => setFocusKey(isFocused ? null : s.key)}
-                                            className="opacity-0 group-hover:opacity-100 text-[10px] font-bold text-emerald-600 hover:underline dark:text-emerald-400 px-1 py-0.5"
-                                            title="Solo focus on chart"
-                                        >
-                                            {isFocused ? "Clear" : "Solo"}
-                                        </button>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    </div>
-                </aside>
-
-                {/* Main Visualizer Area */}
-                <div className="flex-1 w-full min-w-0 space-y-4">
-                    {/* View Controls & Hero Card */}
-                    <div className="rounded-2xl border border-gray-200 bg-white/95 p-4 shadow-xs backdrop-blur-md dark:border-gray-800 dark:bg-gray-900/95">
-                        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 pb-3 dark:border-gray-800">
-                            <div>
-                                <div className="flex items-center gap-2">
-                                    <h1 className="text-base font-black text-gray-900 dark:text-gray-100">
-                                        Relative Rotation Graph (RRG)
-                                    </h1>
-                                    <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-emerald-700 border border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800">
-                                        Benchmark: {selectedBenchmarkObj.label}
-                                    </span>
-                                </div>
-                                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                                    Visualizing sector trend &amp; momentum cycles. Sectors rotate clockwise through Leading $\to$ Weakening $\to$ Lagging $\to$ Improving.
-                                </p>
-                            </div>
-
-                            {/* View Mode & Zoom Buttons */}
-                            <div className="flex items-center gap-2">
-                                <div className="inline-flex rounded-xl border border-gray-200 bg-gray-50 p-0.5 dark:border-gray-700 dark:bg-gray-800">
-                                    <button
-                                        onClick={() => setViewMode("chart")}
-                                        className={`rounded-lg px-2.5 py-1 text-xs font-bold transition ${
-                                            viewMode === "chart"
-                                                ? "bg-white text-emerald-600 shadow-2xs dark:bg-gray-900 dark:text-emerald-400"
-                                                : "text-gray-500 hover:text-gray-800 dark:text-gray-400"
-                                        }`}
-                                    >
-                                        Chart View
-                                    </button>
-                                    <button
-                                        onClick={() => setViewMode("matrix")}
-                                        className={`rounded-lg px-2.5 py-1 text-xs font-bold transition ${
-                                            viewMode === "matrix"
-                                                ? "bg-white text-emerald-600 shadow-2xs dark:bg-gray-900 dark:text-emerald-400"
-                                                : "text-gray-500 hover:text-gray-800 dark:text-gray-400"
-                                        }`}
-                                    >
-                                        Matrix Table
-                                    </button>
-                                    <button
-                                        onClick={() => setViewMode("both")}
-                                        className={`rounded-lg px-2.5 py-1 text-xs font-bold transition ${
-                                            viewMode === "both"
-                                                ? "bg-white text-emerald-600 shadow-2xs dark:bg-gray-900 dark:text-emerald-400"
-                                                : "text-gray-500 hover:text-gray-800 dark:text-gray-400"
-                                        }`}
-                                    >
-                                        Dual View
-                                    </button>
-                                </div>
-
-                                <div className="flex items-center gap-1 border-l border-gray-200 pl-2 dark:border-gray-700 text-gray-500 dark:text-gray-400">
-                                    <button
-                                        onClick={() => setZoom((z) => Math.min(3.0, z * 1.25))}
-                                        className="rounded-lg p-1.5 hover:bg-gray-100 hover:text-gray-800 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-                                        title="Zoom in"
-                                    >
-                                        <FiZoomIn size={15} />
-                                    </button>
-                                    <button
-                                        onClick={() => setZoom((z) => Math.max(0.8, z / 1.25))}
-                                        className="rounded-lg p-1.5 hover:bg-gray-100 hover:text-gray-800 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-                                        title="Zoom out"
-                                    >
-                                        <FiZoomOut size={15} />
-                                    </button>
-                                    <button
-                                        onClick={() => setZoom(1)}
-                                        className="rounded-lg p-1.5 hover:bg-gray-100 hover:text-gray-800 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-                                        title="Reset zoom"
-                                    >
-                                        <FiMaximize2 size={15} />
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Category Filter Chips Bar */}
-                        <div className="mb-4 flex items-center gap-1.5 overflow-x-auto pb-1 custom-scrollbar text-xs">
-                            <span className="text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider shrink-0 mr-1">
-                                Category:
-                            </span>
-                            {SECTOR_CATEGORIES.map((cat) => {
-                                const isSelected = categoryFilter === cat.key;
-                                return (
-                                    <button
-                                        key={cat.key}
-                                        onClick={() => setCategoryFilter(cat.key)}
-                                        className={`shrink-0 rounded-full px-3 py-1 font-bold transition-all text-xs border ${
-                                            isSelected
-                                                ? "bg-emerald-600 text-white border-emerald-600 shadow-2xs"
-                                                : "bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:bg-gray-800/80 dark:text-gray-300 dark:hover:bg-gray-700 border-gray-200 dark:border-gray-700/60"
-                                        }`}
-                                    >
-                                        {cat.label}
-                                    </button>
-                                );
-                            })}
-                        </div>
-
-                        {/* Interactive Timeline Replay Scrubber */}
-                        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-gray-100 bg-gray-50/80 px-3.5 py-2.5 dark:border-gray-800 dark:bg-gray-850">
-                            <div className="flex items-center gap-2">
-                                <button
-                                    onClick={() => setPlaying((v) => !v)}
-                                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white shadow-xs transition ${
-                                        playing
-                                            ? "bg-amber-600 hover:bg-amber-700"
-                                            : "bg-emerald-600 hover:bg-emerald-700"
-                                    }`}
-                                    aria-label={playing ? "Pause rotation replay" : "Play rotation replay"}
-                                >
-                                    {playing ? <FiPause size={13} /> : <FiPlay size={13} className="ml-0.5" />}
-                                </button>
-                                <button
-                                    onClick={() => setPlaySpeed((s) => (s === 1 ? 2 : 1))}
-                                    className="rounded-md bg-gray-200/70 dark:bg-gray-700 px-1.5 py-0.5 text-[10px] font-mono font-bold text-gray-700 dark:text-gray-300"
-                                    title="Replay Speed"
-                                >
-                                    {playSpeed}x
-                                </button>
-                            </div>
-
-                            <span className="w-24 shrink-0 text-xs font-mono text-gray-500 dark:text-gray-400">
-                                {TAIL_LENGTH - 1} {timeframe === "daily" ? "days" : timeframe === "weekly" ? "weeks" : "months"} ago
-                            </span>
-
-                            <input
-                                type="range"
-                                min={0}
-                                max={TAIL_LENGTH - 1}
-                                value={scrubIndex}
-                                onChange={(e) => {
-                                    setPlaying(false);
-                                    setScrubIndex(Number(e.target.value));
-                                }}
-                                className="flex-1 accent-emerald-600 cursor-pointer"
-                            />
-
-                            <div className="w-36 shrink-0 text-right">
-                                <span className="inline-block rounded-md bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 text-xs font-bold text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                                    {timelineLabel}
-                                </span>
-                            </div>
-                        </div>
-
-                        {/* RRG SVG Canvas */}
-                        {(viewMode === "chart" || viewMode === "both") && (
-                            <div className="relative overflow-hidden rounded-2xl border border-gray-200 bg-slate-950 p-1 dark:border-gray-800 select-none shadow-inner">
-                                <svg
-                                    viewBox={viewBox}
-                                    className="h-[480px] sm:h-[540px] w-full"
-                                    style={{ cursor: "crosshair" }}
-                                >
-                                    <defs>
-                                        <radialGradient id="leadingGlow" cx="100%" cy="0%" r="90%">
-                                            <stop offset="0%" stopColor="#10b981" stopOpacity="0.22" />
-                                            <stop offset="100%" stopColor="#10b981" stopOpacity="0.01" />
-                                        </radialGradient>
-                                        <radialGradient id="weakeningGlow" cx="100%" cy="100%" r="90%">
-                                            <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.22" />
-                                            <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.01" />
-                                        </radialGradient>
-                                        <radialGradient id="laggingGlow" cx="0%" cy="100%" r="90%">
-                                            <stop offset="0%" stopColor="#ef4444" stopOpacity="0.22" />
-                                            <stop offset="100%" stopColor="#ef4444" stopOpacity="0.01" />
-                                        </radialGradient>
-                                        <radialGradient id="improvingGlow" cx="0%" cy="0%" r="90%">
-                                            <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.22" />
-                                            <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.01" />
-                                        </radialGradient>
-                                    </defs>
-
-                                    {/* Quadrant Backgrounds */}
-                                    {/* Top-Right: Leading (Green) */}
-                                    <rect x={zeroX} y={PAD} width={PAD + plotW - zeroX} height={zeroY - PAD} fill="url(#leadingGlow)" />
-                                    {/* Bottom-Right: Weakening (Amber) */}
-                                    <rect x={zeroX} y={zeroY} width={PAD + plotW - zeroX} height={PAD + plotH - zeroY} fill="url(#weakeningGlow)" />
-                                    {/* Bottom-Left: Lagging (Red) */}
-                                    <rect x={PAD} y={zeroY} width={zeroX - PAD} height={PAD + plotH - zeroY} fill="url(#laggingGlow)" />
-                                    {/* Top-Left: Improving (Blue) */}
-                                    <rect x={PAD} y={PAD} width={zeroX - PAD} height={zeroY - PAD} fill="url(#improvingGlow)" />
-
-                                    {/* Grid Lines & Ticks */}
-                                    {xTicks.map((t) => (
-                                        <g key={`x-${t}`}>
-                                            <line x1={sx(t)} x2={sx(t)} y1={PAD} y2={PAD + plotH} stroke="#334155" strokeWidth="1" strokeDasharray="3 3" opacity="0.35" />
-                                            <text x={sx(t)} y={PAD + plotH + 18} textAnchor="middle" fontSize="10" fill="#64748b" fontFamily="monospace">
-                                                {t.toFixed(tickDecimals(t))}
-                                            </text>
-                                        </g>
-                                    ))}
-
-                                    {yTicks.map((t) => (
-                                        <g key={`y-${t}`}>
-                                            <line x1={PAD} x2={PAD + plotW} y1={sy(t)} y2={sy(t)} stroke="#334155" strokeWidth="1" strokeDasharray="3 3" opacity="0.35" />
-                                            <text x={PAD - 8} y={sy(t) + 3} textAnchor="end" fontSize="10" fill="#64748b" fontFamily="monospace">
-                                                {t.toFixed(tickDecimals(t))}
-                                            </text>
-                                        </g>
-                                    ))}
-
-                                    {/* Neutral 100 Baseline Crosshairs */}
-                                    <line x1={PAD} x2={PAD + plotW} y1={zeroY} y2={zeroY} stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="5 4" opacity="0.75" />
-                                    <line x1={zeroX} x2={zeroX} y1={PAD} y2={PAD + plotH} stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="5 4" opacity="0.75" />
-
-                                    {/* Center 100 Neutral Origin Marker */}
-                                    <circle cx={zeroX} cy={zeroY} r="4.5" fill="#38bdf8" />
-                                    <text x={zeroX + 7} y={zeroY - 6} fontSize="10" fontWeight="800" fill="#94a3b8">
-                                        100 (Neutral Benchmark)
-                                    </text>
-
-                                    {/* Quadrant Big Badges */}
-                                    <g transform={`translate(${PAD + plotW - 14}, ${PAD + 22})`}>
-                                        <text textAnchor="end" fontSize="13" fontWeight="900" fill="#10b981">
-                                            LEADING ↗
-                                        </text>
-                                        <text textAnchor="end" y="14" fontSize="9" fontWeight="600" fill="#6ee7b7" opacity="0.8">
-                                            High Trend • High Momentum
-                                        </text>
-                                    </g>
-
-                                    <g transform={`translate(${PAD + plotW - 14}, ${PAD + plotH - 24})`}>
-                                        <text textAnchor="end" fontSize="13" fontWeight="900" fill="#f59e0b">
-                                            WEAKENING ↘
-                                        </text>
-                                        <text textAnchor="end" y="14" fontSize="9" fontWeight="600" fill="#fcd34d" opacity="0.8">
-                                            High Trend • Slowing Momentum
-                                        </text>
-                                    </g>
-
-                                    <g transform={`translate(${PAD + 14}, ${PAD + plotH - 24})`}>
-                                        <text fontSize="13" fontWeight="900" fill="#ef4444">
-                                            ↙ LAGGING
-                                        </text>
-                                        <text y="14" fontSize="9" fontWeight="600" fill="#fca5a5" opacity="0.8">
-                                            Low Trend • Low Momentum
-                                        </text>
-                                    </g>
-
-                                    <g transform={`translate(${PAD + 14}, ${PAD + 22})`}>
-                                        <text fontSize="13" fontWeight="900" fill="#3b82f6">
-                                            ↖ IMPROVING
-                                        </text>
-                                        <text y="14" fontSize="9" fontWeight="600" fill="#93c5fd" opacity="0.8">
-                                            Low Trend • Accelerating Momentum
-                                        </text>
-                                    </g>
-
-                                    {/* Axis Titles */}
-                                    <text x={PAD + plotW / 2} y={H - 12} textAnchor="middle" fontSize="11" fontWeight="700" fill="#94a3b8">
-                                        JdK RS-Ratio (Relative Trend vs {selectedBenchmarkObj.label})
-                                    </text>
-                                    <text x={18} y={PAD + plotH / 2} textAnchor="middle" fontSize="11" fontWeight="700" fill="#94a3b8" transform={`rotate(-90 18 ${PAD + plotH / 2})`}>
-                                        JdK RS-Momentum (Momentum vs {selectedBenchmarkObj.label})
-                                    </text>
-
-                                    {/* Sector Trajectory Lines and Head Nodes */}
-                                    {filteredDataset.map((s) => {
-                                        const start = Math.max(0, scrubIndex - tailWindow + 1);
-                                        const pts = s.path.slice(start, scrubIndex + 1);
-                                        const linePts = pts.map((p) => `${sx(p.x)},${sy(p.y)}`).join(" ");
-                                        const cur = pts[pts.length - 1] || s.currentPoint;
-                                        const isHovered = hoveredSector?.key === s.key;
-                                        const isFocused = focusKey === s.key;
-
-                                        return (
-                                            <g
-                                                key={s.key}
-                                                className="cursor-pointer transition-opacity"
-                                                onMouseEnter={() => setHoveredSector(s)}
-                                                onMouseLeave={() => setHoveredSector(null)}
-                                                onClick={() => setFocusKey(isFocused ? null : s.key)}
-                                            >
-                                                {/* Trajectory Tail Polyline */}
-                                                <polyline
-                                                    points={linePts}
-                                                    fill="none"
-                                                    stroke={s.color}
-                                                    strokeWidth={isHovered || isFocused ? "3.5" : "2.2"}
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                    opacity={isHovered || isFocused ? "1" : "0.85"}
-                                                />
-
-                                                {/* Historical Tail Dots */}
-                                                {pts.slice(0, -1).map((p, i) => (
-                                                    <circle
-                                                        key={i}
-                                                        cx={sx(p.x)}
-                                                        cy={sy(p.y)}
-                                                        r={isHovered || isFocused ? "3.2" : "2.2"}
-                                                        fill={s.color}
-                                                        opacity={0.3 + (i / pts.length) * 0.55}
-                                                    />
-                                                ))}
-
-                                                {/* Current Head Node */}
-                                                <circle
-                                                    cx={sx(cur.x)}
-                                                    cy={sy(cur.y)}
-                                                    r={isHovered || isFocused ? "8.5" : "6.5"}
-                                                    fill={s.color}
-                                                    stroke="#ffffff"
-                                                    strokeWidth="2.2"
-                                                />
-
-                                                {/* Pulsing ring if active */}
-                                                {(isHovered || isFocused) && (
-                                                    <circle
-                                                        cx={sx(cur.x)}
-                                                        cy={sy(cur.y)}
-                                                        r="12"
-                                                        fill="none"
-                                                        stroke={s.color}
-                                                        strokeWidth="1.5"
-                                                        opacity="0.8"
-                                                    />
-                                                )}
-
-                                                {/* Sector Text Label with High-Contrast Background Stroke */}
-                                                <text
-                                                    x={sx(cur.x) + 11}
-                                                    y={sy(cur.y) + 4}
-                                                    fontSize={isHovered || isFocused ? "12" : "10"}
-                                                    fontWeight="800"
-                                                    fill={isHovered || isFocused ? "#ffffff" : s.color}
-                                                    style={{
-                                                        paintOrder: "stroke",
-                                                        stroke: "#020617",
-                                                        strokeWidth: 3.5,
-                                                    }}
-                                                >
-                                                    {s.label}
-                                                </text>
-                                            </g>
-                                        );
-                                    })}
-                                </svg>
-
-                                {/* Hovered Sector Info Overlay */}
-                                {hoveredSector && (
-                                    <div className="absolute top-3 left-3 rounded-2xl border border-gray-700 bg-slate-900/95 p-3.5 text-xs text-white shadow-2xl backdrop-blur-md z-10 max-w-xs">
-                                        <div className="flex items-center justify-between gap-2 font-bold mb-1.5">
-                                            <div className="flex items-center gap-2">
-                                                <span className="h-3.5 w-3.5 rounded-full" style={{ background: hoveredSector.color }} />
-                                                <span className="text-sm font-black">{hoveredSector.label}</span>
-                                            </div>
-                                            <span className={`rounded-md px-2 py-0.5 text-[10px] font-black border ${QUADRANT_CONFIG[hoveredSector.quadrant]?.badge}`}>
-                                                {hoveredSector.quadrant}
-                                            </span>
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-mono mt-1 border-t border-gray-800 pt-1.5">
-                                            <div>Price: <b className="text-white">{hoveredSector.price ? formatPrice(hoveredSector.price) : "—"}</b></div>
-                                            <div>Change: <b className={hoveredSector.pChange >= 0 ? "text-emerald-400" : "text-rose-400"}>{hoveredSector.pChange >= 0 ? "+" : ""}{hoveredSector.pChange?.toFixed(2)}%</b></div>
-                                            <div>RS-Ratio: <b className="text-blue-300">{hoveredSector.rsRatio?.toFixed(2)}</b></div>
-                                            <div>RS-Momentum: <b className="text-purple-300">{hoveredSector.rsMomentum?.toFixed(2)}</b></div>
-                                        </div>
-                                        <div className="mt-2 text-[10px] text-gray-400 border-t border-gray-800 pt-1.5 font-medium">
-                                            Strategy: <span className="text-emerald-300 font-semibold">{QUADRANT_CONFIG[hoveredSector.quadrant]?.action}</span>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Quadrant Summary Grid */}
-                    <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
-                        {QUADRANT_ORDER.map((q) => {
-                            const c = QUADRANT_COLORS[q];
-                            const config = QUADRANT_CONFIG[q];
-                            const items = currentQuadrants[q] || [];
-
+        <div className="min-h-screen bg-gray-50 dark:bg-surface-muted text-gray-900 dark:text-gray-100 p-0 sm:p-4 lg:p-6 lg:pt-2">
+            <div className="max-w-[1920px] mx-auto space-y-3">
+                {/* Top Equity Navigation Hub */}
+                <div className="hidden lg:flex items-center justify-between gap-3 border-b border-gray-200 dark:border-white/10 pb-3">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                        {EQUITY_TABS.map((tab) => {
+                            const Icon = tab.icon;
                             return (
-                                <div
-                                    key={q}
-                                    className="overflow-hidden rounded-2xl border transition-all shadow-xs"
-                                    style={{
-                                        borderColor: c.border,
-                                        background: c.bg,
-                                    }}
+                                <NavLink
+                                    key={tab.to}
+                                    to={tab.to}
+                                    className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-extrabold transition-all ${
+                                        tab.active
+                                            ? "bg-purple-600 text-white shadow-xs"
+                                            : "bg-white text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:bg-surface dark:text-gray-300 dark:hover:bg-surface-raised border border-gray-200 dark:border-white/10"
+                                    }`}
                                 >
-                                    <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5">
-                                        <div>
-                                            <div className="flex items-center gap-2">
-                                                <span className="text-sm font-black" style={{ color: c.text }}>{q}</span>
-                                                <span className="rounded-full bg-white/50 dark:bg-black/40 px-2 py-0.2 text-[10px] font-black" style={{ color: c.text }}>
-                                                    {items.length}
-                                                </span>
-                                            </div>
-                                            <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">{c.desc}</p>
-                                        </div>
-                                    </div>
-
-                                    <div className="space-y-1.5 p-3 max-h-52 overflow-y-auto bg-white/70 dark:bg-gray-900/70 backdrop-blur-sm custom-scrollbar">
-                                        {items.length === 0 ? (
-                                            <div className="py-4 text-center text-xs text-gray-400 font-medium">
-                                                No sectors in this quadrant
-                                            </div>
-                                        ) : (
-                                            items.map((s) => (
-                                                <div
-                                                    key={s.key}
-                                                    onClick={() => setFocusKey(focusKey === s.key ? null : s.key)}
-                                                    className="flex items-center justify-between rounded-lg p-1.5 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer text-xs font-semibold transition"
-                                                >
-                                                    <div className="flex items-center gap-2 truncate pr-1">
-                                                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: s.color }} />
-                                                        <span className="text-gray-800 dark:text-gray-200 truncate">{s.label}</span>
-                                                    </div>
-                                                    <div className="text-right shrink-0">
-                                                        <span className={`font-mono text-[11px] font-bold ${s.pChange >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
-                                                            {s.pChange >= 0 ? "+" : ""}{s.pChange?.toFixed(2)}%
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                            ))
-                                        )}
-                                    </div>
-
-                                    <div className="px-3 py-2 text-[10px] font-semibold text-gray-500 dark:text-gray-400 border-t border-black/5 dark:border-white/5">
-                                        {config.action}
-                                    </div>
-                                </div>
+                                    <Icon size={13} />
+                                    <span>{tab.label}</span>
+                                </NavLink>
                             );
                         })}
                     </div>
 
-                    {/* Sector Rotation & Performance Matrix Table */}
-                    {(viewMode === "matrix" || viewMode === "both") && (
-                        <div className="rounded-2xl border border-gray-200 bg-white/95 shadow-xs overflow-hidden backdrop-blur-md dark:border-gray-800 dark:bg-gray-900/95">
-                            <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50/50 px-4 py-3 dark:border-gray-800 dark:bg-gray-850">
-                                <h3 className="text-xs font-black uppercase tracking-wider text-gray-900 dark:text-gray-100 flex items-center gap-2">
-                                    <span>Sector Momentum &amp; Rotation Matrix</span>
-                                    <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-                                        Relative to {selectedBenchmarkObj.label}
-                                    </span>
-                                </h3>
-                                <div className="text-xs text-gray-400 font-medium hidden sm:block">
-                                    Click any row to solo focus on chart
-                                </div>
-                            </div>
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={loadLiveData}
+                            disabled={loading}
+                            className="flex items-center gap-1.5 px-3 py-1 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-surface text-xs font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-raised cursor-pointer"
+                        >
+                            <FiRefreshCw size={12} className={loading ? "animate-spin text-purple-600" : ""} />
+                            <span>Refresh Live</span>
+                        </button>
+                    </div>
+                </div>
 
-                            <div className="overflow-x-auto custom-scrollbar">
-                                <table className="w-full border-collapse text-left text-xs">
-                                    <thead>
-                                        <tr className="border-b border-gray-200 bg-gray-50/70 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:border-gray-800 dark:bg-gray-800/40">
-                                            <th className="px-4 py-3">Sector Index</th>
-                                            <th className="px-4 py-3 text-right">LTP (₹)</th>
-                                            <th className="px-4 py-3 text-right">Today Change</th>
-                                            <th className="px-4 py-3 text-right">RS-Ratio (Trend)</th>
-                                            <th className="px-4 py-3 text-right">RS-Momentum</th>
-                                            <th className="px-4 py-3 text-center">Quadrant</th>
-                                            <th className="px-4 py-3">Technical Strategy</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                                        {fullDataset.map((s) => {
-                                            const isFocused = focusKey === s.key;
-                                            const config = QUADRANT_CONFIG[s.quadrant];
+                {/* Mobile Sticky Bar (< lg) */}
+                <div className="lg:hidden sticky top-0 z-30 flex items-center gap-2 p-2 bg-white/95 dark:bg-surface-muted/95 backdrop-blur-md border-b border-gray-200 dark:border-white/10">
+                    <button
+                        type="button"
+                        onClick={() => setMobileDrawerOpen(true)}
+                        className="relative h-9 flex-1 min-w-0 flex items-center justify-between gap-2 px-3 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-surface text-left cursor-pointer"
+                    >
+                        <div className="flex items-center gap-2 truncate">
+                            <FiCompass size={15} className="text-purple-600 shrink-0" />
+                            <span className="truncate text-xs font-bold text-gray-900 dark:text-white">
+                                {selectedIndex ? cleanSymbol(selectedIndex) : "All Sectors"}
+                            </span>
+                        </div>
+                        <FiChevronDown size={14} className="text-gray-400 shrink-0" />
+                    </button>
 
-                                            return (
-                                                <tr
-                                                    key={s.key}
-                                                    onClick={() => setFocusKey(isFocused ? null : s.key)}
-                                                    className={`cursor-pointer transition-colors hover:bg-emerald-50/30 dark:hover:bg-emerald-950/20 ${
-                                                        isFocused ? "bg-emerald-50/60 dark:bg-emerald-950/40 font-bold" : ""
-                                                    }`}
-                                                >
-                                                    <td className="px-4 py-3">
-                                                        <div className="flex items-center gap-2">
-                                                            <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: s.color }} />
-                                                            <div>
-                                                                <span className="font-black text-gray-900 dark:text-gray-100">{s.label}</span>
-                                                                <span className="block text-[10px] font-normal text-gray-400">{s.category}</span>
-                                                            </div>
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-4 py-3 text-right font-mono font-bold text-gray-800 dark:text-gray-200">
-                                                        {s.price ? formatPrice(s.price) : "—"}
-                                                    </td>
-                                                    <td className="px-4 py-3 text-right font-mono font-bold">
-                                                        <span className={s.pChange >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}>
-                                                            {s.pChange >= 0 ? "+" : ""}{s.pChange?.toFixed(2)}%
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-4 py-3 text-right font-mono text-gray-700 dark:text-gray-300">
-                                                        {s.rsRatio?.toFixed(2)}
-                                                    </td>
-                                                    <td className="px-4 py-3 text-right font-mono text-gray-700 dark:text-gray-300">
-                                                        {s.rsMomentum?.toFixed(2)}
-                                                    </td>
-                                                    <td className="px-4 py-3 text-center">
-                                                        <span className={`inline-block rounded-md border px-2 py-0.5 text-[10px] font-black ${config.pill}`}>
-                                                            {config.tag}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-4 py-3 text-xs text-gray-500 dark:text-gray-400">
-                                                        {config.action}
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                    </tbody>
-                                </table>
+                    {lastUpdatedFormatted && (
+                        <div className="shrink-0 text-right text-label leading-tight">
+                            <div className="text-gray-400">Updated</div>
+                            <div className="font-mono tabular-nums font-bold text-gray-700 dark:text-gray-300">
+                                {lastUpdatedFormatted}
                             </div>
                         </div>
                     )}
                 </div>
+
+                {/* Mobile Secondary Controls (< lg) */}
+                <div className="lg:hidden px-3 py-2.5 bg-white dark:bg-surface border-y border-gray-200 dark:border-white/10 flex flex-col gap-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                        <div className="flex-1">
+                            <label className="text-micro uppercase font-bold text-gray-400 block mb-0.5">Benchmark</label>
+                            <select
+                                value={benchmark || "NIFTY-INDEX"}
+                                onChange={(e) => setBenchmark(e.target.value)}
+                                className="w-full text-xs font-bold px-2 py-1.5 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-surface-muted text-gray-900 dark:text-white outline-none"
+                            >
+                                {benchmarkOptions.map((opt) => (
+                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="flex-1">
+                            <label className="text-micro uppercase font-bold text-gray-400 block mb-0.5">Timeframe</label>
+                            <div className="grid grid-cols-2 gap-1 p-0.5 rounded-lg bg-gray-100 dark:bg-surface-muted">
+                                <button
+                                    type="button"
+                                    onClick={() => setTimeframe("daily")}
+                                    className={`py-1 text-xs font-bold rounded cursor-pointer ${timeframe === "daily" ? "bg-white dark:bg-surface text-purple-600 shadow-xs" : "text-gray-500"}`}
+                                >
+                                    Daily
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setTimeframe("weekly")}
+                                    className={`py-1 text-xs font-bold rounded cursor-pointer ${timeframe === "weekly" ? "bg-white dark:bg-surface text-purple-600 shadow-xs" : "text-gray-500"}`}
+                                >
+                                    Weekly
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <span className="text-label font-bold text-gray-400 w-10">Tail</span>
+                        <input
+                            type="range"
+                            min={RRG_CONFIG.TAIL_MIN}
+                            max={RRG_CONFIG.TAIL_MAX}
+                            value={tailLength}
+                            onChange={(e) => setTailLength(Number(e.target.value))}
+                            className="flex-1 accent-purple-600 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg cursor-pointer"
+                        />
+                        <span className="text-xs font-mono tabular-nums font-bold text-gray-700 dark:text-gray-300 w-12 text-right">
+                            {tailLength} pts
+                        </span>
+                    </div>
+                </div>
+
+                {/* Main 2-Column Workstation Grid */}
+                <div className="grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)] gap-2.5 items-start">
+                    {/* Desktop Sidebar: RRG Settings & Index Picker */}
+                    <aside className="hidden lg:flex lg:sticky lg:top-20 lg:self-start lg:max-h-[calc(100vh-5.5rem)] bg-white dark:bg-surface rounded-2xl border border-gray-200 dark:border-white/10 shadow-xs flex-col overflow-hidden">
+                        {/* Sidebar Header */}
+                        <div className="px-4 py-3 border-b border-gray-100 dark:border-white/10 flex items-center gap-2">
+                            <FiCompass size={17} className="text-blue-600" />
+                            <h2 className="text-sm font-bold text-gray-900 dark:text-white tracking-wide">
+                                RRG Settings
+                            </h2>
+                        </div>
+
+                        {/* Benchmark, Timeframe & Tail Controls */}
+                        <div className="p-3.5 border-b border-gray-100 dark:border-white/10 space-y-3.5">
+                            {/* Benchmark Selector */}
+                            <div className="flex items-center justify-between gap-2">
+                                <label className="text-xs font-semibold text-gray-600 dark:text-gray-400 shrink-0">
+                                    Benchmark
+                                </label>
+                                <select
+                                    value={benchmark || "NIFTY-INDEX"}
+                                    onChange={(e) => setBenchmark(e.target.value)}
+                                    className="text-xs font-semibold px-2.5 py-1 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-surface-muted text-gray-800 dark:text-gray-200 outline-none cursor-pointer max-w-[145px] truncate"
+                                >
+                                    {benchmarkOptions.map((opt) => (
+                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {/* Timeframe Selector */}
+                            <div className="flex items-center justify-between gap-2">
+                                <label className="text-xs font-semibold text-gray-600 dark:text-gray-400 shrink-0">
+                                    Timeframe
+                                </label>
+                                <div className="flex items-center gap-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => setTimeframe("daily")}
+                                        className={`px-2.5 py-1 text-xs font-semibold rounded-md border transition cursor-pointer ${
+                                            timeframe === "daily"
+                                                ? "bg-blue-50 border-blue-400 text-blue-600 dark:bg-blue-950/50 dark:border-blue-500 dark:text-blue-400 font-bold"
+                                                : "bg-white dark:bg-surface-muted border-gray-200 dark:border-white/10 text-gray-600 dark:text-gray-400"
+                                        }`}
+                                    >
+                                        Daily
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setTimeframe("weekly")}
+                                        className={`px-2.5 py-1 text-xs font-semibold rounded-md border transition cursor-pointer ${
+                                            timeframe === "weekly"
+                                                ? "bg-blue-50 border-blue-400 text-blue-600 dark:bg-blue-950/50 dark:border-blue-500 dark:text-blue-400 font-bold"
+                                                : "bg-white dark:bg-surface-muted border-gray-200 dark:border-white/10 text-gray-600 dark:text-gray-400"
+                                        }`}
+                                    >
+                                        Weekly
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Tail Length Slider */}
+                            <div className="flex items-center justify-between gap-2 text-xs">
+                                <label className="text-xs font-semibold text-gray-600 dark:text-gray-400 shrink-0 w-10">
+                                    Tail
+                                </label>
+                                <input
+                                    type="range"
+                                    min={RRG_CONFIG.TAIL_MIN}
+                                    max={RRG_CONFIG.TAIL_MAX}
+                                    value={tailLength}
+                                    onChange={(e) => setTailLength(Number(e.target.value))}
+                                    className="flex-1 accent-blue-600 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg cursor-pointer"
+                                />
+                                <span className="font-mono tabular-nums font-bold text-gray-800 dark:text-gray-200 w-4 text-right">
+                                    {tailLength}
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* Index List Header */}
+                        <div className="px-3.5 py-1.5 border-b border-gray-100 dark:border-white/10 text-label font-bold text-gray-400 bg-gray-50/50 dark:bg-surface-muted/50">
+                            Index
+                        </div>
+
+                        {/* Scrollable Sector Indices List */}
+                        <div className="custom-scrollbar overflow-y-auto flex-1 min-h-0 divide-y divide-gray-100/60 dark:divide-white/5">
+                            <button
+                                type="button"
+                                onClick={() => setSelectedIndex(null)}
+                                className={`w-full flex items-center py-2 px-3 text-left text-xs transition-colors cursor-pointer border-l-[3px] ${
+                                    selectedIndex === null
+                                        ? "bg-blue-50/80 dark:bg-blue-950/40 border-l-blue-600 text-blue-600 dark:text-blue-400 font-bold"
+                                        : "hover:bg-gray-50 dark:hover:bg-white/5 border-l-transparent text-gray-700 dark:text-gray-300 font-semibold"
+                                }`}
+                            >
+                                <div className="flex items-center gap-2.5 truncate">
+                                    <FiGrid className={`w-4 h-4 shrink-0 ${selectedIndex === null ? "text-blue-600" : "text-gray-500"}`} />
+                                    <span className="truncate">All Sectors</span>
+                                </div>
+                            </button>
+
+                            {[...ALL_SECTORS].sort(sortIndices).map((secKey) => {
+                                const isSelected = selectedIndex === secKey;
+                                const clean = cleanSymbol(secKey);
+                                return (
+                                    <button
+                                        key={secKey}
+                                        type="button"
+                                        onClick={() => setSelectedIndex(secKey)}
+                                        className={`w-full flex items-center py-2 px-3 text-left text-xs transition-colors cursor-pointer border-l-[3px] ${
+                                            isSelected
+                                                ? "bg-blue-50/80 dark:bg-blue-950/40 border-l-blue-600 text-blue-600 dark:text-blue-400 font-bold"
+                                                : "hover:bg-gray-50 dark:hover:bg-white/5 border-l-transparent text-gray-700 dark:text-gray-300 font-semibold"
+                                        }`}
+                                    >
+                                        <div className="flex items-center gap-2.5 truncate">
+                                            <SectorIcon name={secKey} className="w-4 h-4 shrink-0" />
+                                            <span className="truncate">{clean}</span>
+                                        </div>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </aside>
+
+                    {/* Right Main Section: RRG Tool & Visualizer */}
+                    <main className="bg-white dark:bg-surface rounded-2xl border border-gray-200 dark:border-white/10 shadow-xs overflow-hidden flex flex-col min-w-0">
+                        {/* Section Header */}
+                        <div className="hidden lg:flex items-center justify-between gap-3 px-4 sm:px-5 py-3 border-b border-gray-100 dark:border-white/10">
+                            <div className="flex items-center gap-2 min-w-0">
+                                <FiCompass size={18} className="text-purple-600 shrink-0" />
+                                <h2 className="text-sm font-bold text-gray-900 dark:text-white tracking-wide m-0 truncate">
+                                    Relative Rotation Graph
+                                    {selectedIndex && (
+                                        <span className="text-gray-400 font-normal ml-1">
+                                            — {cleanSymbol(selectedIndex)} ({snapshot.mode === "stocks" ? "Stocks" : "Sector"})
+                                        </span>
+                                    )}
+                                </h2>
+                                {lastUpdatedFormatted && (
+                                    <span className="flex-shrink-0 text-xs text-gray-400 whitespace-nowrap border-l border-gray-200 dark:border-white/10 pl-3 ml-1 font-mono tabular-nums">
+                                        Last updated: <strong className="text-gray-700 dark:text-gray-300 font-semibold">{lastUpdatedFormatted}</strong>
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Interactive Playback Scrubber Bar */}
+                        <div className="px-3 lg:px-5 py-2 border-b border-gray-100 dark:border-white/10 bg-gray-50/50 dark:bg-surface-muted/50">
+                            <div className="flex items-center gap-2 lg:gap-3">
+                                <button
+                                    type="button"
+                                    onClick={togglePlay}
+                                    className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-purple-600 hover:bg-purple-700 text-white shadow-xs transition cursor-pointer"
+                                    title={isPlaying ? "Pause playback" : "Play rotation history"}
+                                >
+                                    {isPlaying ? <FiPause size={13} /> : <FiPlay size={13} className="ml-0.5" />}
+                                </button>
+
+                                <span className="hidden lg:inline text-xs font-mono tabular-nums font-bold text-gray-400 whitespace-nowrap shrink-0">
+                                    {formatPeriodDate(periods[0])}
+                                </span>
+
+                                <div className="flex-1 min-w-0 relative">
+                                    <input
+                                        type="range"
+                                        min={0}
+                                        max={maxFrameIndex}
+                                        value={frameIndex}
+                                        onChange={(e) => {
+                                            setIsPlaying(false);
+                                            setFrameIndex(Number(e.target.value));
+                                        }}
+                                        className="w-full accent-purple-600 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg cursor-pointer"
+                                    />
+                                </div>
+
+                                <span className="hidden lg:inline text-xs font-mono tabular-nums font-bold text-gray-400 whitespace-nowrap shrink-0">
+                                    {formatPeriodDate(periods[maxFrameIndex])}
+                                </span>
+
+                                <div className="text-xs font-mono tabular-nums font-bold text-purple-600 dark:text-purple-400 whitespace-nowrap shrink-0 min-w-[76px] text-right">
+                                    {formatPeriodDate(periods[frameIndex], "full")}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Sector Chips Legend Bar */}
+                        <div className="px-3 lg:px-5 py-2 border-b border-gray-100 dark:border-white/10 flex flex-col gap-1.5">
+                            <div className="flex items-center justify-between text-xs">
+                                <div className="flex items-center gap-2">
+                                    <span className="font-extrabold text-gray-900 dark:text-white">
+                                        {snapshot.mode === "stocks" ? "Stocks" : "Sectors"}
+                                    </span>
+                                    <span className="text-label text-gray-400">
+                                        ({activeSymbolsList.length - hiddenSymbols.size} visible)
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={showAll}
+                                        className="text-label font-bold text-purple-600 hover:underline cursor-pointer"
+                                    >
+                                        Show all
+                                    </button>
+                                    <span className="text-gray-300 dark:text-gray-700">·</span>
+                                    <button
+                                        type="button"
+                                        onClick={hideAll}
+                                        className="text-label font-bold text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 cursor-pointer"
+                                    >
+                                        Hide all
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-wrap gap-1 max-h-[3.8rem] overflow-y-auto lg:max-h-none lg:overflow-visible custom-scrollbar">
+                                {activeSymbolsList.map((sym) => {
+                                    const meta = getSymbolMeta(sym, snapshot.mode);
+                                    const isHidden = hiddenSymbols.has(sym);
+                                    return (
+                                        <button
+                                            key={sym}
+                                            type="button"
+                                            onClick={() => toggleSymbol(sym)}
+                                            className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-xs transition-colors cursor-pointer ${
+                                                isHidden
+                                                    ? "opacity-40 text-gray-400 line-through bg-gray-100 dark:bg-white/5"
+                                                    : "text-gray-800 dark:text-gray-200 font-bold hover:bg-gray-100 dark:hover:bg-white/5"
+                                            }`}
+                                        >
+                                            <span
+                                                className="w-2.5 h-2.5 rounded-full shrink-0"
+                                                style={{
+                                                    backgroundColor: isHidden ? "transparent" : meta.color,
+                                                    boxShadow: isHidden ? `inset 0 0 0 1.5px ${meta.color}` : "none",
+                                                }}
+                                            />
+                                            <span>{meta.short}</span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* Interactive RRG SVG Quadrant Chart */}
+                        <div
+                            ref={chartContainerRef}
+                            className="aspect-[4/5] sm:aspect-[16/9] w-full min-h-[340px] max-h-[70vh] lg:max-h-[640px] relative select-none cursor-grab active:cursor-grabbing overflow-hidden bg-white dark:bg-surface-muted overscroll-contain"
+                            style={{ overscrollBehavior: "contain", touchAction: "none" }}
+                            onMouseDown={onMouseDown}
+                            onMouseMove={onMouseMove}
+                            onMouseUp={onMouseUp}
+                        >
+                            {/* Floating Zoom Controls Toolbar */}
+                            <div className="absolute top-3 right-3 z-20 flex flex-col gap-1 p-1 rounded-xl border border-gray-200 dark:border-white/10 bg-white/90 dark:bg-surface/90 backdrop-blur-sm shadow-md">
+                                <button
+                                    type="button"
+                                    onClick={handleZoomIn}
+                                    className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 font-bold text-sm cursor-pointer"
+                                    title="Zoom in"
+                                >
+                                    <FiZoomIn size={14} />
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleZoomOut}
+                                    className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 font-bold text-sm cursor-pointer"
+                                    title="Zoom out"
+                                >
+                                    <FiZoomOut size={14} />
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleZoomReset}
+                                    className={`w-7 h-7 flex items-center justify-center rounded-lg font-bold text-xs cursor-pointer ${
+                                        viewport ? "text-blue-600 bg-blue-50 dark:bg-blue-950/40" : "text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5"
+                                    }`}
+                                    title="Reset zoom (Auto-fit)"
+                                >
+                                    <FiMaximize2 size={13} />
+                                </button>
+                            </div>
+
+                            {/* SVG Chart Layer */}
+                            <svg
+                                ref={chartSvgRef}
+                                viewBox={`0 0 ${W} ${H}`}
+                                className="w-full h-full"
+                                onClick={() => {
+                                    setPinnedSymbol(null);
+                                    setTooltip({ open: false, sym: null, x: 0, y: 0 });
+                                }}
+                            >
+                                <defs>
+                                    <clipPath id="rrg-plot-clip">
+                                        <rect x={padLeft} y={padTop} width={innerW} height={innerH} />
+                                    </clipPath>
+                                </defs>
+
+                                <g clipPath="url(#rrg-plot-clip)">
+                                    {/* 4 Colored Quadrant Background Rectangles */}
+                                    {/* Top-Left: Improving (Soft Blue) */}
+                                    <rect
+                                        x={padLeft}
+                                        y={padTop}
+                                        width={Math.max(0, midX - padLeft)}
+                                        height={Math.max(0, midY - padTop)}
+                                        fill="#eff6ff"
+                                        className="dark:fill-blue-950/20"
+                                    />
+                                    {/* Top-Right: Leading (Soft Green) */}
+                                    <rect
+                                        x={midX}
+                                        y={padTop}
+                                        width={Math.max(0, padLeft + innerW - midX)}
+                                        height={Math.max(0, midY - padTop)}
+                                        fill="#f0fdf4"
+                                        className="dark:fill-emerald-950/20"
+                                    />
+                                    {/* Bottom-Left: Lagging (Soft Red/Pink) */}
+                                    <rect
+                                        x={padLeft}
+                                        y={midY}
+                                        width={Math.max(0, midX - padLeft)}
+                                        height={Math.max(0, padTop + innerH - midY)}
+                                        fill="#fef2f2"
+                                        className="dark:fill-rose-950/20"
+                                    />
+                                    {/* Bottom-Right: Weakening (Soft Amber/Yellow) */}
+                                    <rect
+                                        x={midX}
+                                        y={midY}
+                                        width={Math.max(0, padLeft + innerW - midX)}
+                                        height={Math.max(0, padTop + innerH - midY)}
+                                        fill="#fffbeb"
+                                        className="dark:fill-amber-950/20"
+                                    />
+
+                                    {/* Vertical Integer Grid Lines */}
+                                    {xTicks.map((val) => {
+                                        const x = scaleX(val);
+                                        const isCenter = val === 100;
+                                        return (
+                                            <line
+                                                key={`grid-x-${val}`}
+                                                x1={x}
+                                                x2={x}
+                                                y1={padTop}
+                                                y2={padTop + innerH}
+                                                stroke={isCenter ? "#64748b" : "#e2e8f0"}
+                                                strokeOpacity={isCenter ? 0.6 : 0.65}
+                                                strokeWidth={isCenter ? 1.4 : 0.75}
+                                                className={isCenter ? "dark:stroke-gray-500" : "dark:stroke-gray-800"}
+                                            />
+                                        );
+                                    })}
+
+                                    {/* Horizontal Integer Grid Lines */}
+                                    {yTicks.map((val) => {
+                                        const y = scaleY(val);
+                                        const isCenter = val === 100;
+                                        return (
+                                            <line
+                                                key={`grid-y-${val}`}
+                                                x1={padLeft}
+                                                x2={padLeft + innerW}
+                                                y1={y}
+                                                y2={y}
+                                                stroke={isCenter ? "#64748b" : "#e2e8f0"}
+                                                strokeOpacity={isCenter ? 0.6 : 0.65}
+                                                strokeWidth={isCenter ? 1.4 : 0.75}
+                                                className={isCenter ? "dark:stroke-gray-500" : "dark:stroke-gray-800"}
+                                            />
+                                        );
+                                    })}
+
+                                    {/* Quadrant Name Labels in Corners */}
+                                    <text
+                                        x={padLeft + 14}
+                                        y={padTop + 22}
+                                        fill={QUADRANT_CONFIG.Improving.color}
+                                        fontSize={12}
+                                        fontWeight={800}
+                                        opacity={0.85}
+                                    >
+                                        Improving
+                                    </text>
+                                    <text
+                                        x={padLeft + innerW - 14}
+                                        y={padTop + 22}
+                                        fill={QUADRANT_CONFIG.Leading.color}
+                                        fontSize={12}
+                                        fontWeight={800}
+                                        textAnchor="end"
+                                        opacity={0.85}
+                                    >
+                                        Leading
+                                    </text>
+                                    <text
+                                        x={padLeft + 14}
+                                        y={padTop + innerH - 12}
+                                        fill="#ef4444"
+                                        fontSize={12}
+                                        fontWeight={800}
+                                        opacity={0.9}
+                                    >
+                                        Lagging
+                                    </text>
+                                    <text
+                                        x={padLeft + innerW - 14}
+                                        y={padTop + innerH - 12}
+                                        fill="#d97706"
+                                        fontSize={12}
+                                        fontWeight={800}
+                                        textAnchor="end"
+                                        opacity={0.9}
+                                    >
+                                        Weakening
+                                    </text>
+
+                                    {/* Trajectory Tails and Heads for Active Symbols */}
+                                    {activeSymbolsList.map((sym) => {
+                                        if (hiddenSymbols.has(sym)) return null;
+                                        const { rs_ratio, rs_momentum } = snapshot.symbols[sym];
+                                        const startIdx = Math.max(0, frameIndex - tailLength);
+                                        const pts = [];
+
+                                        for (let i = startIdx; i <= frameIndex; i++) {
+                                            const rx = rs_ratio[i];
+                                            const my = rs_momentum[i];
+                                            if (Number.isFinite(rx) && Number.isFinite(my)) {
+                                                pts.push({
+                                                    cx: scaleX(rx),
+                                                    cy: scaleY(my),
+                                                    idx: i,
+                                                });
+                                            }
+                                        }
+
+                                        if (pts.length === 0) return null;
+                                        const head = pts[pts.length - 1];
+                                        const meta = getSymbolMeta(sym, snapshot.mode);
+                                        const isDimmed = pinnedSymbol !== null && pinnedSymbol !== sym;
+                                        const isPinned = pinnedSymbol === sym;
+                                        const gradId = `tail-grad-${sym.replace(/[^a-zA-Z0-9]/g, "")}`;
+
+                                        return (
+                                            <g
+                                                key={sym}
+                                                style={{
+                                                    opacity: isDimmed ? RRG_CONFIG.PINNED_DIMMED_ALPHA : 1,
+                                                    transition: "opacity 200ms ease-out",
+                                                }}
+                                            >
+                                                {/* Gradient for Tail */}
+                                                {pts.length >= 2 && (
+                                                    <defs>
+                                                        <linearGradient
+                                                            id={gradId}
+                                                            x1={pts[0].cx}
+                                                            y1={pts[0].cy}
+                                                            x2={head.cx}
+                                                            y2={head.cy}
+                                                            gradientUnits="userSpaceOnUse"
+                                                        >
+                                                            <stop offset="0%" stopColor={meta.color} stopOpacity={RRG_CONFIG.TAIL_OLDEST_ALPHA} />
+                                                            <stop offset="100%" stopColor={meta.color} stopOpacity={RRG_CONFIG.TAIL_HEAD_ALPHA} />
+                                                        </linearGradient>
+                                                    </defs>
+                                                )}
+
+                                                {/* Tail Path (Silky-smooth Catmull-Rom spline curve) */}
+                                                {pts.length >= 2 && (
+                                                    <path
+                                                        d={getCatmullRomSplinePath(pts, 1.0)}
+                                                        fill="none"
+                                                        stroke={`url(#${gradId})`}
+                                                        strokeWidth={isPinned ? 2.5 : 2}
+                                                        strokeLinecap="round"
+                                                        strokeLinejoin="round"
+                                                    />
+                                                )}
+
+                                                {/* Milestone Dots along Tail */}
+                                                {pts.slice(0, -1).map((p, pIdx) => {
+                                                    const alpha =
+                                                        RRG_CONFIG.TAIL_OLDEST_ALPHA +
+                                                        (RRG_CONFIG.TAIL_HEAD_ALPHA - RRG_CONFIG.TAIL_OLDEST_ALPHA) *
+                                                            ((pIdx + 1) / Math.max(1, pts.length - 1));
+                                                    return (
+                                                        <circle
+                                                            key={p.idx}
+                                                            cx={p.cx}
+                                                            cy={p.cy}
+                                                            r={2.2}
+                                                            fill={meta.color}
+                                                            fillOpacity={alpha}
+                                                        />
+                                                    );
+                                                })}
+
+                                                {/* Head Circle & Label */}
+                                                <g transform={`translate(${head.cx}, ${head.cy})`}>
+                                                    <circle
+                                                        cx={0}
+                                                        cy={0}
+                                                        r={isPinned ? 8 : 6.5}
+                                                        fill={meta.color}
+                                                        stroke="#fff"
+                                                        strokeWidth={1.5}
+                                                    />
+                                                    <text
+                                                        x={10}
+                                                        y={4}
+                                                        fill={meta.color}
+                                                        fontSize={11.5}
+                                                        fontWeight={800}
+                                                        pointerEvents="none"
+                                                        className="font-sans drop-shadow-xs"
+                                                    >
+                                                        {meta.short}
+                                                    </text>
+
+                                                    {/* Invisible larger hit target */}
+                                                    <circle
+                                                        cx={0}
+                                                        cy={0}
+                                                        r={16}
+                                                        fill="transparent"
+                                                        className="cursor-pointer"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setPinnedSymbol((prev) => (prev === sym ? null : sym));
+                                                        }}
+                                                        onMouseEnter={(e) => {
+                                                            const rect = chartContainerRef.current?.getBoundingClientRect();
+                                                            if (rect) {
+                                                                setTooltip({
+                                                                    open: true,
+                                                                    sym,
+                                                                    x: e.clientX - rect.left,
+                                                                    y: e.clientY - rect.top,
+                                                                });
+                                                            }
+                                                        }}
+                                                        onMouseMove={(e) => {
+                                                            const rect = chartContainerRef.current?.getBoundingClientRect();
+                                                            if (rect) {
+                                                                setTooltip((t) => ({
+                                                                    ...t,
+                                                                    open: true,
+                                                                    sym,
+                                                                    x: e.clientX - rect.left,
+                                                                    y: e.clientY - rect.top,
+                                                                }));
+                                                            }
+                                                        }}
+                                                        onMouseLeave={() => {
+                                                            setTooltip((t) => ({ ...t, open: false }));
+                                                        }}
+                                                    />
+                                                </g>
+                                            </g>
+                                        );
+                                    })}
+                                </g>
+
+                                {/* Bottom X-Axis (Trend) */}
+                                <g className="text-gray-500 dark:text-gray-400 font-mono tabular-nums text-micro">
+                                    <line
+                                        x1={padLeft}
+                                        x2={padLeft + innerW}
+                                        y1={padTop + innerH}
+                                        y2={padTop + innerH}
+                                        stroke="currentColor"
+                                        strokeOpacity={0.6}
+                                        strokeWidth={1}
+                                    />
+                                    {/* Integer X Ticks */}
+                                    {xTicks.map((tickVal) => (
+                                        <g key={`x-tick-${tickVal}`} transform={`translate(${scaleX(tickVal)}, ${padTop + innerH})`}>
+                                            <line y2={4} stroke="currentColor" strokeOpacity={0.6} strokeWidth={1} />
+                                            <text y={15} textAnchor="middle" fill="currentColor">
+                                                {tickVal}
+                                            </text>
+                                        </g>
+                                    ))}
+                                    <text
+                                        x={padLeft + innerW / 2}
+                                        y={padTop + innerH + 32}
+                                        textAnchor="middle"
+                                        fill="currentColor"
+                                        fontSize={12}
+                                        fontWeight={700}
+                                        className="font-sans"
+                                    >
+                                        Trend
+                                    </text>
+                                </g>
+
+                                {/* Left Y-Axis (Momentum) */}
+                                <g className="text-gray-500 dark:text-gray-400 font-mono tabular-nums text-micro">
+                                    <line
+                                        x1={padLeft}
+                                        x2={padLeft}
+                                        y1={padTop}
+                                        y2={padTop + innerH}
+                                        stroke="currentColor"
+                                        strokeOpacity={0.6}
+                                        strokeWidth={1}
+                                    />
+                                    {/* Integer Y Ticks */}
+                                    {yTicks.map((tickVal) => (
+                                        <g key={`y-tick-${tickVal}`} transform={`translate(${padLeft}, ${scaleY(tickVal)})`}>
+                                            <line x2={-4} stroke="currentColor" strokeOpacity={0.6} strokeWidth={1} />
+                                            <text x={-6} y={3} textAnchor="end" fill="currentColor">
+                                                {tickVal}
+                                            </text>
+                                        </g>
+                                    ))}
+                                    <text
+                                        x={-(padTop + innerH / 2)}
+                                        y={16}
+                                        transform="rotate(-90)"
+                                        textAnchor="middle"
+                                        fill="currentColor"
+                                        fontSize={12}
+                                        fontWeight={700}
+                                        className="font-sans"
+                                    >
+                                        Momentum
+                                    </text>
+                                </g>
+                            </svg>
+
+                            {/* Rich Floating Tooltip Card */}
+                            {tooltip.open && hoveredData && (
+                                <div
+                                    className="absolute z-30 pointer-events-none rounded-xl border border-gray-200 dark:border-white/10 bg-white/95 dark:bg-surface/95 backdrop-blur-md px-3.5 py-2.5 shadow-xl text-xs min-w-[170px]"
+                                    style={{
+                                        left: Math.min(tooltip.x + 12, (chartContainerRef.current?.clientWidth || 300) - 180),
+                                        top: Math.max(8, tooltip.y - 45),
+                                    }}
+                                >
+                                    <div className="flex items-center gap-2 mb-1.5 border-b border-gray-100 dark:border-white/10 pb-1">
+                                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: hoveredData.color }} />
+                                        <span className="font-extrabold text-gray-900 dark:text-white">{hoveredData.label}</span>
+                                    </div>
+                                    <div className="text-label text-gray-400 mb-1 font-mono tabular-nums">{hoveredData.date}</div>
+                                    <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono tabular-nums text-label">
+                                        <span className="text-gray-400">RS-Ratio:</span>
+                                        <strong className="text-gray-900 dark:text-white text-right">{hoveredData.rsRatio}</strong>
+                                        <span className="text-gray-400">RS-Momentum:</span>
+                                        <strong className="text-gray-900 dark:text-white text-right">{hoveredData.rsMomentum}</strong>
+                                        <span className="text-gray-400">Quadrant:</span>
+                                        <strong
+                                            className="text-right font-sans font-bold"
+                                            style={{ color: QUADRANT_CONFIG[hoveredData.quadrant]?.color || "inherit" }}
+                                        >
+                                            {hoveredData.quadrant}
+                                        </strong>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Quadrant Summary Cards (4 Cards Grid below chart) */}
+                        <div className="px-3 sm:px-4 py-3 border-t border-gray-100 dark:border-white/10 bg-gray-50/50 dark:bg-surface-muted/50">
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                                {QUADRANT_DISPLAY_ORDER.map((q) => {
+                                    const list = quadrantGroups[q.key] || [];
+                                    return (
+                                        <div
+                                            key={q.key}
+                                            className="rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-surface overflow-hidden shadow-2xs"
+                                        >
+                                            <div className={`flex items-center justify-between px-3 py-2 border-b border-gray-100 dark:border-white/10 ${q.headerBg}`}>
+                                                <h3 className={`text-xs font-bold tracking-wide ${q.title}`}>
+                                                    {q.label}
+                                                </h3>
+                                                <span className={`text-xs font-bold px-2 py-0.5 rounded-md ${q.badge}`}>
+                                                    {list.length}
+                                                </span>
+                                            </div>
+
+                                            <div className="p-2.5 flex flex-col gap-1 max-h-[160px] overflow-y-auto custom-scrollbar">
+                                                {list.length === 0 ? (
+                                                    <span className="text-xs text-gray-400 italic py-2 text-center">No symbols</span>
+                                                ) : (
+                                                    list.map((item) => {
+                                                        const meta = getSymbolMeta(item.sym, snapshot.mode);
+                                                        return (
+                                                            <button
+                                                                key={item.sym}
+                                                                type="button"
+                                                                onClick={() => toggleSymbol(item.sym)}
+                                                                className={`flex items-center justify-between px-1.5 py-1 rounded-lg text-left text-xs transition cursor-pointer ${
+                                                                    item.isHidden
+                                                                        ? "opacity-40 text-gray-400 line-through bg-gray-50 dark:bg-white/5"
+                                                                        : "hover:bg-gray-100 dark:hover:bg-white/5 text-gray-800 dark:text-gray-200 font-bold"
+                                                                }`}
+                                                            >
+                                                                <div className="flex items-center gap-1.5 truncate">
+                                                                    <span
+                                                                        className="w-2 h-2 rounded-full shrink-0"
+                                                                        style={{
+                                                                            backgroundColor: item.isHidden ? "transparent" : meta.color,
+                                                                            boxShadow: item.isHidden ? `inset 0 0 0 1.5px ${meta.color}` : "none",
+                                                                        }}
+                                                                    />
+                                                                    <span className="truncate">{meta.label}</span>
+                                                                </div>
+                                                                <span className="font-mono tabular-nums text-label text-gray-400 ml-1">
+                                                                    {item.rsRatio.toFixed(1)}
+                                                                </span>
+                                                            </button>
+                                                        );
+                                                    })
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </main>
+                </div>
+
+                {/* StockMojo Content Sections: About RRG, FAQ, Guide */}
+                <div className="mt-6 space-y-4">
+                    {/* About RRG Section */}
+                    <section className="bg-white dark:bg-surface rounded-2xl border border-gray-200 dark:border-white/10 p-5 sm:p-7 shadow-xs space-y-3">
+                        <div className="flex items-center gap-2">
+                            <span className="p-2 rounded-xl bg-purple-50 dark:bg-purple-950/60 text-purple-600 font-bold">
+                                📊
+                            </span>
+                            <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white">
+                                About the Sector Rotation Graph (RRG)
+                            </h2>
+                        </div>
+                        <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
+                            Sector rotation is one of the most reliable structural signals an Indian equity investor can read. Money does not flow into every sector at the same time — it cycles, and most of the cycle is visible weeks before it shows up in price headlines.
+                        </p>
+                        <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
+                            The Sector Rotation Graph plots all 19 NSE sectoral indices against Nifty 50 on a single quadrant chart, with a fading tail behind each sector showing the last several sessions of motion. The result is a single picture of where money has come from, where it is concentrated now, and where it is headed next.
+                        </p>
+
+                        <div className="pt-2 border-t border-gray-100 dark:border-white/10">
+                            <h3 className="text-xs sm:text-sm font-extrabold text-gray-900 dark:text-white mb-1">
+                                Daily versus weekly
+                            </h3>
+                            <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                                The weekly timeframe smooths out day-to-day noise and is best for positional rotation and multi-week swing positioning. The daily timeframe reveals fast turns earlier and is suited for tactical entry/exit timing and short-term traders.
+                            </p>
+                        </div>
+                    </section>
+
+                    {/* How to Use RRG Guide */}
+                    <section className="bg-white dark:bg-surface rounded-2xl border border-gray-200 dark:border-white/10 p-5 sm:p-7 shadow-xs space-y-4">
+                        <div className="flex items-center gap-2">
+                            <span className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 font-bold">
+                                🧭
+                            </span>
+                            <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white">
+                                How to use the Sector Rotation Graph
+                            </h2>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs sm:text-sm">
+                            <div className="p-3.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/60 dark:bg-surface-muted/60 space-y-1">
+                                <div className="font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
+                                    <span className="w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center text-micro font-bold">1</span>
+                                    <span>Pick your timeframe</span>
+                                </div>
+                                <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    Start in Weekly to see structural sector rotation; switch to Daily once you've identified the leaders for shorter-term timing.
+                                </p>
+                            </div>
+
+                            <div className="p-3.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/60 dark:bg-surface-muted/60 space-y-1">
+                                <div className="font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
+                                    <span className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-micro font-bold">2</span>
+                                    <span>Identify Leading sectors</span>
+                                </div>
+                                <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    Look at the top-right (green) quadrant. Sectors with dots deep in that quadrant and tails pointing further into it are the active outperformers.
+                                </p>
+                            </div>
+
+                            <div className="p-3.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/60 dark:bg-surface-muted/60 space-y-1">
+                                <div className="font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
+                                    <span className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-micro font-bold">3</span>
+                                    <span>Catch Improving turnarounds</span>
+                                </div>
+                                <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    The top-left (blue) Improving quadrant flags sectors that are still in a lagging trend relative to Nifty, but whose momentum has turned up. These are early candidate leaders.
+                                </p>
+                            </div>
+
+                            <div className="p-3.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/60 dark:bg-surface-muted/60 space-y-1">
+                                <div className="font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
+                                    <span className="w-5 h-5 rounded-full bg-amber-600 text-white flex items-center justify-center text-micro font-bold">4</span>
+                                    <span>Read the tail direction</span>
+                                </div>
+                                <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    A tail that moves persistently in one direction (no hooks, no reversals) means the rotation is durable. A hooking or reversing tail signals an impending shift.
+                                </p>
+                            </div>
+                        </div>
+                    </section>
+
+                    {/* Frequently Asked Questions */}
+                    <section className="bg-white dark:bg-surface rounded-2xl border border-gray-200 dark:border-white/10 p-5 sm:p-7 shadow-xs space-y-4">
+                        <div className="flex items-center gap-2">
+                            <span className="p-2 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 font-bold">
+                                ❓
+                            </span>
+                            <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white">
+                                Frequently Asked Questions
+                            </h2>
+                        </div>
+
+                        <div className="divide-y divide-gray-100 dark:divide-white/5 text-xs sm:text-sm">
+                            <div className="py-3.5 space-y-1">
+                                <h4 className="font-bold text-gray-900 dark:text-white">
+                                    What is a Sector Rotation Graph (RRG)?
+                                </h4>
+                                <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                                    RRG is a 2-D chart that plots each sector's strength (RS-Ratio) against its momentum (RS-Momentum), measured against a benchmark — Nifty 50. Each sector becomes a single point that moves clockwise through four quadrants over time. The tail behind each point shows where that sector has come from over the last several sessions.
+                                </p>
+                            </div>
+
+                            <div className="py-3.5 space-y-1">
+                                <h4 className="font-bold text-gray-900 dark:text-white">
+                                    What do the four quadrants mean?
+                                </h4>
+                                <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                                    <strong>Leading (green)</strong>: Strong relative strength and positive momentum — actively outperforming the benchmark.
+                                    <br />
+                                    <strong>Weakening (yellow)</strong>: Strong relative strength, but momentum is slowing — outperformance is fading.
+                                    <br />
+                                    <strong>Lagging (red)</strong>: Weak relative strength and negative momentum — actively underperforming the benchmark.
+                                    <br />
+                                    <strong>Improving (blue)</strong>: Weak relative strength, but momentum has turned up — recovering and potentially heading towards leadership.
+                                </p>
+                            </div>
+
+                            <div className="py-3.5 space-y-1">
+                                <h4 className="font-bold text-gray-900 dark:text-white">
+                                    Can I drill down into individual stocks inside a sector?
+                                </h4>
+                                <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                                    Yes! Click any sector index (like BANKNIFTY or IT) in the left sidebar Index list. The graph immediately pivots to show the top constituent stocks of that sector rotating against the sector index itself.
+                                </p>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                {/* Mobile Drawer for Index Selection (< lg) */}
+                {mobileDrawerOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+                        <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-surface border border-gray-200 dark:border-white/10 shadow-2xl overflow-hidden max-h-[85vh] flex flex-col">
+                            <div className="flex items-center justify-between p-3.5 border-b border-gray-100 dark:border-white/10">
+                                <h3 className="font-bold text-sm text-gray-900 dark:text-white flex items-center gap-2">
+                                    <FiCompass className="text-purple-600" />
+                                    <span>Select Index</span>
+                                </h3>
+                                <button
+                                    type="button"
+                                    onClick={() => setMobileDrawerOpen(false)}
+                                    className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/5 cursor-pointer font-bold"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+
+                            <div className="custom-scrollbar overflow-y-auto flex-1 divide-y divide-gray-100/60 dark:divide-white/5 p-1">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSelectedIndex(null);
+                                        setMobileDrawerOpen(false);
+                                    }}
+                                    className={`w-full flex items-center py-2.5 px-3 text-left text-xs transition cursor-pointer rounded-xl ${
+                                        selectedIndex === null
+                                            ? "bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-300 font-extrabold"
+                                            : "hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 font-semibold"
+                                    }`}
+                                >
+                                    <div className="flex items-center gap-2">
+                                        <FiGrid className="w-4 h-4 text-purple-600 shrink-0" />
+                                        <span>All Sectors</span>
+                                    </div>
+                                </button>
+
+                                {[...ALL_SECTORS].sort(sortIndices).map((secKey) => {
+                                    const isSelected = selectedIndex === secKey;
+                                    const clean = cleanSymbol(secKey);
+                                    return (
+                                        <button
+                                            key={secKey}
+                                            type="button"
+                                            onClick={() => {
+                                                setSelectedIndex(secKey);
+                                                setMobileDrawerOpen(false);
+                                            }}
+                                            className={`w-full flex items-center py-2.5 px-3 text-left text-xs transition cursor-pointer rounded-xl ${
+                                                isSelected
+                                                    ? "bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-300 font-extrabold"
+                                                    : "hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 font-semibold"
+                                            }`}
+                                        >
+                                            <div className="flex items-center gap-2">
+                                                <SectorIcon name={secKey} className="w-4 h-4 shrink-0" />
+                                                <span>{clean}</span>
+                                            </div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );

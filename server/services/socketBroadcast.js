@@ -27,12 +27,24 @@ function roomFor(symbol) {
     return `sym:${symbol.toUpperCase()}`;
 }
 
+let ioInstance = null;
+
 function attach(io) {
+    ioInstance = io;
     io.on("connection", (socket) => {
         socketLogger.info(`Client connected: ${socket.id}`);
 
         socket.emit("marketStatus", {
             ...publicStatus(),
+        });
+
+        // User room for targeted paper trading notifications
+        socket.on("join_user", (payload) => {
+            const uid = payload && (payload.userId || payload.user_id);
+            if (uid) {
+                socket.join(`user:${uid}`);
+                socketLogger.debug(`Socket ${socket.id} joined user:${uid}`);
+            }
         });
 
         socket.on("subscribe", (payload) => {
@@ -89,6 +101,22 @@ function detach() {
         clearInterval(interval);
         interval = null;
     }
+    ioInstance = null;
 }
 
-module.exports = { attach, detach, BROADCAST_INTERVAL_MS };
+function emitPaperEvent(event, data) {
+    if (ioInstance) {
+        ioInstance.emit(event, data);
+        if (data && data.userId) {
+            ioInstance.to(`user:${data.userId}`).emit(event, data);
+        }
+    }
+}
+
+function emitUserEvent(userId, event, data) {
+    if (ioInstance && userId) {
+        ioInstance.to(`user:${userId}`).emit(event, data);
+    }
+}
+
+module.exports = { attach, detach, emitPaperEvent, emitUserEvent, BROADCAST_INTERVAL_MS };

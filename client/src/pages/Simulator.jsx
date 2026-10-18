@@ -196,7 +196,7 @@ function SymbolOption({ sym, active, isFav, onPick, onToggleFav }) {
         <SymbolLogo symbol={sym} size="sm" />
         <div className="truncate">
           <div className="text-xs font-bold leading-tight">{sym}</div>
-          <div className="text-[10px] text-gray-400 truncate max-w-[140px]">{meta.name || sym}</div>
+          <div className="text-micro text-gray-400 truncate max-w-[140px]">{meta.name || sym}</div>
         </div>
       </div>
       <button
@@ -1698,7 +1698,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 >
                   <SymbolLogo symbol={symbol} size="xs" />
                   <span className="tracking-wide">{symbol}</span>
-                  <span className="text-[10px] text-gray-400 dark:text-gray-400">▾</span>
+                  <span className="text-micro text-gray-400 dark:text-gray-400">▾</span>
                 </button>
                 <button
                   onClick={() => cycleSymbol(1)}
@@ -1712,19 +1712,19 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 {pickerOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
-                    <div className="absolute left-0 top-full z-50 mt-1.5 w-64 max-h-96 overflow-y-auto rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-2xl text-xs">
-                      <div className="sticky top-0 border-b border-gray-100 dark:border-white/10 bg-white dark:bg-[#0b1420] p-2.5">
+                    <div className="absolute left-0 top-full z-50 mt-1.5 w-64 max-h-96 overflow-y-auto rounded-xl border border-gray-200 dark:border-white/10 bg-surface shadow-2xl text-xs">
+                      <div className="sticky top-0 border-b border-gray-100 dark:border-white/10 bg-surface p-2.5">
                         <input
                           autoFocus
                           value={pickerQuery}
                           onChange={(e) => setPickerQuery(e.target.value)}
                           placeholder="Search symbol…"
-                          className="w-full rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-[#070e17] px-3 py-1.5 text-xs text-gray-900 dark:text-white outline-none focus:border-emerald-500"
+                          className="w-full rounded-lg border border-gray-200 dark:border-white/10 bg-surface-muted px-3 py-1.5 text-xs text-gray-900 dark:text-white outline-none focus:border-emerald-500"
                         />
                       </div>
                       {filteredIndices.length > 0 && (
                         <div>
-                          <div className="px-3 pt-2.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-400">Index</div>
+                          <div className="px-3 pt-2.5 pb-1 text-micro font-bold uppercase tracking-wider text-gray-400 dark:text-gray-400">Index</div>
                           {filteredIndices.map((s) => (
                             <SymbolOption key={s} sym={s} active={s === symbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
                           ))}
@@ -1732,7 +1732,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                       )}
                       {filteredStocks.length > 0 && (
                         <div>
-                          <div className="px-3 pt-2.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-400">Stocks</div>
+                          <div className="px-3 pt-2.5 pb-1 text-micro font-bold uppercase tracking-wider text-gray-400 dark:text-gray-400">Stocks</div>
                           {filteredStocks.map((s) => (
                             <SymbolOption key={s} sym={s} active={s === symbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
                           ))}
@@ -1772,7 +1772,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   {speedOpen && (
                     <>
                       <div className="fixed inset-0 z-40" onClick={() => setSpeedOpen(false)} />
-                      <div className="absolute right-0 z-50 mt-1.5 w-56 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-3.5 shadow-2xl text-xs">
+                      <div className="absolute right-0 z-50 mt-1.5 w-56 rounded-xl border border-gray-200 dark:border-white/10 bg-surface p-3.5 shadow-2xl text-xs">
                         <div className="mb-3">
                           <div className="mb-1.5 font-bold text-gray-700 dark:text-gray-300">Move Step</div>
                           <div className="flex flex-col gap-1.5">
@@ -1807,18 +1807,18 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
             </div>
 
             {/* Date/time scrubber */}
-            <div className="mt-2.5 flex w-full flex-wrap items-center gap-1.5 text-[11px]">
+            <div className="mt-2.5 grid w-full grid-cols-6 gap-1.5 text-label sm:flex sm:flex-wrap sm:items-center">
               <button
                 onClick={() => jumpDate(-1)}
                 disabled={!dates.length}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="min-w-0 sm:flex-1 sm:min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 -1d
               </button>
               <button
                 onClick={jumpToStart}
                 disabled={!chainData}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="min-w-0 sm:flex-1 sm:min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 SOD
               </button>
@@ -1826,7 +1826,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(-3600)}
                 disabled={!chainData || !canStepEarlier}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing earlier to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="min-w-0 sm:flex-1 sm:min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 -1h
               </button>
@@ -1834,7 +1834,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(-900)}
                 disabled={!chainData || !canStepEarlier}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing earlier to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="min-w-0 sm:flex-1 sm:min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 -15m
               </button>
@@ -1842,7 +1842,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(-300)}
                 disabled={!chainData || !canStepEarlier}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing earlier to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="min-w-0 sm:flex-1 sm:min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 -5m
               </button>
@@ -1850,12 +1850,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(-60)}
                 disabled={!chainData || !canStepEarlier}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing earlier to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="min-w-0 sm:flex-1 sm:min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 -1m
               </button>
 
-              <div className="relative flex-[3] min-w-[170px]">
+              <div className="relative order-first col-span-6 sm:order-none sm:flex-[3] sm:min-w-[170px]">
                 <button
                   onClick={() => (calendarOpen ? setCalendarOpen(false) : openCalendar())}
                   disabled={!dates.length}
@@ -1865,7 +1865,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                   <span>{formatDateTimeLabel(selectedDate, currentTime)}</span>
                   {selectedDate && dayExpirySet.has(selectedDate) && (
                     <span
-                      className="rounded-full bg-emerald-500 px-1.5 py-0.2 text-[9px] font-extrabold text-white"
+                      className="rounded-full bg-emerald-500 px-1.5 py-0.2 text-micro font-extrabold text-white"
                       title="This is an expiry day"
                     >
                       EXPIRY
@@ -1876,7 +1876,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 {calendarOpen && calendarYm && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setCalendarOpen(false)} />
-                    <div className="absolute left-0 z-50 mt-1.5 flex w-[calc(100vw-2rem)] max-w-[440px] flex-col overflow-hidden rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-2xl sm:w-[440px] sm:flex-row">
+                    <div className="absolute left-0 z-50 mt-1.5 flex w-[calc(100vw-2rem)] max-w-[440px] flex-col overflow-hidden rounded-2xl border border-gray-200 dark:border-white/10 bg-surface shadow-2xl sm:w-[440px] sm:flex-row">
                       {/* Month calendar */}
                       <div className="flex-1 border-b border-gray-100 dark:border-white/10 p-3.5 sm:border-b-0 sm:border-r">
                         <div className="mb-2.5 flex items-center justify-between">
@@ -1890,7 +1890,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             <button onClick={() => shiftCalendarYear(1)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-700 dark:hover:text-gray-200" aria-label="Next year"><FiChevronsRight size={14} /></button>
                           </div>
                         </div>
-                        <div className="mb-1.5 grid grid-cols-7 gap-1 text-center text-[10px] font-semibold text-gray-400 dark:text-gray-400">
+                        <div className="mb-1.5 grid grid-cols-7 gap-1 text-center text-micro font-semibold text-gray-400 dark:text-gray-400">
                           {WEEKDAYS.map((w) => <div key={w}>{w[0]}{w[1]}</div>)}
                         </div>
                         <div className="grid grid-cols-7 gap-1">
@@ -1943,7 +1943,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             );
                           })}
                         </div>
-                        <div className="mt-3 flex items-center gap-3 text-[10px] text-gray-500 dark:text-gray-400">
+                        <div className="mt-3 flex items-center gap-3 text-micro text-gray-500 dark:text-gray-400">
                           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Expiry</span>
                           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-gray-400" /> Holiday</span>
                           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-500" /> EOD</span>
@@ -1959,7 +1959,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 key={h}
                                 ref={(el) => { if (h === pendingHour) activeHourBtnRef.current = el; }}
                                 onClick={() => pickHour(h)}
-                                className={`w-full py-1.5 text-[12px] font-bold ${
+                                className={`w-full py-1.5 text-xs font-bold ${
                                   h === pendingHour ? "bg-emerald-600 text-white" : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
                                 }`}
                               >
@@ -1973,7 +1973,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 key={min}
                                 ref={(el) => { if (min === pendingMinute) activeMinuteBtnRef.current = el; }}
                                 onClick={() => pickMinute(min)}
-                                className={`w-full py-1.5 text-[12px] font-bold ${
+                                className={`w-full py-1.5 text-xs font-bold ${
                                   min === pendingMinute ? "bg-emerald-600 text-white" : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
                                 }`}
                               >
@@ -2001,7 +2001,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(60)}
                 disabled={!chainData || !canStepLater}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing later to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="min-w-0 sm:flex-1 sm:min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 +1m
               </button>
@@ -2009,7 +2009,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(300)}
                 disabled={!chainData || !canStepLater}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing later to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="min-w-0 sm:flex-1 sm:min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 +5m
               </button>
@@ -2017,7 +2017,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(900)}
                 disabled={!chainData || !canStepLater}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing later to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="min-w-0 sm:flex-1 sm:min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 +15m
               </button>
@@ -2025,33 +2025,33 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 onClick={() => jumpTimeBy(3600)}
                 disabled={!chainData || !canStepLater}
                 title={onlySnapshotForDay ? "Only one stored snapshot for this day — nothing later to step to" : undefined}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="min-w-0 sm:flex-1 sm:min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 +1h
               </button>
               <button
                 onClick={jumpToEnd}
                 disabled={!chainData}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="min-w-0 sm:flex-1 sm:min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 EOD
               </button>
               <button
                 onClick={() => jumpDate(1)}
                 disabled={!dates.length}
-                className="flex-1 min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
+                className="min-w-0 sm:flex-1 sm:min-w-[42px] rounded-lg border border-gray-200 dark:border-white/10 bg-gray-100/80 dark:bg-[#070e17] px-2 py-1.5 text-center font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/5 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40 transition"
               >
                 +1d
               </button>
             </div>
 
             {!dates.length && !datesLoaded && (
-              <div className="mt-2.5 text-[11px] font-medium text-gray-400">
+              <div className="mt-2.5 text-label font-medium text-gray-400">
                 Loading available dates…
               </div>
             )}
             {!dates.length && datesLoaded && !chainError && (
-              <div className="mt-2.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+              <div className="mt-2.5 text-label font-medium text-amber-600 dark:text-amber-400">
                 No stored option data for {symbol} yet — try a different symbol or date.
               </div>
             )}
@@ -2073,13 +2073,13 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     className="flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-50/80 dark:bg-emerald-950/40 dark:border-emerald-800/50 px-2.5 py-1 shadow-2xs"
                     title={`Spot underlying price (Change from day open: ${displaySpotChange != null ? (displaySpotChange >= 0 ? "+" : "") + displaySpotChange.toFixed(2) : "0"})`}
                   >
-                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">SPOT</span>
+                    <span className="text-micro font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">SPOT</span>
                     <span className="font-mono text-xs font-bold tabular-nums text-gray-900 dark:text-gray-100">
                       {formatPrice(displaySpot ?? displaySpotStored)}
                     </span>
                     {displaySpotChangePct != null && (
                       <span
-                        className={`font-mono text-[10px] tabular-nums font-bold ${
+                        className={`font-mono text-micro tabular-nums font-bold ${
                           displaySpotChangePct >= 0
                             ? "text-emerald-600 dark:text-emerald-400"
                             : "text-rose-600 dark:text-rose-400"
@@ -2096,12 +2096,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     className="flex items-center gap-1.5 rounded-lg border border-blue-500/20 bg-blue-50/80 dark:bg-blue-950/40 dark:border-blue-800/50 px-2.5 py-1 shadow-2xs"
                     title={displayFutExpiry ? `Front-month future, expiry ${formatExpiryShort(displayFutExpiry)} (${displayFutSource === "parity" ? "Synthetic Parity Forward" : "Historical Database"})` : "No futures data"}
                   >
-                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-blue-700 dark:text-blue-400">FUT</span>
+                    <span className="text-micro font-extrabold uppercase tracking-wider text-blue-700 dark:text-blue-400">FUT</span>
                     <span className={`font-mono text-xs font-bold tabular-nums ${displayFutPrice != null ? "text-gray-900 dark:text-gray-100" : "text-gray-400"}`}>
                       {displayFutPrice != null ? formatPrice(displayFutPrice) : "—"}
                     </span>
                     {displayFutBasis != null && (
-                      <span className={`text-[10px] tabular-nums font-bold ${displayFutBasis >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`} title="Futures Basis (Premium / Discount vs Spot)">
+                      <span className={`text-micro tabular-nums font-bold ${displayFutBasis >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`} title="Futures Basis (Premium / Discount vs Spot)">
                         ({displayFutBasis >= 0 ? "+" : ""}{displayFutBasis.toFixed(1)}{displayFutBasisPct != null ? ` / ${displayFutBasisPct >= 0 ? "+" : ""}${displayFutBasisPct}%` : ""})
                       </span>
                     )}
@@ -2112,13 +2112,13 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     className="flex items-center gap-1.5 rounded-lg border border-purple-500/20 bg-purple-50/80 dark:bg-purple-950/40 dark:border-purple-800/50 px-2.5 py-1 shadow-2xs"
                     title={displayVix != null ? `India VIX (${displayVixSource === "implied" ? "ATM Implied Volatility" : "Real Historical Close"}${displayVixChange != null ? ` | Change from open: ${displayVixChange >= 0 ? "+" : ""}${displayVixChange.toFixed(2)}` : ""})` : "No stored India VIX"}
                   >
-                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-purple-700 dark:text-purple-400">VIX</span>
+                    <span className="text-micro font-extrabold uppercase tracking-wider text-purple-700 dark:text-purple-400">VIX</span>
                     <span className={`font-mono text-xs font-bold tabular-nums ${displayVix != null ? "text-gray-900 dark:text-gray-100" : "text-gray-400"}`}>
                       {displayVix != null ? formatPrice(displayVix) : "—"}
                     </span>
                     {displayVixChangePct != null && displayVix != null && (
                       <span
-                        className={`font-mono text-[10px] tabular-nums font-bold ${
+                        className={`font-mono text-micro tabular-nums font-bold ${
                           displayVixChangePct >= 0
                             ? "text-emerald-600 dark:text-emerald-400"
                             : "text-rose-600 dark:text-rose-400"
@@ -2129,7 +2129,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                       </span>
                     )}
                     {displayVixSource === "implied" && (
-                      <span className="rounded bg-amber-200/80 dark:bg-amber-900/60 px-1 py-0.2 text-[8px] font-bold text-amber-900 dark:text-amber-200" title="Computed from ATM option chain Implied Volatility">IV</span>
+                      <span className="rounded bg-amber-200/80 dark:bg-amber-900/60 px-1 py-0.2 text-micro font-bold text-amber-900 dark:text-amber-200" title="Computed from ATM option chain Implied Volatility">IV</span>
                     )}
                   </div>
                 </div>
@@ -2137,7 +2137,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setHideChain(true)}
-                    className="rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50/80 dark:bg-[#070e17] px-2.5 py-1 text-[11px] font-semibold text-gray-700 dark:text-gray-300 transition-colors hover:bg-gray-100 dark:hover:bg-white/5"
+                    className="rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50/80 dark:bg-[#070e17] px-2.5 py-1 text-label font-semibold text-gray-700 dark:text-gray-300 transition-colors hover:bg-gray-100 dark:hover:bg-white/5"
                     title="Hide Chain — give the right panel full width"
                   >
                     Hide Chain ⇥
@@ -2163,10 +2163,10 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold transition-all duration-200 ${
                               isSelected
                                 ? "bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md shadow-emerald-600/20 scale-[1.02]"
-                                : "border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-[#070e17] text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
+                                : "border border-gray-200 dark:border-white/10 bg-surface-muted text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
                             }`}
                           >
-                            {formatExpiryShort(exp)} <span className={`text-[10px] font-normal ${isSelected ? "text-emerald-100" : "text-gray-400"}`}>({dte}d)</span>
+                            {formatExpiryShort(exp)} <span className={`text-micro font-normal ${isSelected ? "text-emerald-100" : "text-gray-400"}`}>({dte}d)</span>
                           </button>
                         );
                       })}
@@ -2178,7 +2178,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold transition-all duration-200 ${
                               !chainData.expiries.slice(0, 3).includes(chainData.selectedExpiry)
                                 ? "bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md shadow-emerald-600/20"
-                                : "border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-[#070e17] text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
+                                : "border border-gray-200 dark:border-white/10 bg-surface-muted text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
                             }`}
                           >
                             {!chainData.expiries.slice(0, 3).includes(chainData.selectedExpiry)
@@ -2189,7 +2189,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                           {expiryDropdownOpen && (
                             <>
                               <div className="fixed inset-0 z-10" onClick={() => setExpiryDropdownOpen(false)} />
-                              <div className="absolute left-0 top-full z-20 mt-1.5 min-w-[170px] max-h-72 overflow-y-auto rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] py-1.5 shadow-2xl text-xs animate-in fade-in slide-in-from-top-1 duration-200">
+                              <div className="absolute left-0 top-full z-20 mt-1.5 min-w-[170px] max-h-72 overflow-y-auto rounded-xl border border-gray-200 dark:border-white/10 bg-surface py-1.5 shadow-2xl text-xs animate-in fade-in slide-in-from-top-1 duration-200">
                                 {chainData.expiries.slice(3).map((exp) => (
                                   <button
                                     key={exp}
@@ -2226,12 +2226,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     {settingsOpen && (
                       <>
                         <div className="fixed inset-0 z-10" onClick={() => setSettingsOpen(false)} />
-                        <div className="absolute right-0 top-full z-20 mt-1.5 w-56 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-4 shadow-2xl text-xs animate-in fade-in slide-in-from-top-1 duration-200">
+                        <div className="absolute right-0 top-full z-20 mt-1.5 w-56 rounded-xl border border-gray-200 dark:border-white/10 bg-surface p-4 shadow-2xl text-xs animate-in fade-in slide-in-from-top-1 duration-200">
                           <div className="mb-3 flex items-center justify-between">
                             <span className="font-bold text-gray-800 dark:text-gray-100">Chain Settings</span>
                             <button 
                               onClick={resetChainSettings} 
-                              className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 transition-colors hover:underline"
+                              className="text-micro font-semibold text-emerald-600 dark:text-emerald-400 transition-colors hover:underline"
                             >
                               Reset
                             </button>
@@ -2243,7 +2243,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 type="checkbox" 
                                 checked={columns.oi} 
                                 onChange={() => toggleColumn("oi")} 
-                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 dark:border-gray-600 text-emerald-600 focus:ring-emerald-500"
                               /> 
                               <span className="select-none font-medium text-gray-700 dark:text-gray-200">Open Interest</span>
                             </label>
@@ -2253,7 +2253,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 type="checkbox" 
                                 checked={columns.callDelta} 
                                 onChange={() => toggleColumn("callDelta")} 
-                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 dark:border-gray-600 text-emerald-600 focus:ring-emerald-500"
                               /> 
                               <span className="select-none font-medium text-gray-700 dark:text-gray-200">Call/Put Delta</span>
                             </label>
@@ -2263,7 +2263,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 type="checkbox" 
                                 checked={columns.iv} 
                                 onChange={() => toggleColumn("iv")} 
-                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 dark:border-gray-600 text-emerald-600 focus:ring-emerald-500"
                               /> 
                               <span className="select-none font-medium text-gray-700 dark:text-gray-200">IV</span>
                             </label>
@@ -2273,7 +2273,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 type="checkbox" 
                                 checked={columns.theta} 
                                 onChange={() => toggleColumn("theta")} 
-                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 dark:border-gray-600 text-emerald-600 focus:ring-emerald-500"
                               /> 
                               <span className="select-none font-medium text-gray-700 dark:text-gray-200">Theta</span>
                             </label>
@@ -2283,7 +2283,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 type="checkbox" 
                                 checked={columns.vega} 
                                 onChange={() => toggleColumn("vega")} 
-                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 dark:border-gray-600 text-emerald-600 focus:ring-emerald-500"
                               /> 
                               <span className="select-none font-medium text-gray-700 dark:text-gray-200">Vega</span>
                             </label>
@@ -2293,7 +2293,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 type="checkbox" 
                                 checked={columns.gamma} 
                                 onChange={() => toggleColumn("gamma")} 
-                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 dark:border-gray-600 text-emerald-600 focus:ring-emerald-500"
                               /> 
                               <span className="select-none font-medium text-gray-700 dark:text-gray-200">Gamma</span>
                             </label>
@@ -2320,9 +2320,9 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
           )}
 
           {displayRows.length > 0 && (
-            <div ref={chainScrollRef} className="max-h-[82vh] overflow-x-auto overflow-y-auto rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs custom-scrollbar">
-              <table className="w-full min-w-[540px] border-collapse text-[11px] sm:text-[12.5px]">
-                <thead className="sticky top-0 bg-gray-50 dark:bg-[#070e17] border-b border-gray-200 dark:border-white/10 z-10 shadow-2xs">
+            <div ref={chainScrollRef} className="max-h-[82vh] overflow-x-auto overflow-y-auto rounded-2xl border border-gray-200 dark:border-white/10 bg-surface shadow-xs custom-scrollbar">
+              <table className="w-full sm:min-w-[540px] border-collapse text-label sm:text-xs">
+                <thead className="sticky top-0 bg-surface-muted border-b border-gray-200 dark:border-white/10 z-10 shadow-2xs">
                   <tr className="text-center font-extrabold text-xs">
                     <th colSpan={chainCeColCount} className="bg-emerald-50/80 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border-b border-gray-200 dark:border-white/10 py-2 tracking-wide">
                       CALLS (CE)
@@ -2332,12 +2332,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                       PUTS (PE)
                     </th>
                   </tr>
-                  <tr className="text-[11px] text-gray-500 dark:text-gray-400">
+                  <tr className="text-label text-gray-500 dark:text-gray-400">
                     {columns.gamma && <th className="px-1.5 py-2 text-center font-semibold bg-emerald-50/30 dark:bg-emerald-950/20">Γ</th>}
                     {columns.vega && <th className="px-1.5 py-2 text-center font-semibold bg-emerald-50/30 dark:bg-emerald-950/20">Vega</th>}
                     {columns.theta && <th className="px-1.5 py-2 text-center font-semibold bg-emerald-50/30 dark:bg-emerald-950/20">Theta</th>}
                     {columns.iv && <th className="px-1.5 py-2 text-center font-semibold bg-emerald-50/30 dark:bg-emerald-950/20">IV</th>}
-                    {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold bg-emerald-50/30 dark:bg-emerald-950/20 w-[13%]">CallΔ</th>}
+                    {columns.callDelta && <th className="hidden sm:table-cell px-1.5 py-2 text-center font-semibold bg-emerald-50/30 dark:bg-emerald-950/20 w-[13%]">CallΔ</th>}
                     <th className="px-2 py-2 text-right font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/30 w-[16%]">
                       LTP
                     </th>
@@ -2349,7 +2349,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     <th className="px-2 py-2 text-left font-bold text-rose-700 dark:text-rose-400 bg-rose-50/40 dark:bg-rose-950/30 w-[16%]">
                       LTP
                     </th>
-                    {columns.callDelta && <th className="px-1.5 py-2 text-center font-semibold bg-rose-50/30 dark:bg-rose-950/20 w-[10%]">PutΔ</th>}
+                    {columns.callDelta && <th className="hidden sm:table-cell px-1.5 py-2 text-center font-semibold bg-rose-50/30 dark:bg-rose-950/20 w-[10%]">PutΔ</th>}
                     {columns.iv && <th className="px-1.5 py-2 text-center font-semibold bg-rose-50/30 dark:bg-rose-950/20">IV</th>}
                     {columns.theta && <th className="px-1.5 py-2 text-center font-semibold bg-rose-50/30 dark:bg-rose-950/20">Theta</th>}
                     {columns.vega && <th className="px-1.5 py-2 text-center font-semibold bg-rose-50/30 dark:bg-rose-950/20">Vega</th>}
@@ -2384,14 +2384,14 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         {columns.theta && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{formatDelta(row.ce?.theta)}<StaleBadge stale={row.ce?._thetaStale} /></td>}
                         {columns.iv && <td className="px-1.5 py-1.5 text-center tabular-nums text-gray-400">{row.ce?.iv != null ? `${row.ce.iv.toFixed(1)}%` : "-"}<StaleBadge stale={row.ce?._ivStale} /></td>}
                         {columns.callDelta && (
-                          <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-amber-50/40 dark:bg-amber-950/20" : ""}`}>
+                          <td className={`hidden sm:table-cell px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${ceItm ? "bg-amber-50/40 dark:bg-amber-950/20" : ""}`}>
                             {formatDelta(row.ce?.delta)}
                             <StaleBadge stale={row.ce?._deltaStale} />
                           </td>
                         )}
                         <td className={`group px-2 py-1.5 text-right tabular-nums relative ${ceItm ? "bg-amber-50/40 dark:bg-amber-950/20" : ""}`}>
                           {ceNet !== 0 && (
-                            <span className={`absolute -top-0.5 right-0.5 z-[1] rounded-full border bg-white dark:bg-[#070e17] px-1 text-[8px] font-black leading-tight ${ceNet > 0 ? "border-emerald-500 text-emerald-600" : "border-rose-500 text-rose-600"}`}>
+                            <span className={`absolute -top-0.5 right-0.5 z-[1] rounded-full border bg-white dark:bg-[#070e17] px-1 text-micro font-bold leading-tight ${ceNet > 0 ? "border-emerald-500 text-emerald-600" : "border-rose-500 text-rose-600"}`}>
                               {ceNet > 0 ? `+${ceNet}` : ceNet}
                             </span>
                           )}
@@ -2399,37 +2399,37 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             className={`group-hover:invisible ${
                               isAtm
                                 ? "inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-1.5 py-0.5 text-white shadow-xs font-bold"
-                                : "text-gray-900 dark:text-gray-100 font-bold font-mono"
+                                : "text-gray-900 dark:text-gray-100 font-bold font-mono tabular-nums"
                             }`}
                           >
                             {formatPrice(row.ce?.ltp)}
                             <StaleBadge stale={row.ce?._ltpStale} label="no stored price at this minute — showing the last recorded value" />
-                            {isAtm && <span className="text-[8px] font-extrabold tracking-wide">ATM</span>}
+                            {isAtm && <span className="text-micro font-extrabold tracking-wide">ATM</span>}
                           </span>
                           <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white/95 dark:bg-[#0b1420]/95 backdrop-blur-xs">
                             {!replayData && (ceLeg ? (
                               <>
-                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty - 1)} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-[11px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5">−</button>
-                                <span className="w-5 text-center text-[11px] font-bold tabular-nums text-gray-800 dark:text-gray-200">{ceLeg.qty}</span>
-                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty + 1)} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-[11px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5">+</button>
+                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty - 1)} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-label font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5">−</button>
+                                <span className="w-5 text-center text-label font-bold tabular-nums text-gray-800 dark:text-gray-200">{ceLeg.qty}</span>
+                                <button onClick={() => updateQty(ceLeg.id, ceLeg.qty + 1)} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-label font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5">+</button>
                               </>
                             ) : (
                               <>
                                 <button
                                   onClick={() => addLeg(row, "CE", "buy")}
-                                  className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-0.5 text-[11px] font-black shadow-xs transition"
+                                  className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-0.5 text-label font-bold shadow-xs transition"
                                 >
                                   B
                                 </button>
                                 <button
                                   onClick={() => addLeg(row, "CE", "sell")}
-                                  className="rounded-lg bg-rose-600 hover:bg-rose-500 text-white px-2 py-0.5 text-[11px] font-black shadow-xs transition"
+                                  className="rounded-lg bg-rose-600 hover:bg-rose-500 text-white px-2 py-0.5 text-label font-bold shadow-xs transition"
                                 >
                                   S
                                 </button>
                               </>
                             ))}
-                            <button onClick={() => setChartModal({ strike: row.strike, right: "CE" })} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-[12px] leading-none text-gray-500 hover:bg-gray-100 dark:hover:bg-white/5" title="View contract chart">📈</button>
+                            <button onClick={() => setChartModal({ strike: row.strike, right: "CE" })} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-xs leading-none text-gray-500 hover:bg-gray-100 dark:hover:bg-white/5" title="View contract chart">📈</button>
                           </div>
                         </td>
                         {columns.oi && (
@@ -2442,13 +2442,13 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                           <span
                             className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-xs font-bold tabular-nums font-mono ${
                               isAtm
-                                ? "border-emerald-600 bg-emerald-600 text-white shadow-xs font-black"
-                                : "border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] text-gray-900 dark:text-gray-100 shadow-2xs"
+                                ? "border-emerald-600 bg-emerald-600 text-white shadow-xs font-bold"
+                                : "border-gray-200 dark:border-white/10 bg-surface text-gray-900 dark:text-gray-100 shadow-2xs"
                             }`}
                           >
                             {row.strike}
                             {isAtm && (
-                              <span className="rounded-sm bg-white/20 px-1 text-[8px] font-extrabold tracking-wide">
+                              <span className="rounded-sm bg-white/20 px-1 text-micro font-extrabold tracking-wide">
                                 ATM
                               </span>
                             )}
@@ -2462,7 +2462,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         )}
                         <td className={`group px-2 py-1.5 text-left tabular-nums relative ${peItm ? "bg-amber-50/40 dark:bg-amber-950/20" : ""}`}>
                           {peNet !== 0 && (
-                            <span className={`absolute -top-0.5 left-0.5 z-[1] rounded-full border bg-white dark:bg-[#070e17] px-1 text-[8px] font-black leading-tight ${peNet > 0 ? "border-emerald-500 text-emerald-600" : "border-rose-500 text-rose-600"}`}>
+                            <span className={`absolute -top-0.5 left-0.5 z-[1] rounded-full border bg-white dark:bg-[#070e17] px-1 text-micro font-bold leading-tight ${peNet > 0 ? "border-emerald-500 text-emerald-600" : "border-rose-500 text-rose-600"}`}>
                               {peNet > 0 ? `+${peNet}` : peNet}
                             </span>
                           )}
@@ -2470,41 +2470,41 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             className={`group-hover:invisible ${
                               isAtm
                                 ? "inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-1.5 py-0.5 text-white shadow-xs font-bold"
-                                : "text-gray-900 dark:text-gray-100 font-bold font-mono"
+                                : "text-gray-900 dark:text-gray-100 font-bold font-mono tabular-nums"
                             }`}
                           >
                             {formatPrice(row.pe?.ltp)}
                             <StaleBadge stale={row.pe?._ltpStale} label="no stored price at this minute — showing the last recorded value" />
-                            {isAtm && <span className="text-[8px] font-extrabold tracking-wide">ATM</span>}
+                            {isAtm && <span className="text-micro font-extrabold tracking-wide">ATM</span>}
                           </span>
                           <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white/95 dark:bg-[#0b1420]/95 backdrop-blur-xs">
                             {!replayData && (peLeg ? (
                               <>
-                                <button onClick={() => updateQty(peLeg.id, peLeg.qty - 1)} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-[11px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5">−</button>
-                                <span className="w-5 text-center text-[11px] font-bold tabular-nums text-gray-800 dark:text-gray-200">{peLeg.qty}</span>
-                                <button onClick={() => updateQty(peLeg.id, peLeg.qty + 1)} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-[11px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5">+</button>
+                                <button onClick={() => updateQty(peLeg.id, peLeg.qty - 1)} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-label font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5">−</button>
+                                <span className="w-5 text-center text-label font-bold tabular-nums text-gray-800 dark:text-gray-200">{peLeg.qty}</span>
+                                <button onClick={() => updateQty(peLeg.id, peLeg.qty + 1)} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-label font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5">+</button>
                               </>
                             ) : (
                               <>
                                 <button
                                   onClick={() => addLeg(row, "PE", "buy")}
-                                  className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-0.5 text-[11px] font-black shadow-xs transition"
+                                  className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-0.5 text-label font-bold shadow-xs transition"
                                 >
                                   B
                                 </button>
                                 <button
                                   onClick={() => addLeg(row, "PE", "sell")}
-                                  className="rounded-lg bg-rose-600 hover:bg-rose-500 text-white px-2 py-0.5 text-[11px] font-black shadow-xs transition"
+                                  className="rounded-lg bg-rose-600 hover:bg-rose-500 text-white px-2 py-0.5 text-label font-bold shadow-xs transition"
                                 >
                                   S
                                 </button>
                               </>
                             ))}
-                            <button onClick={() => setChartModal({ strike: row.strike, right: "PE" })} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-[12px] leading-none text-gray-500 hover:bg-gray-100 dark:hover:bg-white/5" title="View contract chart">📈</button>
+                            <button onClick={() => setChartModal({ strike: row.strike, right: "PE" })} className="rounded-lg border border-gray-300 dark:border-white/10 px-1.5 py-0.5 text-xs leading-none text-gray-500 hover:bg-gray-100 dark:hover:bg-white/5" title="View contract chart">📈</button>
                           </div>
                         </td>
                         {columns.callDelta && (
-                          <td className={`px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-amber-50/40 dark:bg-amber-950/20" : ""}`}>
+                          <td className={`hidden sm:table-cell px-1.5 py-1.5 text-center tabular-nums text-gray-400 ${peItm ? "bg-amber-50/40 dark:bg-amber-950/20" : ""}`}>
                             {formatDelta(row.pe?.delta)}
                             <StaleBadge stale={row.pe?._deltaStale} />
                           </td>
@@ -2522,7 +2522,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
           )}
 
           {!selectedDate && !chainError && (
-            <div className="rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-8 text-center text-xs text-gray-400 shadow-xs">
+            <div className="rounded-2xl border border-gray-200 dark:border-white/10 bg-surface p-8 text-center text-xs text-gray-400 shadow-xs">
               Pick a symbol and a historical trading day above. The chain is
               real data stored from that day — build legs the same way as
               Strategy Builder, then replay the whole day minute by minute from
@@ -2535,7 +2535,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
         {hideChain && (
           <button
             onClick={() => setHideChain(false)}
-            className="fixed left-3 top-20 z-30 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-3.5 py-2 text-xs font-bold text-gray-700 dark:text-gray-200 shadow-xl hover:bg-gray-50 dark:hover:bg-white/5 transition"
+            className="fixed left-3 top-20 z-30 rounded-xl border border-gray-200 dark:border-white/10 bg-surface px-3.5 py-2 text-xs font-bold text-gray-700 dark:text-gray-200 shadow-xl hover:bg-gray-50 dark:hover:bg-white/5 transition"
           >
             Show Option Chain ⇥
           </button>
@@ -2611,7 +2611,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
               <div className="w-full shrink-0 flex flex-col justify-between rounded-2xl border border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 p-4 shadow-xs space-y-3 md:w-64 backdrop-blur-md">
                 {/* P&L Card with StockMojo Badge */}
                 <div className="border-b border-gray-100 dark:border-gray-800/80 pb-3">
-                  <div className="text-[11px] font-bold text-gray-500 dark:text-gray-400">
+                  <div className="text-label font-bold text-gray-500 dark:text-gray-400">
                     P&L
                   </div>
                   <div className="mt-1 flex items-center gap-2">
@@ -2629,17 +2629,17 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
                 {/* Est Margin */}
                 <div title="Estimated margin required by exchange/broker" className="border-b border-gray-100 dark:border-gray-800/80 pb-2.5">
-                  <div className="flex items-center justify-between text-[11px] font-semibold text-gray-400 dark:text-gray-400">
+                  <div className="flex items-center justify-between text-label font-semibold text-gray-400 dark:text-gray-400">
                     <span>Est. Margin</span>
                     {marginDetails?.isHedged && (
-                      <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400">Hedged</span>
+                      <span className="text-micro font-bold text-emerald-600 dark:text-emerald-400">Hedged</span>
                     )}
                   </div>
                   <div className="text-sm font-bold font-mono tabular-nums text-gray-900 dark:text-gray-100 mt-0.5">
                     {marginDetails?.fundsRequired ? formatPrice(marginDetails.fundsRequired) : (estMargin ? formatPrice(estMargin) : "₹0.00")}
                   </div>
                   {marginDetails?.isHedged && marginDetails?.marginBenefit > 0 && (
-                    <div className="mt-1 inline-flex items-center gap-1 rounded bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.2 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                    <div className="mt-1 inline-flex items-center gap-1 rounded bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.2 text-micro font-medium text-emerald-700 dark:text-emerald-300">
                       <span>✓ Saved</span>
                       <span className="font-bold">{formatPrice(marginDetails.marginBenefit)}</span>
                     </div>
@@ -2649,13 +2649,13 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 {/* POP & Reward : Risk */}
                 <div className="grid grid-cols-2 gap-2 border-b border-gray-100 dark:border-gray-800/80 pb-2.5">
                   <div>
-                    <div className="text-[11px] font-semibold text-gray-400">POP</div>
+                    <div className="text-label font-semibold text-gray-400">POP</div>
                     <div className="mt-0.5 text-xs font-bold font-mono tabular-nums text-gray-800 dark:text-gray-200">
                       {pop != null ? `${pop.toFixed(0)}%` : "—"}
                     </div>
                   </div>
                   <div>
-                    <div className="text-[11px] font-semibold text-gray-400">Reward : Risk</div>
+                    <div className="text-label font-semibold text-gray-400">Reward : Risk</div>
                     <div className="mt-0.5 text-xs font-bold font-mono tabular-nums text-gray-800 dark:text-gray-200">
                       {riskRewardRatio && riskRewardRatio.startsWith("1 : ")
                         ? riskRewardRatio.replace("1 : ", "")
@@ -2665,9 +2665,9 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 </div>
 
                 {/* Max Profit & Max Loss */}
-                <div className="space-y-2 border-b border-gray-100 dark:border-gray-800/80 pb-2.5 text-xs font-mono">
+                <div className="space-y-2 border-b border-gray-100 dark:border-gray-800/80 pb-2.5 text-xs font-mono tabular-nums">
                   <div>
-                    <div className="text-[11px] font-semibold text-gray-400 font-sans">Max Profit</div>
+                    <div className="text-label font-semibold text-gray-400 font-sans">Max Profit</div>
                     <div className="text-xs font-bold tabular-nums text-emerald-600 dark:text-emerald-400 mt-0.5">
                       {activeLegs.length === 0
                         ? "—"
@@ -2677,7 +2677,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     </div>
                   </div>
                   <div>
-                    <div className="text-[11px] font-semibold text-gray-400 font-sans">Max Loss</div>
+                    <div className="text-label font-semibold text-gray-400 font-sans">Max Loss</div>
                     <div className="text-xs font-bold tabular-nums text-rose-600 dark:text-rose-400 mt-0.5">
                       {activeLegs.length === 0
                         ? "—"
@@ -2690,11 +2690,11 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
                 {/* Breakevens */}
                 <div className="border-b border-gray-100 dark:border-gray-800/80 pb-2.5">
-                  <div className="text-[11px] font-semibold text-gray-400 dark:text-gray-400 mb-1">
+                  <div className="text-label font-semibold text-gray-400 dark:text-gray-400 mb-1">
                     Breakevens
                   </div>
                   {breakevens && breakevens.length ? (
-                    <div className="space-y-1 font-mono text-xs">
+                    <div className="space-y-1 font-mono tabular-nums text-xs">
                       {breakevens.map((be, i) => {
                         const pctFromSpot = displaySpot ? ((be - displaySpot) / displaySpot) * 100 : null;
                         return (
@@ -2702,7 +2702,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             <span>{Math.round(be)}</span>
                             {pctFromSpot != null && (
                               <span
-                                className={`text-[10px] font-semibold ${
+                                className={`text-micro font-semibold ${
                                   pctFromSpot >= 0
                                     ? "text-emerald-600 dark:text-emerald-400"
                                     : "text-rose-600 dark:text-rose-400"
@@ -2722,22 +2722,22 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
                 {/* Greeks Grid */}
                 {netGreeks && (
-                  <div className="grid grid-cols-3 gap-1 pt-0.5 text-[10px]">
-                    <div className="rounded-lg bg-gray-50 dark:bg-gray-850 p-1.5 text-center border border-gray-100 dark:border-gray-800">
+                  <div className="grid grid-cols-3 gap-1 pt-0.5 text-micro">
+                    <div className="rounded-lg bg-gray-50 dark:bg-gray-800/60 p-1.5 text-center border border-gray-100 dark:border-gray-800">
                       <div className="text-gray-400 font-bold">Delta (Δ)</div>
-                      <div className={`font-black tabular-nums text-xs mt-0.5 ${netGreeks.delta > 0 ? "text-emerald-600 dark:text-emerald-400" : netGreeks.delta < 0 ? "text-rose-600 dark:text-rose-400" : "text-gray-700 dark:text-gray-300"}`}>
+                      <div className={`font-bold tabular-nums text-xs mt-0.5 ${netGreeks.delta > 0 ? "text-emerald-600 dark:text-emerald-400" : netGreeks.delta < 0 ? "text-rose-600 dark:text-rose-400" : "text-gray-700 dark:text-gray-300"}`}>
                         {netGreeks.delta?.toFixed(2) ?? 0}
                       </div>
                     </div>
-                    <div className="rounded-lg bg-gray-50 dark:bg-gray-850 p-1.5 text-center border border-gray-100 dark:border-gray-800">
+                    <div className="rounded-lg bg-gray-50 dark:bg-gray-800/60 p-1.5 text-center border border-gray-100 dark:border-gray-800">
                       <div className="text-gray-400 font-bold">Theta (Θ)</div>
-                      <div className={`font-black tabular-nums text-xs mt-0.5 ${netGreeks.theta > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-gray-700 dark:text-gray-300"}`}>
+                      <div className={`font-bold tabular-nums text-xs mt-0.5 ${netGreeks.theta > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-gray-700 dark:text-gray-300"}`}>
                         {netGreeks.theta?.toFixed(0) ?? 0}/d
                       </div>
                     </div>
-                    <div className="rounded-lg bg-gray-50 dark:bg-gray-850 p-1.5 text-center border border-gray-100 dark:border-gray-800">
+                    <div className="rounded-lg bg-gray-50 dark:bg-gray-800/60 p-1.5 text-center border border-gray-100 dark:border-gray-800">
                       <div className="text-gray-400 font-bold">Vega (ν)</div>
-                      <div className="font-black tabular-nums text-xs mt-0.5 text-gray-700 dark:text-gray-300">
+                      <div className="font-bold tabular-nums text-xs mt-0.5 text-gray-700 dark:text-gray-300">
                         {netGreeks.vega?.toFixed(0) ?? 0}
                       </div>
                     </div>
@@ -2747,7 +2747,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
             )}
 
             <div className="flex-1 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 shadow-xs overflow-hidden flex flex-col backdrop-blur-md">
-              <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-850 px-3 pt-2.5 overflow-x-auto">
+              <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/60 px-3 pt-2.5 overflow-x-auto">
                 <div className="flex gap-1">
                   {CHART_TABS.map(([key, label]) => (
                     <button
@@ -2825,7 +2825,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                       <CandlestickChart ref={niftyChartRef} symbol={symbol} date={selectedDate} compact />
                     </div>
                     {legs.length > 0 && (
-                      <div className="text-[11px] text-gray-400 dark:text-gray-400 text-center">
+                      <div className="text-label text-gray-400 dark:text-gray-400 text-center">
                         Crosshair is synced between the two charts above — move it on either one.
                       </div>
                     )}
@@ -2837,7 +2837,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
           {(legs.length > 0 || upcomingPositions.length > 0) && (
             <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 shadow-xs overflow-hidden backdrop-blur-md">
-              <div className="flex overflow-x-auto border-b border-gray-100 dark:border-gray-800 text-xs font-bold bg-gray-50/50 dark:bg-gray-850">
+              <div className="flex overflow-x-auto border-b border-gray-100 dark:border-gray-800 text-xs font-bold bg-gray-50/50 dark:bg-gray-800/60">
                 <button
                   onClick={() => setTab("positions")}
                   className={`shrink-0 px-4 sm:px-6 py-3 transition-colors ${tab === "positions" ? "border-b-2 border-emerald-600 text-emerald-600 dark:text-emerald-400 bg-white dark:bg-gray-900" : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"}`}
@@ -2860,7 +2860,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
               {tab === "positions" ? (
                 <>
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 dark:border-gray-800 bg-gray-50/40 dark:bg-gray-800/40 px-4 py-2.5 text-[11px]">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 dark:border-gray-800 bg-gray-50/40 dark:bg-gray-800/40 px-4 py-2.5 text-label">
                     <div className="flex items-center gap-3">
                       <label className="flex items-center gap-1.5 text-gray-700 dark:text-gray-300 font-semibold cursor-pointer">
                         <input
@@ -2868,12 +2868,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                           checked={allLegsActive}
                           disabled={!!replayData}
                           onChange={toggleSelectAllLegs}
-                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
+                          className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
                         />
                       </label>
                       <button
                         onClick={() => setLegsTopFirst((v) => !v)}
-                        className="rounded-full bg-blue-600 px-3 py-0.5 text-[11px] font-bold text-white shadow-2xs hover:bg-blue-700 transition"
+                        className="rounded-full bg-blue-600 px-3 py-0.5 text-label font-bold text-white shadow-2xs hover:bg-blue-700 transition"
                       >
                         {legsTopFirst ? "Top" : "Bottom"}
                       </button>
@@ -2902,11 +2902,11 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
-                      <div className="flex items-center gap-1 font-mono text-xs">
-                        <span className="text-gray-500 dark:text-gray-400 font-sans font-medium text-[11px]">Total P&L:</span>
+                      <div className="flex items-center gap-1 font-mono tabular-nums text-xs">
+                        <span className="text-gray-500 dark:text-gray-400 font-sans font-medium text-label">Total P&L:</span>
                         <span className={`font-bold tabular-nums ${totalLivePnl != null && totalLivePnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
                           {totalLivePnl != null ? `${totalLivePnl >= 0 ? "+" : ""}${formatPrice(totalLivePnl)}` : "+0"}
-                          <span className="ml-1 text-[10px] font-medium">
+                          <span className="ml-1 text-micro font-medium">
                             ({((marginDetails?.fundsRequired || estMargin) ? (((totalLivePnl ?? 0) / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2) : "0.00")}%)
                           </span>
                         </span>
@@ -2915,13 +2915,13 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         onClick={archiveCurrentPosition}
                         disabled={!legs.length}
                         title="Snapshot the current legs into Upcoming Positions and clear them"
-                        className="inline-flex items-center gap-1 rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-1 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 transition text-[11px]"
+                        className="inline-flex items-center gap-1 rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-1 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 transition text-label"
                       >
                         <FiArchive className="h-3.5 w-3.5" /> Archive
                       </button>
                       <button
                         onClick={resetWorkspace}
-                        className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-1 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition text-[11px]"
+                        className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-1 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition text-label"
                       >
                         Reset/New
                       </button>
@@ -2932,34 +2932,34 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     <thead>
                       <tr className="text-gray-400 dark:text-gray-400 bg-gray-50/40 dark:bg-gray-800/40 border-b border-gray-100 dark:border-gray-800">
                         <th className="px-3 py-2 w-8" title="Include in payoff calculation"></th>
-                        <th className="px-3 py-2 text-center font-semibold text-[11px] w-12">
+                        <th className="px-3 py-2 text-center font-semibold text-label w-12">
                           Side
                         </th>
-                        <th className="px-3 py-2 text-center font-semibold text-[11px] w-14">
+                        <th className="px-3 py-2 text-center font-semibold text-label w-14">
                           Lots
                         </th>
-                        <th className="px-3 py-2 text-left font-semibold text-[11px]">
+                        <th className="px-3 py-2 text-left font-semibold text-label">
                           Expiry
                         </th>
-                        <th className="px-3 py-2 text-center font-semibold text-[11px]">
+                        <th className="px-3 py-2 text-center font-semibold text-label">
                           Strike
                         </th>
-                        <th className="px-3 py-2 text-center font-semibold text-[11px]">
+                        <th className="px-3 py-2 text-center font-semibold text-label">
                           Type
                         </th>
-                        <th className="px-3 py-2 text-right font-semibold text-[11px]">
+                        <th className="px-3 py-2 text-right font-semibold text-label">
                           Entry
                         </th>
-                        <th className="px-3 py-2 text-right font-semibold text-[11px]">
+                        <th className="px-3 py-2 text-right font-semibold text-label">
                           LTP/Exit
                         </th>
-                        <th className="px-3 py-2 text-right font-semibold text-[11px]">
+                        <th className="px-3 py-2 text-right font-semibold text-label">
                           P&L
                         </th>
-                        <th className="px-3 py-2 text-center font-semibold text-[11px]">
+                        <th className="px-3 py-2 text-center font-semibold text-label">
                           SL/TG
                         </th>
-                        <th className="px-3 py-2 text-center font-semibold text-[11px] w-20">
+                        <th className="px-3 py-2 text-center font-semibold text-label w-20">
                           Exit
                         </th>
                       </tr>
@@ -3033,7 +3033,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 disabled={!!replayData}
                                 onChange={() => toggleLegActive(leg.id)}
                                 title={included ? "Included in payoff calculation — uncheck to exclude" : "Excluded from payoff calculation — check to include"}
-                                className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
+                                className="h-4 w-4 cursor-pointer rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
                               />
                             </td>
                             <td className="px-3 py-2 text-center">
@@ -3041,7 +3041,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 onClick={() => toggleLegSide(leg.id)}
                                 disabled={!!replayData}
                                 title="Click to flip Buy/Sell"
-                                className={`w-7 h-6 inline-flex items-center justify-center rounded-md text-xs font-black transition border ${
+                                className={`w-7 h-6 inline-flex items-center justify-center rounded-md text-xs font-bold transition border ${
                                   leg.action === "buy"
                                     ? "border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100"
                                     : "border-rose-500 text-rose-600 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100"
@@ -3060,7 +3060,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 value={leg.expiry || ""}
                                 disabled={!!replayData || !chainData?.expiries?.length}
                                 onChange={(e) => updateLegExpiry(leg.id, e.target.value)}
-                                className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:text-gray-200 outline-none focus:border-blue-500 disabled:opacity-50 cursor-pointer"
+                                className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-0.5 text-label font-medium text-gray-700 dark:text-gray-200 outline-none focus:border-blue-500 disabled:opacity-50 cursor-pointer"
                               >
                                 {(chainData?.expiries?.includes(leg.expiry) ? chainData.expiries : [leg.expiry, ...(chainData?.expiries || [])]).map((exp) => (
                                   <option key={exp} value={exp}>{formatExpiryShort(exp)}</option>
@@ -3073,7 +3073,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                   <button
                                     onClick={() => rollLegStrike(leg.id, -1)}
                                     disabled={!!replayData}
-                                    className="h-5 w-5 inline-flex items-center justify-center rounded border border-gray-200 dark:border-gray-700 text-[11px] font-bold text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
+                                    className="h-5 w-5 inline-flex items-center justify-center rounded border border-gray-200 dark:border-gray-700 text-label font-bold text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
                                     title="Roll to lower strike"
                                   >
                                     −
@@ -3082,7 +3082,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                   <button
                                     onClick={() => rollLegStrike(leg.id, 1)}
                                     disabled={!!replayData}
-                                    className="h-5 w-5 inline-flex items-center justify-center rounded border border-gray-200 dark:border-gray-700 text-[11px] font-bold text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
+                                    className="h-5 w-5 inline-flex items-center justify-center rounded border border-gray-200 dark:border-gray-700 text-label font-bold text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
                                     title="Roll to higher strike"
                                   >
                                     +
@@ -3096,7 +3096,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             </td>
                             <td className="px-3 py-2 text-center">
                               <span
-                                className={`rounded px-2 py-0.5 text-[11px] font-bold ${
+                                className={`rounded px-2 py-0.5 text-label font-bold ${
                                   leg.type === "CE"
                                     ? "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/60"
                                     : "text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-950/60"
@@ -3142,10 +3142,10 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 <span className="font-bold text-xs">@</span>
                               </button>
                               {(leg.slPercent != null || leg.tgPercent != null) && (
-                                <div className="text-[9px] font-semibold text-gray-400">SL {leg.slPercent ?? "—"}% / TG {leg.tgPercent ?? "—"}%</div>
+                                <div className="text-micro font-semibold text-gray-400">SL {leg.slPercent ?? "—"}% / TG {leg.tgPercent ?? "—"}%</div>
                               )}
                               {replayOutcome?.exitReason && (
-                                <div className={`mt-0.5 text-[9px] font-bold ${replayOutcome.exitReason === "target" ? "text-emerald-600" : "text-rose-600"}`}>
+                                <div className={`mt-0.5 text-micro font-bold ${replayOutcome.exitReason === "target" ? "text-emerald-600" : "text-rose-600"}`}>
                                   {replayOutcome.exitReason === "target" ? "Target hit" : "SL hit"} @ {replayOutcome.exitTime?.slice(0, 5)}
                                 </div>
                               )}
@@ -3184,7 +3184,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     {/* Scheduled Active Legs (time > currentTime) */}
                     {upcomingLegs.length > 0 && (
                       <div className="border-b border-gray-100 dark:border-gray-800">
-                        <div className="flex flex-wrap items-center justify-between gap-2 bg-blue-50/50 dark:bg-blue-950/30 px-4 py-2.5 text-[11px] border-b border-blue-100/60 dark:border-blue-900/40">
+                        <div className="flex flex-wrap items-center justify-between gap-2 bg-blue-50/50 dark:bg-blue-950/30 px-4 py-2.5 text-label border-b border-blue-100/60 dark:border-blue-900/40">
                           <div>
                             <span className="font-bold text-blue-900 dark:text-blue-200">
                               Scheduled Positions ({upcomingLegs.length})
@@ -3196,7 +3196,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                           <div className="flex items-center gap-2">
                             <button
                               onClick={enterAllUpcomingNow}
-                              className="rounded-lg bg-blue-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-blue-700 transition shadow-2xs"
+                              className="rounded-lg bg-blue-600 px-2.5 py-1 text-label font-bold text-white hover:bg-blue-700 transition shadow-2xs"
                             >
                               Enter All Now @ {currentTime?.slice(0, 5)}
                             </button>
@@ -3204,16 +3204,16 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         </div>
                         <div className="divide-y divide-gray-100 dark:divide-gray-800">
                           {upcomingLegs.map((leg) => (
-                            <div key={leg.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5 text-[11px] hover:bg-gray-50/50 dark:hover:bg-gray-800/50 transition">
+                            <div key={leg.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5 text-label hover:bg-gray-50/50 dark:hover:bg-gray-800/50 transition">
                               <span
-                                className={`w-11 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-black text-white shadow-xs ${
+                                className={`w-11 shrink-0 rounded-md px-2 py-0.5 text-center text-micro font-bold text-white shadow-xs ${
                                   leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"
                                 }`}
                               >
                                 {leg.action === "buy" ? "BUY" : "SELL"}
                               </span>
                               <span
-                                className={`w-8 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-extrabold ${
+                                className={`w-8 shrink-0 rounded-md px-2 py-0.5 text-center text-micro font-extrabold ${
                                   leg.type === "CE" ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300" : "bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300"
                                 }`}
                               >
@@ -3221,10 +3221,10 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                               </span>
                               <span className="font-bold tabular-nums text-gray-900 dark:text-gray-100 font-mono">{leg.strike}</span>
                               <span className="text-gray-400 dark:text-gray-400 font-medium">×{leg.qty} lot{leg.qty > 1 ? "s" : ""}</span>
-                              <span className="text-gray-500 dark:text-gray-400 font-mono">
+                              <span className="text-gray-500 dark:text-gray-400 font-mono tabular-nums">
                                 Entry: {formatPrice(leg.premium)}
                               </span>
-                              <span className="rounded-md bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-[10px] font-bold font-mono">
+                              <span className="rounded-md bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-micro font-bold font-mono tabular-nums">
                                 ⏳ Scheduled @ {leg.time ? String(leg.time).slice(0, 5) : "—"}
                               </span>
                               <div className="ml-auto flex items-center gap-2">
@@ -3232,7 +3232,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                   <button
                                     onClick={() => scrubToTime(leg.time)}
                                     title={`Step time forward to ${leg.time}`}
-                                    className="rounded border border-gray-200 dark:border-gray-700 px-2 py-0.5 text-[11px] font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition"
+                                    className="rounded border border-gray-200 dark:border-gray-700 px-2 py-0.5 text-label font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition"
                                   >
                                     ▶ Step to {String(leg.time).slice(0, 5)}
                                   </button>
@@ -3240,7 +3240,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 <button
                                   onClick={() => enterLegNow(leg.id)}
                                   title={`Activate position right now at ${currentTime}`}
-                                  className="rounded bg-blue-600 px-2 py-0.5 text-[11px] font-bold text-white hover:bg-blue-700 transition"
+                                  className="rounded bg-blue-600 px-2 py-0.5 text-label font-bold text-white hover:bg-blue-700 transition"
                                 >
                                   Enter Now
                                 </button>
@@ -3261,13 +3261,13 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     {/* Archived Strategy Snapshots */}
                     {upcomingPositions.length > 0 && (
                       <div>
-                        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 bg-gray-50/40 dark:bg-gray-800/40 px-4 py-2 text-[11px]">
+                        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 bg-gray-50/40 dark:bg-gray-800/40 px-4 py-2 text-label">
                           <span className="font-bold text-gray-700 dark:text-gray-300">
                             Archived Strategy Snapshots ({upcomingPositions.length})
                           </span>
                           <button
                             onClick={resetWorkspace}
-                            className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-0.5 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition text-[10px]"
+                            className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-0.5 font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition text-micro"
                           >
                             Reset Workspace
                           </button>
@@ -3284,7 +3284,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             ];
                             return (
                               <div key={entry.id}>
-                                <div className="flex flex-wrap items-center justify-between gap-2 bg-gray-50/60 dark:bg-gray-800/60 px-4 py-2 text-[11px]">
+                                <div className="flex flex-wrap items-center justify-between gap-2 bg-gray-50/60 dark:bg-gray-800/60 px-4 py-2 text-label">
                                   <div className="font-bold text-gray-800 dark:text-gray-200">
                                     {entry.date}
                                     <span className="ml-2 font-normal text-gray-400 dark:text-gray-400">
@@ -3294,7 +3294,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                   <div className="flex items-center gap-3">
                                     <div>
                                       <span className="text-gray-400 dark:text-gray-400 font-medium">Net {netCost >= 0 ? "Credit" : "Debit"}: </span>
-                                      <span className={`font-black tabular-nums ${netCost >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                      <span className={`font-bold tabular-nums ${netCost >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
                                         {formatPrice(Math.abs(netCost))}
                                       </span>
                                     </div>
@@ -3309,16 +3309,16 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 </div>
                                 <div className="divide-y divide-gray-100 dark:divide-gray-800/60">
                                   {orderedEntryLegs.map((leg) => (
-                                    <div key={leg.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-[11px]">
+                                    <div key={leg.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-label">
                                       <span
-                                        className={`w-11 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-black text-white shadow-xs ${
+                                        className={`w-11 shrink-0 rounded-md px-2 py-0.5 text-center text-micro font-bold text-white shadow-xs ${
                                           leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"
                                         }`}
                                       >
                                         {leg.action === "buy" ? "BUY" : "SELL"}
                                       </span>
                                       <span
-                                        className={`w-8 shrink-0 rounded-md px-2 py-0.5 text-center text-[10px] font-extrabold ${
+                                        className={`w-8 shrink-0 rounded-md px-2 py-0.5 text-center text-micro font-extrabold ${
                                           leg.type === "CE" ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300" : "bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300"
                                         }`}
                                       >

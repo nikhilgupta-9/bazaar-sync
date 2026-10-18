@@ -84,7 +84,7 @@ export default function IndustryMomentum() {
                             <div>
                                 <div className="flex items-start justify-between">
                                     <div className="flex items-center gap-2">
-                                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-gray-100 text-[10px] font-bold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-gray-100 text-micro font-bold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
                                             #{index + 1}
                                         </span>
                                         <h3 className="font-bold text-sm text-gray-900 dark:text-white">
@@ -92,7 +92,7 @@ export default function IndustryMomentum() {
                                         </h3>
                                     </div>
                                     <span
-                                        className={`rounded-md px-2 py-0.5 text-xs font-bold ${
+                                        className={`rounded-md px-2 py-0.5 text-xs font-bold font-mono tabular-nums ${
                                             isPos
                                                 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400"
                                                 : "bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400"
@@ -101,19 +101,19 @@ export default function IndustryMomentum() {
                                         {isPos ? "+" : ""}{ind.avgMomentum}%
                                     </span>
                                 </div>
-                                <div className="mt-1 text-[11px] text-gray-400">{ind.sector}</div>
+                                <div className="mt-1 text-label text-gray-400">{ind.sector}</div>
 
                                 {/* Top Performer Badge */}
                                 {ind.topPerformer && (
                                     <div className="mt-3 flex items-center justify-between rounded-lg bg-gray-50 p-2 text-xs dark:bg-gray-800/50">
-                                        <span className="flex items-center gap-1 text-[11px] text-gray-500 dark:text-gray-400">
+                                        <span className="flex items-center gap-1 text-label text-gray-500 dark:text-gray-400">
                                             <FiAward className="text-amber-500" size={13} /> Leader:
                                         </span>
                                         <span className="font-bold text-gray-900 dark:text-white">
                                             {ind.topPerformer.symbol}
                                         </span>
                                         <span
-                                            className={`font-semibold font-mono text-[11px] ${
+                                            className={`font-semibold font-mono tabular-nums text-label ${
                                                 ind.topPerformer.pChange >= 0
                                                     ? "text-emerald-600 dark:text-emerald-400"
                                                     : "text-rose-600 dark:text-rose-400"
@@ -127,18 +127,18 @@ export default function IndustryMomentum() {
 
                             {/* Constituent stock pills */}
                             <div className="mt-3 border-t border-gray-100 pt-2.5 dark:border-gray-800">
-                                <div className="mb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                                <div className="mb-1 text-micro font-semibold text-gray-400 uppercase tracking-wider">
                                     Constituents ({ind.stockCount})
                                 </div>
                                 <div className="flex flex-wrap gap-1.5">
                                     {ind.stocks.map((st) => (
                                         <span
                                             key={st.symbol}
-                                            className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                                            className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-0.5 text-label font-medium text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
                                         >
                                             <span>{st.symbol}</span>
                                             <span
-                                                className={`text-[10px] font-mono ${
+                                                className={`text-micro font-mono tabular-nums ${
                                                     st.pChange >= 0
                                                         ? "text-emerald-600 dark:text-emerald-400"
                                                         : "text-rose-600 dark:text-rose-400"

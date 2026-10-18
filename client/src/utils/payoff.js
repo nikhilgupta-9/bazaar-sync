@@ -300,7 +300,9 @@ function verticalMaxLossPerUnit(shortLeg, longLeg) {
     return Math.max(0, -worst);
 }
 
-export function computeMarginDetails(legs, spot, symbol) {
+const CRYPTO_SYMBOLS = new Set(["BTC", "ETH", "SOL", "BTCUSDT", "ETHUSDT", "SOLUSDT"]);
+
+export function computeMarginDetails(legs, spot, symbol, options = {}) {
     if (!spot || !legs || !legs.length) {
         return {
             fundsRequired: 0,
@@ -313,6 +315,11 @@ export function computeMarginDetails(legs, spot, symbol) {
             isHedged: false,
         };
     }
+
+    const isCrypto = options.isCrypto || (symbol && CRYPTO_SYMBOLS.has(String(symbol).toUpperCase()));
+    // In Delta Exchange, default options leverage is 20x (5% IM) or 100x (1% IM)
+    const leverage = Number(options.leverage) || (isCrypto ? 20 : 1);
+    const cryptoImRate = 1 / Math.max(1, leverage);
 
     let premiumPaid = 0;
     let premiumReceived = 0;
@@ -336,21 +343,29 @@ export function computeMarginDetails(legs, spot, symbol) {
                 shortPool[leg.type].push({ ...leg, lotsLeft: leg.qty });
             }
             const lotSize = leg.lotSize || 1;
-            const { spanPct, exposurePct, totalPct } = getSpanExposureBreakdown(leg, symbol);
-            totalNakedMargin += spot * lotSize * leg.qty * totalPct;
-            totalExposureMargin += spot * lotSize * leg.qty * exposurePct;
+            if (isCrypto) {
+                // Delta Exchange Initial Margin per short leg: Notional * IM%
+                const notional = spot * lotSize * leg.qty;
+                totalNakedMargin += notional * cryptoImRate;
+            } else {
+                const { spanPct, exposurePct, totalPct } = getSpanExposureBreakdown(leg, symbol);
+                totalNakedMargin += spot * lotSize * leg.qty * totalPct;
+                totalExposureMargin += spot * lotSize * leg.qty * exposurePct;
+            }
         }
     }
 
     const hasShort = legs.some((l) => l.action === "sell");
     if (!hasShort) {
+        const roundPrecision = isCrypto ? 10000 : 100;
+        const fundsReq = Math.round(premiumPaid * roundPrecision) / roundPrecision;
         return {
-            fundsRequired: Math.round(premiumPaid),
+            fundsRequired: fundsReq,
             estMargin: 0,
             nakedMargin: 0,
             marginBenefit: 0,
-            netPremium: Math.round(-premiumPaid),
-            premiumPaid: Math.round(premiumPaid),
+            netPremium: -fundsReq,
+            premiumPaid: fundsReq,
             premiumReceived: 0,
             isHedged: false,
         };
@@ -367,7 +382,6 @@ export function computeMarginDetails(legs, spot, symbol) {
         for (const sLeg of shorts) {
             if (sLeg.lotsLeft <= 0) continue;
             const lotSize = sLeg.lotSize || 1;
-            const { spanPct } = getSpanExposureBreakdown(sLeg, symbol);
 
             // Prioritize same expiry hedges first, then cross-expiry calendar hedges
             const candidates = longs
@@ -385,26 +399,42 @@ export function computeMarginDetails(legs, spot, symbol) {
                 const isSameExpiry = !sLeg.expiry || !lLeg.expiry || sLeg.expiry === lLeg.expiry;
 
                 let spreadSpanForPair = 0;
-                if (isSameExpiry) {
+                if (isCrypto) {
+                    // Delta Exchange Portfolio Margin for spreads
                     const strikeDiff = Math.abs(sLeg.strike - lLeg.strike);
                     const isDebitSpread = (type === "CE" && lLeg.strike < sLeg.strike) || (type === "PE" && lLeg.strike > sLeg.strike);
+                    const nakedShort = spot * lotSize * pairLots * cryptoImRate;
 
                     if (isDebitSpread) {
-                        // Debit spread: Max risk is bounded by net debit paid
-                        const netDebitPerUnit = Math.max(0, (lLeg.premium || 0) - (sLeg.premium || 0));
-                        spreadSpanForPair = netDebitPerUnit * lotSize * pairLots;
+                        // Fully covered by long leg — 0 additional margin blocked beyond net debit
+                        spreadSpanForPair = 0;
                     } else {
-                        // Credit spread: Bounded by strike difference * lotSize + base SPAN extreme loss buffer
-                        const spreadLoss = strikeDiff * lotSize * pairLots;
-                        const spreadBuffer = (spot * lotSize * pairLots) * BASE_SPAN_EXTREME_LOSS_PCT;
-                        spreadSpanForPair = Math.min(
-                            spot * lotSize * pairLots * spanPct,
-                            spreadLoss + spreadBuffer
-                        );
+                        // Credit spread: max risk is bounded by strike difference * lotSize
+                        const maxSpreadLoss = strikeDiff * lotSize * pairLots;
+                        spreadSpanForPair = Math.min(nakedShort, maxSpreadLoss);
                     }
                 } else {
-                    // Calendar Spread: ~30% of standard SPAN margin
-                    spreadSpanForPair = (spot * lotSize * pairLots * spanPct) * 0.30;
+                    const { spanPct } = getSpanExposureBreakdown(sLeg, symbol);
+                    if (isSameExpiry) {
+                        const strikeDiff = Math.abs(sLeg.strike - lLeg.strike);
+                        const isDebitSpread = (type === "CE" && lLeg.strike < sLeg.strike) || (type === "PE" && lLeg.strike > sLeg.strike);
+
+                        if (isDebitSpread) {
+                            // Debit spread: fully covered by long leg, no extra span beyond debit
+                            spreadSpanForPair = 0;
+                        } else {
+                            // Credit spread: Bounded by strike difference * lotSize + base SPAN extreme loss buffer
+                            const spreadLoss = strikeDiff * lotSize * pairLots;
+                            const spreadBuffer = (spot * lotSize * pairLots) * BASE_SPAN_EXTREME_LOSS_PCT;
+                            spreadSpanForPair = Math.min(
+                                spot * lotSize * pairLots * spanPct,
+                                spreadLoss + spreadBuffer
+                            );
+                        }
+                    } else {
+                        // Calendar Spread: ~30% of standard SPAN margin
+                        spreadSpanForPair = (spot * lotSize * pairLots * spanPct) * 0.30;
+                    }
                 }
 
                 spreadSpans[type] += spreadSpanForPair;
@@ -422,16 +452,24 @@ export function computeMarginDetails(legs, spot, symbol) {
     for (const sLeg of shortPool.CE) {
         if (sLeg.lotsLeft > 0) {
             const lotSize = sLeg.lotSize || 1;
-            const { spanPct } = getSpanExposureBreakdown(sLeg, symbol);
-            unhedgedCeSpan += spot * lotSize * sLeg.lotsLeft * spanPct;
+            if (isCrypto) {
+                unhedgedCeSpan += spot * lotSize * sLeg.lotsLeft * cryptoImRate;
+            } else {
+                const { spanPct } = getSpanExposureBreakdown(sLeg, symbol);
+                unhedgedCeSpan += spot * lotSize * sLeg.lotsLeft * spanPct;
+            }
         }
     }
 
     for (const sLeg of shortPool.PE) {
         if (sLeg.lotsLeft > 0) {
             const lotSize = sLeg.lotSize || 1;
-            const { spanPct } = getSpanExposureBreakdown(sLeg, symbol);
-            unhedgedPeSpan += spot * lotSize * sLeg.lotsLeft * spanPct;
+            if (isCrypto) {
+                unhedgedPeSpan += spot * lotSize * sLeg.lotsLeft * cryptoImRate;
+            } else {
+                const { spanPct } = getSpanExposureBreakdown(sLeg, symbol);
+                unhedgedPeSpan += spot * lotSize * sLeg.lotsLeft * spanPct;
+            }
         }
     }
 
@@ -447,27 +485,30 @@ export function computeMarginDetails(legs, spot, symbol) {
     const netPremium = premiumReceived - premiumPaid;
     const marginBenefit = anyHedgeMatched ? Math.max(0, totalNakedMargin - totalEstMargin) : 0;
 
-    // Funds Required matches broker requirements (Margin blocked for short legs + net debit if applicable)
+    // Funds Required matches broker & Delta Exchange requirements (Margin blocked for short legs + net debit if applicable)
     const fundsRequired = Math.max(
         totalEstMargin,
         netPremium < 0 ? totalEstMargin + Math.abs(netPremium) : totalEstMargin
     );
 
+    const roundPrecision = isCrypto ? 10000 : 100;
+    const r = (val) => Math.round(val * roundPrecision) / roundPrecision;
+
     return {
-        fundsRequired: Math.round(fundsRequired * 100) / 100,
-        estMargin: Math.round(totalEstMargin * 100) / 100,
-        nakedMargin: Math.round(totalNakedMargin * 100) / 100,
-        marginBenefit: Math.round(marginBenefit * 100) / 100,
-        netPremium: Math.round(netPremium * 100) / 100,
-        premiumPaid: Math.round(premiumPaid * 100) / 100,
-        premiumReceived: Math.round(premiumReceived * 100) / 100,
+        fundsRequired: r(fundsRequired),
+        estMargin: r(totalEstMargin),
+        nakedMargin: r(totalNakedMargin),
+        marginBenefit: r(marginBenefit),
+        netPremium: r(netPremium),
+        premiumPaid: r(premiumPaid),
+        premiumReceived: r(premiumReceived),
         isHedged: anyHedgeMatched,
     };
 }
 
-export function computeEstMargin(legs, spot, symbol) {
+export function computeEstMargin(legs, spot, symbol, options = {}) {
     if (!spot) return null;
-    const details = computeMarginDetails(legs, spot, symbol);
+    const details = computeMarginDetails(legs, spot, symbol, options);
     return details.fundsRequired || details.estMargin || 0;
 }
 

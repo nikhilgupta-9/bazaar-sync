@@ -2,6 +2,74 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ------------------------------------------------------------------------
+   Bazaar Sync UI tokens — the rules live in .claude/skills/bazaar-ui/rules.md.
+   Semantic colours switch with the `.dark` class on <html>, so one class
+   (bg-surface, text-fg-muted, border-line …) replaces a light + dark: pair.
+   Values are the ones the app already used most (see rules.md §3).
+   ------------------------------------------------------------------------ */
+:root {
+  --bs-page: #f8f9fb;
+  --bs-surface: #ffffff;
+  --bs-surface-muted: #f9fafb;   /* gray-50  — table headers, inset panels */
+  --bs-surface-raised: #f3f4f6;  /* gray-100 — pills, inputs, segmented controls */
+  --bs-surface-hover: #f3f4f6;
+  --bs-line: #e5e7eb;            /* gray-200 */
+  --bs-fg: #111827;              /* gray-900 */
+  --bs-fg-muted: #6b7280;        /* gray-500 */
+  --bs-fg-subtle: #9ca3af;       /* gray-400 */
+  --bs-up: #059669;              /* emerald-600 */
+  --bs-down: #e11d48;            /* rose-600 */
+}
+.dark {
+  --bs-page: #0b1420;
+  --bs-surface: #0b1420;
+  --bs-surface-muted: #070e17;
+  --bs-surface-raised: #121c2b;
+  --bs-surface-hover: #18263a;
+  --bs-line: rgb(255 255 255 / 0.1);
+  --bs-fg: #f3f4f6;
+  --bs-fg-muted: #9ca3af;
+  --bs-fg-subtle: #6b7280;
+  --bs-up: #34d399;              /* emerald-400 */
+  --bs-down: #fb7185;            /* rose-400 */
+}
+@theme inline {
+  --color-page: var(--bs-page);
+  --color-surface: var(--bs-surface);
+  --color-surface-muted: var(--bs-surface-muted);
+  --color-surface-raised: var(--bs-surface-raised);
+  --color-surface-hover: var(--bs-surface-hover);
+  --color-line: var(--bs-line);
+  --color-fg: var(--bs-fg);
+  --color-fg-muted: var(--bs-fg-muted);
+  --color-fg-subtle: var(--bs-fg-subtle);
+  --color-up: var(--bs-up);
+  --color-down: var(--bs-down);
+}
+/* The two small sizes the app needs below text-xs (12px). Nothing goes under 10px. */
+@theme {
+  --text-micro: 10px;
+  --text-micro--line-height: 14px;
+  --text-label: 11px;
+  --text-label--line-height: 16px;
+}
+
+/* Horizontally scrollable pill rows: keep them swipeable but hide the bar.
+   (no-scrollbar / scrollbar-none were already used across pages but never defined.) */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 :root {
   --sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color-scheme: light;

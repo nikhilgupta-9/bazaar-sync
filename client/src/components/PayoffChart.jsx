@@ -210,16 +210,16 @@ export default function PayoffChart({
         <div className="w-full flex flex-col">
             {/* Top SD & Spot Header */}
             <div className="mb-1 flex items-center justify-between px-1 sm:px-3 text-[9.5px] font-semibold text-gray-500 dark:text-gray-400">
-                <span className="tabular-nums">−2SD {sd2Down ? `(${Math.round(sd2Down).toLocaleString("en-IN")})` : ""}</span>
+                <span className="hidden sm:inline tabular-nums">−2SD {sd2Down ? `(${Math.round(sd2Down).toLocaleString("en-IN")})` : ""}</span>
                 <span className="tabular-nums">−1SD {sd1Down ? `(${Math.round(sd1Down).toLocaleString("en-IN")})` : ""}</span>
-                <span className="text-[10.5px] font-black text-gray-900 dark:text-white px-2 py-0.2 rounded-full bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 shadow-xs">
+                <span className="text-[10px] sm:text-[10.5px] font-black text-gray-900 dark:text-white px-2 py-0.2 rounded-full bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 shadow-xs">
                     {spotPrice ? `Spot: ${formatPrice(spotPrice)}` : ""}
                 </span>
                 <span className="tabular-nums">+1SD {sd1Up ? `(${Math.round(sd1Up).toLocaleString("en-IN")})` : ""}</span>
-                <span className="tabular-nums">+2SD {sd2Up ? `(${Math.round(sd2Up).toLocaleString("en-IN")})` : ""}</span>
+                <span className="hidden sm:inline tabular-nums">+2SD {sd2Up ? `(${Math.round(sd2Up).toLocaleString("en-IN")})` : ""}</span>
             </div>
 
-            <div className="relative w-full" style={{ height }}>
+            <div className={`relative w-full ${!height ? "h-[270px] sm:h-[330px] md:h-[370px]" : ""}`} style={height ? { height } : undefined}>
                 <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart data={curve} margin={{ top: 8, right: 15, left: 0, bottom: 2 }}>
                         <defs>

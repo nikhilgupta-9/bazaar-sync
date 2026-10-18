@@ -149,16 +149,18 @@ function aggregateContractCandles(points, intervalMinutes = 1) {
 
     let prevClose = null;
     const minuteCandles = points.map((p) => {
-        const open = prevClose == null ? p.value : prevClose;
-        const close = p.value;
+        const open = p.open != null ? p.open : (prevClose == null ? p.value : prevClose);
+        const close = p.close != null ? p.close : p.value;
+        const high = p.high != null ? p.high : Math.max(open, close);
+        const low = p.low != null ? p.low : Math.min(open, close);
         prevClose = close;
         return {
             time: p.time,
             open,
-            high: Math.max(open, close),
-            low: Math.min(open, close),
+            high,
+            low,
             close,
-            volume: p.oi || 0,
+            volume: p.volume != null ? p.volume : (p.oi || 0),
         };
     });
 
@@ -643,28 +645,31 @@ export default function ContractChartModal({
 
     return (
         <div
-            className={`fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/70 backdrop-blur-xs transition-opacity duration-200 ${
-                open ? "opacity-100" : "opacity-0"
+            className={`fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-2xs transition-opacity duration-200 ${
+                open ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
             }`}
             onClick={handleClose}
         >
             <div
-                className={`w-full transition-all duration-200 ease-out rounded-3xl bg-white dark:bg-[#0b1420] border border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col overflow-hidden ${
-                    isFullscreen ? "max-w-[99vw] h-[98vh]" : "max-w-[98vw] lg:max-w-[96vw] h-[88vh]"
+                className={`w-full transition-all duration-300 ease-out rounded-t-2xl sm:rounded-t-3xl bg-surface border-t border-x border-line shadow-2xl flex flex-col overflow-hidden ${
+                    isFullscreen ? "h-[96vh]" : "h-[700px] sm:h-[780px] lg:h-[84vh] max-h-[92vh]"
                 } ${
-                    open ? "scale-100 translate-y-0" : "scale-95 translate-y-4"
+                    open ? "translate-y-0" : "translate-y-full"
                 }`}
                 onClick={(e) => e.stopPropagation()}
             >
+                {/* Drag Handle Indicator */}
+                <div className="w-12 h-1 rounded-full bg-line mx-auto mt-2 shrink-0 cursor-grab" />
+
                 {/* 1. TOP HEADER: Contract Details, Live Stats & 1-Click Action Buttons */}
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-gray-50/90 px-4 py-3 dark:border-gray-800 dark:bg-[#0f172a]/90 backdrop-blur-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 border-b border-line bg-surface-muted px-3 sm:px-4 py-2 sm:py-2.5">
                     {/* Left: Strike Badge & Price Metrics */}
                     <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                         <span
-                            className={`rounded-xl px-3 py-1 text-xs font-black tracking-wide border shadow-xs ${
+                            className={`rounded-xl px-2.5 py-1 text-xs font-bold tracking-wide border shadow-xs ${
                                 right === "CE"
-                                    ? "bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800"
-                                    : "bg-rose-50 text-rose-700 border-rose-300 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800"
+                                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                                    : "bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30"
                             }`}
                         >
                             {symbol} {strike} {right}
@@ -672,12 +677,12 @@ export default function ContractChartModal({
 
                         {stats && (
                             <div className="flex items-baseline gap-2">
-                                <span className="text-base sm:text-xl font-black font-mono tabular-nums text-gray-900 dark:text-white">
+                                <span className="text-base sm:text-lg font-bold font-mono tabular-nums text-fg">
                                     {formatPrice(stats.last)}
                                 </span>
                                 <span
-                                    className={`text-xs font-bold tabular-nums ${
-                                        stats.isUp ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
+                                    className={`text-xs font-bold font-mono tabular-nums ${
+                                        stats.isUp ? "text-up" : "text-down"
                                     }`}
                                 >
                                     {stats.isUp ? "▲ +" : "▼ "}{formatPrice(Math.abs(stats.change))} ({formatPercent(stats.changePct)})
@@ -685,35 +690,35 @@ export default function ContractChartModal({
                             </div>
                         )}
 
-                        <span className="hidden md:inline text-xs text-gray-400 dark:text-gray-500">|</span>
+                        <span className="hidden md:inline text-xs text-fg-subtle">|</span>
 
                         {stats && (
-                            <div className="hidden lg:flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
-                                <span>H: <strong className="text-emerald-600 font-semibold">{formatPrice(stats.high)}</strong></span>
-                                <span>L: <strong className="text-rose-600 font-semibold">{formatPrice(stats.low)}</strong></span>
-                                {stats.oi != null && <span>OI: <strong className="text-gray-800 dark:text-gray-200 font-semibold">{Number(stats.oi).toLocaleString("en-IN")}</strong></span>}
+                            <div className="hidden lg:flex items-center gap-3 text-xs text-fg-muted font-mono tabular-nums">
+                                <span>H: <strong className="text-up font-semibold">{formatPrice(stats.high)}</strong></span>
+                                <span>L: <strong className="text-down font-semibold">{formatPrice(stats.low)}</strong></span>
+                                {stats.oi != null && <span>OI: <strong className="text-fg font-semibold">{Number(stats.oi).toLocaleString("en-IN")}</strong></span>}
                             </div>
                         )}
 
-                        <span className="rounded-lg bg-gray-200/70 px-2 py-0.5 text-[10px] font-bold text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                        <span className="rounded-lg bg-surface-raised px-2 py-0.5 text-micro font-bold text-fg-muted">
                             Exp: {expiry}
                         </span>
                     </div>
 
-                    {/* Right: Add Leg Actions (Simulator Integration) + Close */}
-                    <div className="flex items-center gap-2">
+                    {/* Right: Actions, Fullscreen toggle & Close */}
+                    <div className="flex items-center gap-1.5 sm:gap-2">
                         {onAddLeg && (
                             <div className="flex items-center gap-1.5 mr-2">
                                 <button
                                     onClick={() => onAddLeg("buy")}
-                                    className="flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-black text-white hover:bg-emerald-700 shadow-xs transition"
+                                    className="flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 shadow-xs transition"
                                 >
                                     <FiPlus size={14} />
                                     <span>Buy Leg</span>
                                 </button>
                                 <button
                                     onClick={() => onAddLeg("sell")}
-                                    className="flex items-center gap-1 rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-black text-white hover:bg-rose-700 shadow-xs transition"
+                                    className="flex items-center gap-1 rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-rose-700 shadow-xs transition"
                                 >
                                     <FiMinus size={14} />
                                     <span>Sell Leg</span>
@@ -722,8 +727,16 @@ export default function ContractChartModal({
                         )}
 
                         <button
+                            onClick={() => setIsFullscreen((f) => !f)}
+                            className="rounded-xl border border-line bg-surface p-2 text-fg-muted hover:bg-surface-hover hover:text-fg shadow-xs transition"
+                            title={isFullscreen ? "Dock Chart" : "Fullscreen"}
+                        >
+                            {isFullscreen ? <FiMinimize size={16} /> : <FiMaximize size={16} />}
+                        </button>
+
+                        <button
                             onClick={handleClose}
-                            className="rounded-xl border border-gray-200 bg-white p-2 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 shadow-xs transition"
+                            className="rounded-xl border border-line bg-surface p-2 text-fg-muted hover:bg-surface-hover hover:text-fg shadow-xs transition"
                             title="Close Chart"
                         >
                             <FiX size={18} />
@@ -732,10 +745,10 @@ export default function ContractChartModal({
                 </div>
 
                 {/* 2. SUB TOOLBAR: Timeframes, Chart Style, Indicators, Tools & Screenshot */}
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 bg-white px-3 py-1.5 text-xs dark:border-gray-800 dark:bg-[#0b1420]">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface px-3 py-1.5 text-xs">
                     <div className="flex flex-wrap items-center gap-2">
                         {/* Timeframe aggregation pills */}
-                        <div className="flex items-center rounded-lg border border-gray-200 bg-gray-50 p-0.5 dark:border-gray-700 dark:bg-gray-800">
+                        <div className="flex items-center rounded-lg border border-line bg-surface-raised p-0.5">
                             {TIMEFRAMES.map((tf) => (
                                 <button
                                     key={tf.value}
@@ -743,7 +756,7 @@ export default function ContractChartModal({
                                     className={`rounded-md px-2 py-0.5 text-xs font-bold transition ${
                                         timeframe === tf.value
                                             ? "bg-emerald-600 text-white shadow-xs"
-                                            : "text-gray-600 hover:bg-gray-200 dark:text-gray-400 dark:hover:bg-gray-700"
+                                            : "text-fg-muted hover:bg-surface-hover hover:text-fg"
                                     }`}
                                 >
                                     {tf.label}
@@ -755,13 +768,13 @@ export default function ContractChartModal({
                         <div className="relative">
                             <button
                                 onClick={() => setChartStyleOpen(!chartStyleOpen)}
-                                className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1 font-bold text-gray-700 shadow-xs hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                                className="flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 font-bold text-fg shadow-xs hover:bg-surface-hover"
                             >
                                 <FiTrendingUp className="h-3.5 w-3.5 text-emerald-600" />
                                 <span>{CHART_STYLES.find((c) => c.key === chartStyle)?.label || "Candles"}</span>
                             </button>
                             {chartStyleOpen && (
-                                <div className="absolute left-0 top-full z-30 mt-1 min-w-[130px] rounded-xl border border-gray-200 bg-white p-1 shadow-xl dark:border-gray-700 dark:bg-gray-800">
+                                <div className="absolute left-0 top-full z-30 mt-1 min-w-[130px] rounded-xl border border-line bg-surface p-1 shadow-xl">
                                     {CHART_STYLES.map((cs) => (
                                         <button
                                             key={cs.key}
@@ -772,7 +785,7 @@ export default function ContractChartModal({
                                             className={`flex w-full items-center rounded-lg px-2.5 py-1 text-xs font-semibold ${
                                                 chartStyle === cs.key
                                                     ? "bg-emerald-600 text-white"
-                                                    : "text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                                                    : "text-fg hover:bg-surface-hover"
                                             }`}
                                         >
                                             {cs.label}
@@ -786,13 +799,13 @@ export default function ContractChartModal({
                         <div className="relative">
                             <button
                                 onClick={() => setIndicatorsOpen(!indicatorsOpen)}
-                                className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1 font-bold text-gray-700 shadow-xs hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                                className="flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 font-bold text-fg shadow-xs hover:bg-surface-hover"
                             >
                                 <FiSliders className="h-3.5 w-3.5 text-emerald-600" />
                                 <span>Indicators</span>
                             </button>
                             {indicatorsOpen && (
-                                <div className="absolute left-0 top-full z-30 mt-1 min-w-[170px] rounded-xl border border-gray-200 bg-white p-2 shadow-xl dark:border-gray-700 dark:bg-gray-800">
+                                <div className="absolute left-0 top-full z-30 mt-1 min-w-[170px] rounded-xl border border-line bg-surface p-2 shadow-xl">
                                     {[
                                         { key: "ema9", label: "EMA (9)" },
                                         { key: "ema21", label: "EMA (21)" },
@@ -801,7 +814,7 @@ export default function ContractChartModal({
                                     ].map((ind) => (
                                         <label
                                             key={ind.key}
-                                            className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                                            className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 text-xs text-fg hover:bg-surface-hover"
                                         >
                                             <span>{ind.label}</span>
                                             <input
@@ -824,7 +837,7 @@ export default function ContractChartModal({
                             className={`rounded-lg border px-2.5 py-1 font-bold transition ${
                                 showOiVolume
                                     ? "border-emerald-600 bg-emerald-50 text-emerald-700 dark:border-emerald-500 dark:bg-emerald-950/60 dark:text-emerald-300"
-                                    : "border-gray-200 bg-white text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                                    : "border-line bg-surface text-fg-muted hover:bg-surface-hover hover:text-fg"
                             }`}
                         >
                             <span>OI Volume</span>
@@ -835,14 +848,14 @@ export default function ContractChartModal({
                     <div className="flex items-center gap-1.5">
                         <button
                             onClick={takeScreenshot}
-                            className="rounded-lg border border-gray-200 bg-white p-1 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 shadow-xs transition"
+                            className="rounded-lg border border-line bg-surface p-1 text-fg-muted hover:bg-surface-hover hover:text-fg shadow-xs transition"
                             title="Take Screenshot"
                         >
                             <FiCamera size={14} />
                         </button>
                         <button
                             onClick={() => setIsFullscreen((v) => !v)}
-                            className="rounded-lg border border-gray-200 bg-white p-1 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 shadow-xs transition"
+                            className="rounded-lg border border-line bg-surface p-1 text-fg-muted hover:bg-surface-hover hover:text-fg shadow-xs transition"
                             title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
                         >
                             {isFullscreen ? <FiMinimize size={14} /> : <FiMaximize size={14} />}
@@ -851,30 +864,30 @@ export default function ContractChartModal({
                 </div>
 
                 {/* 3. MAIN CHART BODY + LEFT DRAWING RAIL */}
-                <div className="flex flex-1 w-full overflow-hidden p-2 gap-2 bg-white dark:bg-[#0b1420]">
+                <div className="flex flex-1 w-full overflow-hidden p-2 gap-2 bg-surface">
                     {/* Left Drawing Tools Rail */}
-                    <div className="flex shrink-0 flex-col gap-1 rounded-xl border border-gray-100 bg-gray-50/70 p-1 dark:border-gray-800 dark:bg-gray-900/50">
+                    <div className="flex shrink-0 flex-col gap-1 rounded-xl border border-line bg-surface-muted p-1">
                         {DRAWING_TOOLS.map((tool) => (
                             <button
                                 key={tool.key}
                                 onClick={() => setActiveTool((t) => (t === tool.key ? null : tool.key))}
                                 title={tool.label}
-                                className={`flex h-7 w-7 items-center justify-center rounded-lg border text-[11px] font-bold transition-all ${
+                                className={`flex h-7 w-7 items-center justify-center rounded-lg border text-label font-bold transition-all ${
                                     activeTool === tool.key
                                         ? "border-emerald-600 bg-emerald-600 text-white shadow-sm"
-                                        : "border-gray-200 bg-white text-gray-700 hover:border-emerald-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                                        : "border-line bg-surface text-fg hover:border-emerald-500 hover:bg-surface-hover"
                                 }`}
                             >
                                 <span>{tool.icon}</span>
                             </button>
                         ))}
 
-                        <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+                        <div className="my-1 border-t border-line" />
 
                         <button
                             onClick={toggleDrawingsVisible}
                             title={drawingsVisible ? "Hide Drawings" : "Show Drawings"}
-                            className="flex h-7 w-7 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                            className="flex h-7 w-7 items-center justify-center rounded-lg border border-line bg-surface text-fg hover:bg-surface-hover"
                         >
                             {drawingsVisible ? <FiEye size={12} /> : <FiEyeOff size={12} className="text-gray-400" />}
                         </button>
@@ -882,20 +895,20 @@ export default function ContractChartModal({
                         <button
                             onClick={clearDrawings}
                             title="Clear All Drawings"
-                            className="flex h-7 w-7 items-center justify-center rounded-lg border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 dark:border-rose-900/50 dark:bg-gray-800 dark:text-rose-400"
+                            className="flex h-7 w-7 items-center justify-center rounded-lg border border-rose-500/30 bg-surface text-rose-600 hover:bg-rose-500/10 dark:text-rose-400"
                         >
                             <FiTrash2 size={12} />
                         </button>
                     </div>
 
                     {/* Chart Container Area */}
-                    <div className="relative flex-1 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-inner dark:border-gray-800 dark:bg-[#0b1420]">
+                    <div className="relative flex-1 overflow-hidden rounded-2xl border border-line bg-surface shadow-inner">
                         {/* Live Crosshair OHLC Legend */}
                         {hover && (
-                            <div className="absolute left-3 top-2.5 z-20 flex flex-wrap items-center gap-2 rounded-lg bg-white/90 px-2.5 py-1 text-[11px] font-semibold text-gray-700 shadow-xs backdrop-blur-xs dark:bg-gray-900/90 dark:text-gray-200">
-                                <span className="font-bold text-gray-900 dark:text-white">{hover.time}</span>
+                            <div className="absolute left-3 top-2.5 z-20 flex flex-wrap items-center gap-2 rounded-lg bg-surface/90 border border-line px-2.5 py-1 text-label font-semibold text-fg shadow-xs backdrop-blur-xs">
+                                <span className="font-bold text-fg">{hover.time}</span>
                                 <span className="text-gray-400">|</span>
-                                <span>O: <strong className="text-gray-900 dark:text-white">{formatPrice(hover.o)}</strong></span>
+                                <span>O: <strong className="text-fg">{formatPrice(hover.o)}</strong></span>
                                 <span>H: <strong className="text-emerald-600">{formatPrice(hover.h)}</strong></span>
                                 <span>L: <strong className="text-rose-600">{formatPrice(hover.l)}</strong></span>
                                 <span>C: <strong className={hover.up ? "text-emerald-600 font-bold" : "text-rose-600 font-bold"}>{formatPrice(hover.c)}</strong></span>
@@ -927,7 +940,7 @@ export default function ContractChartModal({
                 </div>
 
                 {/* 4. FOOTER NOTE */}
-                <div className="border-t border-gray-200 bg-gray-50/80 px-4 py-2 flex items-center justify-between text-[11px] text-gray-500 dark:border-gray-800 dark:bg-[#0f172a]/80 dark:text-gray-400">
+                <div className="border-t border-line bg-surface-muted px-4 py-2 flex items-center justify-between text-label text-fg-muted">
                     <span>
                         Tick-level per-minute LTP snapshots synthesized with real Open, High, Low, Close & OI stream.
                     </span>

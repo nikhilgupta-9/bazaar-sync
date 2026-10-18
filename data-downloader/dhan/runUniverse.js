@@ -1,6 +1,7 @@
 // dhan/runUniverse.js — the actual driver the user asked for:
 //
-//   node dhan/runUniverse.js [FROM_YEAR] [TO_YEAR] [--symbols=A,B] [--reset]
+//   node dhan/runUniverse.js [FROM_YEAR] [TO_YEAR] [--symbols=A,B] [--reset] [--skip-futures]
+//   (--skip-futures: option chain + OHLCV spot only, no futures_history pull)
 //   (defaults: FROM_YEAR=2023, TO_YEAR=current year)
 //
 // For EACH symbol, in order (7 indices, then INDIAVIX, then every F&O stock
@@ -85,7 +86,7 @@ function isAuthError(err) {
     return err && (err.dhanBody?.errorCode === "DH-901" || /Invalid_Authentication|invalid or expired/i.test(err.message || ""));
 }
 
-async function processSymbolYear(symbol, year) {
+async function processSymbolYear(symbol, year, runFlags = {}) {
     const existing = await countExistingYear(symbol, year);
     const hadAny = existing.optionRows + existing.ohlcvRows + existing.futRows > 0;
     if (hadAny) {
@@ -99,14 +100,14 @@ async function processSymbolYear(symbol, year) {
     if (symbol === "INDIAVIX") {
         await enrichIndex.enrichIndexYear(symbol, year);
     } else {
-        await runSymbolYear(symbol, year, {});
+        await runSymbolYear(symbol, year, runFlags);
     }
 }
 
 async function main() {
     const { fromYear, toYear, flags } = parseArgs(process.argv);
     if (!Number.isInteger(fromYear) || !Number.isInteger(toYear) || fromYear < 2015 || toYear < fromYear) {
-        console.error("Usage: node dhan/runUniverse.js [FROM_YEAR] [TO_YEAR] [--symbols=A,B] [--reset]  (defaults: 2023..current year)");
+        console.error("Usage: node dhan/runUniverse.js [FROM_YEAR] [TO_YEAR] [--symbols=A,B] [--reset] [--skip-futures]  (defaults: 2023..current year)");
         process.exit(1);
     }
     const onlySymbolsOverride = flags.symbols
@@ -163,7 +164,7 @@ async function main() {
         for (let year = i === startIdx ? resumeYear : fromYear; year <= Math.min(toYear, curYear); year++) {
             saveProgress({ symbol, year });
             try {
-                await processSymbolYear(symbol, year);
+                await processSymbolYear(symbol, year, { "skip-futures": !!flags["skip-futures"] });
                 consecutiveAuthFailures = 0;
                 consecutiveOtherFailures = 0;
 
@@ -173,7 +174,9 @@ async function main() {
                         const archival = require(path.join(__dirname, "..", "..", "server", "services", "archivalPipelineService"));
                         console.log(`\n[dhan-universe] 🚀 Auto-archiving ${symbol} (${year}) to Google Drive...`);
                         await archival.processBatch({ dataType: "option_chain", symbol, year: String(year), autoPrune: true });
-                        await archival.processBatch({ dataType: "futures", symbol, year: String(year), autoPrune: true });
+                        if (!flags["skip-futures"]) {
+                            await archival.processBatch({ dataType: "futures", symbol, year: String(year), autoPrune: true });
+                        }
                         await archival.processBatch({ dataType: "ohlcv", symbol, year: String(year), autoPrune: true });
                     } catch (gdriveErr) {
                         console.warn(`[dhan-universe] GDrive auto-archive notice for ${symbol} (${year}):`, gdriveErr.message);

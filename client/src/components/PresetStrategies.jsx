@@ -505,7 +505,7 @@ function buildPresets(data) {
     ];
 }
 
-export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
+export default function PresetStrategies({ data, onApply, fetchExpiryRows, bare = false }) {
     const presets = useMemo(() => buildPresets(data), [data]);
     const [selectedCategory, setSelectedCategory] = useState("Neutral");
     const [searchQuery, setSearchQuery] = useState("");
@@ -556,7 +556,7 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
     }
 
     return (
-        <div className="rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-3 sm:p-4 shadow-xs transition-colors">
+        <div className={bare ? "@container p-3 sm:p-4" : "rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-3 sm:p-4 shadow-xs transition-colors"}>
             {/* Header Title & Search Bar */}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 mb-3.5">
                 <div>
@@ -584,22 +584,22 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
             </div>
 
             {/* Category Filter Pills (Matching StockMojo 4 Tabs: Bullish | Bearish | Neutral | Other) */}
-            <div className="grid grid-cols-4 sm:flex items-center gap-1.5 mb-3.5 border-b border-gray-100 dark:border-white/10 pb-2.5">
+            <div className="grid grid-cols-4 sm:flex items-center gap-1 sm:gap-1.5 mb-3 sm:mb-3.5 border-b border-gray-100 dark:border-white/10 pb-2 sm:pb-2.5">
                 {CATEGORIES.map((c) => {
                     const isActive = selectedCategory === c;
                     return (
                         <button
                             key={c}
                             onClick={() => setSelectedCategory(c)}
-                            className={`flex items-center justify-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold transition-all cursor-pointer truncate ${
+                            className={`flex items-center justify-center gap-1 rounded-lg px-1.5 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold transition-all cursor-pointer truncate ${
                                 isActive
                                     ? "bg-emerald-500/15 border border-emerald-500 text-emerald-600 dark:text-emerald-400 shadow-xs"
                                     : "bg-gray-100 dark:bg-white/5 border border-gray-200/60 dark:border-white/10 text-gray-600 dark:text-gray-400 hover:border-emerald-500/60 hover:text-gray-900 dark:hover:text-white"
                             }`}
                         >
-                            <span>{c}</span>
+                            <span className="truncate">{c}</span>
                             <span
-                                className={`rounded-full px-1 py-0.1 text-[9.5px] font-mono ${
+                                className={`rounded-full px-1 py-0.1 text-[9px] sm:text-[9.5px] font-mono ${
                                     isActive ? "bg-emerald-600 text-white" : "bg-gray-200 dark:bg-white/10 text-gray-500 dark:text-gray-400"
                                 }`}
                             >
@@ -610,17 +610,33 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
                 })}
             </div>
 
-            {/* Grid of Strategy Cards */}
+            {/* Grid of Strategy Cards / Skeleton */}
             {!data ? (
-                <div className="py-12 text-center text-sm font-medium text-gray-400 dark:text-gray-500 animate-pulse">
-                    Loading live option chain strikes…
+                <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 sm:gap-3.5 animate-pulse">
+                    {Array.from({ length: 8 }).map((_, i) => (
+                        <div
+                            key={i}
+                            className="flex flex-col justify-between rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] p-2.5 sm:p-3.5 shadow-xs space-y-2.5 sm:space-y-3"
+                        >
+                            <div className="flex items-center justify-between">
+                                <div className="h-4 w-10 sm:w-14 rounded-lg bg-gray-200 dark:bg-gray-800" />
+                                <div className="h-4 w-10 sm:w-14 rounded-lg bg-gray-200 dark:bg-gray-800" />
+                            </div>
+                            <div className="h-14 sm:h-20 rounded-xl bg-gray-100 dark:bg-[#0b1420]" />
+                            <div className="space-y-1.5">
+                                <div className="h-4 w-20 sm:w-28 rounded bg-gray-200 dark:bg-gray-800" />
+                                <div className="h-3 w-full rounded bg-gray-100 dark:bg-gray-800/60" />
+                            </div>
+                            <div className="h-7 w-full rounded-xl bg-gray-200 dark:bg-gray-800" />
+                        </div>
+                    ))}
                 </div>
             ) : filtered.length === 0 ? (
                 <div className="py-12 text-center text-sm text-gray-400 dark:text-gray-500">
                     No strategies found matching &quot;{searchQuery}&quot;.
                 </div>
             ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
+                <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 sm:gap-3.5">
                     {filtered.map((p) => {
                         const legCount = p.legs ? p.legs.length : p.legCount || 0;
                         const isLoading = loadingPreset === p.name;
@@ -642,35 +658,38 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
                         return (
                             <div
                                 key={p.name}
-                                className="group relative flex flex-col justify-between rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] p-3.5 shadow-xs transition-all hover:-translate-y-1 hover:border-emerald-500 dark:hover:border-emerald-500 hover:shadow-md dark:hover:shadow-emerald-950/20"
+                                onClick={() => {
+                                    if (legCount && !isLoading) handleApply(p);
+                                }}
+                                className="group relative flex flex-col justify-between rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] p-2.5 sm:p-3.5 shadow-xs transition-all hover:-translate-y-1 hover:border-emerald-500 dark:hover:border-emerald-500 hover:shadow-md dark:hover:shadow-emerald-950/20 cursor-pointer"
                             >
                                 <div>
                                     {/* Top Metadata Badges */}
-                                    <div className="flex items-center justify-between gap-1.5 mb-2.5">
-                                        <span className={`rounded-lg border px-2 py-0.5 text-[10px] font-extrabold ${biasColor}`}>
+                                    <div className="flex items-center justify-between gap-1 mb-2 sm:mb-2.5">
+                                        <span className={`rounded-lg border px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] font-extrabold ${biasColor}`}>
                                             {p.bias}
                                         </span>
-                                        <span className={`rounded-lg border px-2 py-0.5 text-[10px] font-semibold ${riskColor}`}>
+                                        <span className={`rounded-lg border px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] font-semibold ${riskColor}`}>
                                             {p.risk}
                                         </span>
                                     </div>
 
                                     {/* Payoff Diagram Visual Box */}
-                                    <div className="rounded-xl border border-gray-100 dark:border-white/10 bg-gray-50/70 dark:bg-[#0b1420] p-2.5 transition group-hover:bg-emerald-50/30 dark:group-hover:bg-emerald-950/20">
+                                    <div className="rounded-xl border border-gray-100 dark:border-white/10 bg-gray-50/70 dark:bg-[#0b1420] p-1.5 sm:p-2.5 transition group-hover:bg-emerald-50/30 dark:group-hover:bg-emerald-950/20">
                                         <PayoffIcon shape={p.shape} />
                                     </div>
 
                                     {/* Strategy Info */}
-                                    <div className="mt-3">
+                                    <div className="mt-2 sm:mt-3">
                                         <div className="flex items-baseline justify-between gap-1">
-                                            <h3 className="text-sm font-bold text-gray-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition">
+                                            <h3 className="text-xs sm:text-sm font-bold text-gray-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition truncate">
                                                 {p.name}
                                             </h3>
-                                            <span className="shrink-0 text-[11px] font-bold text-gray-400 dark:text-gray-500">
+                                            <span className="shrink-0 text-[10px] sm:text-[11px] font-bold text-gray-400 dark:text-gray-500">
                                                 {legCount} {legCount === 1 ? "Leg" : "Legs"}
                                             </span>
                                         </div>
-                                        <p className="mt-1 text-[11px] leading-relaxed text-gray-500 dark:text-gray-400 line-clamp-2">
+                                        <p className="mt-1 text-[10px] sm:text-[11px] leading-snug sm:leading-relaxed text-gray-500 dark:text-gray-400 line-clamp-2">
                                             {p.summary}
                                         </p>
                                     </div>
@@ -678,12 +697,15 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows }) {
 
                                 {/* Apply Action Button */}
                                 <button
-                                    onClick={() => handleApply(p)}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleApply(p);
+                                    }}
                                     disabled={!legCount || isLoading}
-                                    className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 px-3 py-1.5 text-xs font-bold text-gray-700 dark:text-gray-200 transition group-hover:border-emerald-600 group-hover:bg-emerald-600 group-hover:text-white dark:group-hover:bg-emerald-600 dark:group-hover:border-emerald-600 dark:group-hover:text-white disabled:opacity-40"
+                                    className="mt-2.5 sm:mt-3 flex w-full items-center justify-center gap-1 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 px-2 sm:px-3 py-1.5 text-[11px] sm:text-xs font-bold text-gray-700 dark:text-gray-200 transition group-hover:border-emerald-600 group-hover:bg-emerald-600 group-hover:text-white dark:group-hover:bg-emerald-600 dark:group-hover:border-emerald-600 dark:group-hover:text-white disabled:opacity-40"
                                 >
-                                    <span>{isLoading ? "Building Strategy…" : "Build Strategy"}</span>
-                                    {!isLoading && <FiArrowRight size={13} className="transition group-hover:translate-x-0.5" />}
+                                    <span>{isLoading ? "Building…" : "Build Strategy"}</span>
+                                    {!isLoading && <FiArrowRight size={12} className="transition group-hover:translate-x-0.5" />}
                                 </button>
                             </div>
                         );
