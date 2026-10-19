@@ -12,6 +12,21 @@ const paperWalletService = require("./paperWalletService");
 const socketBroadcast = require("./socketBroadcast");
 const { marketHours } = require("../utils/marketUtils");
 const { MAX_LOTS_PER_ORDER, MARGIN_PERCENT_OF_NOTIONAL } = require("../config/paperTradeConfig");
+const spanMarginService = require("./spanMarginService");
+
+// Margin from NSE Clearing's SPAN file (scan risk + calendar charge + exposure), the way a
+// broker would block it. null when the file can't price the legs (crypto, unknown contract,
+// file unavailable) — callers then fall back to MARGIN_PERCENT_OF_NOTIONAL.
+async function spanMarginOrNull(symbol, spot, legs) {
+    if (["BTC", "ETH", "SOL"].includes(String(symbol).toUpperCase())) return null;
+    try {
+        const r = await spanMarginService.calculateMargin({ symbol, spot, legs });
+        return r.available ? r.margin : null;
+    } catch (err) {
+        console.warn("[paperPositionService] SPAN margin unavailable:", err.message);
+        return null;
+    }
+}
 
 function badRequest(message) {
     const err = new Error(message);
@@ -163,27 +178,32 @@ initPaperTables().catch(() => {});
  * For Indian Market: strictly reads marketCache live feed or recent snapshot fallback.
  * For Crypto: reads Delta Exchange live option chain.
  */
-async function getLiveContractPrice(symbol, expiry, optRight, strike) {
+async function getLiveContractPrice(symbol, expiry, optRight, strike, fallbackPrice = null) {
     const sym = String(symbol || "").toUpperCase();
     const strikeNum = Number(strike);
     const right = String(optRight || "").toUpperCase();
+    const normExpiry = normalizeExpiryDate(expiry);
 
     // 1. Crypto Underlying (Delta Exchange Live)
     if (sym === "BTC" || sym === "ETH" || sym === "SOL" || sym.startsWith("BTC") || sym.startsWith("ETH") || sym.startsWith("SOL")) {
         try {
             const deltaExchangeService = require("./deltaExchangeService");
             const chain = await deltaExchangeService.getCryptoOptionChain(sym, expiry);
-            if (chain && chain.rows) {
-                const row = chain.rows.find((r) => Math.abs(Number(r.strike) - strikeNum) < 0.01);
-                const side = row && (right === "CE" ? row.ce : row.pe);
-                if (side && side.ltp != null && side.ltp > 0) {
-                    return {
-                        ltp: Number(side.ltp),
-                        lotSize: 1,
-                        spot: Number(chain.spotPrice || side.ltp),
-                        isLive: true,
-                        source: "delta_exchange",
-                    };
+            const list = chain?.rows || chain?.chain;
+            if (Array.isArray(list) && list.length) {
+                const row = list.find((r) => Math.abs(Number(r.strike) - strikeNum) < 0.01);
+                if (row) {
+                    const side = right === "CE" ? (row.ce || row.call) : (row.pe || row.put);
+                    const ltp = side && (side.ltp ?? side.markPrice ?? side.close ?? side.askPrice ?? side.bidPrice);
+                    if (ltp != null && Number(ltp) > 0) {
+                        return {
+                            ltp: Number(ltp),
+                            lotSize: 1,
+                            spot: Number(chain.spotPrice || ltp),
+                            isLive: true,
+                            source: "delta_exchange",
+                        };
+                    }
                 }
             }
         } catch (err) {
@@ -253,6 +273,22 @@ async function getLiveContractPrice(symbol, expiry, optRight, strike) {
         }
     } catch {}
 
+    // 5. Fallback to client quoted price if available
+    if (fallbackPrice != null && Number(fallbackPrice) > 0) {
+        let lotSize = (await instrumentMaster.getLotSize(sym)) || 50;
+        try {
+            const histLot = await lotSizeHistoryService.getLotSizeAsOf(sym, normExpiry || new Date().toISOString().slice(0, 10));
+            if (histLot) lotSize = histLot;
+        } catch {}
+        return {
+            ltp: Number(fallbackPrice),
+            lotSize: Number(lotSize),
+            spot: strikeNum,
+            isLive: false,
+            source: "quote_fallback",
+        };
+    }
+
     throw badRequest(`No market price available for ${sym} ${strike} ${right}`);
 }
 
@@ -296,8 +332,11 @@ async function openPosition(userId, {
     }
 
     // MARKET Order Execution
-    const { ltp, lotSize, spot } = await getLiveContractPrice(displaySymbol, normExpiry, right, strike);
+    const { ltp, lotSize, spot } = await getLiveContractPrice(displaySymbol, normExpiry, right, strike, price);
     const label = `${displaySymbol} ${strike}${right} x${lots}`;
+    const spanMargin = posSide === "short"
+        ? await spanMarginOrNull(displaySymbol, spot, [{ expiry: normExpiry, strike, type: right, action: "sell", lots, lotSize }])
+        : null;
 
     const conn = await pool.getConnection();
     try {
@@ -306,13 +345,14 @@ async function openPosition(userId, {
         let marginBlocked = null;
         if (posSide === "long") {
             const cost = ltp * lots * lotSize;
+            marginBlocked = Math.round(cost * 100) / 100;
             await paperWalletService.debit(conn, userId, cost, `Buy ${label}`);
         } else {
             const premium = ltp * lots * lotSize;
             const spotRef = spot || strike;
             const isCryptoSym = ["BTC", "ETH", "SOL"].includes(String(displaySymbol).toUpperCase());
             const marginRate = isCryptoSym ? 0.05 : MARGIN_PERCENT_OF_NOTIONAL;
-            marginBlocked = spotRef * lotSize * lots * marginRate;
+            marginBlocked = Math.round((spanMargin ?? (spotRef * lotSize * lots * marginRate)) * 100) / 100;
             await paperWalletService.credit(conn, userId, premium, `Sell ${label} — premium received`);
             await paperWalletService.debit(conn, userId, marginBlocked, `Sell ${label} — margin blocked`);
         }
@@ -402,7 +442,7 @@ async function placeOrder(userId, {
     }
 
     // Resolve current contract info & lot size
-    const priceData = await getLiveContractPrice(sym, normExpiry, right, strike);
+    const priceData = await getLiveContractPrice(sym, normExpiry, right, strike, price || triggerPrice);
     const lotSize = priceData.lotSize || 50;
     const currentLtp = priceData.ltp;
 
@@ -427,6 +467,7 @@ async function placeOrder(userId, {
             stopLossPrice,
             targetPrice,
             trailingSl,
+            price: currentLtp || price,
         });
     }
 
@@ -438,7 +479,8 @@ async function placeOrder(userId, {
     const marginRate = isCryptoSym ? 0.05 : MARGIN_PERCENT_OF_NOTIONAL;
     const requiredFunds = orderSide === "buy"
         ? refPrice * lots * lotSize
-        : (priceData.spot || strike) * lotSize * lots * marginRate;
+        : (await spanMarginOrNull(sym, priceData.spot, [{ expiry: normExpiry, strike, type: right, action: "sell", lots, lotSize }]))
+            ?? (priceData.spot || strike) * lotSize * lots * marginRate;
 
     if (balance < requiredFunds) {
         throw badRequest(`Insufficient virtual balance (${isCryptoSym ? "$" : "₹"}${balance.toLocaleString()}) for order requirement (${isCryptoSym ? "$" : "₹"}${requiredFunds.toLocaleString()})`);
@@ -592,7 +634,7 @@ async function updatePositionBracket(userId, positionId, { stopLossPrice = null,
 /**
  * Open multiple legs in a single atomic transaction (Strategy Builder execution).
  */
-async function openStrategyPositions(userId, { symbol, expiry, legs, strategyName = "Custom Strategy" }) {
+async function openStrategyPositions(userId, { symbol, expiry, legs, strategyName = "Custom Strategy", requiredFunds = null, requiredMargin = null }) {
     const displaySymbol = String(symbol || "").toUpperCase();
     if (!Array.isArray(legs) || legs.length === 0) {
         throw badRequest("legs array must not be empty");
@@ -610,7 +652,8 @@ async function openStrategyPositions(userId, { symbol, expiry, legs, strategyNam
         const legExpiry = normalizeExpiryDate(leg.expiry || expiry);
         if (!legExpiry) throw badRequest(`Invalid expiry for strike ${strike}`);
 
-        const priceData = await getLiveContractPrice(displaySymbol, legExpiry, right, strike);
+        const fallbackPrice = leg.entry_price || leg.ltp || leg.price || null;
+        const priceData = await getLiveContractPrice(displaySymbol, legExpiry, right, strike, fallbackPrice);
         resolvedLegs.push({
             strike,
             optRight: right,
@@ -626,24 +669,49 @@ async function openStrategyPositions(userId, { symbol, expiry, legs, strategyNam
         });
     }
 
+    const isCryptoSym = ["BTC", "ETH", "SOL"].includes(String(displaySymbol).toUpperCase());
+    const marginRate = isCryptoSym ? 0.05 : MARGIN_PERCENT_OF_NOTIONAL;
+
+    // Calculate unscaled margin for short legs (long legs require 0 margin)
+    const rawLegMargins = resolvedLegs.map((leg) => {
+        if (leg.side === "long") return 0;
+        const totalShares = leg.lots * leg.lotSize;
+        const spotRef = leg.spot || leg.strike;
+        return spotRef * totalShares * marginRate;
+    });
+
+    const sumRawMargins = rawLegMargins.reduce((a, b) => a + b, 0);
+    const basketSpan = sumRawMargins > 0
+        ? await spanMarginOrNull(displaySymbol, resolvedLegs[0]?.spot, resolvedLegs.map((l) => ({
+            expiry: l.expiry, strike: l.strike, type: l.optRight, action: l.side === "short" ? "sell" : "buy", lots: l.lots, lotSize: l.lotSize,
+        })))
+        : null;
+    // Hedges offset inside SPAN, so the basket margin is split across short legs pro rata.
+    const targetMargin = basketSpan != null
+        ? basketSpan
+        : (requiredMargin != null && Number(requiredMargin) >= 0)
+            ? Number(requiredMargin)
+            : (requiredFunds != null && Number(requiredFunds) > 0 ? Number(requiredFunds) : sumRawMargins);
+    const scale = sumRawMargins > 0 ? (targetMargin / sumRawMargins) : 0;
+
     const conn = await pool.getConnection();
     try {
         await conn.beginTransaction();
 
         const createdPositions = [];
-        for (const leg of resolvedLegs) {
+        for (let idx = 0; idx < resolvedLegs.length; idx++) {
+            const leg = resolvedLegs[idx];
             const label = `${displaySymbol} ${leg.strike}${leg.optRight} (${leg.side.toUpperCase()}) x${leg.lots}`;
+            const totalShares = leg.lots * leg.lotSize;
             let marginBlocked = null;
 
             if (leg.side === "long") {
-                const cost = leg.ltp * leg.lots * leg.lotSize;
+                const cost = leg.ltp * totalShares;
+                marginBlocked = Math.round(cost * 100) / 100;
                 await paperWalletService.debit(conn, userId, cost, `Paper Order: Buy ${label} [${strategyName}]`);
             } else {
-                const premium = leg.ltp * leg.lots * leg.lotSize;
-                const spotRef = leg.spot || leg.strike;
-                const isCryptoSym = ["BTC", "ETH", "SOL"].includes(String(displaySymbol).toUpperCase());
-                const marginRate = isCryptoSym ? 0.05 : MARGIN_PERCENT_OF_NOTIONAL;
-                marginBlocked = spotRef * leg.lotSize * leg.lots * marginRate;
+                const premium = leg.ltp * totalShares;
+                marginBlocked = Math.round(rawLegMargins[idx] * (scale > 0 ? scale : 1) * 100) / 100;
                 await paperWalletService.credit(conn, userId, premium, `Paper Order: Sell ${label} [${strategyName}] — premium`);
                 await paperWalletService.debit(conn, userId, marginBlocked, `Paper Order: Sell ${label} [${strategyName}] — margin`);
             }
@@ -706,7 +774,7 @@ async function openStrategyPositions(userId, { symbol, expiry, legs, strategyNam
 /**
  * Close a single paper position and realize P&L.
  */
-async function closePosition(userId, positionId, exitReason = "manual") {
+async function closePosition(userId, positionId, exitReason = "manual", fallbackPrice = null) {
     const [[position]] = await pool.query(
         "SELECT * FROM paper_positions WHERE id = ? AND user_id = ?",
         [positionId, userId]
@@ -714,7 +782,13 @@ async function closePosition(userId, positionId, exitReason = "manual") {
     if (!position) throw Object.assign(new Error("position not found"), { status: 404 });
     if (position.status !== "open") throw badRequest("position is already closed");
 
-    const { ltp } = await getLiveContractPrice(position.symbol, position.expiry, position.opt_right, position.strike);
+    const { ltp } = await getLiveContractPrice(
+        position.symbol,
+        position.expiry,
+        position.opt_right,
+        position.strike,
+        fallbackPrice || position.current_price || position.entry_price
+    );
     const label = `${position.symbol} ${position.strike}${position.opt_right} x${position.lots}`;
 
     const conn = await pool.getConnection();
@@ -1052,7 +1126,8 @@ async function executePendingOrderFill(orderId, fillPrice) {
             await paperWalletService.debit(conn, userId, cost, `Limit Fill: Buy ${label}`);
         } else {
             const premium = fillPrice * lots * lotSize;
-            marginBlocked = ord.strike * lotSize * lots * MARGIN_PERCENT_OF_NOTIONAL;
+            marginBlocked = (await spanMarginOrNull(ord.symbol, null, [{ expiry: String(ord.expiry).slice(0, 10), strike: Number(ord.strike), type: ord.opt_right, action: "sell", lots, lotSize }]))
+                ?? ord.strike * lotSize * lots * MARGIN_PERCENT_OF_NOTIONAL;
             await paperWalletService.credit(conn, userId, premium, `Limit Fill: Sell ${label} — premium`);
             await paperWalletService.debit(conn, userId, marginBlocked, `Limit Fill: Sell ${label} — margin`);
         }

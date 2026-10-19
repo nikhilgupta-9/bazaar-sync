@@ -398,7 +398,7 @@ CREATE TABLE IF NOT EXISTS `paper_positions` (
 CREATE TABLE IF NOT EXISTS `paper_wallet_ledger` (
   `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
   `user_id` bigint(20) unsigned NOT NULL,
-  `type` enum('trial_grant','pro_purchase_grant','refill_purchase','trade_debit','trade_credit') NOT NULL,
+  `type` enum('trial_grant','pro_purchase_grant','refill_purchase','trade_debit','trade_credit','admin_credit','admin_debit') NOT NULL,
   `amount` decimal(14,2) NOT NULL,
   `balance_after` decimal(14,2) NOT NULL,
   `razorpay_order_id` varchar(64) DEFAULT NULL,

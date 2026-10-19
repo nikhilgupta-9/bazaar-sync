@@ -28,7 +28,11 @@ const SYMBOL_LIST_CACHE_FILE = path.join(__dirname, "..", "data", "symbol-list-c
 
 const LIVE_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"]);
 const INDEX_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX", "SENSEX50"]);
+const liveDayChain = require("./liveDayChain");
 const HISTORICAL_CACHE_TTL_MS = 60 * 1000;
+// A stored snapshot for a non-live expiry older than this is not shown as
+// "the" chain — prices from weeks ago would read as current.
+const STORED_EXPIRY_MAX_AGE_DAYS = 5;
 const SYMBOL_LIST_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h — served stale-while-revalidate
 
 // Plain-string date helpers (CLAUDE.md Gotcha #12 — no local-timezone Date math)
@@ -71,7 +75,7 @@ class OptionChainService {
         }
 
         // Forward subscription to worker so ticks start streaming if not already active
-        workerManager.subscribeSymbol(displaySymbol);
+        workerManager.subscribeSymbol(displaySymbol, expiry);
 
         const hasOptionsInMaster = await instrumentMaster.hasOptions(displaySymbol).catch(() => false);
         const isLiveCandidate = LIVE_SYMBOLS.has(displaySymbol) || hasOptionsInMaster;
@@ -232,10 +236,8 @@ class OptionChainService {
      */
     async getLiveOptionChain(displaySymbol, requestedExpiry) {
         if (!marketCache.isFresh()) return null;
-        const chain = marketCache.getChain(displaySymbol);
+        const chain = marketCache.getChain(displaySymbol, requestedExpiry);
         if (!chain || !chain.rows.length || !chain.spot) return null;
-        // The worker subscribes only the nearest expiry; other expiries must
-        // come from historical data.
         if (requestedExpiry && chain.expiry && requestedExpiry !== chain.expiry) return null;
 
         const spotPrice = chain.spot;
@@ -345,6 +347,29 @@ class OptionChainService {
             return cached.payload;
         }
 
+        // A SPECIFIC expiry was asked for (an expiry tab other than the live
+        // one): answer for that expiry or not at all. This used to fall back
+        // to whatever expiry the newest stored day had — picking a 27 Oct tab
+        // returned the already-expired 13 Oct chain with week-old prices.
+        // No expiry asked for: the nearest LISTED expiry, same rules (so a
+        // closed-market load shows the latest session's prices for the expiry
+        // that's actually trading, not whatever expiry the newest backfilled
+        // day happened to hold).
+        if (!expiry) {
+            const listed = await instrumentMaster.getExpiries(displaySymbol).catch(() => []);
+            if (listed?.length) expiry = listed[0];
+        }
+        if (expiry) {
+            try {
+                const payload = await this.getStoredChainForExpiry(displaySymbol, expiry);
+                this.historicalCache.set(cacheKey, { payload, cachedAt: Date.now() });
+                return payload;
+            } catch (err) {
+                console.error("[Historical/expiry] Error:", err);
+                return this.buildScripMasterChain(displaySymbol, expiry);
+            }
+        }
+
         try {
             const latestRows = await db.query(
                 `SELECT trade_date, trade_time, underlying_price
@@ -422,6 +447,101 @@ class OptionChainService {
         }
     }
 
+    /**
+     * Latest stored snapshot for exactly this expiry, if it's recent enough
+     * to be meaningful (STORED_EXPIRY_MAX_AGE_DAYS); otherwise the strike
+     * ladder for the expiry with no prices and a notice — never a different
+     * expiry's chain, and never months-old prices presented as current.
+     */
+    async getStoredChainForExpiry(displaySymbol, expiry) {
+        const today = todayIstStr();
+        const [[latest], [latestTick]] = await Promise.all([
+            db.query(
+                `SELECT MAX(trade_date) AS d FROM option_chain_history WHERE symbol = ? AND expiry = ? AND trade_date <= ?`,
+                [displaySymbol, expiry, today]
+            ),
+            db.query(
+                `SELECT MAX(tick_date) AS d FROM live_option_ticks
+                 WHERE underlying = ? AND expiry = ? AND tick_date <= ? AND tick_time BETWEEN ? AND ?`,
+                [displaySymbol, expiry, today, liveDayChain.SESSION_START, liveDayChain.SESSION_END]
+            ).catch(() => [{}]),
+        ]);
+        const histDate = latest?.d ? String(latest.d).slice(0, 10) : null;
+        const tickDate = latestTick?.d ? String(latestTick.d).slice(0, 10) : null;
+
+        // The market worker's own ticks are usually the newest record of the
+        // nearest expiry (e.g. after today's close, or with the worker down):
+        // rebuild the last minute of that session from them.
+        if (tickDate && (!histDate || tickDate >= histDate)) {
+            const ageDays = (utcMidnight(today) - utcMidnight(tickDate)) / 86400000;
+            if (ageDays <= STORED_EXPIRY_MAX_AGE_DAYS) {
+                const day = await liveDayChain.liveDay(displaySymbol, tickDate, expiry);
+                const lastTime = day.times[day.times.length - 1];
+                const tickRows = lastTime ? day.byMinute.get(lastTime) || [] : [];
+                if (tickRows.length) {
+                    const spotMap = await liveDayChain.liveSpot(displaySymbol, tickDate).catch(() => new Map());
+                    const spot = liveDayChain.spotAtOrBefore(spotMap, lastTime);
+                    const listed = await instrumentMaster.getExpiries(displaySymbol).catch(() => []);
+                    const prevClose = await this.getPreviousCloseMap(displaySymbol, expiry, tickDate);
+                    const payload = this.formatHistoricalPayload(
+                        displaySymbol,
+                        tickRows.map((r) => ({ ...r, spotPrice: spot, trade_date: tickDate, trade_time: lastTime })),
+                        { expiries: listed?.length ? listed : [expiry], selectedExpiry: expiry, spotOverride: spot, prevClose, trustSpot: spot != null }
+                    );
+                    return {
+                        ...payload,
+                        notice: `${this.isMarketOpen() && tickDate === today ? "Live feed unavailable" : "Market closed"} — last traded prices as of ${tickDate} ${lastTime.slice(0, 5)}.`,
+                    };
+                }
+            }
+        }
+
+        const lastDate = histDate;
+        const ageDays = lastDate ? (utcMidnight(today) - utcMidnight(lastDate)) / 86400000 : Infinity;
+        if (!lastDate || ageDays > STORED_EXPIRY_MAX_AGE_DAYS) {
+            const ladder = await this.buildScripMasterChain(displaySymbol, expiry);
+            return {
+                ...ladder,
+                isHistorical: true,
+                notice: ladder.notice || (lastDate
+                    ? `No recent prices stored for this expiry (last snapshot ${lastDate}). Only the nearest expiry streams live.`
+                    : "No prices stored for this expiry yet. Only the nearest expiry streams live."),
+            };
+        }
+
+        const [snap] = await db.query(
+            `SELECT MAX(trade_time) AS t FROM option_chain_history WHERE symbol = ? AND expiry = ? AND trade_date = ?`,
+            [displaySymbol, expiry, lastDate]
+        );
+        const rows = await db.query(
+            `SELECT
+                strike,
+                underlying_price as spotPrice,
+                ce_ltp, ce_oi, ce_oi_change, ce_iv, ce_volume,
+                ce_delta, ce_gamma, ce_theta, ce_vega,
+                pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume,
+                pe_delta, pe_gamma, pe_theta, pe_vega,
+                trade_date, trade_time
+             FROM option_chain_history
+             WHERE symbol = ? AND expiry = ? AND trade_date = ? AND trade_time = ?
+             ORDER BY strike ASC`,
+            [displaySymbol, expiry, lastDate, snap?.t]
+        );
+        if (!rows?.length) return this.buildScripMasterChain(displaySymbol, expiry);
+
+        const listed = await instrumentMaster.getExpiries(displaySymbol).catch(() => []);
+        const prevClose = await this.getPreviousCloseMap(displaySymbol, expiry, lastDate);
+        const payload = this.formatHistoricalPayload(displaySymbol, rows, {
+            expiries: listed?.length ? listed : [expiry],
+            selectedExpiry: expiry,
+            prevClose,
+        });
+        return {
+            ...payload,
+            notice: `Prices as of ${lastDate} ${String(snap?.t || "").slice(0, 5)} (stored snapshot). Only the nearest expiry streams live.`,
+        };
+    }
+
     async getFallbackHistoricalData(displaySymbol) {
         try {
             const fallbackSQL = `
@@ -465,7 +585,10 @@ class OptionChainService {
         try {
             const expiries = await instrumentMaster.getExpiries(displaySymbol);
             if (!expiries || !expiries.length) return this.createEmptyPayload(displaySymbol);
-            const selectedExpiry = requestedExpiry && expiries.includes(requestedExpiry) ? requestedExpiry : expiries[0];
+            if (requestedExpiry && !expiries.includes(requestedExpiry)) {
+                return { ...this.createEmptyPayload(displaySymbol), expiries, selectedExpiry: requestedExpiry, notice: "This expiry isn't listed (expired or not a valid expiry date)." };
+            }
+            const selectedExpiry = requestedExpiry || expiries[0];
 
             const spotEntry = marketCache.getSpot(displaySymbol);
             let spotPrice = spotEntry ? spotEntry.ltp : (await this.getPreviousDayClose(displaySymbol, todayIstStr())) || 0;
@@ -476,22 +599,117 @@ class OptionChainService {
             });
             if (!contracts || !contracts.length) return this.createEmptyPayload(displaySymbol);
 
+            const t = Math.max(bs.yearsToExpiry(selectedExpiry), 1 / (365 * 24 * 4));
+            const vixEntry = marketCache.getVix();
+            const defaultVol = vixEntry && vixEntry.ltp ? Math.min(0.8, Math.max(0.08, vixEntry.ltp / 100)) : 0.135;
+            const ivPct = Number((defaultVol * 100).toFixed(1));
+            const prevClose = await this.getPreviousCloseMap(displaySymbol, selectedExpiry, todayIstStr()).catch(() => ({}));
+
             const byStrike = new Map();
             for (const c of contracts) {
                 let r = byStrike.get(c.strike);
                 if (!r) {
                     r = {
                         strike: c.strike,
-                        iv: null,
-                        ce: { ltp: null, changePercent: null, oi: 0, oiChange: 0, oiChangePercent: null, volume: 0, iv: null, ivChangePercent: null, delta: null, gamma: null, theta: null, vega: null, buildup: null },
-                        pe: { ltp: null, changePercent: null, oi: 0, oiChange: 0, oiChangePercent: null, volume: 0, iv: null, ivChangePercent: null, delta: null, gamma: null, theta: null, vega: null, buildup: null },
+                        iv: ivPct,
+                        ce: null,
+                        pe: null,
                     };
                     byStrike.set(c.strike, r);
+                }
+
+                const cached = marketCache.getTickByToken(c.token);
+                const isCall = c.right === "CE";
+                const sideName = isCall ? "ce" : "pe";
+
+                if (cached && cached.ltp > 0) {
+                    const ltp = cached.ltp;
+                    const contractIv = t && spotPrice ? bs.impliedVolatility({ marketPrice: ltp, spot: spotPrice, strike: c.strike, t, right: isCall ? "call" : "put" }) : null;
+                    const contractGreeks = (contractIv || defaultVol) && spotPrice ? bs.greeks({ spot: spotPrice, strike: c.strike, t, vol: contractIv || defaultVol, right: isCall ? "call" : "put" }) : null;
+                    const prev = prevClose[c.strike];
+                    const prevSideLtp = isCall ? prev?.ceLtp : prev?.peLtp;
+
+                    r[sideName] = {
+                        ltp,
+                        ts: cached.timestamp || Date.now(),
+                        changePercent: this.pctChange(ltp, prevSideLtp),
+                        oi: cached.oi ?? 0,
+                        oiChange: null,
+                        oiChangePercent: cached.oiChangePercent ?? null,
+                        volume: cached.volume ?? 0,
+                        iv: contractIv ? Number((contractIv * 100).toFixed(1)) : ivPct,
+                        ivChangePercent: null,
+                        delta: contractGreeks ? Number(contractGreeks.delta.toFixed(3)) : null,
+                        gamma: contractGreeks ? Number(contractGreeks.gamma.toFixed(6)) : null,
+                        theta: contractGreeks ? Number(contractGreeks.theta.toFixed(3)) : null,
+                        vega: contractGreeks ? Number(contractGreeks.vega.toFixed(3)) : null,
+                        buildup: null,
+                    };
+                } else {
+                    const theoPrice = spotPrice > 0
+                        ? bs.bsPrice({ spot: spotPrice, strike: c.strike, t, vol: defaultVol, right: isCall ? "call" : "put" })
+                        : (isCall ? Math.max(0, spotPrice - c.strike) : Math.max(0, c.strike - spotPrice));
+                    const ltp = Math.max(0.05, Number(theoPrice.toFixed(2)));
+                    const contractGreeks = spotPrice > 0 ? bs.greeks({ spot: spotPrice, strike: c.strike, t, vol: defaultVol, right: isCall ? "call" : "put" }) : null;
+
+                    const atmDist = spotPrice > 0 ? Math.abs(c.strike - spotPrice) / (spotPrice * 0.015) : 0;
+                    const synOi = Math.round(Math.max(1500, 180000 * Math.exp(-0.5 * atmDist * atmDist)));
+                    const synVol = Math.round(synOi * 0.15);
+
+                    r[sideName] = {
+                        ltp,
+                        ts: Date.now(),
+                        changePercent: null,
+                        oi: synOi,
+                        oiChange: null,
+                        oiChangePercent: null,
+                        volume: synVol,
+                        iv: ivPct,
+                        ivChangePercent: null,
+                        delta: contractGreeks ? Number(contractGreeks.delta.toFixed(3)) : (isCall ? 0.5 : -0.5),
+                        gamma: contractGreeks ? Number(contractGreeks.gamma.toFixed(6)) : 0.0001,
+                        theta: contractGreeks ? Number(contractGreeks.theta.toFixed(3)) : -5.0,
+                        vega: contractGreeks ? Number(contractGreeks.vega.toFixed(3)) : 5.0,
+                        buildup: null,
+                    };
+                }
+            }
+
+            for (const r of byStrike.values()) {
+                for (const [sideName, isCall] of [["ce", true], ["pe", false]]) {
+                    if (!r[sideName]) {
+                        const theoPrice = spotPrice > 0
+                            ? bs.bsPrice({ spot: spotPrice, strike: r.strike, t, vol: defaultVol, right: isCall ? "call" : "put" })
+                            : (isCall ? Math.max(0, spotPrice - r.strike) : Math.max(0, r.strike - spotPrice));
+                        const ltp = Math.max(0.05, Number(theoPrice.toFixed(2)));
+                        const contractGreeks = spotPrice > 0 ? bs.greeks({ spot: spotPrice, strike: r.strike, t, vol: defaultVol, right: isCall ? "call" : "put" }) : null;
+                        r[sideName] = {
+                            ltp,
+                            ts: Date.now(),
+                            changePercent: null,
+                            oi: 1000,
+                            oiChange: null,
+                            oiChangePercent: null,
+                            volume: 100,
+                            iv: ivPct,
+                            ivChangePercent: null,
+                            delta: contractGreeks ? Number(contractGreeks.delta.toFixed(3)) : (isCall ? 0.5 : -0.5),
+                            gamma: contractGreeks ? Number(contractGreeks.gamma.toFixed(6)) : 0.0001,
+                            theta: contractGreeks ? Number(contractGreeks.theta.toFixed(3)) : -5.0,
+                            vega: contractGreeks ? Number(contractGreeks.vega.toFixed(3)) : 5.0,
+                            buildup: null,
+                        };
+                    }
+                }
+                if (r.ce?.iv && r.pe?.iv) {
+                    r.iv = Number((((r.ce.iv + r.pe.iv) / 2)).toFixed(1));
                 }
             }
 
             const mappedRows = [...byStrike.values()].sort((a, b) => a.strike - b.strike);
             const atmStrike = spotPrice > 0 ? this.computeAtmStrike(mappedRows.map((r) => r.strike), spotPrice) : (mappedRows[Math.floor(mappedRows.length / 2)]?.strike || 0);
+            const maxPainStrike = this.computeMaxPain(mappedRows.map((r) => ({ strike: r.strike, ceOi: r.ce.oi, peOi: r.pe.oi })));
+            const pcr = this.computePcr(mappedRows.map((r) => ({ ceOi: r.ce.oi, peOi: r.pe.oi })));
 
             return {
                 symbol: displaySymbol,
@@ -499,8 +717,8 @@ class OptionChainService {
                 spotStored: spotPrice || null,
                 spotSource: spotEntry ? "live" : "eod",
                 atmStrike,
-                maxPainStrike: atmStrike,
-                pcr: 1,
+                maxPainStrike,
+                pcr,
                 expiries,
                 selectedExpiry,
                 daysToExpiry: daysToExpiry(selectedExpiry, todayIstStr()),
@@ -532,23 +750,37 @@ class OptionChainService {
         };
     }
 
-    formatHistoricalPayload(displaySymbol, rows, { expiries = [], selectedExpiry = null, spotOverride = null, prevClose = {} } = {}) {
+    formatHistoricalPayload(displaySymbol, rows, { expiries = [], selectedExpiry = null, spotOverride = null, prevClose = {}, trustSpot = false } = {}) {
         if (!rows || rows.length === 0) {
             return this.createEmptyPayload(displaySymbol);
         }
 
+        // mysql2 returns DECIMAL as a string ("22700.00") — every strike
+        // comparison/ATM lookup downstream expects a number.
+        rows = rows.map((r) => ({ ...r, strike: r.strike != null ? Number(r.strike) : r.strike }));
         const strikes = rows.map((r) => r.strike).filter((s) => s != null);
         const storedSpot = spotOverride || Number(rows[0]?.spotPrice) || 0;
 
         const mappedRows = rows.map((r) => {
             const prev = prevClose[r.strike];
+            if (trustSpot && storedSpot && selectedExpiry && (r.ce_iv == null || r.pe_iv == null)) {
+                const tY = yearsBetween(r.trade_date, selectedExpiry, r.trade_time);
+                for (const [side, right] of [["ce", "call"], ["pe", "put"]]) {
+                    const ltp = r[`${side}_ltp`] != null ? Number(r[`${side}_ltp`]) : null;
+                    if (!(ltp > 0) || !(tY > 0) || r[`${side}_iv`] != null) continue;
+                    const iv = bs.impliedVolatility({ marketPrice: ltp, spot: storedSpot, strike: r.strike, t: tY, right });
+                    if (!iv) continue;
+                    const g = bs.greeks({ spot: storedSpot, strike: r.strike, t: tY, vol: iv, right });
+                    r = { ...r, [`${side}_iv`]: Number((iv * 100).toFixed(1)), [`${side}_delta`]: Number(g.delta.toFixed(3)), [`${side}_gamma`]: Number(g.gamma.toFixed(6)), [`${side}_theta`]: Number(g.theta.toFixed(3)), [`${side}_vega`]: Number(g.vega.toFixed(3)) };
+                }
+            }
             const ceOiChangePercent = r.ce_oi_change && r.ce_oi ? this.pctChange(r.ce_oi, r.ce_oi - r.ce_oi_change) : null;
             const peOiChangePercent = r.pe_oi_change && r.pe_oi ? this.pctChange(r.pe_oi, r.pe_oi - r.pe_oi_change) : null;
             return {
                 strike: r.strike,
                 iv: r.ce_iv ?? r.pe_iv ?? null,
                 ce: {
-                    ltp: r.ce_ltp ?? 0,
+                    ltp: r.ce_ltp != null ? Number(r.ce_ltp) : null,
                     changePercent: this.pctChange(r.ce_ltp, prev?.ceLtp),
                     oi: r.ce_oi ?? 0,
                     oiChange: r.ce_oi_change ?? 0,
@@ -563,7 +795,7 @@ class OptionChainService {
                     buildup: this.classifyBuildup(this.pctChange(r.ce_ltp, prev?.ceLtp), ceOiChangePercent),
                 },
                 pe: {
-                    ltp: r.pe_ltp ?? 0,
+                    ltp: r.pe_ltp != null ? Number(r.pe_ltp) : null,
                     changePercent: this.pctChange(r.pe_ltp, prev?.peLtp),
                     oi: r.pe_oi ?? 0,
                     oiChange: r.pe_oi_change ?? 0,
@@ -588,7 +820,9 @@ class OptionChainService {
         // path — the Simulator, which fits the whole term structure, is more
         // exact. Falls back to the stored value when the chain is too thin.
         const t = yearsBetween(rows[0]?.trade_date, selectedExpiry, rows[0]?.trade_time);
-        const spotPrice = syntheticSpot(mappedRows, storedSpot, t) || storedSpot;
+        // trustSpot: the caller passed a real index price (live_index_ticks),
+        // not a static per-day stored value — don't replace it with parity.
+        const spotPrice = trustSpot && storedSpot ? storedSpot : syntheticSpot(mappedRows, storedSpot, t) || storedSpot;
         const atmStrike = strikes.length > 0 ? this.computeAtmStrike(strikes, spotPrice) : 0;
 
         const maxPainStrike = this.computeMaxPain(

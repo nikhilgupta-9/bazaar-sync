@@ -52,6 +52,8 @@ const bs = require(path.join(DD, "lib", "blackScholes"));
 const { addDays, todayIst } = require(path.join(DD, "lib", "dates"));
 const { pool } = require("../config/db");
 const archivalPipeline = require("../services/archivalPipelineService");
+const archivalLocks = require("../services/archivalLocks");
+process.on("exit", () => archivalLocks.releaseAll());
 
 const PROGRESS_FILE = path.join(DD, "data", "upstox-stock-oc-archival-progress.json");
 const INDEX_KEYS = upstox.UNDERLYING_KEYS; // NIFTY → "NSE_INDEX|Nifty 50", SENSEX → "BSE_INDEX|SENSEX", …
@@ -224,7 +226,8 @@ async function storeSpot(symbol, candles) {
 }
 
 // Same column list + upsert as data-downloader/upstox/enrich.js storeOptionChainRows.
-async function storeStrikeRows(symbol, expiry, strike, ceRows, peRows) {
+// Enforces max ATM ± 30 strikes per minute
+async function storeStrikeRows(symbol, expiry, strike, ceRows, peRows, strikesList = null, maxAtmOffset = 30) {
     const byTime = new Map();
     for (const r of ceRows) byTime.set(`${r.date}|${r.time}`, { date: r.date, time: r.time, ce: r });
     for (const r of peRows) {
@@ -233,7 +236,18 @@ async function storeStrikeRows(symbol, expiry, strike, ceRows, peRows) {
         row.pe = r;
         byTime.set(k, row);
     }
-    const rows = [...byTime.values()];
+
+    const strikeIdx = strikesList ? strikesList.indexOf(strike) : -1;
+    const nearestIdx = (p) => strikesList.reduce((b, s, i) => (Math.abs(s - p) < Math.abs(strikesList[b] - p) ? i : b), 0);
+
+    const rows = [...byTime.values()].filter((r) => {
+        if (!strikesList || strikeIdx === -1) return true;
+        const s = r.ce?.spot ?? r.pe?.spot;
+        if (s == null) return true;
+        const atmIdx = nearestIdx(s);
+        return Math.abs(strikeIdx - atmIdx) <= maxAtmOffset;
+    });
+
     const values = rows.map((r) => [
         symbol, r.date, r.time, expiry, strike,
         r.ce?.spot ?? r.pe?.spot ?? null,
@@ -410,9 +424,9 @@ async function processSymbol(symbol, from, to, nStrikes, { spotOnly = false } = 
             try {
                 const ce = pair.CE ? enrich(await fetchContractCandles(pair.CE, winFrom, winTo), { strike, right: "call", expiry, spot }) : [];
                 const pe = pair.PE ? enrich(await fetchContractCandles(pair.PE, winFrom, winTo), { strike, right: "put", expiry, spot }) : [];
-                rowsThisExpiry += await storeStrikeRows(symbol, expiry, strike, ce, pe);
+                rowsThisExpiry += await storeStrikeRows(symbol, expiry, strike, ce, pe, strikes, nStrikes);
             } catch (err) {
-                failed.push({ expiry, strike, pair, winFrom, winTo, error: err.message });
+                failed.push({ expiry, strike, pair, winFrom, winTo, strikes, error: err.message });
                 console.error(`[${symbol}] ${expiry} ${strike}: ${err.message}`);
             }
         }
@@ -426,7 +440,7 @@ async function processSymbol(symbol, from, to, nStrikes, { spotOnly = false } = 
         try {
             const ce = f.pair.CE ? enrich(await fetchContractCandles(f.pair.CE, f.winFrom, f.winTo), { strike: f.strike, right: "call", expiry: f.expiry, spot }) : [];
             const pe = f.pair.PE ? enrich(await fetchContractCandles(f.pair.PE, f.winFrom, f.winTo), { strike: f.strike, right: "put", expiry: f.expiry, spot }) : [];
-            optionRows += await storeStrikeRows(symbol, f.expiry, f.strike, ce, pe);
+            optionRows += await storeStrikeRows(symbol, f.expiry, f.strike, ce, pe, f.strikes, nStrikes);
         } catch (err) {
             stillFailed.push(`${f.expiry}:${f.strike} ${err.message}`);
         }
@@ -486,6 +500,7 @@ async function main() {
         if (flags["dry-run"]) continue;
 
         const started = Date.now();
+        archivalLocks.lock(symbol); // keeps services/autoUploadDaemon.js off this symbol until we've uploaded it
         try {
             const res = await processSymbol(symbol, from, TO, nStrikes, { spotOnly });
             if (!spotOnly) {
@@ -550,6 +565,8 @@ async function main() {
                 console.error("Upstox token looks invalid/expired — stopping. Put a fresh UPSTOX_ACCESS_TOKEN in server/.env and re-run (resumes automatically).");
                 break;
             }
+        } finally {
+            archivalLocks.unlock(symbol);
         }
     }
 

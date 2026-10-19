@@ -23,6 +23,8 @@ const { pool } = require("../config/db");
 const lotSizeHistoryService = require("../services/lotSizeHistoryService");
 const { parityForward, spotFromForwardCurve, yearsBetween } = require("../utils/syntheticSpot");
 const { impliedVolatility, greeks, RISK_FREE_RATE } = require("../utils/blackScholes");
+const liveDayChain = require("../services/liveDayChain");
+const marketCache = require("../services/marketCache");
 
 // listDates scans every (trade_date, trade_time) pair for a symbol (NIFTY
 // alone is 6M+ rows after Phase 7's backfills) to compute a per-date
@@ -45,6 +47,9 @@ const { impliedVolatility, greeks, RISK_FREE_RATE } = require("../utils/blackSch
 // request with no memory AND no disk cache), and warmDatesCache() below
 // pre-pays even that for the common index symbols on server boot.
 const DATES_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+// Bump when computeDatesPayload's rules change so older cached payloads
+// (memory or disk) are recomputed instead of served.
+const DATES_PAYLOAD_VERSION = 2;
 const DATES_CACHE_FILE = path.join(__dirname, "..", "data", "simulator-dates-cache.json");
 const DATES_INVALIDATION_FILE = path.join(__dirname, "..", "data", "simulator-dates-cache.invalidated");
 const datesCache = new Map(); // symbol -> { computedAt, payload }
@@ -115,11 +120,14 @@ async function computeDatesPayload(symbol) {
         [symbol]
     );
     const [liveRows] = await pool.query(
-        `SELECT tick_date as trade_date, COUNT(DISTINCT tick_time) AS snapshotCount
+        // In-session minutes only — the worker stores a stale pre-open
+        // snapshot on start-up (e.g. 06:55 on a Saturday) that isn't a
+        // trading day. See services/liveDayChain.js.
+        `SELECT tick_date as trade_date, COUNT(DISTINCT LEFT(tick_time, 5)) AS snapshotCount
          FROM live_option_ticks
-         WHERE underlying = ?
+         WHERE underlying = ? AND tick_time BETWEEN ? AND ?
          GROUP BY tick_date ORDER BY tick_date DESC`,
-        [symbol]
+        [symbol, liveDayChain.SESSION_START, liveDayChain.SESSION_END]
     ).catch(() => [[]]);
 
     const [ohlcvRows] = await pool.query(
@@ -129,11 +137,11 @@ async function computeDatesPayload(symbol) {
         [symbol]
     );
     const [liveOhlcvRows] = await pool.query(
-        `SELECT tick_date as trade_date, COUNT(DISTINCT tick_time) AS snapshotCount
+        `SELECT tick_date as trade_date, COUNT(DISTINCT LEFT(tick_time, 5)) AS snapshotCount
          FROM live_index_ticks
-         WHERE symbol = ?
+         WHERE symbol = ? AND tick_time BETWEEN ? AND ?
          GROUP BY tick_date ORDER BY tick_date DESC`,
-        [symbol]
+        [symbol, liveDayChain.SESSION_START, liveDayChain.SESSION_END]
     ).catch(() => [[]]);
 
     const optionByDate = new Map(rows.map((r) => [r.trade_date, Number(r.snapshotCount)]));
@@ -160,7 +168,7 @@ async function computeDatesPayload(symbol) {
     }]));
     const dates = allDates.filter((date) => optionByDate.has(date));
     const sparseDates = dates.filter((date) => (optionByDate.get(date) || 0) <= 1);
-    return { symbol, dates, sparseDates, allDates, dateStatus };
+    return { v: DATES_PAYLOAD_VERSION, symbol, dates, sparseDates, allDates, dateStatus };
 }
 
 function refreshDatesCache(symbol) {
@@ -209,7 +217,7 @@ function invalidateDatesCache() {
 async function warmDatesCache(symbols = ["NIFTY", "BANKNIFTY", "FINNIFTY"]) {
     for (const symbol of symbols) {
         const cached = datesCache.get(symbol);
-        if (!cached || Date.now() - cached.computedAt > DATES_CACHE_TTL_MS) {
+        if (!cached || cached.payload?.v !== DATES_PAYLOAD_VERSION || Date.now() - cached.computedAt > DATES_CACHE_TTL_MS) {
             await refreshDatesCache(symbol);
         }
     }
@@ -286,7 +294,7 @@ async function listDates(req, res) {
         if (!symbol) return;
 
         const cached = datesCache.get(symbol);
-        if (cached) {
+        if (cached && cached.payload?.v === DATES_PAYLOAD_VERSION) {
             // Stale-while-revalidate: answer instantly, refresh in the
             // background if the cache is past its TTL (see the cache notes above).
             if (Date.now() - cached.computedAt > DATES_CACHE_TTL_MS) refreshDatesCache(symbol);
@@ -396,11 +404,7 @@ async function getChainAtTime(req, res) {
         let isLiveSource = false;
 
         if (!expiries.length) {
-            const [liveExpiryRows] = await pool.query(
-                `SELECT DISTINCT expiry FROM live_option_ticks WHERE underlying = ? AND tick_date = ? ORDER BY expiry ASC`,
-                [symbol, date]
-            ).catch(() => [[]]);
-            expiries = liveExpiryRows.map((r) => r.expiry);
+            expiries = await liveDayChain.liveExpiries(symbol, date).catch(() => []);
             if (expiries.length) isLiveSource = true;
         }
 
@@ -413,32 +417,17 @@ async function getChainAtTime(req, res) {
         let rawRows = [];
         let selectedTime = null;
 
+        let liveSpotMap = null;
         if (isLiveSource) {
-            const [timeRows] = await pool.query(
-                `SELECT DISTINCT tick_time FROM live_option_ticks
-                 WHERE underlying = ? AND tick_date = ? AND expiry = ? ORDER BY tick_time ASC`,
-                [symbol, date, selectedExpiry]
-            );
-            times = timeRows.map((r) => r.tick_time);
-            selectedTime = time && times.includes(time) ? time : times[0];
-
-            const [ticks] = await pool.query(
-                `SELECT strike,
-                        MAX(CASE WHEN opt_right = 'CE' THEN ltp END) AS ce_ltp,
-                        MAX(CASE WHEN opt_right = 'CE' THEN oi END) AS ce_oi,
-                        MAX(CASE WHEN opt_right = 'CE' THEN oi_change_percent END) AS ce_oi_change,
-                        MAX(CASE WHEN opt_right = 'CE' THEN volume END) AS ce_volume,
-                        MAX(CASE WHEN opt_right = 'PE' THEN ltp END) AS pe_ltp,
-                        MAX(CASE WHEN opt_right = 'PE' THEN oi END) AS pe_oi,
-                        MAX(CASE WHEN opt_right = 'PE' THEN oi_change_percent END) AS pe_oi_change,
-                        MAX(CASE WHEN opt_right = 'PE' THEN volume END) AS pe_volume
-                 FROM live_option_ticks
-                 WHERE underlying = ? AND tick_date = ? AND expiry = ? AND tick_time = ?
-                 GROUP BY strike
-                 ORDER BY strike ASC`,
-                [symbol, date, selectedExpiry, selectedTime]
-            );
-            rawRows = ticks;
+            // Minute-bucketed chain rebuilt from raw ticks (each contract's
+            // last trade carried forward) — see services/liveDayChain.js.
+            const day = await liveDayChain.liveDay(symbol, date, selectedExpiry);
+            times = day.times;
+            if (time && times.includes(time)) selectedTime = time;
+            else if (time) selectedTime = [...times].reverse().find((t) => t <= time) || times[0];
+            else selectedTime = times[0];
+            rawRows = selectedTime ? day.byMinute.get(selectedTime) || [] : [];
+            liveSpotMap = await liveDayChain.liveSpot(symbol, date).catch(() => new Map());
         } else {
             const [timeRows] = await pool.query(
                 `SELECT DISTINCT trade_time FROM option_chain_history USE INDEX (idx_backtest_range)
@@ -474,11 +463,17 @@ async function getChainAtTime(req, res) {
         // utils/syntheticSpot.js). ohlcv_data wins only when it has a real
         // minute bar (rare, Angel-One-cron days).
         const storedSpot = rawRows.find((r) => r.underlying_price != null)?.underlying_price;
-        const ohlcvSpot = await getSpotAt(symbol, date, selectedTime);
+        // Live days: the real index LTP that minute from live_index_ticks.
+        const liveIndexSpot = liveSpotMap ? liveDayChain.spotAtOrBefore(liveSpotMap, selectedTime) : null;
+        const ohlcvSpot = liveIndexSpot ?? (await getSpotAt(symbol, date, selectedTime));
         const anchor = storedSpot != null ? Number(storedSpot) : (ohlcvSpot ?? null);
 
         let paritySpot = null;
-        if (anchor != null) {
+        if (isLiveSource && liveIndexSpot == null) {
+            // No index tick yet — parity on the one recorded expiry (default carry).
+            const forward = parityForward(rawRows.filter((r) => r.ce_ltp > 0 && r.pe_ltp > 0).map((r) => ({ strike: Number(r.strike), ce: { ltp: Number(r.ce_ltp) }, pe: { ltp: Number(r.pe_ltp) } })));
+            if (forward != null) paritySpot = spotFromForwardCurve([{ t: yearsBetween(date, selectedExpiry, selectedTime), forward }]);
+        } else if (anchor != null && !isLiveSource) {
             const [fwdRows] = await pool.query(
                 `SELECT expiry, strike, ce_ltp, pe_ltp FROM option_chain_history USE INDEX (idx_symbol_date_time)
                  WHERE symbol = ? AND trade_date = ? AND trade_time = ?
@@ -500,7 +495,7 @@ async function getChainAtTime(req, res) {
 
         const ohlcvIsMinuteBar = ohlcvSpot != null;
         const spotPrice = (ohlcvIsMinuteBar ? ohlcvSpot : null) ?? paritySpot ?? anchor;
-        const spotSource = ohlcvIsMinuteBar ? "ohlcv" : paritySpot != null ? "parity" : "stored";
+        const spotSource = liveIndexSpot != null ? "live_index" : ohlcvIsMinuteBar ? "ohlcv" : paritySpot != null ? "parity" : "stored";
 
         // Time to expiry `t` in fractional years for Black-Scholes calculations
         const [y, m, d] = date.split("-").map(Number);
@@ -616,7 +611,9 @@ async function getChainAtTime(req, res) {
 
         // Calculate Spot Change from Day Open
         let spotOpen = null;
-        if (times.length > 0) {
+        if (liveSpotMap && liveSpotMap.size) {
+            spotOpen = liveSpotMap.values().next().value;
+        } else if (times.length > 0) {
             if (selectedTime === times[0]) {
                 spotOpen = spotPrice;
             } else {
@@ -657,10 +654,24 @@ async function getChainAtTime(req, res) {
             console.error("[simulator/chain] vix lookup failed:", err.message);
         }
 
-        // Implied Volatility VIX Fallback: if India VIX OHLC is missing, use ATM option IV average
-        if (vix == null && atmStrike != null) {
+        // Today's session: the live worker's India VIX tick (cache-only,
+        // never persisted — CLAUDE.md Gotcha #13), when it's the current day.
+        if (vix == null && isLiveSource) {
+            const ist = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+            const liveVix = date === ist ? marketCache.getVix() : null;
+            if (liveVix?.ltp != null) {
+                vix = Number(Number(liveVix.ltp).toFixed(2));
+                vixSource = "live";
+            }
+        }
+
+        // Implied Volatility VIX Fallback: if India VIX OHLC is missing, use ATM option IV average.
+        // Skipped within ~2 days of expiry, where ATM IV balloons (0-DTE IV of
+        // 30%+ on a ~13 VIX day) and would misrepresent VIX.
+        if (vix == null && atmStrike != null && tYears >= 2 / 365) {
             const atmRow = rows.find((r) => r.strike === atmStrike);
-            const atmIv = atmRow?.ce?.iv || atmRow?.pe?.iv || null;
+            const ivs = [atmRow?.ce?.iv, atmRow?.pe?.iv].filter((v) => v != null && v > 0);
+            const atmIv = ivs.length ? ivs.reduce((x, y) => x + y, 0) / ivs.length : null;
             if (atmIv != null) {
                 vix = Number(atmIv.toFixed(2));
                 vixSource = "implied";
@@ -762,7 +773,18 @@ async function replay(req, res) {
              WHERE symbol = ? AND trade_date = ? AND expiry = ? ORDER BY trade_time ASC`,
             [symbol, date, expiry]
         );
-        const times = timeRows.map((r) => r.trade_time);
+        let times = timeRows.map((r) => r.trade_time);
+        // Days only the market worker recorded: replay off the minute chain
+        // rebuilt from its raw ticks (services/liveDayChain.js).
+        let liveDay = null;
+        let liveSpotMap = null;
+        if (!times.length) {
+            liveDay = await liveDayChain.liveDay(symbol, date, expiry).catch(() => null);
+            if (liveDay?.times.length) {
+                times = liveDay.times;
+                liveSpotMap = await liveDayChain.liveSpot(symbol, date).catch(() => new Map());
+            }
+        }
         if (!times.length) return res.status(404).json({ error: `No stored option data for ${symbol} ${date} expiry ${expiry}` });
         // The leg's entry premium is whatever was on screen the moment the
         // user built it (client sends the chain-scrubbed time it was viewing,
@@ -775,12 +797,21 @@ async function replay(req, res) {
         // first snapshot only if no valid entryTime was supplied.
         const entryTime = requestedEntryTime && times.includes(requestedEntryTime) ? requestedEntryTime : times[0];
 
-        const [priceRows] = await pool.query(
-            `SELECT trade_time, strike, underlying_price, ce_ltp, pe_ltp, ce_volume, pe_volume, ce_oi, pe_oi FROM option_chain_history
-             WHERE symbol = ? AND trade_date = ? AND expiry = ? AND strike IN (?)
-             ORDER BY trade_time ASC`,
-            [symbol, date, expiry, strikes]
-        );
+        let priceRows;
+        if (liveDay) {
+            const wanted = new Set(strikes);
+            priceRows = [];
+            for (const t of times) {
+                for (const r of liveDay.byMinute.get(t) || []) if (wanted.has(r.strike)) priceRows.push({ ...r, trade_time: t });
+            }
+        } else {
+            [priceRows] = await pool.query(
+                `SELECT trade_time, strike, underlying_price, ce_ltp, pe_ltp, ce_volume, pe_volume, ce_oi, pe_oi FROM option_chain_history
+                 WHERE symbol = ? AND trade_date = ? AND expiry = ? AND strike IN (?)
+                 ORDER BY trade_time ASC`,
+                [symbol, date, expiry, strikes]
+            );
+        }
         const byMinute = new Map(); // time -> Map<strike, {ce_ltp, pe_ltp}>
         const fallbackSpotByTime = new Map(); // time -> underlying_price stored on the row itself
         for (const r of priceRows) {
@@ -801,14 +832,19 @@ async function replay(req, res) {
             const legNotional = entryPrice != null ? Math.abs(entryPrice * qty * shareMultiplier) : null;
             const slAmount = slPercent && legNotional != null ? (slPercent / 100) * legNotional : null;
             const tgAmount = tgPercent && legNotional != null ? (tgPercent / 100) * legNotional : null;
-            return { ...leg, strike: Number(leg.strike), qty, entryPrice, slPercent, tgPercent, slAmount, tgAmount };
+            // Price-based SL/TG (the option's own premium, stockmojo-style) wins over the % form.
+            const slPrice = leg.slPrice != null && leg.slPrice !== "" && Number(leg.slPrice) > 0 ? Number(leg.slPrice) : null;
+            const tgPrice = leg.tgPrice != null && leg.tgPrice !== "" && Number(leg.tgPrice) > 0 ? Number(leg.tgPrice) : null;
+            return { ...leg, strike: Number(leg.strike), qty, entryPrice, slPercent, tgPercent, slAmount, tgAmount, slPrice, tgPrice };
         });
 
         const [ohlcvRows] = await pool.query(
             `SELECT trade_time, close FROM ohlcv_data WHERE symbol = ? AND trade_date = ? ORDER BY trade_time ASC`,
             [symbol, date]
         );
-        const spotByTime = new Map(ohlcvRows.map((r) => [r.trade_time, Number(r.close)]));
+        const spotByTime = liveSpotMap
+            ? new Map(times.map((t) => [t, liveDayChain.spotAtOrBefore(liveSpotMap, t)]).filter(([, v]) => v != null))
+            : new Map(ohlcvRows.map((r) => [r.trade_time, Number(r.close)]));
 
         // Real per-minute spot: the stored underlying_price is static all day.
         // Per minute, compute the put-call parity FORWARD at every expiry
@@ -821,7 +857,7 @@ async function replay(req, res) {
              WHERE symbol = ? AND trade_date = ? AND underlying_price IS NOT NULL LIMIT 1`,
             [symbol, date]
         );
-        const anchorSpot = dayStored[0]?.underlying_price != null ? Number(dayStored[0].underlying_price) : null;
+        const anchorSpot = !liveDay && dayStored[0]?.underlying_price != null ? Number(dayStored[0].underlying_price) : null;
         const paritySpotByTime = new Map();
         if (anchorSpot != null) {
             const [wideRows] = await pool.query(
@@ -853,7 +889,7 @@ async function replay(req, res) {
         // price data, so a later gap in that specific contract's rows can't
         // null out the whole point the way a still-open leg's missing price
         // still does (see anyMissing below).
-        const legExit = legsWithEntry.map(() => ({ exited: false, exitTime: null, exitReason: null, frozenPnl: 0 }));
+        const legExit = legsWithEntry.map(() => ({ exited: false, exitTime: null, exitReason: null, exitPrice: null, frozenPnl: 0 }));
 
         // volume/oi are summed once per leg's own contract (not multiplied by
         // qty) — they're real market-wide activity on that strike, not scaled
@@ -892,10 +928,17 @@ async function replay(req, res) {
                 }
                 const diff = leg.action === "buy" ? price - leg.entryPrice : leg.entryPrice - price;
                 const legPnl = diff * leg.qty * shareMultiplier;
-                if (leg.slAmount != null && legPnl <= -leg.slAmount) {
-                    state.exited = true; state.exitTime = time; state.exitReason = "stop_loss"; state.frozenPnl = legPnl;
-                } else if (leg.tgAmount != null && legPnl >= leg.tgAmount) {
-                    state.exited = true; state.exitTime = time; state.exitReason = "target"; state.frozenPnl = legPnl;
+                const isSell = leg.action === "sell";
+                // Price trigger: a short leg's SL is a price ABOVE entry, its
+                // target BELOW; a long leg's the reverse. Exit fills at this
+                // minute's real price (not the trigger level), like a market
+                // square-off on the first minute that crosses it.
+                const slByPrice = leg.slPrice != null && (isSell ? price >= leg.slPrice : price <= leg.slPrice);
+                const tgByPrice = leg.tgPrice != null && (isSell ? price <= leg.tgPrice : price >= leg.tgPrice);
+                if (time > entryTime && (slByPrice || (leg.slPrice == null && leg.slAmount != null && legPnl <= -leg.slAmount))) {
+                    state.exited = true; state.exitTime = time; state.exitReason = "stop_loss"; state.exitPrice = price; state.frozenPnl = legPnl;
+                } else if (time > entryTime && (tgByPrice || (leg.tgPrice == null && leg.tgAmount != null && legPnl >= leg.tgAmount))) {
+                    state.exited = true; state.exitTime = time; state.exitReason = "target"; state.exitPrice = price; state.frozenPnl = legPnl;
                 }
                 pnl += legPnl;
                 volume += (row ? Number(leg.type === "CE" ? row.ce_volume : row.pe_volume) : 0) || 0;
@@ -919,6 +962,7 @@ async function replay(req, res) {
             ...leg,
             exitTime: legExit[i].exited ? legExit[i].exitTime : null,
             exitReason: legExit[i].exited ? legExit[i].exitReason : null,
+            exitPrice: legExit[i].exited ? legExit[i].exitPrice : null,
         }));
 
         res.json({ symbol, date, expiry, entryTime, lotSize, legs: legsWithExit, series });

@@ -66,7 +66,7 @@ import { useTheme } from "../context/ThemeContext";
 import { saveStrategy } from "../services/strategiesApi";
 import TradingViewChart from "../components/TradingViewChart";
 
-const BACKEND_BASE = "http://localhost:5001";
+const BACKEND_BASE = import.meta.env.VITE_API_URL || "http://localhost:5001";
 
 const CRYPTO_COINS = [
     { symbol: "BTC", name: "Bitcoin", icon: "₿", defaultLot: 0.001, leverage: "200x", color: "text-amber-400" },

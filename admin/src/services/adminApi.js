@@ -26,6 +26,22 @@ export async function fetchUserDetail(token, id) {
     return handle(await fetch(`${API_URL}/api/admin/users/${id}`, authed(token)));
 }
 
+export async function addUserPaperBalance(token, userId, { amount, note }) {
+    return handle(await fetch(`${API_URL}/api/admin/users/${userId}/balance`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ amount, note }),
+    }));
+}
+
+export async function updateUserPlan(token, userId, payload) {
+    return handle(await fetch(`${API_URL}/api/admin/users/${userId}/plan`, {
+        method: "POST",
+        headers: { ...authed(token).headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    }));
+}
+
 export async function fetchPayments(token) {
     return handle(await fetch(`${API_URL}/api/admin/payments`, authed(token)));
 }

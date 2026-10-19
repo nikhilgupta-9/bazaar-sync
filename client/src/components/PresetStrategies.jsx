@@ -555,6 +555,13 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows, bare 
         }
     }
 
+    // Bare = rendered inside a side panel, so size the grid by the panel's
+    // width (container query), not the viewport — a 520px panel on a 1536px
+    // screen otherwise got 4 cramped columns with truncated names.
+    const gridCols = bare
+        ? "grid grid-cols-2 @2xl:grid-cols-3 @5xl:grid-cols-4 gap-2 sm:gap-3"
+        : "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 sm:gap-3";
+
     return (
         <div className={bare ? "@container p-3 sm:p-4" : "rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-3 sm:p-4 shadow-xs transition-colors"}>
             {/* Header Title & Search Bar */}
@@ -612,7 +619,7 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows, bare 
 
             {/* Grid of Strategy Cards / Skeleton */}
             {!data ? (
-                <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 sm:gap-3.5 animate-pulse">
+                <div className={`${gridCols} animate-pulse`}>
                     {Array.from({ length: 8 }).map((_, i) => (
                         <div
                             key={i}
@@ -636,7 +643,7 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows, bare 
                     No strategies found matching &quot;{searchQuery}&quot;.
                 </div>
             ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 sm:gap-3.5">
+                <div className={gridCols}>
                     {filtered.map((p) => {
                         const legCount = p.legs ? p.legs.length : p.legCount || 0;
                         const isLoading = loadingPreset === p.name;
@@ -665,11 +672,11 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows, bare 
                             >
                                 <div>
                                     {/* Top Metadata Badges */}
-                                    <div className="flex items-center justify-between gap-1 mb-2 sm:mb-2.5">
-                                        <span className={`rounded-lg border px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] font-extrabold ${biasColor}`}>
+                                    <div className="flex flex-wrap items-center justify-between gap-1 mb-2 sm:mb-2.5">
+                                        <span className={`rounded-lg border px-1.5 sm:px-2 py-0.5 text-micro font-bold whitespace-nowrap ${biasColor}`}>
                                             {p.bias}
                                         </span>
-                                        <span className={`rounded-lg border px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] font-semibold ${riskColor}`}>
+                                        <span className={`rounded-lg border px-1.5 sm:px-2 py-0.5 text-micro font-semibold whitespace-nowrap ${riskColor}`}>
                                             {p.risk}
                                         </span>
                                     </div>
@@ -682,14 +689,14 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows, bare 
                                     {/* Strategy Info */}
                                     <div className="mt-2 sm:mt-3">
                                         <div className="flex items-baseline justify-between gap-1">
-                                            <h3 className="text-xs sm:text-sm font-bold text-gray-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition truncate">
+                                            <h3 className="min-w-0 text-xs sm:text-sm font-bold leading-snug text-fg group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition line-clamp-2">
                                                 {p.name}
                                             </h3>
-                                            <span className="shrink-0 text-[10px] sm:text-[11px] font-bold text-gray-400 dark:text-gray-500">
+                                            <span className="shrink-0 text-micro sm:text-label font-bold text-fg-subtle">
                                                 {legCount} {legCount === 1 ? "Leg" : "Legs"}
                                             </span>
                                         </div>
-                                        <p className="mt-1 text-[10px] sm:text-[11px] leading-snug sm:leading-relaxed text-gray-500 dark:text-gray-400 line-clamp-2">
+                                        <p className="mt-1 text-micro sm:text-label leading-snug sm:leading-relaxed text-gray-500 dark:text-gray-400 line-clamp-2">
                                             {p.summary}
                                         </p>
                                     </div>

@@ -207,7 +207,7 @@ describe("Iron Condor (4 legs, fully defined risk)", () => {
         const margin = computeMarginDetails(creditSpread, 18000, "NIFTY");
         expect(margin.isHedged).toBe(true);
         expect(margin.fundsRequired).toBeLessThan(50000);
-        expect(margin.marginBenefit).toBeGreaterThan(80000);
+        expect(margin.marginBenefit).toBeGreaterThan(50000);
     });
 
     it("requires margin for debit spread accounting for short leg exposure", () => {
@@ -229,8 +229,8 @@ describe("Iron Condor (4 legs, fully defined risk)", () => {
         ];
         const margin = computeMarginDetails(ironFly, 17979.55, "NIFTY");
         expect(margin.isHedged).toBe(true);
-        expect(margin.estMargin).toBeCloseTo(69292.73, 0);
-        expect(margin.fundsRequired).toBeCloseTo(69292.73, 0);
+        expect(margin.estMargin).toBeCloseTo(32435.97, 0);
+        expect(margin.fundsRequired).toBeCloseTo(32435.97, 0);
     });
 
     it("calculates exact Delta Exchange Buy option premium without integer rounding loss", () => {

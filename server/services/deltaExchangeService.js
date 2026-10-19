@@ -171,7 +171,13 @@ async function getCryptoOptionChain(underlying = "BTC", selectedExpiry = null) {
     // Determine target expiry
     let activeExpiry = sortedExpiries[0]?.raw || null;
     if (selectedExpiry) {
-        const match = sortedExpiries.find(e => e.raw === selectedExpiry || e.label.toLowerCase() === selectedExpiry.toLowerCase());
+        const selStr = String(selectedExpiry).trim();
+        const selNorm = selStr.slice(0, 10);
+        const match = sortedExpiries.find(e => 
+            e.raw === selStr || 
+            e.label.toLowerCase() === selStr.toLowerCase() ||
+            (e.raw && e.raw.slice(0, 10) === selNorm)
+        );
         if (match) activeExpiry = match.raw;
     }
 
@@ -266,6 +272,14 @@ async function getCryptoOptionChain(underlying = "BTC", selectedExpiry = null) {
         if (r.put) r.put.oiPercent = Math.min(100, (r.put.oiValueUsd / maxPutOi) * 100);
     });
 
+    const rowsWithSides = chainRows.map(r => ({
+        strike: r.strike,
+        ce: r.call ? { ltp: r.call.markPrice || r.call.askPrice || r.call.bidPrice || 0, ...r.call } : null,
+        pe: r.put ? { ltp: r.put.markPrice || r.put.askPrice || r.put.bidPrice || 0, ...r.put } : null,
+        call: r.call,
+        put: r.put,
+    }));
+
     return {
         underlying: cleanAsset,
         spotPrice: spotPrice || (chainRows.length > 0 ? chainRows[Math.floor(chainRows.length / 2)].strike : 85000),
@@ -273,7 +287,9 @@ async function getCryptoOptionChain(underlying = "BTC", selectedExpiry = null) {
         spot24hVol,
         expiries: sortedExpiries,
         activeExpiry: activeExpiryMeta,
+        selectedExpiry: activeExpiry,
         chain: chainRows,
+        rows: rowsWithSides,
         totalStrikes: chainRows.length,
         timestamp: Date.now(),
     };

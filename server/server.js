@@ -100,20 +100,27 @@ const authLimiter = rateLimit({
 
 const generalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 1500,
+    max: 5000,
     standardHeaders: true,
     legacyHeaders: false,
     skip: (req) => {
-        // High-frequency endpoints: scrubber, time-replay simulator, TradingView feeds, static uploads, and health checks
+        // High-frequency endpoints: paper trading, option chain feeds, strategies, simulator scrubber, TradingView, uploads, health
+        const url = req.originalUrl || req.url || req.path || "";
+        const p = req.path || "";
         return (
-            req.path.startsWith("/api/simulator") ||
-            req.path.startsWith("/api/tv") ||
-            req.path.startsWith("/uploads") ||
-            req.path === "/health"
+            url.startsWith("/api/paper-trade") || p.startsWith("/paper-trade") ||
+            url.startsWith("/api/option-chain") || p.startsWith("/option-chain") ||
+            url.startsWith("/api/strategy") || p.startsWith("/strategy") ||
+            url.startsWith("/api/simulator") || p.startsWith("/simulator") ||
+            url.startsWith("/api/market") || p.startsWith("/market") ||
+            url.startsWith("/api/tv") || p.startsWith("/tv") ||
+            url.startsWith("/uploads") || p.startsWith("/uploads") ||
+            url === "/health" || p === "/health"
         );
     },
     message: { error: "Too many requests. Please slow down and try again shortly." },
 });
+
 
 app.use(
     cors({
@@ -178,6 +185,9 @@ app.use("/api/seo", seoRoutes);
 app.use("/api/tv", tvDatafeedRoutes);
 app.use("/api/equity", equityRoutes);
 app.use("/api/crypto", cryptoRoutes);
+app.use("/api/margin", require("./routes/margin"));
+// warm the NSE SPAN file in the background so the first margin request is instant
+setTimeout(() => require("./services/spanMarginService").ensureLoaded().catch((e) => console.warn("[span] warm-up failed:", e.message)), 5000);
 
 // 404 handler
 app.use((req, res) => {
@@ -219,6 +229,9 @@ server.listen(PORT, () => {
     warmSimulatorDatesCache();
     // Same idea for the Strategy Builder / Option Chain "Select Asset" list.
     require("./services/optionChainService").refreshSymbolList();
+    // And the 52-Week High/Low scan (cold scan is 3-15s — past the client timeout).
+    require("./controllers/equityController").refresh52WScan()
+        .catch((err) => console.warn("[Boot] 52W scan warm failed:", err.message));
 
     // Admin Data Extraction jobs still "running" from a previous process
     // life (restart/crash mid-job) can never self-update — mark them so the
@@ -262,8 +275,10 @@ server.listen(PORT, () => {
 server.on("error", (err) => {
     if (err.code === "EADDRINUSE") {
         console.error(`❌ Port ${PORT} is already in use. Please free it up or use a different port.`);
+        process.exit(1);
     } else {
         console.error("❌ Server error:", err);
+        process.exit(1);
     }
 });
 

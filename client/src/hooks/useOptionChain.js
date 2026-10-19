@@ -151,6 +151,7 @@ export function useOptionChain(initialSymbol = "NIFTY") {
                         rows,
                         spotPrice: frame.spot ?? prev.spotPrice,
                         isHistorical: false,
+                        notice: null, // live ticks are flowing for this expiry again
                         timestamp: new Date().toISOString(),
                     };
                 });

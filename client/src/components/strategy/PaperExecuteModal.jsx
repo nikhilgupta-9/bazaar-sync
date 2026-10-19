@@ -2,9 +2,9 @@ import React from "react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import { openPosition } from "../../services/paperTradeApi";
+import { openPosition, openStrategyTrade } from "../../services/paperTradeApi";
 
-export default function PaperExecuteModal({ isOpen, onClose, symbol, legs, lotSize }) {
+export default function PaperExecuteModal({ isOpen, onClose, symbol, legs, lotSize, strategyName, requiredFunds = null, requiredMargin = null }) {
     const { token, user } = useAuth();
     const [executing, setExecuting] = useState(false);
     const [result, setResult] = useState(null);
@@ -25,20 +25,47 @@ export default function PaperExecuteModal({ isOpen, onClose, symbol, legs, lotSi
         const successes = [];
         const failures = [];
 
-        for (const leg of legs) {
+        if (legs.length > 1) {
             try {
-                const side = leg.action === "buy" ? "long" : "short";
-                const res = await openPosition(token, {
+                const res = await openStrategyTrade(token, {
                     symbol: symbol.toUpperCase(),
-                    expiry: leg.expiry,
-                    strike: leg.strike,
-                    optRight: leg.type,
-                    lots: leg.qty,
-                    side,
+                    expiry: legs[0]?.expiry,
+                    strategyName: strategyName || `${symbol.toUpperCase()} Strategy`,
+                    requiredFunds: requiredFunds,
+                    requiredMargin: requiredMargin != null ? requiredMargin : requiredFunds,
+                    legs: legs.map((l) => ({
+                        optRight: l.type,
+                        strike: l.strike,
+                        side: l.action === "buy" ? "long" : "short",
+                        lots: l.qty,
+                        expiry: l.expiry,
+                        entry_price: l.premium,
+                        ltp: l.premium,
+                        lot_size: l.lotSize || lotSize,
+                    })),
                 });
-                successes.push({ leg, res });
+                successes.push({ leg: { label: `${legs.length} Legs Basket` }, res });
             } catch (err) {
-                failures.push({ leg, error: err.message || "Failed to execute leg" });
+                failures.push({ leg: { label: `${legs.length} Legs Basket` }, error: err.message || "Failed to execute strategy" });
+            }
+        } else {
+            for (const leg of legs) {
+                try {
+                    const side = leg.action === "buy" ? "long" : "short";
+                    const res = await openPosition(token, {
+                        symbol: symbol.toUpperCase(),
+                        expiry: leg.expiry,
+                        strike: leg.strike,
+                        optRight: leg.type,
+                        lots: leg.qty,
+                        side,
+                        price: leg.premium,
+                        ltp: leg.premium,
+                    });
+                    successes.push({ leg, res });
+                } catch (err) {
+                    failures.push({ leg, error: err.message || "Failed to execute leg" });
+                }
             }
         }
 
@@ -97,6 +124,22 @@ export default function PaperExecuteModal({ isOpen, onClose, symbol, legs, lotSi
                                     </div>
                                 ))}
                             </div>
+                            {(requiredFunds != null || requiredMargin != null) && (
+                                <div className="mt-3 pt-2.5 border-t border-gray-200 dark:border-gray-700/60 flex items-center justify-between text-xs">
+                                    <div>
+                                        <span className="text-gray-500 font-semibold">Funds Required: </span>
+                                        <span className="font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                                            ₹{Math.round(requiredFunds || 0).toLocaleString("en-IN")}
+                                        </span>
+                                    </div>
+                                    <div>
+                                        <span className="text-gray-500 font-semibold">Est. Margin: </span>
+                                        <span className="font-bold text-gray-900 dark:text-white tabular-nums">
+                                            {requiredMargin === 0 ? "Not required" : `₹${Math.round(requiredMargin || 0).toLocaleString("en-IN")}`}
+                                        </span>
+                                    </div>
+                                </div>
+                            )}
                         </div>
 
                         {error && (

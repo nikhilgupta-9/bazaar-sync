@@ -5,6 +5,7 @@ const {
     listPlansAdmin, createPlanAdmin, updatePlanAdmin, setPlanActiveAdmin, deletePlanAdmin,
     listCoupons, createCoupon, setCouponActive, deleteCoupon,
     listLotSizeHistoryAdmin, addLotSizeHistoryEntry, bulkImportLotSizeHistory, removeLotSizeHistoryEntry,
+    addUserBalance, updateUserPlan,
 } = require("../controllers/adminController");
 const {
     getEnvStatus, updateEnvValue,
@@ -36,6 +37,8 @@ router.delete("/security/ips/:id", removeAdminAllowedIp);
 router.get("/overview", getOverview);
 router.get("/users", listUsers);
 router.get("/users/:id", getUserDetail);
+router.post("/users/:id/balance", addUserBalance);
+router.post("/users/:id/plan", updateUserPlan);
 router.get("/payments", listPayments);
 router.get("/positions", listAllPositions);
 router.get("/strategies", listAllStrategies);

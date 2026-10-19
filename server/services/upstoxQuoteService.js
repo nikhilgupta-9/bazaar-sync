@@ -5,6 +5,7 @@ const upstoxInstruments = require("./upstoxInstrumentMaster");
 
 const BASE_URL = process.env.UPSTOX_API_BASE_URL || "https://api.upstox.com/v2";
 const CACHE_TTL_MS = 3000; // 3-second cache for active live quotes
+const BATCH_CONCURRENCY = 4; // parallel quote batches (Upstox allows ~50 req/s)
 
 const quoteCache = new Map(); // instrumentKey -> { data, timestamp }
 
@@ -68,10 +69,24 @@ async function fetchRawUpstoxQuotes(instrumentKeys) {
 
     if (!uncachedKeys.length) return result;
 
-    // Fetch in batches of 100
+    // Fetch in batches of 100, a few batches in flight at once — sequential
+    // batches made a ~1200-symbol scan take 12+ round trips (10-15s cold).
     const batchSize = 100;
+    const batches = [];
     for (let i = 0; i < uncachedKeys.length; i += batchSize) {
-        const batch = uncachedKeys.slice(i, i + batchSize);
+        batches.push(uncachedKeys.slice(i, i + batchSize));
+    }
+    let next = 0;
+    const worker = async () => {
+        while (next < batches.length) {
+            await fetchBatch(batches[next++]);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, batches.length) }, worker));
+
+    return result;
+
+    async function fetchBatch(batch) {
         const encodedKeys = batch.map((k) => encodeURIComponent(k)).join(",");
         const path = `/v2/market-quote/quotes?instrument_key=${encodedKeys}`;
 
@@ -126,8 +141,6 @@ async function fetchRawUpstoxQuotes(instrumentKeys) {
             console.error("[UpstoxQuote] Batch fetch error:", err.message);
         }
     }
-
-    return result;
 }
 
 /**

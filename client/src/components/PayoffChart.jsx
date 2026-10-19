@@ -173,6 +173,17 @@ export default function PayoffChart({
 }) {
     const { isDark } = useTheme();
 
+    const minPrice = curve?.[0]?.price ?? 0;
+    const maxPrice = curve?.[curve.length - 1]?.price ?? 0;
+
+    // Before the early return below: a hook after it made React throw
+    // "Rendered more hooks than during the previous render" the moment the
+    // first leg was added (empty curve → real curve).
+    const visibleOiData = useMemo(() => {
+        if (!oiData?.length || minPrice >= maxPrice) return [];
+        return oiData.filter((r) => r.strike >= minPrice && r.strike <= maxPrice);
+    }, [oiData, minPrice, maxPrice]);
+
     if (!curve || !curve.length) {
         return (
             <div className="p-16 text-center text-xs text-gray-400">
@@ -180,9 +191,6 @@ export default function PayoffChart({
             </div>
         );
     }
-
-    const minPrice = curve[0]?.price ?? 0;
-    const maxPrice = curve[curve.length - 1]?.price ?? 0;
 
     const max = Math.max(...curve.map((p) => p.pnl));
     const min = Math.min(...curve.map((p) => p.pnl));
@@ -192,19 +200,20 @@ export default function PayoffChart({
     const spotExpiryPnl = spotPrice ? interpolateAt(curve, spotPrice, "pnl") : null;
     const spotTodayPnl = spotPrice && hasToday ? interpolateAt(curve, spotPrice, "todayPnl") : null;
 
-    // Filter OI data to what is visible
-    const visibleOiData = useMemo(() => {
-        if (!oiData?.length || minPrice >= maxPrice) return [];
-        return oiData.filter((r) => r.strike >= minPrice && r.strike <= maxPrice);
-    }, [oiData, minPrice, maxPrice]);
 
     const axisColor = isDark ? "#475569" : "#94a3b8";
     const textColor = isDark ? "#94a3b8" : "#64748b";
 
-    const sd1Down = spotPrice && expectedMove ? spotPrice - expectedMove : null;
-    const sd2Down = spotPrice && expectedMove ? spotPrice - 2 * expectedMove : null;
-    const sd1Up = spotPrice && expectedMove ? spotPrice + expectedMove : null;
-    const sd2Up = spotPrice && expectedMove ? spotPrice + 2 * expectedMove : null;
+    // expectedMove is payoff.js's computeExpectedMove object
+    // ({minus2sd, minus1sd, plus1sd, plus2sd}); a bare number (σ in points)
+    // is still accepted. Treating the object as a number made the header
+    // read "+1SD (NaN)".
+    const em = expectedMove && typeof expectedMove === "object" ? expectedMove : null;
+    const sigma = typeof expectedMove === "number" && Number.isFinite(expectedMove) ? expectedMove : null;
+    const sd1Down = em ? em.minus1sd : spotPrice && sigma ? spotPrice - sigma : null;
+    const sd2Down = em ? em.minus2sd : spotPrice && sigma ? spotPrice - 2 * sigma : null;
+    const sd1Up = em ? em.plus1sd : spotPrice && sigma ? spotPrice + sigma : null;
+    const sd2Up = em ? em.plus2sd : spotPrice && sigma ? spotPrice + 2 * sigma : null;
 
     return (
         <div className="w-full flex flex-col">

@@ -12,10 +12,11 @@ import { formatPrice, formatPercent, formatOi } from "../utils/format";
 import { fetchSymbolList } from "../services/optionChainApi";
 import ContractChartModal from "../components/ContractChartModal";
 import OptionChainOiChart from "../components/OptionChainOiChart";
+import TradingViewChart from "../components/TradingViewChart";
 import OiBar from "../components/OiBar";
 import OptionChainSettingsDrawer from "../components/OptionChainSettingsDrawer";
 import PremiumFeaturesModal from "../components/PremiumFeaturesModal";
-import { FiSettings, FiSearch, FiCheck, FiChevronDown, FiBarChart2, FiInfo, FiX } from "react-icons/fi";
+import { FiSettings, FiSearch, FiCheck, FiChevronDown, FiBarChart2, FiInfo, FiX, FiTrendingUp } from "react-icons/fi";
 import { TbReload } from "react-icons/tb";
 import { IoIosArrowBack, IoIosArrowForward } from "react-icons/io";
 
@@ -65,11 +66,49 @@ function formatStrikeRatio(numerator, denominator) {
 
 function ValueWithChange({ value, change, formatValue = formatPrice, align = "right" }) {
     return (
-        <div className={`flex flex-col ${align === "right" ? "items-end" : align === "left" ? "items-start" : "items-center"} leading-tight`}>
+        <div className={`flex items-baseline gap-1 whitespace-nowrap ${align === "right" ? "justify-end" : align === "left" ? "justify-start" : "justify-center"}`}>
             <span className="font-mono tabular-nums font-bold text-fg">{formatValue(value)}</span>
-            <span className={`text-micro font-mono tabular-nums font-semibold ${change > 0 ? "text-up" : change < 0 ? "text-down" : "text-fg-subtle"}`}>
-                {change != null ? `${change >= 0 ? "+" : ""}${formatPercent(change)}` : "-"}
-            </span>
+            {change != null && (
+                <span className={`text-label font-mono tabular-nums font-semibold ${change > 0 ? "text-up" : change < 0 ? "text-down" : "text-fg-subtle"}`}>
+                    {`${change >= 0 ? "+" : ""}${formatPercent(change)}`}
+                </span>
+            )}
+        </div>
+    );
+}
+
+// Placeholder that mirrors the chain's shape (calls | strike | puts) while the
+// first snapshot loads, so the page doesn't jump when real rows arrive.
+const SKELETON_ROWS = 14;
+const SKELETON_SIDE_COLS = 5;
+function OptionChainSkeleton({ label }) {
+    const bar = (w, key) => <span key={key} className="block h-2.5 rounded bg-gray-200 dark:bg-white/10" style={{ width: w }} />;
+    return (
+        <div className="rounded-2xl border border-line bg-surface shadow-xs overflow-hidden" role="status" aria-live="polite">
+            <span className="sr-only">{label}</span>
+            <div className="grid grid-cols-[1fr_auto_1fr] border-b border-line text-xs font-bold">
+                <div className="bg-emerald-500/10 py-2 text-center text-emerald-700 dark:text-emerald-400">CALLS (CE)</div>
+                <div className="w-20 sm:w-24 bg-surface-raised py-2 text-center text-fg border-x border-line">STRIKE</div>
+                <div className="bg-rose-500/10 py-2 text-center text-rose-700 dark:text-rose-400">PUTS (PE)</div>
+            </div>
+            <div className="animate-pulse divide-y divide-line">
+                {Array.from({ length: SKELETON_ROWS }, (_, r) => (
+                    <div key={r} className={`grid grid-cols-[1fr_auto_1fr] items-center ${r === Math.floor(SKELETON_ROWS / 2) ? "bg-amber-500/10" : ""}`}>
+                        <div className="flex items-center justify-end gap-3 px-3 py-2.5">
+                            {Array.from({ length: SKELETON_SIDE_COLS }, (_, c) => (
+                                <span key={c} className={c < SKELETON_SIDE_COLS - 1 ? "hidden md:block" : ""}>{bar(c === SKELETON_SIDE_COLS - 1 ? 52 : 40 + ((r + c) % 3) * 8, c)}</span>
+                            ))}
+                        </div>
+                        <div className="w-20 sm:w-24 self-stretch flex items-center justify-center bg-surface-muted border-x border-line">{bar(44, "s")}</div>
+                        <div className="flex items-center justify-start gap-3 px-3 py-2.5">
+                            {Array.from({ length: SKELETON_SIDE_COLS }, (_, c) => (
+                                <span key={c} className={c > 0 ? "hidden md:block" : ""}>{bar(c === 0 ? 52 : 40 + ((r + c + 1) % 3) * 8, c)}</span>
+                            ))}
+                        </div>
+                    </div>
+                ))}
+            </div>
+            <div className="border-t border-line bg-surface-muted px-3 py-2 text-center text-label font-semibold text-fg-subtle">{label}</div>
         </div>
     );
 }
@@ -146,6 +185,42 @@ const PRESET_CONFIGS = {
     },
 };
 
+const CHAIN_SETTINGS_KEY_PREFIX = "bazaar_sync_oc_settings_";
+const DEFAULT_CHAIN_SETTINGS = {
+    indian: { columns: { ...PRESET_CONFIGS.standard, bidAsk: false }, activePreset: "standard", atmBasis: "spot", strikesAroundAtm: 20 },
+    crypto: { columns: { ...PRESET_CONFIGS.standard, bidAsk: true }, activePreset: "standard", atmBasis: "spot", strikesAroundAtm: 20 },
+};
+const ATM_BASIS_BY_MARKET = { indian: ["spot", "future", "synth"], crypto: ["spot", "synth"] };
+
+function loadChainSettings(market) {
+    const defaults = DEFAULT_CHAIN_SETTINGS[market] || DEFAULT_CHAIN_SETTINGS.indian;
+    try {
+        const saved = JSON.parse(localStorage.getItem(CHAIN_SETTINGS_KEY_PREFIX + market) || "null");
+        if (!saved || typeof saved !== "object") return defaults;
+        return {
+            columns: { ...defaults.columns, ...(saved.columns || {}) },
+            activePreset: typeof saved.activePreset === "string" ? saved.activePreset : defaults.activePreset,
+            atmBasis: (ATM_BASIS_BY_MARKET[market] || []).includes(saved.atmBasis) ? saved.atmBasis : defaults.atmBasis,
+            strikesAroundAtm: saved.strikesAroundAtm === null || Number.isFinite(saved.strikesAroundAtm) ? saved.strikesAroundAtm : defaults.strikesAroundAtm,
+        };
+    } catch {
+        return defaults;
+    }
+}
+
+function saveChainSettings(market, settings) {
+    try {
+        localStorage.setItem(CHAIN_SETTINGS_KEY_PREFIX + market, JSON.stringify(settings));
+    } catch {
+        /* storage unavailable (private mode) — settings just won't persist */
+    }
+}
+
+function formatBidAsk(side, fmt) {
+    if (side?.bid == null && side?.ask == null) return "-";
+    return `${side.bid != null ? fmt(side.bid) : "-"} / ${side.ask != null ? fmt(side.ask) : "-"}`;
+}
+
 // /option-chain/:symbol → NSE/BSE chain, /option-chain/crypto/:coin → Delta Exchange chain.
 export default function OptionChain() {
     const { symbol: urlSymbol, coin } = useParams();
@@ -215,14 +290,22 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
 
     // Settings drawer & columns state
     const [settingsOpen, setSettingsOpen] = useState(false);
-    const [columnState, setColumns] = useState(PRESET_CONFIGS.standard);
+    // Settings are kept per market (NSE F&O vs Crypto) — each has its own
+    // drawer options and defaults, and switching market must not carry one
+    // market's choices into the other.
+    const [savedSettings] = useState(() => loadChainSettings(market));
+    const [columnState, setColumns] = useState(savedSettings.columns);
     const columns = useMemo(
-        () => (isCrypto ? { ...columnState, oiChange: false, oiChangePercent: false, ltpChangePercent: false } : columnState),
+        // Delta Exchange sends no previous-day data, so these can never show for crypto.
+        () => (isCrypto ? { ...columnState, oiChange: false, oiChangePercent: false, ltpChangePercent: false } : { ...columnState, bidAsk: false }),
         [columnState, isCrypto]
     );
-    const [activePreset, setActivePreset] = useState("standard");
-    const [atmBasis, setAtmBasis] = useState("spot");
-    const [strikesAroundAtm, setStrikesAroundAtm] = useState(20);
+    const [activePreset, setActivePreset] = useState(savedSettings.activePreset);
+    const [atmBasis, setAtmBasis] = useState(savedSettings.atmBasis);
+    const [strikesAroundAtm, setStrikesAroundAtm] = useState(savedSettings.strikesAroundAtm);
+    useEffect(() => {
+        saveChainSettings(market, { columns: columnState, activePreset, atmBasis, strikesAroundAtm });
+    }, [market, columnState, activePreset, atmBasis, strikesAroundAtm]);
 
     // View Mode: 'table' (Option Matrix) | 'chart' (OI Bar Chart)
     const [viewMode, setViewMode] = useState("table");
@@ -240,7 +323,8 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
     function applyPreset(presetName) {
         setActivePreset(presetName);
         if (PRESET_CONFIGS[presetName]) {
-            setColumns(PRESET_CONFIGS[presetName]);
+            // Bid/Ask isn't part of the shared presets — keep the trader's crypto choice.
+            setColumns((prev) => ({ ...PRESET_CONFIGS[presetName], bidAsk: prev.bidAsk }));
         }
     }
 
@@ -284,7 +368,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
 
     const effectiveAtmPrice = useMemo(() => {
         if (!data) return null;
-        if (atmBasis === "future") return data.futurePrice ?? data.spotPrice;
+        if (atmBasis === "future" && !isCrypto) return data.futurePrice ?? data.spotPrice;
         if (atmBasis === "synth") {
             const atmRow = data.rows?.find((r) => r.strike === data.atmStrike);
             const synth =
@@ -294,7 +378,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
             return synth ?? data.spotPrice;
         }
         return data.spotPrice;
-    }, [atmBasis, data]);
+    }, [atmBasis, data, isCrypto]);
 
     const effectiveAtmStrike = useMemo(() => {
         if (!data?.rows?.length || effectiveAtmPrice == null) return data?.atmStrike ?? null;
@@ -339,15 +423,15 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
 
     const hasData = !!data;
     useLayoutEffect(() => {
+        // The table box is as tall as the screen minus the sticky top nav, so
+        // once the page is scrolled to it the whole viewport is strikes
+        // (stockmojo-style) — previously it stopped at the first fold, which
+        // left only ~13 rows visible under the control bar.
         const fit = () => {
             const box = tableContainerRef.current;
             if (!box) return;
-            if (window.innerWidth < 1024) {
-                box.style.maxHeight = "";
-                return;
-            }
-            const docTop = box.getBoundingClientRect().top + window.scrollY;
-            box.style.maxHeight = `${Math.max(450, window.innerHeight - docTop - 16)}px`;
+            const navH = document.querySelector("header.sticky")?.offsetHeight || 0;
+            box.style.maxHeight = `${Math.max(420, window.innerHeight - navH - 12)}px`;
         };
         fit();
         window.addEventListener("resize", fit);
@@ -408,6 +492,14 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
         return { maxOi, maxVolume, maxOiChange };
     }, [displayRows]);
 
+    const [isNarrow, setIsNarrow] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
+    useEffect(() => {
+        const mq = window.matchMedia("(max-width: 767px)");
+        const onChange = (e) => setIsNarrow(e.matches);
+        mq.addEventListener("change", onChange);
+        return () => mq.removeEventListener("change", onChange);
+    }, []);
+
     const isMobileSplit = mobileSideView === "both";
     const isMobileCalls = mobileSideView === "calls";
     const isMobilePuts = mobileSideView === "puts";
@@ -415,6 +507,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
     // Column Counts for ColSpan calculation
     const ceColCount =
         1 /* Call LTP */ +
+        (columns.bidAsk ? 1 : 0) +
         (columns.iv ? 1 : 0) +
         (columns.delta ? 1 : 0) +
         (columns.gamma ? 1 : 0) +
@@ -426,11 +519,17 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
         (columns.oiChange ? 1 : 0) +
         (columns.oi ? 1 : 0);
 
+    // Below md, split view shows only Call LTP | Strike | Put LTP — a colSpan
+    // over the hidden cells made phantom columns (cut-off PUTS header, a
+    // blank band on the right, squashed totals).
+    const narrowSplit = isNarrow && isMobileSplit;
+
     const midColCount =
         1 /* Strike */ + (columns.pcr ? 1 : 0) + (columns.pcrVol ? 1 : 0);
 
     const peColCount =
         1 /* Put LTP */ +
+        (columns.bidAsk ? 1 : 0) +
         (columns.iv ? 1 : 0) +
         (columns.delta ? 1 : 0) +
         (columns.gamma ? 1 : 0) +
@@ -460,8 +559,8 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                 <div className="rounded-xl border border-line bg-surface p-2 sm:p-2.5 shadow-xs space-y-1.5">
                     {/* Row 1: Market Selector, Quick Indices, Stock Search & Live Spot Bar */}
                     <div className="flex flex-wrap items-center justify-between gap-2.5">
-                        {/* Left: Quick Symbol Selector */}
-                        <div className="flex flex-wrap items-center gap-2">
+                        {/* Left: Quick Symbol Selector (min-w-0 so the pill row scrolls instead of widening the page) */}
+                        <div className="flex flex-wrap items-center gap-2 min-w-0 max-w-full">
                             {/* Market switch: NSE/BSE F&O vs Crypto (Delta Exchange) */}
                             <div className="flex items-center rounded-xl border border-line bg-surface-raised p-0.5">
                                 <button
@@ -487,7 +586,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                             <span className="hidden sm:block h-5 w-px bg-line" />
 
                             {/* Quick Symbol Pills */}
-                            <div className="-mx-2 px-2 flex items-center gap-1 overflow-x-auto scrollbar-none sm:mx-0 sm:px-0 sm:flex-wrap">
+                            <div className="-mx-2 px-2 min-w-0 flex items-center gap-1 overflow-x-auto scrollbar-none sm:mx-0 sm:px-0 sm:flex-wrap">
                                 {isCrypto
                                     ? CRYPTO_COINS.map((c) => (
                                           <button
@@ -669,6 +768,16 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                     </div>
 
                     {/* Row 2: Sleek Continuous Market Ticker Strip (StockMojo Parity) */}
+                    {!data && (
+                        <div className="flex items-center gap-4 overflow-hidden py-1.5 px-2.5 rounded-lg bg-surface-muted border border-line" aria-hidden="true">
+                            {[72, 88, 64, 70, 80, 120].map((w, i) => (
+                                <div key={i} className="flex items-center gap-1.5 shrink-0 animate-pulse">
+                                    <span className="h-2 w-8 rounded bg-gray-200 dark:bg-white/10" />
+                                    <span className="h-3 rounded bg-gray-200 dark:bg-white/10" style={{ width: w }} />
+                                </div>
+                            ))}
+                        </div>
+                    )}
                     {data && (
                         <div className="flex items-center gap-2.5 overflow-x-auto scrollbar-none py-1 px-2.5 rounded-lg bg-surface-muted border border-line text-xs font-mono tabular-nums">
                             <div className="flex items-center gap-1.5 shrink-0">
@@ -679,6 +788,19 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                         {data.spotChange >= 0 ? "▲" : "▼"}{fmtPrice(Math.abs(data.spotChange))} ({formatPercent(data.spotChangePercent)})
                                     </span>
                                 )}
+                                <button
+                                    type="button"
+                                    onClick={() => setViewMode(viewMode === "tradingview" ? "table" : "tradingview")}
+                                    className={`ml-1 flex items-center gap-1 px-2 py-0.5 rounded-md font-bold text-micro transition cursor-pointer ${
+                                        viewMode === "tradingview"
+                                            ? "bg-emerald-600 text-white shadow-xs"
+                                            : "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                                    }`}
+                                    title={`Toggle ${symbol} TradingView Chart`}
+                                >
+                                    <FiTrendingUp size={11} />
+                                    <span>TradingView</span>
+                                </button>
                             </div>
 
                             <span className="h-3.5 w-px bg-line shrink-0" />
@@ -755,6 +877,10 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                             <span className="text-label font-bold uppercase tracking-wider text-fg-subtle mr-1 hidden md:inline">
                                 Expiry:
                             </span>
+                            {!data &&
+                                [64, 58, 62, 60, 66].map((w, i) => (
+                                    <span key={i} aria-hidden="true" className="h-6 shrink-0 rounded-lg bg-gray-200 dark:bg-white/10 animate-pulse" style={{ width: w }} />
+                                ))}
                             {data?.expiries?.slice(0, 8).map((exp) => (
                                 <button
                                     key={exp}
@@ -817,11 +943,11 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                             )}
                         </div>
 
-                        {/* View Mode Switcher: Option Matrix vs OI Bar Chart */}
+                        {/* View Mode Switcher: Option Matrix vs OI Bar Chart vs TradingView */}
                         <div className="flex items-center rounded-xl border border-line bg-surface-raised p-0.5 shadow-xs">
                             <button
                                 onClick={() => setViewMode("table")}
-                                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold transition-all ${
+                                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold transition-all cursor-pointer ${
                                     viewMode === "table"
                                         ? "bg-emerald-600 text-white shadow-xs"
                                         : "text-fg-muted hover:text-fg"
@@ -831,7 +957,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                             </button>
                             <button
                                 onClick={() => setViewMode("chart")}
-                                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold transition-all ${
+                                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold transition-all cursor-pointer ${
                                     viewMode === "chart"
                                         ? "bg-emerald-600 text-white shadow-xs"
                                         : "text-fg-muted hover:text-fg"
@@ -839,6 +965,17 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                             >
                                 <FiBarChart2 size={13} />
                                 <span>OI Bar Chart</span>
+                            </button>
+                            <button
+                                onClick={() => setViewMode("tradingview")}
+                                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold transition-all cursor-pointer ${
+                                    viewMode === "tradingview"
+                                        ? "bg-emerald-600 text-white shadow-xs"
+                                        : "text-fg-muted hover:text-fg"
+                                }`}
+                            >
+                                <FiTrendingUp size={13} />
+                                <span>TradingView</span>
                             </button>
                         </div>
 
@@ -867,9 +1004,9 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                         {/* Mobile Side Selector Switcher (Mobile Only) */}
                         <div className="flex md:hidden w-full items-center justify-between rounded-xl border border-line bg-surface-raised p-0.5 shadow-xs mt-1">
                             {[
-                                ["both", "Split View"],
-                                ["calls", "Calls (CE) Only"],
-                                ["puts", "Puts (PE) Only"],
+                                ["both", "Both"],
+                                ["calls", "Calls (CE)"],
+                                ["puts", "Puts (PE)"],
                             ].map(([sKey, sLabel]) => (
                                 <button
                                     key={sKey}
@@ -893,9 +1030,48 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                     </div>
                 )}
 
-                {/* 2. MAIN OPTION CHAIN VIEW (Matrix Table or OI Bar Chart) */}
+                {/* Where these prices come from when they aren't the live feed —
+                    e.g. a non-live expiry tab, or the last session after close. */}
+                {!error && data?.notice && (
+                    <div className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-medium text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-300">
+                        {data.notice}
+                    </div>
+                )}
+
+                {/* 2. MAIN OPTION CHAIN VIEW (Matrix Table or OI Bar Chart or TradingView) */}
                 {data && data.rows?.length ? (
-                    viewMode === "chart" ? (
+                    viewMode === "tradingview" ? (
+                        <div className="rounded-2xl border border-line bg-surface shadow-xs overflow-hidden p-3 space-y-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2 px-2 py-1 text-xs border-b border-line pb-2">
+                                <div className="flex items-center gap-2">
+                                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                                    <span className="font-extrabold text-fg text-sm">{symbol}</span>
+                                    <span className="text-micro font-semibold uppercase px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                        Live TradingView Terminal
+                                    </span>
+                                    {data?.spotPrice != null && (
+                                        <span className="font-mono text-fg font-bold tabular-nums ml-1">
+                                            Spot: {fmtPrice(data.spotPrice)}
+                                        </span>
+                                    )}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-micro font-semibold text-fg-subtle hidden sm:inline">
+                                        Native Drawing Tools · 100+ Indicators · Multi-Timeframe Candles
+                                    </span>
+                                    <button
+                                        onClick={() => setViewMode("table")}
+                                        className="px-2.5 py-1 rounded-lg border border-line hover:bg-surface-hover text-fg font-semibold transition cursor-pointer text-xs"
+                                    >
+                                        Back to Matrix ✕
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="h-[76vh] min-h-[580px] w-full rounded-xl overflow-hidden border border-line bg-surface">
+                                <TradingViewChart key={symbol} symbol={symbol} interval="5" height="100%" />
+                            </div>
+                        </div>
+                    ) : viewMode === "chart" ? (
                         <OptionChainOiChart
                             data={data}
                             displayRows={displayRows}
@@ -908,25 +1084,25 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                         />
                     ) : (
                     <div className="rounded-2xl border border-line bg-surface shadow-xs overflow-hidden">
-                        <div className="overflow-auto max-h-[calc(100vh-130px)] min-h-[550px]" ref={tableContainerRef}>
+                        <div className="overflow-auto max-h-[calc(100vh-110px)]" ref={tableContainerRef}>
                             <table className="w-full text-left border-collapse text-xs">
                                 <thead className="sticky top-0 z-20 bg-surface shadow-xs">
                                     {/* Top Grouping Header */}
                                     <tr className="border-b border-line text-xs font-bold">
                                         <th
-                                            colSpan={ceColCount}
+                                            colSpan={narrowSplit ? 1 : ceColCount}
                                             className={`${isMobilePuts ? "hidden md:table-cell" : ""} bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 text-center py-2 border-r border-line font-bold`}
                                         >
                                             CALLS (CE)
                                         </th>
                                         <th
-                                            colSpan={midColCount}
+                                            colSpan={narrowSplit ? 1 : midColCount}
                                             className="bg-surface-raised text-fg text-center py-2 border-r border-line font-bold"
                                         >
                                             STRIKE
                                         </th>
                                         <th
-                                            colSpan={peColCount}
+                                            colSpan={narrowSplit ? 1 : peColCount}
                                             className={`${isMobileCalls ? "hidden md:table-cell" : ""} bg-rose-500/10 text-rose-700 dark:text-rose-400 text-center py-2 font-bold`}
                                         >
                                             PUTS (PE)
@@ -986,6 +1162,11 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 IV
                                             </th>
                                         )}
+                                        {columns.bidAsk && (
+                                            <th className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-2 text-right whitespace-nowrap`}>
+                                                Bid / Ask
+                                            </th>
+                                        )}
                                         <th className={`${isMobilePuts ? "hidden md:table-cell" : "table-cell"} px-3 py-2 text-right font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-500/10`}>
                                             Call LTP
                                         </th>
@@ -1009,6 +1190,11 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                         <th className={`${isMobileCalls ? "hidden md:table-cell" : "table-cell"} px-3 py-2 text-left font-bold text-rose-700 dark:text-rose-400 bg-rose-500/10`}>
                                             Put LTP
                                         </th>
+                                        {columns.bidAsk && (
+                                            <th className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-2 text-left whitespace-nowrap`}>
+                                                Bid / Ask
+                                            </th>
+                                        )}
                                         {columns.iv && (
                                             <th className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-2 text-left`}>
                                                 IV
@@ -1086,13 +1272,13 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                             >
                                                 {/* CALL SIDE CELLS (Left to Center) */}
                                                 {columns.oi && (
-                                                    <td className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 ${ceItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""}`}>
+                                                    <td className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1 ${ceItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""}`}>
                                                         <OiBar value={row.ce.oi} max={scale.maxOi} side="ce" format={fmtQty} />
                                                     </td>
                                                 )}
                                                 {columns.oiChange && (
                                                     <td
-                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-right font-mono tabular-nums font-semibold ${
+                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-right font-mono tabular-nums font-semibold ${
                                                             ceItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                         style={heatStyle(row.ce.oiChange, scale.maxOiChange)}
@@ -1102,7 +1288,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.oiChangePercent && (
                                                     <td
-                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-right font-mono tabular-nums font-semibold ${
+                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-right font-mono tabular-nums font-semibold ${
                                                             ceItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         } ${
                                                             row.ce.oiChangePercent >= 0 ? "text-up" : "text-down"
@@ -1113,7 +1299,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.volume && (
                                                     <td
-                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-right font-mono tabular-nums text-fg-muted ${
+                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-right font-mono tabular-nums text-fg-muted ${
                                                             ceItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                         style={heatStyle(row.ce.volume, scale.maxVolume)}
@@ -1123,7 +1309,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.volOi && (
                                                     <td
-                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-right font-mono tabular-nums text-fg-muted ${
+                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-right font-mono tabular-nums text-fg-muted ${
                                                             ceItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                     >
@@ -1132,7 +1318,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.theta && (
                                                     <td
-                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-right font-mono tabular-nums text-fg-subtle ${
+                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-right font-mono tabular-nums text-fg-subtle ${
                                                             ceItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                     >
@@ -1141,7 +1327,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.vega && (
                                                     <td
-                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-right font-mono tabular-nums text-fg-subtle ${
+                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-right font-mono tabular-nums text-fg-subtle ${
                                                             ceItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                     >
@@ -1150,7 +1336,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.gamma && (
                                                     <td
-                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-right font-mono tabular-nums text-fg-subtle ${
+                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-right font-mono tabular-nums text-fg-subtle ${
                                                             ceItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                     >
@@ -1159,7 +1345,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.delta && (
                                                     <td
-                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-right tabular-nums font-mono text-fg ${
+                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-right tabular-nums font-mono text-fg ${
                                                             ceItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                     >
@@ -1168,7 +1354,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.iv && (
                                                     <td
-                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-right font-mono tabular-nums text-fg-muted ${
+                                                        className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-right font-mono tabular-nums text-fg-muted ${
                                                             ceItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                     >
@@ -1176,8 +1362,14 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                     </td>
                                                 )}
 
+                                                {columns.bidAsk && (
+                                                    <td className={`${isMobileCalls ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-right font-mono tabular-nums text-fg-muted whitespace-nowrap ${ceItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""}`}>
+                                                        {formatBidAsk(row.ce, fmtPrice)}
+                                                    </td>
+                                                )}
+
                                                 {/* Call LTP Cell (Always next to Strike) */}
-                                                <td className={`${isMobilePuts ? "hidden md:table-cell" : "table-cell"} px-3 py-1.5 ${ceItm ? "bg-amber-500/[0.06] dark:bg-amber-500/[0.1]" : ""}`}>
+                                                <td className={`${isMobilePuts ? "hidden md:table-cell" : "table-cell"} px-3 py-1 ${ceItm ? "bg-amber-500/[0.06] dark:bg-amber-500/[0.1]" : ""}`}>
                                                     <div className="flex items-center justify-end gap-1.5">
 
                                                         {!isCrypto && (
@@ -1188,7 +1380,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                                     setChartTarget({ strike: row.strike, right: "CE" });
                                                                 }}
                                                                 title="View Candlestick Chart"
-                                                                className="rounded p-1 text-fg-subtle hover:bg-emerald-500/15 hover:text-emerald-600 transition"
+                                                                className="rounded p-0.5 text-fg-subtle hover:bg-emerald-500/15 hover:text-emerald-600 transition"
                                                             >
                                                                 <FiBarChart2 size={13} />
                                                             </button>
@@ -1208,7 +1400,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
 
                                                 {/* STRIKE PRICE CENTER CELL */}
                                                 <td
-                                                    className={`px-3 py-1.5 text-center font-bold font-mono tabular-nums border-x border-line ${
+                                                    className={`px-3 py-1 text-center font-bold font-mono tabular-nums border-x border-line ${
                                                         isAtm
                                                             ? "bg-amber-500/20 text-amber-900 dark:text-amber-200"
                                                             : "bg-surface-raised text-fg"
@@ -1234,19 +1426,19 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
 
                                                 {/* MIDDLE METRICS (PCR) */}
                                                 {columns.pcr && (
-                                                    <td className={`${isMobileSplit ? "hidden md:table-cell" : "table-cell"} px-2 py-1.5 text-right font-mono tabular-nums text-fg-muted bg-surface-muted`}>
+                                                    <td className={`${isMobileSplit ? "hidden md:table-cell" : "table-cell"} px-2 py-1 text-right font-mono tabular-nums text-fg-muted bg-surface-muted`}>
                                                         {formatStrikeRatio(row.pe.oi, row.ce.oi)}
                                                     </td>
                                                 )}
                                                 {columns.pcrVol && (
-                                                    <td className={`${isMobileSplit ? "hidden md:table-cell" : "table-cell"} px-2 py-1.5 text-right font-mono tabular-nums text-fg-muted bg-surface-muted`}>
+                                                    <td className={`${isMobileSplit ? "hidden md:table-cell" : "table-cell"} px-2 py-1 text-right font-mono tabular-nums text-fg-muted bg-surface-muted`}>
                                                         {formatStrikeRatio(row.pe.volume, row.ce.volume)}
                                                     </td>
                                                 )}
 
                                                 {/* PUT SIDE CELLS (Center to Right) */}
                                                 {/* Put LTP Cell (Always next to Strike) */}
-                                                <td className={`${isMobileCalls ? "hidden md:table-cell" : "table-cell"} px-3 py-1.5 ${peItm ? "bg-amber-500/[0.06] dark:bg-amber-500/[0.1]" : ""}`}>
+                                                <td className={`${isMobileCalls ? "hidden md:table-cell" : "table-cell"} px-3 py-1 ${peItm ? "bg-amber-500/[0.06] dark:bg-amber-500/[0.1]" : ""}`}>
                                                     <div className="flex items-center justify-start gap-1.5">
                                                         <ValueWithChange
                                                             formatValue={fmtPrice}
@@ -1266,7 +1458,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                                     setChartTarget({ strike: row.strike, right: "PE" });
                                                                 }}
                                                                 title="View Candlestick Chart"
-                                                                className="rounded p-1 text-fg-subtle hover:bg-rose-500/15 hover:text-rose-600 transition"
+                                                                className="rounded p-0.5 text-fg-subtle hover:bg-rose-500/15 hover:text-rose-600 transition"
                                                             >
                                                                 <FiBarChart2 size={13} />
                                                             </button>
@@ -1275,9 +1467,14 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                     </div>
                                                 </td>
 
+                                                {columns.bidAsk && (
+                                                    <td className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-left font-mono tabular-nums text-fg-muted whitespace-nowrap ${peItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""}`}>
+                                                        {formatBidAsk(row.pe, fmtPrice)}
+                                                    </td>
+                                                )}
                                                 {columns.iv && (
                                                     <td
-                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-left font-mono tabular-nums text-fg-muted ${
+                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-left font-mono tabular-nums text-fg-muted ${
                                                             peItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                     >
@@ -1286,7 +1483,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.delta && (
                                                     <td
-                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-left tabular-nums font-mono text-fg ${
+                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-left tabular-nums font-mono text-fg ${
                                                             peItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                     >
@@ -1295,7 +1492,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.gamma && (
                                                     <td
-                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-left font-mono tabular-nums text-fg-subtle ${
+                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-left font-mono tabular-nums text-fg-subtle ${
                                                             peItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                     >
@@ -1304,7 +1501,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.vega && (
                                                     <td
-                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-left font-mono tabular-nums text-fg-subtle ${
+                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-left font-mono tabular-nums text-fg-subtle ${
                                                             peItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                     >
@@ -1313,7 +1510,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.theta && (
                                                     <td
-                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-left font-mono tabular-nums text-fg-subtle ${
+                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-left font-mono tabular-nums text-fg-subtle ${
                                                             peItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                     >
@@ -1322,7 +1519,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.volOi && (
                                                     <td
-                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-left font-mono tabular-nums text-fg-muted ${
+                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-left font-mono tabular-nums text-fg-muted ${
                                                             peItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                     >
@@ -1331,7 +1528,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.volume && (
                                                     <td
-                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-left font-mono tabular-nums text-fg-muted ${
+                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-left font-mono tabular-nums text-fg-muted ${
                                                             peItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                         style={heatStyle(row.pe.volume, scale.maxVolume)}
@@ -1341,7 +1538,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.oiChangePercent && (
                                                     <td
-                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-left font-mono tabular-nums font-semibold ${
+                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-left font-mono tabular-nums font-semibold ${
                                                             peItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         } ${
                                                             row.pe.oiChangePercent >= 0 ? "text-up" : "text-down"
@@ -1352,7 +1549,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                 )}
                                                 {columns.oiChange && (
                                                     <td
-                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 text-left font-mono tabular-nums font-semibold ${
+                                                        className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1 text-left font-mono tabular-nums font-semibold ${
                                                             peItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""
                                                         }`}
                                                         style={heatStyle(row.pe.oiChange, scale.maxOiChange)}
@@ -1361,7 +1558,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                                     </td>
                                                 )}
                                                 {columns.oi && (
-                                                    <td className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1.5 ${peItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""}`}>
+                                                    <td className={`${isMobilePuts ? "table-cell" : "hidden md:table-cell"} px-2 py-1 ${peItm ? "bg-amber-500/[0.05] dark:bg-amber-500/[0.08]" : ""}`}>
                                                         <OiBar value={row.pe.oi} max={scale.maxOi} side="pe" format={fmtQty} />
                                                     </td>
                                                 )}
@@ -1374,25 +1571,27 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                 {totals && (
                                     <tfoot className="sticky bottom-0 z-10 bg-surface-muted font-bold border-t-2 border-line text-xs">
                                         <tr className="border-b border-line">
-                                            <td colSpan={ceColCount} className={`${isMobilePuts ? "hidden md:table-cell" : ""} px-3 py-2 text-right text-emerald-700 dark:text-emerald-400 font-mono tabular-nums`}>
-                                                ITM: {fmtQty(totals.ceItm.oi)} | OTM: {fmtQty(totals.ceOtm.oi)}
+                                            <td colSpan={narrowSplit ? 1 : ceColCount} className={`${isMobilePuts ? "hidden md:table-cell" : ""} px-3 py-2 text-right text-emerald-700 dark:text-emerald-400 font-mono tabular-nums`}>
+                                                <span className="sm:hidden">ITM {fmtQty(totals.ceItm.oi)}<br />OTM {fmtQty(totals.ceOtm.oi)}</span>
+                                                <span className="hidden sm:inline">ITM: {fmtQty(totals.ceItm.oi)} | OTM: {fmtQty(totals.ceOtm.oi)}</span>
                                             </td>
-                                            <td colSpan={midColCount} className="px-3 py-2 text-center bg-surface-raised text-fg border-x border-line">
-                                                TOTAL OI
+                                            <td colSpan={narrowSplit ? 1 : midColCount} className="px-3 py-2 text-center bg-surface-raised text-fg border-x border-line">
+                                                <span className="sm:hidden">OI</span><span className="hidden sm:inline">TOTAL OI</span>
                                             </td>
-                                            <td colSpan={peColCount} className={`${isMobileCalls ? "hidden md:table-cell" : ""} px-3 py-2 text-left text-rose-700 dark:text-rose-400 font-mono tabular-nums`}>
-                                                ITM: {fmtQty(totals.peItm.oi)} | OTM: {fmtQty(totals.peOtm.oi)}
+                                            <td colSpan={narrowSplit ? 1 : peColCount} className={`${isMobileCalls ? "hidden md:table-cell" : ""} px-3 py-2 text-left text-rose-700 dark:text-rose-400 font-mono tabular-nums`}>
+                                                <span className="sm:hidden">ITM {fmtQty(totals.peItm.oi)}<br />OTM {fmtQty(totals.peOtm.oi)}</span>
+                                                <span className="hidden sm:inline">ITM: {fmtQty(totals.peItm.oi)} | OTM: {fmtQty(totals.peOtm.oi)}</span>
                                             </td>
                                         </tr>
                                         <tr className="bg-surface-raised text-fg">
-                                            <td colSpan={ceColCount} className={`${isMobilePuts ? "hidden md:table-cell" : ""} px-3 py-2 text-right font-bold text-sm font-mono tabular-nums`}>
-                                                Total Call OI: {fmtQty(totals.totalCeOi)}
+                                            <td colSpan={narrowSplit ? 1 : ceColCount} className={`${isMobilePuts ? "hidden md:table-cell" : ""} px-2 sm:px-3 py-2 text-right font-bold text-xs sm:text-sm font-mono tabular-nums`}>
+                                                <span className="hidden sm:inline">Total Call OI: </span>{fmtQty(totals.totalCeOi)}
                                             </td>
-                                            <td colSpan={midColCount} className="px-3 py-2 text-center font-bold bg-surface-muted border-x border-line">
+                                            <td colSpan={narrowSplit ? 1 : midColCount} className="px-3 py-2 text-center font-bold bg-surface-muted border-x border-line">
                                                 {displayRows.length} Strikes
                                             </td>
-                                            <td colSpan={peColCount} className={`${isMobileCalls ? "hidden md:table-cell" : ""} px-3 py-2 text-left font-bold text-sm font-mono tabular-nums`}>
-                                                Total Put OI: {fmtQty(totals.totalPeOi)}
+                                            <td colSpan={narrowSplit ? 1 : peColCount} className={`${isMobileCalls ? "hidden md:table-cell" : ""} px-2 sm:px-3 py-2 text-left font-bold text-xs sm:text-sm font-mono tabular-nums`}>
+                                                <span className="hidden sm:inline">Total Put OI: </span>{fmtQty(totals.totalPeOi)}
                                             </td>
                                         </tr>
                                     </tfoot>
@@ -1407,10 +1606,8 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                         )}
                     </div>
                     )
-                ) : loading ? (
-                    <div className="rounded-2xl border border-line bg-surface p-12 text-center text-xs font-semibold text-fg-subtle">
-                        {isCrypto ? `Loading ${symbol} option chain from Delta Exchange…` : "Loading live option matrix…"}
-                    </div>
+                ) : loading || (!data && !error) ? (
+                    <OptionChainSkeleton label={isCrypto ? `Loading ${symbol} option chain from Delta Exchange…` : `Loading ${symbol} option chain…`} />
                 ) : (
                     data && (
                         <div className="rounded-2xl border border-line bg-surface p-12 text-center text-xs text-fg-muted space-y-1">
@@ -1431,6 +1628,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                 <OptionChainSettingsDrawer
                     open={settingsOpen}
                     onClose={() => setSettingsOpen(false)}
+                    market={market}
                     columns={columns}
                     onToggleColumn={toggleColumn}
                     onApplyPreset={applyPreset}

@@ -45,6 +45,8 @@ async function getOrCreateWallet(userId) {
 }
 
 function isProActive(user) {
+    if (!user) return false;
+    if (user.role === "admin") return true;
     return user.tier === "pro" && (!user.pro_expires_at || new Date(user.pro_expires_at) > new Date());
 }
 
@@ -52,16 +54,16 @@ function isProActive(user) {
 // callers already have it) — avoids a second users query here.
 async function getWalletStatus(userId, user) {
     const wallet = await getOrCreateWallet(userId);
-    const trialActive = wallet.trial_expires_at ? new Date(wallet.trial_expires_at) > new Date() : false;
     const isPro = isProActive(user);
+    const trialActive = isPro || (wallet.trial_expires_at ? new Date(wallet.trial_expires_at) > new Date() : false);
 
     return {
         balance: Number(wallet.balance),
         trialActive,
         trialExpiresAt: wallet.trial_expires_at,
         isPro,
-        proExpiresAt: user.pro_expires_at,
-        accessAllowed: trialActive || isPro,
+        proExpiresAt: user ? user.pro_expires_at : null,
+        accessAllowed: isPro || trialActive,
     };
 }
 

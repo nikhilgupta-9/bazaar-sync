@@ -37,28 +37,29 @@ export async function fetchPositions(token, status = "open") {
     return handle(res);
 }
 
-export async function openPosition(token, { symbol, expiry, strike, optRight, lots, side = "long", strategyName }) {
+export async function openPosition(token, payload) {
     const res = await fetch(`${API_URL}/api/paper-trade/positions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ symbol, expiry, strike, optRight, lots, side, strategyName }),
+        body: JSON.stringify(payload),
     });
     return handle(res);
 }
 
-export async function openStrategyTrade(token, { symbol, expiry, legs, strategyName }) {
+export async function openStrategyTrade(token, payload) {
     const res = await fetch(`${API_URL}/api/paper-trade/strategy`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ symbol, expiry, legs, strategyName }),
+        body: JSON.stringify(payload),
     });
     return handle(res);
 }
 
-export async function closePosition(token, id) {
+export async function closePosition(token, id, payload = {}) {
     const res = await fetch(`${API_URL}/api/paper-trade/positions/${id}/close`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload || {}),
     });
     return handle(res);
 }

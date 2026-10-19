@@ -92,7 +92,10 @@ initTables();
 async function exportToGzipCsv(dataType, symbol, year) {
     const cleanSym = symbol ? symbol.replace(/[^A-Za-z0-9_]/g, "") : dataType.toUpperCase();
     const fileName = `${cleanSym}_${year}_${dataType}.csv.gz`;
-    const outputPath = path.join(STAGING_DIR, fileName);
+    // Unique per process + call: two exporters of the same symbol (the auto-upload daemon and a
+    // backfill runner, or two Express processes) writing one shared path interleaved their gzip
+    // streams and uploaded a corrupt file (SENSEX 2026, 2026-10-19). The Drive name stays `fileName`.
+    const outputPath = path.join(STAGING_DIR, `${cleanSym}_${year}_${dataType}.${process.pid}.${Date.now()}.csv.gz`);
 
     let countSql = "";
     let countParams = [];
@@ -482,7 +485,7 @@ async function smartMergeAndPolishDataset({ dataType, symbol, year, localGzipPat
             destinationPath: tempCloudDownloadPath,
         });
 
-        const polishedGzipPath = path.join(STAGING_DIR, `polished_${finalFileName}`);
+        const polishedGzipPath = path.join(STAGING_DIR, `polished_${process.pid}_${Date.now()}_${finalFileName}`);
         const streamRes = await streamMergeGzipCsv({
             localGzipPath,
             cloudGzipPath: tempCloudDownloadPath,

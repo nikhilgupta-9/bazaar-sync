@@ -3,6 +3,7 @@ import React from "react";
 import ReactDOMServer from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { AuthProvider } from "../context/AuthContext";
+import { ThemeProvider } from "../context/ThemeContext";
 import PaperTrade from "./PaperTrade";
 
 describe("PaperTrade render test", () => {
@@ -11,7 +12,9 @@ describe("PaperTrade render test", () => {
       ReactDOMServer.renderToString(
         <MemoryRouter>
           <AuthProvider>
-            <PaperTrade />
+            <ThemeProvider>
+              <PaperTrade />
+            </ThemeProvider>
           </AuthProvider>
         </MemoryRouter>
       );

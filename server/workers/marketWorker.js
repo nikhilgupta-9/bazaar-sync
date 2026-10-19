@@ -148,56 +148,78 @@ async function subscribeFutures() {
 
 /**
  * Once we know an index/stock's spot price, pick the nearest
- * expiry and subscribe strikes around ATM in SnapQuote mode (needed for OI).
+ * expiries (top 3 or requested expiry) and subscribe strikes around ATM in SnapQuote mode (needed for OI).
  */
-async function subscribeOptionsFor(underlying, spotPrice) {
-    if (optionsSubscribed.has(underlying)) return;
-    optionsSubscribed.add(underlying);
-
+async function subscribeOptionsFor(underlying, spotPrice, specificExpiry = null) {
     try {
         const expiries = await instrumentMaster.getExpiries(underlying);
         if (!expiries.length) {
             workerLogger.error(`No live expiries in scrip master for ${underlying}`);
-            optionsSubscribed.delete(underlying); // allow retry on a later tick
             return;
         }
-        const nearest = expiries[0];
-        const contracts = await instrumentMaster.getOptionContracts(underlying, nearest, {
-            centerPrice: spotPrice,
-            strikesPerSide: STRIKES_PER_SIDE,
-        });
 
-        const nseTokens = [];
-        const bseTokens = [];
+        // Subscribe requested expiry or the top 3 expiries
+        const targetExpiries = specificExpiry
+            ? (expiries.includes(specificExpiry) ? [specificExpiry] : [])
+            : expiries.slice(0, Math.min(3, expiries.length));
 
-        for (const c of contracts) {
-            tokenMeta.set(c.token, {
-                kind: "option",
-                underlying,
-                strike: c.strike,
-                right: c.right,
-                expiry: c.expiry,
-                lotSize: c.lotSize,
-            });
-            if (c.exchSeg === "BFO") bseTokens.push(c.token);
-            else nseTokens.push(c.token);
+        for (const exp of targetExpiries) {
+            const subKey = `${underlying}:${exp}`;
+            if (optionsSubscribed.has(subKey)) continue;
+            optionsSubscribed.add(subKey);
+
+            try {
+                const contracts = await instrumentMaster.getOptionContracts(underlying, exp, {
+                    centerPrice: spotPrice,
+                    strikesPerSide: STRIKES_PER_SIDE,
+                });
+
+                if (!contracts || !contracts.length) continue;
+
+                const nseTokens = [];
+                const bseTokens = [];
+
+                for (const c of contracts) {
+                    tokenMeta.set(c.token, {
+                        kind: "option",
+                        underlying,
+                        strike: c.strike,
+                        right: c.right,
+                        expiry: c.expiry,
+                        lotSize: c.lotSize,
+                    });
+                    if (c.exchSeg === "BFO") bseTokens.push(c.token);
+                    else nseTokens.push(c.token);
+                }
+
+                // Batch subscriptions in chunks of 400 to respect frame limits
+                const CHUNK_SIZE = 400;
+                for (let i = 0; i < nseTokens.length; i += CHUNK_SIZE) {
+                    const chunk = nseTokens.slice(i, i + CHUNK_SIZE);
+                    ws.subscribe(MODE.SNAP_QUOTE, EXCHANGE.NSE_FO, chunk);
+                }
+                for (let i = 0; i < bseTokens.length; i += CHUNK_SIZE) {
+                    const chunk = bseTokens.slice(i, i + CHUNK_SIZE);
+                    ws.subscribe(MODE.SNAP_QUOTE, EXCHANGE.BSE_FO, chunk);
+                }
+
+                workerLogger.info(
+                    `${underlying}: subscribed ${contracts.length} option contracts (expiry ${exp}, ATM ~${spotPrice})`
+                );
+            } catch (innerErr) {
+                workerLogger.error(`Option subscription failed for ${underlying} ${exp}: ${innerErr.message}`);
+                optionsSubscribed.delete(subKey);
+            }
         }
-        if (nseTokens.length) ws.subscribe(MODE.SNAP_QUOTE, EXCHANGE.NSE_FO, nseTokens);
-        if (bseTokens.length) ws.subscribe(MODE.SNAP_QUOTE, EXCHANGE.BSE_FO, bseTokens);
-
-        workerLogger.info(
-            `${underlying}: subscribed ${contracts.length} option contracts (expiry ${nearest}, ATM ~${spotPrice})`
-        );
     } catch (err) {
-        workerLogger.error(`Option subscription failed for ${underlying}: ${err.message}`);
-        optionsSubscribed.delete(underlying); // retry on a later index tick
+        workerLogger.error(`Option discovery failed for ${underlying}: ${err.message}`);
     }
 }
 
 /**
- * Dynamic on-demand subscription for any F&O symbol (indices or stocks)
+ * Dynamic on-demand subscription for any F&O symbol (indices or stocks) and optional expiry
  */
-async function subscribeSymbol(symbol) {
+async function subscribeSymbol(symbol, expiry = null) {
     const sym = (symbol || "").toUpperCase();
     if (!sym) return;
     try {
@@ -223,7 +245,7 @@ async function subscribeSymbol(symbol) {
 
         const knownSpot = spot.get(sym);
         if (knownSpot) {
-            await subscribeOptionsFor(sym, knownSpot);
+            await subscribeOptionsFor(sym, knownSpot, expiry);
         }
     } catch (err) {
         workerLogger.error(`Dynamic subscribe failed for ${sym}: ${err.message}`);
@@ -463,7 +485,7 @@ process.on("message", async (msg) => {
     if (!msg || typeof msg !== "object") return;
     if (msg.type === "shutdown") shutdown("IPC shutdown message");
     if (msg.type === "worker:subscribe_symbol" && msg.symbol) {
-        await subscribeSymbol(msg.symbol);
+        await subscribeSymbol(msg.symbol, msg.expiry);
     }
 });
 process.on("uncaughtException", (err) => {

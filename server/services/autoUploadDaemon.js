@@ -3,6 +3,7 @@
 const db = require("../config/db");
 const archivalPipeline = require("./archivalPipelineService");
 const gdrive = require("./googleDriveService");
+const archivalLocks = require("./archivalLocks");
 
 let isRunning = false;
 let isCycleActive = false;
@@ -86,8 +87,15 @@ async function runCycle() {
 
         console.log(`[AutoUploadDaemon] Found ${pending.length} pending asset-year batches to upload to Google Drive.`);
 
+        // A backfill runner still writing a symbol has it locked — uploading/pruning it now would
+        // archive a partial year and race the runner's own upload (see archivalLocks.js).
+        const free = pending.filter((p) => !archivalLocks.isLocked(p.symbol));
+        if (free.length < pending.length) {
+            console.log(`[AutoUploadDaemon] Skipping ${pending.length - free.length} batch(es) a backfill runner is still writing.`);
+        }
+
         // Process up to 3 batches per cycle to avoid blocking other tasks
-        const toProcess = pending.slice(0, 3);
+        const toProcess = free.slice(0, 3);
         for (const item of toProcess) {
             console.log(`[AutoUploadDaemon] 🚀 Auto-uploading [${item.dataType.toUpperCase()}] ${item.symbol} (${item.year}) [${item.count.toLocaleString()} rows] to Google Drive...`);
             lastProcessedSymbol = `${item.symbol} (${item.year})`;

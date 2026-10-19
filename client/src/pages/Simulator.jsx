@@ -30,7 +30,9 @@ import {
 import { yearsToExpiry } from "../utils/blackScholes";
 import OiBar from "../components/OiBar";
 import StaleBadge from "../components/strategy/StaleBadge";
-import SlTgModal from "../components/strategy/SlTgModal";
+import PriceSlTgModal from "../components/strategy/PriceSlTgModal";
+import { SLTG_MODES } from "../components/strategy/sltgModes";
+import TradeAlertToasts from "../components/strategy/TradeAlertToasts";
 import SquareOffAlertBanner from "../components/strategy/SquareOffAlertBanner";
 import PortfolioGreeksTable from "../components/strategy/PortfolioGreeksTable";
 import PayoffChart from "../components/PayoffChart";
@@ -38,7 +40,7 @@ import PresetStrategies from "../components/PresetStrategies";
 import CandlestickChart from "../components/CandlestickChart";
 import StrategyChart from "../components/StrategyChart";
 import { SlCalender } from "react-icons/sl";
-import { FiSettings, FiTrash2, FiRefreshCw, FiArchive, FiChevronLeft, FiChevronRight, FiChevronsLeft, FiChevronsRight } from "react-icons/fi";
+import { FiSettings, FiTrash2, FiRefreshCw, FiArchive, FiChevronLeft, FiChevronRight, FiChevronsLeft, FiChevronsRight, FiRotateCcw } from "react-icons/fi";
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -395,6 +397,28 @@ function isLegUpcoming(leg, currTime) {
   return currTime < leg.time;
 }
 
+// Which SL/TG level (option price, stockmojo-style) this minute's price
+// crosses for a leg, if any. SELL: SL above entry / target below; BUY: the
+// reverse. Returns "stop_loss" | "target" | null.
+function slTgCrossing(leg, ltp) {
+  if (ltp == null || leg.exit) return null;
+  const sell = leg.action === "sell";
+  if (leg.slPrice != null && (sell ? ltp >= leg.slPrice : ltp <= leg.slPrice)) return "stop_loss";
+  if (leg.tgPrice != null && (sell ? ltp <= leg.tgPrice : ltp >= leg.tgPrice)) return "target";
+  return null;
+}
+
+// Margin in the compact Indian form stockmojo shows (1.69L, 2.4Cr).
+function formatMarginCompact(v) {
+  if (v == null || !Number.isFinite(v) || v === 0) return "₹0";
+  const a = Math.abs(v);
+  if (a >= 1e7) return `₹${(v / 1e7).toFixed(2)}Cr`;
+  if (a >= 1e5) return `₹${(v / 1e5).toFixed(2)}L`;
+  return formatPrice(v);
+}
+
+let toastIdCounter = 0;
+
 // `embeddedSymbol` / `hideChrome` are set only when Simulator is rendered
 // *inside* Strategy Builder's "Historical" mode (see StrategyBuilder.jsx) —
 // the symbol then follows Strategy Builder's picker and Simulator's own
@@ -453,7 +477,9 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   const [hideChain, setHideChain] = useState(false);
   const [legsTopFirst, setLegsTopFirst] = useState(true);
   const [slTgEditId, setSlTgEditId] = useState(null);
-  const [slTgDraft, setSlTgDraft] = useState({ sl: "", tg: "" });
+  // SL/TG hit notifications (top-right stack) — see TradeAlertToasts.
+  const [tradeToasts, setTradeToasts] = useState([]);
+  const dismissToast = useCallback((id) => setTradeToasts((prev) => prev.filter((t) => t.id !== id)), []);
 
   const [columns, setColumns] = useState(DEFAULT_COLUMNS);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -900,6 +926,15 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     ? replayData.series[cursor]?.time
     : liveChain?.selectedTime || chainData?.selectedTime;
 
+  // Legs saved/built while the chain's lot size was unknown carry no
+  // lotSize — every ₹ figure (P&L, margin) would silently be per-share
+  // (65x too small for NIFTY). Stamp the real lot size once it's known.
+  const knownLotSize = chainData?.lotSize ?? liveChain?.lotSize ?? null;
+  useEffect(() => {
+    if (!knownLotSize || !legs.some((l) => !l.lotSize)) return;
+    queueMicrotask(() => setLegs((prev) => prev.map((l) => (l.lotSize ? l : { ...l, lotSize: knownLotSize }))));
+  }, [knownLotSize, legs]);
+
   // Legs partitioned by the current simulated minute:
   // - enteredLegs: legs entered at or before currentTime (in-market)
   // - upcomingLegs: legs scheduled for a time after currentTime (upcoming)
@@ -914,8 +949,11 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
   // Legs the Positions table checkbox has left checked — the payoff curve,
   // Greeks, POP, and max-profit/loss below are recalculated from only these.
-  const activeLegs = useMemo(() => enteredLegs.filter((l) => l.active !== false), [enteredLegs]);
+  // Squared-off legs (leg.exit) keep their realized P&L in the Positions
+  // table but no longer count toward payoff / Greeks / margin.
+  const activeLegs = useMemo(() => enteredLegs.filter((l) => l.active !== false && !l.exit), [enteredLegs]);
 
+  const scrubInFlightRef = useRef(false);
   function scrubToTime(time) {
     if (!time || !chainData) return;
     if (replayData) {
@@ -927,6 +965,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
       return;
     }
     setScrubError(null);
+    scrubInFlightRef.current = true;
     fetchSimulatorChain(symbol, {
       date: selectedDate,
       expiry: chainData.selectedExpiry,
@@ -935,6 +974,9 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
       .then((res) => {
         absorbLastGood(lastGoodChainRef.current, res.rows);
         setLiveChain({ ...res, rows: carryForwardRows(res.rows, lastGoodChainRef.current) });
+      })
+      .finally(() => {
+        scrubInFlightRef.current = false;
       })
       .catch((err) => {
         // Previously swallowed silently — a scrub click that failed (bad
@@ -1082,21 +1124,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     updateLeg(id, { premium: currentLtp });
   }
 
-  // SL/TG stored on the leg are actually applied by the backend during Run
-  // Simulation (see server/controllers/simulatorController.js's replay) —
-  // once a leg's own running P&L crosses ±this %, that leg's P&L freezes at
-  // the triggering minute. Set via the modal below (openSlTgModal/
-  // closeSlTgModal), not inline, so there's room to show the real ₹ amount
-  // each % resolves to before committing.
-  function setLegSlTg(id, slPercent, tgPercent) {
-    updateLeg(id, {
-      slPercent: slPercent === "" ? null : Number(slPercent),
-      tgPercent: tgPercent === "" ? null : Number(tgPercent),
-    });
-  }
-
+  // SL/TG are option-price levels (stockmojo parity) checked every minute
+  // the simulator lands on — stepping, Autoplay, or a replay run (backend
+  // replay applies the same price rule). "Alert + Square Off" closes the leg
+  // at that minute's real price; "Alert Only" just notifies. The old
+  // %-of-notional fields are cleared when a price level is saved.
   function openSlTgModal(leg) {
-    setSlTgDraft({ sl: leg.slPercent ?? "", tg: leg.tgPercent ?? "" });
     setSlTgEditId(leg.id);
   }
 
@@ -1104,9 +1137,15 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     setSlTgEditId(null);
   }
 
-  function saveSlTgModal(legId) {
-    setLegSlTg(legId, slTgDraft.sl, slTgDraft.tg);
+  function saveSlTgModal(legId, { slPrice, tgPrice, sltgMode }) {
+    updateLeg(legId, { slPrice, tgPrice, sltgMode, slPercent: null, tgPercent: null, sltgAlerted: {} });
     setSlTgEditId(null);
+  }
+
+  // Undo an SL/TG square-off (or a manual exit) — the leg is live again
+  // from its original entry.
+  function reopenLeg(id) {
+    updateLeg(id, { exit: null, sltgAlerted: {} });
   }
 
   // Scales EVERY leg's lot count by the same delta at once (min 1) — same as
@@ -1143,7 +1182,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   // which leg(s) match this exact strike/right in the currently displayed
   // expiry, plus signed net lots (buy=+qty, sell=-qty) shown as a badge.
   function legsAt(strike, right) {
-    return enteredLegs.filter((l) => l.strike === strike && l.type === right && l.expiry === chainData?.selectedExpiry);
+    return enteredLegs.filter((l) => !l.exit && l.strike === strike && l.type === right && l.expiry === chainData?.selectedExpiry);
   }
   function netPositionAt(strike, right) {
     const matches = legsAt(strike, right);
@@ -1217,13 +1256,15 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
         expiry: chainData.selectedExpiry,
         // Unchecked (excluded) legs stay in the workspace but don't join the
         // replay, same as they're excluded from the theoretical payoff curve.
-        legs: legs.filter((l) => l.active !== false).map(({ strike, type, action, qty, slPercent, tgPercent }) => ({
+        legs: legs.filter((l) => l.active !== false && !l.exit).map(({ strike, type, action, qty, slPercent, tgPercent, slPrice, tgPrice }) => ({
           strike,
           type,
           action,
           qty,
           slPercent,
           tgPercent,
+          slPrice: slPrice ?? null,
+          tgPrice: tgPrice ?? null,
         })),
         // The instant currently on screen is where every leg's `premium`
         // field actually came from (see addLeg/rollLegStrike) — telling the
@@ -1253,7 +1294,17 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   // when a user replays to the end, or jumps to EOD, then clicks Autoplay
   // again expecting it to restart from the top.
   function toggleAutoplay() {
-    if (!replayData) return;
+    if (!replayData) {
+      // Browse mode (no Run Simulation): step the chain forward on a timer —
+      // legs stay editable and SL/TG is checked at every minute landed on.
+      const times = chainData?.times || [];
+      if (!times.length) return;
+      setPlaying((wasPlaying) => {
+        if (!wasPlaying && currentTime >= times[times.length - 1]) scrubToTime(times[0]);
+        return !wasPlaying;
+      });
+      return;
+    }
     setPlaying((wasPlaying) => {
       const startingPlayback = !wasPlaying;
       if (startingPlayback && cursor >= replayData.series.length - 1) {
@@ -1263,6 +1314,83 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
       return startingPlayback;
     });
   }
+
+  // Browse-mode Autoplay: one scrub per tick, never overlapping a scrub
+  // that's still loading (the ref always holds this render's closures).
+  const browseStepRef = useRef(null);
+  useEffect(() => {
+    browseStepRef.current = () => {
+      if (scrubInFlightRef.current) return;
+      const times = chainData?.times || [];
+      if (!times.length || !currentTime) return;
+      if (currentTime >= times[times.length - 1]) {
+        setPlaying(false);
+        return;
+      }
+      const move = MOVE_OPTIONS.find((o) => o.key === moveKey) || MOVE_OPTIONS[0];
+      jumpTimeBy(move.stepPerTick * 60);
+    };
+  });
+  useEffect(() => {
+    if (!playing || replayData) return;
+    const every = EVERY_OPTIONS.find((o) => o.key === everyKey) || EVERY_OPTIONS[0];
+    const timer = setInterval(() => browseStepRef.current?.(), every.tickMs);
+    return () => clearInterval(timer);
+  }, [playing, everyKey, replayData]);
+
+  // SL/TG watch (browse mode): every time the chain lands on a new minute,
+  // check each live leg's price against its SL/TG level. A hit raises a
+  // notification, pauses Autoplay, and — in "Alert + Square Off" mode —
+  // closes the leg at this minute's real price. "Alert Only" notifies once
+  // per level. Replay mode is handled by the effect above (server-computed).
+  useEffect(() => {
+    if (replayData || !liveChain?.rows?.length || !currentTime) return;
+    const hits = [];
+    for (const leg of legs) {
+      if (leg.exit || leg.active === false || isLegUpcoming(leg, currentTime)) continue;
+      if (leg.slPrice == null && leg.tgPrice == null) continue;
+      if (leg.expiry && liveChain.selectedExpiry && leg.expiry !== liveChain.selectedExpiry) continue;
+      // Not on the minute the leg was entered — its own entry price is the reference there.
+      if (leg.time && currentTime <= leg.time) continue;
+      const row = liveChain.rows.find((r) => r.strike === leg.strike);
+      const ltp = row ? (leg.type === "CE" ? row.ce?.ltp : row.pe?.ltp) : null;
+      const reason = slTgCrossing(leg, ltp);
+      if (!reason) continue;
+      const squareOff = (leg.sltgMode || SLTG_MODES.SQUARE_OFF) === SLTG_MODES.SQUARE_OFF;
+      if (!squareOff && leg.sltgAlerted?.[reason]) continue;
+      hits.push({ leg, reason, ltp, squareOff });
+    }
+    if (!hits.length) return;
+    queueMicrotask(() => {
+      setPlaying(false);
+      setLegs((prev) =>
+        prev.map((l) => {
+          const h = hits.find((x) => x.leg.id === l.id);
+          if (!h) return l;
+          return h.squareOff
+            ? { ...l, exit: { price: h.ltp, time: currentTime, reason: h.reason, date: selectedDate } }
+            : { ...l, sltgAlerted: { ...(l.sltgAlerted || {}), [h.reason]: true } };
+        }),
+      );
+      setTradeToasts((prev) => [
+        ...prev,
+        ...hits.map((h) => ({
+          id: ++toastIdCounter,
+          reason: h.reason,
+          squareOff: h.squareOff,
+          action: h.leg.action,
+          strike: h.leg.strike,
+          type: h.leg.type,
+          qty: h.leg.qty,
+          expiry: h.leg.expiry,
+          price: h.ltp,
+          time: currentTime,
+        })),
+      ]);
+    });
+    // Only re-check when the minute on screen changes, not on every leg edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveChain, currentTime, replayData]);
 
   // Playback loop (Autoplay) — Move (step size) and Every (interval) vary independently.
   useEffect(() => {
@@ -1321,6 +1449,10 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
           action: leg.action,
           time: leg.exitTime,
         });
+        setTradeToasts((prev) => [
+          ...prev,
+          { id: ++toastIdCounter, reason: leg.exitReason, squareOff: true, action: leg.action, strike: leg.strike, type: leg.type, qty: leg.qty, expiry: replayData.expiry, price: leg.exitPrice, time: leg.exitTime },
+        ]);
       }
     }
   }, [cursor, replayData]);
@@ -1427,6 +1559,10 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   // StrategyBuilder.jsx's legLivePnl — every P&L number re-derives from
   // whatever's actually shown in the LTP column.
   const legLivePnl = useCallback((leg) => {
+    if (leg.exit) {
+      const diff = leg.action === "buy" ? leg.exit.price - leg.premium : leg.premium - leg.exit.price;
+      return diff * legMultiplier(leg);
+    }
     const row = displayRows.find((r) => r.strike === leg.strike);
     const liveLtp = row
       ? leg.type === "CE"
@@ -1448,13 +1584,15 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   // strategy actually changes — not on every unrelated render.
   const previewLegPayload = useMemo(
     () =>
-      activeLegs.map(({ strike, type, action, qty, slPercent, tgPercent }) => ({
+      activeLegs.map(({ strike, type, action, qty, slPercent, tgPercent, slPrice, tgPrice }) => ({
         strike,
         type,
         action,
         qty,
         slPercent: slPercent ?? null,
         tgPercent: tgPercent ?? null,
+        slPrice: slPrice ?? null,
+        tgPrice: tgPrice ?? null,
       })),
     [activeLegs],
   );
@@ -1552,8 +1690,17 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
       const allStrikes = activeLegs.map((l) => l.strike).filter(Boolean);
       const minStrike = allStrikes.length ? Math.min(...allStrikes) : displaySpot;
       const maxStrike = allStrikes.length ? Math.max(...allStrikes) : displaySpot;
-      const minPrice = Math.min(displaySpot * 0.90, minStrike * 0.95);
-      const maxPrice = Math.max(displaySpot * 1.10, maxStrike * 1.05);
+      // Spot ± max(2.5σ to expiry, 3%), widened just enough to include
+      // every leg's strike (stockmojo-style focus on the tradeable range —
+      // a ±10% window flattened the curve into two straight lines).
+      const ivForRange = (() => {
+        const r = displayRows.find((x) => x.strike === (liveChain?.atmStrike ?? chainData.atmStrike));
+        return r?.ce?.iv ?? r?.pe?.iv ?? 15;
+      })();
+      const yrsForRange = yearsToExpiry(evaluationExpiryOf(activeLegs) || chainData.selectedExpiry, istWallClockToUtcMs(selectedDate, currentTime)) || 1 / 365;
+      const halfWidth = Math.max(displaySpot * (ivForRange / 100) * Math.sqrt(yrsForRange) * 2.5, displaySpot * 0.03);
+      const minPrice = Math.min(displaySpot - halfWidth, minStrike - displaySpot * 0.01);
+      const maxPrice = Math.max(displaySpot + halfWidth, maxStrike + displaySpot * 0.01);
 
       let curveData =
         computePayoffCurve(activeLegs, {
@@ -1750,7 +1897,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
               <div className="flex items-center gap-2">
                 <button
                   onClick={toggleAutoplay}
-                  disabled={!replayData}
+                  disabled={!replayData && !(chainData?.times?.length > 1)}
                   className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed ${
                     playing
                       ? "bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md shadow-emerald-600/20 scale-[1.02]"
@@ -2636,7 +2783,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     )}
                   </div>
                   <div className="text-sm font-bold font-mono tabular-nums text-gray-900 dark:text-gray-100 mt-0.5">
-                    {marginDetails?.fundsRequired ? formatPrice(marginDetails.fundsRequired) : (estMargin ? formatPrice(estMargin) : "₹0.00")}
+                    {formatMarginCompact(marginDetails?.fundsRequired || estMargin || 0)}
                   </div>
                   {marginDetails?.isHedged && marginDetails?.marginBenefit > 0 && (
                     <div className="mt-1 inline-flex items-center gap-1 rounded bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.2 text-micro font-medium text-emerald-700 dark:text-emerald-300">
@@ -3014,9 +3161,11 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             ? row.ce?.ltp
                             : row.pe?.ltp
                           : null;
-                        const currentLtp = leg.ltpOverride ?? liveLtp;
+                        const exited = !!leg.exit;
+                        const currentLtp = exited ? leg.exit.price : leg.ltpOverride ?? liveLtp;
                         const livePnl = legLivePnl(leg);
                         const included = leg.active !== false;
+                        const locked = !!replayData || exited;
                         const canPickStrike = leg.expiry === chainData?.selectedExpiry;
                         const replayOutcome = replayData?.legs?.find(
                           (l) => l.strike === leg.strike && l.type === leg.type && l.action === leg.action,
@@ -3024,13 +3173,13 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         return (
                           <tr
                             key={leg.id}
-                            className={`hover:bg-gray-50/50 dark:hover:bg-gray-800/50 transition-colors ${included ? "" : "opacity-50"}`}
+                            className={`transition-colors ${exited ? "bg-surface-muted text-fg-muted" : "hover:bg-gray-50/50 dark:hover:bg-gray-800/50"} ${included ? "" : "opacity-50"}`}
                           >
                             <td className="px-3 py-2 text-center">
                               <input
                                 type="checkbox"
                                 checked={included}
-                                disabled={!!replayData}
+                                disabled={locked}
                                 onChange={() => toggleLegActive(leg.id)}
                                 title={included ? "Included in payoff calculation — uncheck to exclude" : "Excluded from payoff calculation — check to include"}
                                 className="h-4 w-4 cursor-pointer rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
@@ -3039,7 +3188,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             <td className="px-3 py-2 text-center">
                               <button
                                 onClick={() => toggleLegSide(leg.id)}
-                                disabled={!!replayData}
+                                disabled={locked}
                                 title="Click to flip Buy/Sell"
                                 className={`w-7 h-6 inline-flex items-center justify-center rounded-md text-xs font-bold transition border ${
                                   leg.action === "buy"
@@ -3058,7 +3207,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             <td className="px-3 py-2 text-left">
                               <select
                                 value={leg.expiry || ""}
-                                disabled={!!replayData || !chainData?.expiries?.length}
+                                disabled={locked || !chainData?.expiries?.length}
                                 onChange={(e) => updateLegExpiry(leg.id, e.target.value)}
                                 className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-0.5 text-label font-medium text-gray-700 dark:text-gray-200 outline-none focus:border-blue-500 disabled:opacity-50 cursor-pointer"
                               >
@@ -3072,7 +3221,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 <div className="inline-flex items-center justify-center gap-1">
                                   <button
                                     onClick={() => rollLegStrike(leg.id, -1)}
-                                    disabled={!!replayData}
+                                    disabled={locked}
                                     className="h-5 w-5 inline-flex items-center justify-center rounded border border-gray-200 dark:border-gray-700 text-label font-bold text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
                                     title="Roll to lower strike"
                                   >
@@ -3081,7 +3230,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                   <span className="tabular-nums px-1">{leg.strike}</span>
                                   <button
                                     onClick={() => rollLegStrike(leg.id, 1)}
-                                    disabled={!!replayData}
+                                    disabled={locked}
                                     className="h-5 w-5 inline-flex items-center justify-center rounded border border-gray-200 dark:border-gray-700 text-label font-bold text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
                                     title="Roll to higher strike"
                                   >
@@ -3110,7 +3259,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 type="number"
                                 step="0.05"
                                 value={leg.premium}
-                                disabled={!!replayData}
+                                disabled={locked}
                                 onChange={(e) => updateLeg(leg.id, { premium: Number(e.target.value) })}
                                 title="Entry price — editable"
                                 className="w-16 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-1.5 py-0.5 text-right font-mono tabular-nums text-gray-900 dark:text-gray-100 focus:border-blue-500 outline-none disabled:opacity-50 text-xs"
@@ -3121,7 +3270,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 type="number"
                                 step="0.05"
                                 value={currentLtp ?? ""}
-                                disabled={!!replayData}
+                                disabled={locked}
                                 onChange={(e) => updateLeg(leg.id, { ltpOverride: e.target.value === "" ? null : Number(e.target.value) })}
                                 title="LTP — editable"
                                 className={`w-16 rounded border px-1.5 py-0.5 text-right font-mono tabular-nums outline-none focus:border-blue-500 disabled:opacity-50 text-xs ${leg.ltpOverride != null ? "border-amber-400 bg-amber-50 dark:bg-amber-950/40 text-gray-900 dark:text-gray-100" : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"}`}
@@ -3133,16 +3282,32 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                               {livePnl != null ? `${livePnl >= 0 ? "+" : ""}${formatPrice(livePnl)}` : "+0"}
                             </td>
                             <td className="px-3 py-2 text-center relative">
-                              <button
-                                onClick={() => openSlTgModal(leg)}
-                                disabled={!!replayData}
-                                className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-blue-600 transition disabled:opacity-30"
-                                title={leg.slPercent != null || leg.tgPercent != null ? `SL ${leg.slPercent ?? "—"}% / TG ${leg.tgPercent ?? "—"}%` : "Set SL/TG"}
-                              >
-                                <span className="font-bold text-xs">@</span>
-                              </button>
-                              {(leg.slPercent != null || leg.tgPercent != null) && (
-                                <div className="text-micro font-semibold text-gray-400">SL {leg.slPercent ?? "—"}% / TG {leg.tgPercent ?? "—"}%</div>
+                              {exited ? (
+                                <span
+                                  className={`inline-block rounded px-1.5 py-0.5 text-label font-bold ${leg.exit.reason === "target" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400" : leg.exit.reason === "stop_loss" ? "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400" : "bg-surface-raised text-fg-muted"}`}
+                                  title={`Squared off at ${formatPrice(leg.exit.price)} · ${String(leg.exit.time || "").slice(0, 5)}`}
+                                >
+                                  {leg.exit.reason === "target" ? "TG Hit" : leg.exit.reason === "stop_loss" ? "SL Hit" : "Exited"} · {String(leg.exit.time || "").slice(0, 5)}
+                                </span>
+                              ) : leg.slPrice != null || leg.tgPrice != null ? (
+                                <button
+                                  onClick={() => openSlTgModal(leg)}
+                                  disabled={!!replayData}
+                                  className="rounded px-1 text-left text-label font-semibold leading-tight hover:bg-surface-hover disabled:opacity-50"
+                                  title={`${(leg.sltgMode || SLTG_MODES.SQUARE_OFF) === SLTG_MODES.SQUARE_OFF ? "Alert + Square Off" : "Alert Only"} — click to edit`}
+                                >
+                                  {leg.slPrice != null && <div className="text-rose-600 dark:text-rose-400">SL: {leg.slPrice}</div>}
+                                  {leg.tgPrice != null && <div className="text-emerald-600 dark:text-emerald-400">TG: {leg.tgPrice}</div>}
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => openSlTgModal(leg)}
+                                  disabled={!!replayData}
+                                  className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-blue-600 transition disabled:opacity-30"
+                                  title="Set Stop Loss / Target"
+                                >
+                                  <span className="font-bold text-xs">🎯</span>
+                                </button>
                               )}
                               {replayOutcome?.exitReason && (
                                 <div className={`mt-0.5 text-micro font-bold ${replayOutcome.exitReason === "target" ? "text-emerald-600" : "text-rose-600"}`}>
@@ -3152,6 +3317,16 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             </td>
                             <td className="px-3 py-2 text-center">
                               <div className="flex items-center justify-center gap-1.5">
+                                {exited ? (
+                                  <button
+                                    onClick={() => reopenLeg(leg.id)}
+                                    disabled={!!replayData}
+                                    className="text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition disabled:opacity-30 p-1"
+                                    title="Re-open this position (undo the square-off)"
+                                  >
+                                    <FiRotateCcw size={12} />
+                                  </button>
+                                ) : (
                                 <button
                                   onClick={() => resetLegEntryToLtp(leg.id)}
                                   disabled={!!replayData}
@@ -3160,6 +3335,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 >
                                   <FiRefreshCw size={12} />
                                 </button>
+                                )}
                                 <button
                                   onClick={() => removeLeg(leg.id)}
                                   disabled={!!replayData}
@@ -3381,16 +3557,18 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
       )}
 
       {slTgEditId != null && (
-        <SlTgModal
+        <PriceSlTgModal
           leg={legs.find((l) => l.id === slTgEditId)}
-          symbol={symbol}
-          draft={slTgDraft}
-          onDraftChange={setSlTgDraft}
+          ltp={(() => {
+            const leg = legs.find((l) => l.id === slTgEditId);
+            const row = leg && displayRows.find((r) => r.strike === leg.strike);
+            return row ? (leg.type === "CE" ? row.ce?.ltp : row.pe?.ltp) ?? null : null;
+          })()}
           onClose={closeSlTgModal}
-          onSave={() => saveSlTgModal(slTgEditId)}
-          footer="replay"
+          onSave={(patch) => saveSlTgModal(slTgEditId, patch)}
         />
       )}
+      <TradeAlertToasts toasts={tradeToasts} onDismiss={dismissToast} />
     </div>
   );
 }

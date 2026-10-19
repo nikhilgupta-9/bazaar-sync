@@ -94,26 +94,57 @@ function getLotSize(underlying) {
     return null;
 }
 
+/** Get tick for a specific instrument token, or null. */
+function getTickByToken(token) {
+    if (!token) return null;
+    return cache.get(String(token)) || null;
+}
+
+/** Get list of all expiries currently present in cache for this underlying. */
+function getExpiries(underlying) {
+    const sym = (underlying || "").toUpperCase();
+    const set = new Set();
+    for (const [, e] of cache) {
+        if (e.kind === "option" && e.underlying === sym && e.expiry) {
+            set.add(e.expiry);
+        }
+    }
+    return [...set].sort();
+}
+
 /**
  * All live option entries for an underlying, grouped per strike:
  *   { spot, expiry, rows: [{ strike, ce: {...}|null, pe: {...}|null }] }
+ * If requestedExpiry is specified, returns rows matching that expiry.
+ * Otherwise, defaults to the nearest expiry available in cache.
  * Returns null when the cache holds nothing usable for the symbol.
  */
-function getChain(underlying) {
+function getChain(underlying, requestedExpiry = null) {
     const sym = underlying.toUpperCase();
     const spotEntry = getSpot(sym);
 
+    let targetExpiry = requestedExpiry;
+    if (!targetExpiry) {
+        for (const [, e] of cache) {
+            if (e.kind === "option" && e.underlying === sym && e.expiry) {
+                if (!targetExpiry || e.expiry < targetExpiry) {
+                    targetExpiry = e.expiry;
+                }
+            }
+        }
+    }
+
     const byStrike = new Map();
-    let expiry = null;
     for (const [, e] of cache) {
         if (e.kind !== "option" || e.underlying !== sym) continue;
-        expiry = e.expiry; // worker subscribes a single (nearest) expiry per symbol
+        if (targetExpiry && e.expiry !== targetExpiry) continue;
         let row = byStrike.get(e.strike);
         if (!row) {
             row = { strike: e.strike, ce: null, pe: null };
             byStrike.set(e.strike, row);
         }
         const side = {
+            token: e.token,
             ltp: e.ltp,
             volume: e.volume,
             oi: e.oi,
@@ -129,14 +160,14 @@ function getChain(underlying) {
     return {
         spot: spotEntry ? spotEntry.ltp : null,
         spotTimestamp: spotEntry ? spotEntry.timestamp : null,
-        expiry,
+        expiry: targetExpiry,
         rows: [...byStrike.values()].sort((a, b) => a.strike - b.strike),
     };
 }
 
 /** Compact per-symbol summary used by the socket.io broadcaster. */
-function getBroadcastPayload(underlying) {
-    const chain = getChain(underlying);
+function getBroadcastPayload(underlying, requestedExpiry = null) {
+    const chain = getChain(underlying, requestedExpiry);
     if (!chain) return null;
     const vix = getVix();
     const future = getFuture(underlying);
@@ -177,6 +208,8 @@ module.exports = {
     getVix,
     getFuture,
     getLotSize,
+    getTickByToken,
+    getExpiries,
     getChain,
     getBroadcastPayload,
     addTickListener,

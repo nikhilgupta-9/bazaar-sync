@@ -17,11 +17,12 @@
 //   • ohlcv_data holds a MIX of 1-minute and EOD (15:30:00) rows depending
 //     on the backfill source. Intraday resolutions use only the real minute
 //     rows; a symbol with EOD-only history returns no_data for intraday.
-//   • trade_date / trade_time are IST wall-clock strings. Bars are emitted
-//     treating the wall-clock digits as UTC (same convention as
-//     optionChain.js's /underlying-history and CandlestickChart's
-//     toEpochSeconds), paired with timezone "Etc/UTC" in the symbol info so
-//     the axis shows the real IST clock without a further shift.
+//   • trade_date / trade_time are IST wall-clock strings. Internally bars are
+//     built treating the wall-clock digits as UTC; on the way out INTRADAY
+//     bars are shifted to true epoch seconds (−5:30) and symbols declare
+//     timezone "Asia/Kolkata", so the axis reads 09:15–15:30 whatever
+//     timezone the widget displays. Daily/weekly/monthly bars stay at 00:00
+//     UTC of their date, which is what the library expects for D/W/M.
 const express = require("express");
 const router = express.Router();
 const db = require("../config/db");
@@ -30,6 +31,7 @@ const optionChainService = require("../services/optionChainService");
 const INTRADAY_MIN = { 1: 1, 5: 5, 15: 15, 60: 60 };
 const SUPPORTED_RESOLUTIONS = ["1", "5", "15", "60", "1D", "1W", "1M"];
 const MAX_ROWS = 200000;
+const IST_OFFSET_SEC = 5.5 * 3600;
 
 function round2(x) {
     return Math.round(x * 100) / 100;
@@ -76,6 +78,95 @@ async function symbolUniverse() {
     symbolCache = { list, at: Date.now() };
     return list;
 }
+// -- option contracts -----------------------------------------------------
+// Option Chain / Strategy Builder / Simulator open a contract chart with a
+// ticker like NIFTY_20261019_23150_CE (underlying_YYYYMMDD_strike_right).
+const OPTION_TICKER_RE = /^([A-Z0-9&-]+)_(\d{4})(\d{2})(\d{2})_(\d+(?:\.\d+)?)_(CE|PE)$/;
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function parseOptionTicker(raw) {
+    const m = OPTION_TICKER_RE.exec(String(raw || "").toUpperCase().replace(/^(NFO|BFO|NSE|BSE):/, "").trim());
+    if (!m) return null;
+    const [, underlying, y, mo, d, strike, right] = m;
+    return { ticker: m[0], underlying, expiry: `${y}-${mo}-${d}`, strike: Number(strike), right, label: `${underlying} ${Number(d)} ${MONTH_ABBR[Number(mo) - 1]} ${y} ${strike} ${right}` };
+}
+
+// Minute OHLCV for one contract from REAL stored data only:
+//   • live_option_ticks — the market worker's ticks (≈ every 2s per contract)
+//   • option_chain_history — per-minute snapshots from the backfill sources
+// Each stored point is a traded price, so a minute's OHLC is built from the
+// points inside it. Volume in both tables is the contract's cumulative day
+// volume, so a bar's volume is the increase across it. Ticks outside the
+// 09:15–15:30 session (the worker's pre-open/after-close snapshot of the
+// previous price) are dropped. Nothing is synthesised: a contract with no
+// stored data returns no_data.
+const SESSION_START = "09:15:00";
+const SESSION_END = "15:30:59";
+async function optionMinuteRows(opt, fromDate, toDate) {
+    const ltpCol = opt.right === "CE" ? "ce_ltp" : "pe_ltp";
+    const volCol = opt.right === "CE" ? "ce_volume" : "pe_volume";
+    const [ticks, snaps] = await Promise.all([
+        db.query(
+            `SELECT tick_date AS d, tick_time AS tm, ltp, volume
+             FROM live_option_ticks
+             WHERE underlying = ? AND expiry = ? AND strike = ? AND opt_right = ?
+               AND tick_date >= ? AND tick_date <= ? AND tick_time BETWEEN ? AND ?
+             ORDER BY tick_date ASC, tick_time ASC
+             LIMIT ${MAX_ROWS}`,
+            [opt.underlying, opt.expiry, opt.strike, opt.right, fromDate, toDate, SESSION_START, SESSION_END]
+        ),
+        db.query(
+            `SELECT trade_date AS d, trade_time AS tm, ${ltpCol} AS ltp, ${volCol} AS volume
+             FROM option_chain_history
+             WHERE symbol = ? AND expiry = ? AND strike = ? AND trade_date >= ? AND trade_date <= ?
+               AND trade_time BETWEEN ? AND ? AND ${ltpCol} IS NOT NULL
+             ORDER BY trade_date ASC, trade_time ASC
+             LIMIT ${MAX_ROWS}`,
+            [opt.underlying, opt.expiry, opt.strike, fromDate, toDate, SESSION_START, SESSION_END]
+        ),
+    ]);
+
+    const toPoint = (r) => {
+        const [y, m, d] = String(r.d).slice(0, 10).split("-").map(Number);
+        const [hh, mm, ss] = String(r.tm).split(":").map(Number);
+        return {
+            t: Math.floor(Date.UTC(y, m - 1, d, hh, mm, ss || 0) / 1000),
+            day: String(r.d).slice(0, 10),
+            p: +r.ltp,
+            cumVol: r.volume != null ? +r.volume : null,
+        };
+    };
+    // Live ticks win for any minute they cover; history fills the rest.
+    const tickPts = (ticks || []).map(toPoint).filter((x) => x.p > 0);
+    const tickMinutes = new Set(tickPts.map((x) => Math.floor(x.t / 60)));
+    const histPts = (snaps || []).map(toPoint).filter((x) => x.p > 0 && !tickMinutes.has(Math.floor(x.t / 60)));
+    const pts = [...tickPts, ...histPts].sort((a, b) => a.t - b.t);
+
+    const bars = new Map();
+    let prevDay = null;
+    let prevCum = null;
+    for (const x of pts) {
+        if (x.day !== prevDay) {
+            prevDay = x.day;
+            prevCum = null;
+        }
+        let dv = 0;
+        if (x.cumVol != null) {
+            dv = prevCum != null ? Math.max(0, x.cumVol - prevCum) : 0;
+            prevCum = x.cumVol;
+        }
+        const key = Math.floor(x.t / 60) * 60;
+        const b = bars.get(key);
+        if (!b) bars.set(key, { t: key, tday: Math.floor(Date.UTC(...x.day.split("-").map((n, i) => (i === 1 ? Number(n) - 1 : Number(n)))) / 1000), o: x.p, h: x.p, l: x.p, c: x.p, v: dv, isDailyMarker: false });
+        else {
+            b.h = Math.max(b.h, x.p);
+            b.l = Math.min(b.l, x.p);
+            b.c = x.p;
+            b.v += dv;
+        }
+    }
+    return [...bars.values()];
+}
+
 function cleanSymbol(raw) {
     const s = String(raw || "").toUpperCase().replace(/^NSE:/, "").replace(/^BSE:/, "").trim();
     if (s === "MIDCAP" || s === "NIFTY MIDCAP" || s === "NIFTY_MID_SELECT") return "MIDCPNIFTY";
@@ -87,6 +178,31 @@ function cleanSymbol(raw) {
 // -- /symbols -----------------------------------------------------------
 router.get("/symbols", async (req, res) => {
     try {
+        const opt = parseOptionTicker(req.query.symbol);
+        if (opt) {
+            return res.json({
+                name: opt.ticker,
+                ticker: opt.ticker,
+                full_name: `NFO:${opt.ticker}`,
+                description: opt.label,
+                "exchange-traded": "NFO",
+                "exchange-listed": "NFO",
+                exchange: "NFO",
+                listed_exchange: "NFO",
+                type: "option",
+                session: "0915-1530",
+                timezone: "Asia/Kolkata",
+                minmov: 5,
+                pricescale: 100,
+                has_intraday: true,
+                has_daily: true,
+                has_weekly_and_monthly: true,
+                intraday_multipliers: ["1", "5", "15", "60"],
+                supported_resolutions: SUPPORTED_RESOLUTIONS,
+                volume_precision: 0,
+                data_status: "streaming",
+            });
+        }
         const name = cleanSymbol(req.query.symbol);
         const universe = await symbolUniverse();
         const hit = universe.find((s) => s.symbol === name);
@@ -101,15 +217,16 @@ router.get("/symbols", async (req, res) => {
             listed_exchange: "NSE",
             type: hit?.type || "stock",
             session: "0900-1600",
-            timezone: "Etc/UTC",
+            timezone: "Asia/Kolkata",
             minmov: 1,
             pricescale: 100,
             has_intraday: true,
             has_daily: true,
             has_weekly_and_monthly: true,
+            intraday_multipliers: ["1", "5", "15", "60"],
             supported_resolutions: SUPPORTED_RESOLUTIONS,
             volume_precision: 0,
-            data_status: "endofday",
+            data_status: "streaming",
         });
     } catch (e) {
         res.status(500).json({ s: "error", errmsg: e.message });
@@ -158,10 +275,117 @@ function bucketize(rows, bucketFn) {
     return [...map.values()].sort((a, b) => a.time - b.time);
 }
 
+// Index minute bars rebuilt from the market worker's live_index_ticks —
+// ohlcv_data is mostly EOD markers, so without this an index's 1m/5m chart
+// had nothing for the recent sessions the worker recorded.
+async function liveIndexMinuteRows(symbol, fromDate, toDate) {
+    const ticks = await db.query(
+        `SELECT tick_date AS d, tick_time AS tm, ltp FROM live_index_ticks
+         WHERE symbol = ? AND tick_date >= ? AND tick_date <= ? AND tick_time BETWEEN ? AND ?
+         ORDER BY tick_date ASC, tick_time ASC
+         LIMIT ${MAX_ROWS}`,
+        [symbol, fromDate, toDate, SESSION_START, SESSION_END]
+    ).catch(() => []);
+    const bars = new Map();
+    for (const r of ticks || []) {
+        const p = +r.ltp;
+        if (!(p > 0)) continue;
+        const [y, m, d] = String(r.d).slice(0, 10).split("-").map(Number);
+        const [hh, mm] = String(r.tm).split(":").map(Number);
+        const t = Math.floor(Date.UTC(y, m - 1, d, hh, mm) / 1000);
+        const b = bars.get(t);
+        if (!b) bars.set(t, { t, tday: Math.floor(Date.UTC(y, m - 1, d) / 1000), day: String(r.d).slice(0, 10), o: p, h: p, l: p, c: p, v: 0, isDailyMarker: false });
+        else {
+            b.h = Math.max(b.h, p);
+            b.l = Math.min(b.l, p);
+            b.c = p;
+        }
+    }
+    return [...bars.values()];
+}
+
+async function ohlcvRows(symbol, fromDate, toDate, intraday) {
+    const [stored, live] = await Promise.all([storedOhlcvRows(symbol, fromDate, toDate), liveIndexMinuteRows(symbol, fromDate, toDate)]);
+    if (!live.length) return stored;
+    // Live minutes only fill what ohlcv_data lacks. Intraday: any minute
+    // without a stored minute bar. Daily: only days with no stored row at
+    // all, so a day's EOD candle is never mixed with (or doubled by) ticks.
+    let extra;
+    if (intraday) {
+        const storedMinutes = new Set(stored.filter((r) => !r.isDailyMarker).map((r) => r.t));
+        extra = live.filter((r) => !storedMinutes.has(r.t));
+    } else {
+        const storedDays = new Set(stored.map((r) => r.tday));
+        extra = live.filter((r) => !storedDays.has(r.tday));
+    }
+    return [...stored, ...extra].sort((a, b) => a.t - b.t);
+}
+
+async function storedOhlcvRows(symbol, fromDate, toDate) {
+    const rows = await db.query(
+        `SELECT trade_date, trade_time, open, high, low, close, volume
+         FROM ohlcv_data
+         WHERE UPPER(symbol) = ? AND trade_date >= ? AND trade_date <= ?
+         ORDER BY trade_date ASC, trade_time ASC
+         LIMIT ${MAX_ROWS}`,
+        [symbol, fromDate, toDate]
+    );
+    return (rows || [])
+        .filter((r) => r.close != null)
+        .map((r) => {
+            const [y, m, d] = String(r.trade_date).slice(0, 10).split("-").map(Number);
+            const timeStr = String(r.trade_time);
+            const [hh, mm, ss] = timeStr.split(":").map(Number);
+            return {
+                t: Math.floor(Date.UTC(y, m - 1, d, hh, mm, ss || 0) / 1000),
+                tday: Math.floor(Date.UTC(y, m - 1, d) / 1000),
+                // A "daily marker" row is a whole-day EOD candle stored
+                // with a placeholder time (Bhavcopy/Angel-cron use
+                // 00:00:00 or 15:30:00). Anything else is a real
+                // intraday bar. ohlcv_data in practice is mostly daily
+                // markers — intraday resolutions return what little real
+                // minute data exists, else no_data (TV handles that).
+                isDailyMarker: timeStr === "00:00:00" || timeStr === "15:30:00",
+                o: +r.open, h: +r.high, l: +r.low, c: +r.close,
+                v: r.volume != null ? +r.volume : 0,
+            };
+        });
+}
+
+// Latest stored timestamp before a date — only consulted when the 45-day
+// buffer around a window held nothing at all (long gaps in the data).
+async function lastBarTimeBefore(opt, symbol, beforeDate) {
+    let row;
+    if (opt) {
+        [row] = await db.query(
+            `SELECT tick_date AS d, MAX(tick_time) AS tm FROM live_option_ticks
+             WHERE underlying = ? AND expiry = ? AND strike = ? AND opt_right = ? AND tick_date < ?
+               AND tick_time BETWEEN ? AND ?
+             GROUP BY tick_date ORDER BY tick_date DESC LIMIT 1`,
+            [opt.underlying, opt.expiry, opt.strike, opt.right, beforeDate, SESSION_START, SESSION_END]
+        );
+    } else {
+        [row] = await db.query(
+            `SELECT trade_date AS d, MAX(trade_time) AS tm FROM ohlcv_data
+             WHERE UPPER(symbol) = ? AND trade_date < ?
+             GROUP BY trade_date ORDER BY trade_date DESC LIMIT 1`,
+            [symbol, beforeDate]
+        );
+    }
+    if (!row?.d) return null;
+    const [y, m, d] = String(row.d).slice(0, 10).split("-").map(Number);
+    const [hh, mm] = String(row.tm || "00:00:00").split(":").map(Number);
+    return {
+        day: Math.floor(Date.UTC(y, m - 1, d) / 1000),
+        wall: Math.floor(Date.UTC(y, m - 1, d, hh, mm) / 1000),
+    };
+}
+
 // -- /history ---------------------------------------------------------
 router.get("/history", async (req, res) => {
     try {
-        const symbol = cleanSymbol(req.query.symbol);
+        const opt = parseOptionTicker(req.query.symbol);
+        const symbol = opt ? opt.ticker : cleanSymbol(req.query.symbol);
         const resolution = String(req.query.resolution || "1D");
         const from = parseInt(req.query.from, 10) || 0;
         const to = parseInt(req.query.to, 10) || Math.floor(Date.now() / 1000);
@@ -171,35 +395,7 @@ router.get("/history", async (req, res) => {
         // window edge still have their full source days.
         const fromDate = epochToDateStr(Math.max(0, from - 45 * 86400));
         const toDate = epochToDateStr(to + 2 * 86400);
-        const rows = await db.query(
-            `SELECT trade_date, trade_time, open, high, low, close, volume
-             FROM ohlcv_data
-             WHERE UPPER(symbol) = ? AND trade_date >= ? AND trade_date <= ?
-             ORDER BY trade_date ASC, trade_time ASC
-             LIMIT ${MAX_ROWS}`,
-            [symbol, fromDate, toDate]
-        );
-
-        const raw = (rows || [])
-            .filter((r) => r.close != null)
-            .map((r) => {
-                const [y, m, d] = String(r.trade_date).slice(0, 10).split("-").map(Number);
-                const timeStr = String(r.trade_time);
-                const [hh, mm, ss] = timeStr.split(":").map(Number);
-                return {
-                    t: Math.floor(Date.UTC(y, m - 1, d, hh, mm, ss || 0) / 1000),
-                    tday: Math.floor(Date.UTC(y, m - 1, d) / 1000),
-                    // A "daily marker" row is a whole-day EOD candle stored
-                    // with a placeholder time (Bhavcopy/Angel-cron use
-                    // 00:00:00 or 15:30:00). Anything else is a real
-                    // intraday bar. ohlcv_data in practice is mostly daily
-                    // markers — intraday resolutions return what little real
-                    // minute data exists, else no_data (TV handles that).
-                    isDailyMarker: timeStr === "00:00:00" || timeStr === "15:30:00",
-                    o: +r.open, h: +r.high, l: +r.low, c: +r.close,
-                    v: r.volume != null ? +r.volume : 0,
-                };
-            });
+        const raw = opt ? await optionMinuteRows(opt, fromDate, toDate) : await ohlcvRows(symbol, fromDate, toDate, intradayMin != null);
 
         let bars;
         if (intradayMin != null) {
@@ -228,10 +424,21 @@ router.get("/history", async (req, res) => {
             }
         }
 
+        // Intraday bars are keyed by IST wall clock; compare/emit in true epoch.
+        const shift = intradayMin != null ? IST_OFFSET_SEC : 0;
+        if (shift) bars = bars.map((b) => ({ ...b, time: b.time - shift }));
         const win = bars.filter((b) => b.time >= from && b.time <= to);
         if (win.length === 0) {
-            const earliest = bars[0]?.time;
-            return res.json(earliest && earliest > to ? { s: "no_data", nextTime: earliest } : { s: "no_data" });
+            // nextTime = the closest bar BEFORE this window, so the library
+            // jumps back to it (e.g. a 1-minute chart opened pre-market or on
+            // a weekend lands on the last session instead of "No data here").
+            let prev = null;
+            for (const b of bars) if (b.time < from) prev = b.time;
+            if (prev == null && from > 0) {
+                const last = await lastBarTimeBefore(opt, symbol, epochToDateStr(from));
+                prev = last == null ? null : intradayMin != null ? last.wall - IST_OFFSET_SEC : last.day;
+            }
+            return res.json(prev != null ? { s: "no_data", nextTime: prev } : { s: "no_data" });
         }
         res.json({
             s: "ok",

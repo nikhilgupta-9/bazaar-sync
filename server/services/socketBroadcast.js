@@ -53,11 +53,12 @@ function attach(io) {
             socket.join(roomFor(symbol));
             socketLogger.debug(`${socket.id} subscribed ${symbol}`);
 
+            const expiry = payload && payload.expiry ? String(payload.expiry).trim() : null;
             // Request worker to ensure this symbol is subscribed
-            workerManager.subscribeSymbol(symbol);
+            workerManager.subscribeSymbol(symbol, expiry);
 
             // Immediate first frame so the client doesn't wait a full interval
-            const frame = marketCache.getBroadcastPayload(symbol);
+            const frame = marketCache.getBroadcastPayload(symbol, expiry);
             if (frame) socket.emit("latestTicks", frame);
         });
 
@@ -77,8 +78,16 @@ function attach(io) {
         for (const [roomName, clientSet] of rooms) {
             if (!roomName.startsWith("sym:") || !clientSet || clientSet.size === 0) continue;
             const symbol = roomName.slice(4);
-            const frame = marketCache.getBroadcastPayload(symbol);
-            if (frame) io.to(roomName).emit("latestTicks", frame);
+            const expiries = marketCache.getExpiries(symbol);
+            if (expiries && expiries.length) {
+                for (const exp of expiries) {
+                    const frame = marketCache.getBroadcastPayload(symbol, exp);
+                    if (frame && frame.ticks && frame.ticks.length) io.to(roomName).emit("latestTicks", frame);
+                }
+            } else {
+                const frame = marketCache.getBroadcastPayload(symbol);
+                if (frame) io.to(roomName).emit("latestTicks", frame);
+            }
         }
         io.emit("marketStatus", publicStatus());
     }, BROADCAST_INTERVAL_MS);

@@ -126,9 +126,10 @@ export default function TopNav() {
                     <Logo />
                 </NavLink>
 
-                {/* Full nav — hidden below md, where it would overflow the viewport
-                    (see mobile <nav> panel below for the collapsed equivalent). */}
-                <nav className="hidden items-center gap-6 text-sm font-medium text-gray-600 dark:text-gray-300 md:flex">
+                {/* Full nav — hidden below xl: up to 1279px a logged-in user's
+                    chip + Log out pushed it ~50px past the viewport (see mobile
+                    <nav> panel below for the collapsed equivalent). */}
+                <nav className="hidden items-center gap-4 xl:gap-6 whitespace-nowrap text-sm font-medium text-gray-600 dark:text-gray-300 xl:flex">
                     {links.map((link) =>
                         link.dropdown === "strategy-builder" ? (
                             <StrategyBuilderMenu key="strategy-builder" />
@@ -193,7 +194,7 @@ export default function TopNav() {
                     <button
                         type="button"
                         onClick={() => setMobileOpen((v) => !v)}
-                        className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 md:hidden"
+                        className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 xl:hidden"
                         aria-label={mobileOpen ? "Close menu" : "Open menu"}
                     >
                         {mobileOpen ? <FiX size={20} /> : <FiMenu size={20} />}
@@ -202,7 +203,7 @@ export default function TopNav() {
             </div>
 
             {mobileOpen && (
-                <nav className="flex flex-col border-t border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 md:hidden">
+                <nav className="flex flex-col border-t border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 xl:hidden">
                     {links.map((link) =>
                         link.dropdown === "strategy-builder" ? (
                             <div key="strategy-builder" className="border-t border-gray-100 py-1 dark:border-gray-800">

@@ -127,9 +127,11 @@ function stop(reason = "manual") {
     });
 }
 
-function subscribeSymbol(symbol) {
+function subscribeSymbol(symbol, expiry = null) {
     const sym = String(symbol || "").trim().toUpperCase();
     if (!sym) return;
+
+    const payload = { type: "worker:subscribe_symbol", symbol: sym, expiry: expiry || null };
 
     if (!isRunning()) {
         if (marketHours.isTradingTime() || marketHours.isExtendedHours() || process.env.FORCE_LIVE_FEED === "true") {
@@ -137,7 +139,7 @@ function subscribeSymbol(symbol) {
             setTimeout(() => {
                 if (isRunning() && child) {
                     try {
-                        child.send({ type: "worker:subscribe_symbol", symbol: sym });
+                        child.send(payload);
                     } catch (_) {}
                 }
             }, 1500);
@@ -147,7 +149,7 @@ function subscribeSymbol(symbol) {
 
     if (isRunning() && child) {
         try {
-            child.send({ type: "worker:subscribe_symbol", symbol: sym });
+            child.send(payload);
         } catch (err) {
             workerLogger.error(`Failed to send subscribe message to worker for ${sym}: ${err.message}`);
         }

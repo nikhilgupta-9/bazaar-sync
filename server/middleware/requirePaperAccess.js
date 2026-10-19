@@ -8,8 +8,13 @@ const { isInstituteIp } = require("../services/instituteAccessService");
 // shape as requirePro.js (re-checks the live DB, never trusts the JWT payload).
 async function requirePaperAccess(req, res, next) {
     try {
-        const [[user]] = await pool.query("SELECT tier, pro_expires_at FROM users WHERE id = ?", [req.user.sub]);
+        const [[user]] = await pool.query("SELECT id, role, tier, pro_expires_at FROM users WHERE id = ?", [req.user.sub]);
         if (!user) return res.status(401).json({ error: "user not found" });
+
+        // Admins, localhost, or institute IPs always have paper trading access
+        if (user.role === "admin" || req.ip === "127.0.0.1" || req.ip === "::1" || req.ip === "::ffff:127.0.0.1") {
+            return next();
+        }
 
         const status = await paperWalletService.getWalletStatus(req.user.sub, user);
         if (!status.accessAllowed && !(await isInstituteIp(req.ip))) {

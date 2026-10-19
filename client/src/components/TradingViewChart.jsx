@@ -78,6 +78,7 @@ export default function TradingViewChart({
     studies = ["Volume@tv-basicstudies", "MASimple@tv-basicstudies", "RSI@tv-basicstudies"],
     height = "100%",
     className = "",
+    compareSymbol = null, // overlaid via the library's Overlay study on its own scale (e.g. NIFTY on a strategy P&L chart)
 }) {
     const { isDark } = useTheme();
     const containerRef = useRef(null);
@@ -86,6 +87,7 @@ export default function TradingViewChart({
     const pendingChartStyleRef = useRef(chartStyle);
     const pendingSymbolRef = useRef(symbol);
     const pendingIntervalRef = useRef(interval);
+    const compareSymbolRef = useRef(compareSymbol);
     const [containerId] = useState(() => `tv_chart_${++containerSeq}`);
     const [libStatus, setLibStatus] = useState(null); // null (loading) | { ok: boolean, isLocal: boolean }
 
@@ -114,6 +116,7 @@ export default function TradingViewChart({
     pendingChartStyleRef.current = chartStyle;
     pendingSymbolRef.current = cleanSymbol;
     pendingIntervalRef.current = normalizedInterval;
+    compareSymbolRef.current = compareSymbol;
 
     // 1. IN-PLACE CHART STYLE SWITCHER (CANDLE, HEIKIN ASHI, LINE) WITHOUT CLEARING DRAWINGS
     useEffect(() => {
@@ -223,6 +226,9 @@ export default function TradingViewChart({
                         "use_localstorage_for_settings",
                         "save_chart_properties_to_local_storage",
                         "items_favoriting",
+                        // keep the full toolset in the library's own fullscreen mode too
+                        "header_in_fullscreen_mode",
+                        "side_toolbar_in_fullscreen_mode",
                     ],
                     overrides: {
                         "paneProperties.background": isDark ? "#0b1420" : "#ffffff",
@@ -248,8 +254,19 @@ export default function TradingViewChart({
                     chartReadyRef.current = true;
                     try {
                         const chart = widget.activeChart();
-                        if (chart && pendingChartStyleRef.current && pendingChartStyleRef.current !== "1") {
+                        // Always apply — the library restores the last-used chart
+                        // type from localStorage, so a line-style strategy chart
+                        // would otherwise turn the next candle chart into a line.
+                        if (chart && pendingChartStyleRef.current) {
                             chart.setChartType(Number(pendingChartStyleRef.current));
+                        }
+                        if (chart && compareSymbolRef.current) {
+                            Promise.resolve(
+                                // "Overlay" keeps the main series on its own scale (₹ P&L) and
+                                // gives the overlaid symbol a separate one; "Compare" would
+                                // turn the whole chart into % change.
+                                chart.createStudy("Overlay", false, false, { symbol: compareSymbolRef.current })
+                            ).catch((e) => console.warn("[TradingViewChart] compare overlay failed:", e));
                         }
                     } catch {
                         /* safe */

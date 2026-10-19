@@ -4,17 +4,21 @@
 // yet anywhere (no ban/edit/role-change/refund endpoints) — this is the
 // "see everything" slice; management actions come in later admin-panel passes.
 const { pool } = require("../config/db");
-const { getRecentLedger } = require("../services/paperWalletService");
+const { getRecentLedger, getOrCreateWallet } = require("../services/paperWalletService");
 const { listOpenPositions, listClosedPositions, getLiveContractPrice, getLeaderboard } = require("../services/paperPositionService");
 const { PRO_PRICE_PAISE, REFILL_PRICE_PAISE } = require("../config/paperTradeConfig");
 const lotSizeHistoryService = require("../services/lotSizeHistoryService");
 const proPlanService = require("../services/proPlanService");
+const socketBroadcast = require("../services/socketBroadcast");
 
 async function listUsers(req, res) {
     try {
         const [rows] = await pool.query(
-            `SELECT id, name, email, tier, pro_expires_at, role, created_at
-             FROM users ORDER BY created_at DESC LIMIT 500`
+            `SELECT u.id, u.name, u.email, u.tier, u.pro_expires_at, u.role, u.created_at,
+                    pw.balance AS paper_balance
+             FROM users u
+             LEFT JOIN paper_wallets pw ON pw.user_id = u.id
+             ORDER BY u.created_at DESC LIMIT 500`
         );
         res.json({ users: rows });
     } catch (err) {
@@ -68,6 +72,163 @@ async function getUserDetail(req, res) {
         res.status(500).json({ error: "failed to load user detail" });
     }
 }
+
+async function addUserBalance(req, res) {
+    try {
+        const userId = req.params.id;
+        const { amount, note } = req.body || {};
+        const parsedAmount = Number(amount);
+        if (isNaN(parsedAmount) || parsedAmount === 0) {
+            return res.status(400).json({ error: "A valid non-zero amount is required" });
+        }
+
+        const [[user]] = await pool.query("SELECT id, name, email FROM users WHERE id = ?", [userId]);
+        if (!user) return res.status(404).json({ error: "User not found" });
+
+        // Ensure wallet exists before mutating
+        await getOrCreateWallet(userId);
+
+        const ledgerType = parsedAmount >= 0 ? "admin_credit" : "admin_debit";
+        const ledgerNote = (note && String(note).trim()) || (parsedAmount >= 0 ? "Admin balance credit" : "Admin balance adjustment");
+
+        const conn = await pool.getConnection();
+        let updatedWallet;
+        try {
+            await conn.beginTransaction();
+            await conn.query("SELECT * FROM paper_wallets WHERE user_id = ? FOR UPDATE", [userId]);
+            await conn.query("UPDATE paper_wallets SET balance = balance + ? WHERE user_id = ?", [parsedAmount, userId]);
+            const [[updated]] = await conn.query("SELECT * FROM paper_wallets WHERE user_id = ?", [userId]);
+            updatedWallet = updated;
+
+            await conn.query(
+                `INSERT INTO paper_wallet_ledger (user_id, type, amount, balance_after, note)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [userId, ledgerType, parsedAmount, updated.balance, ledgerNote]
+            );
+            await conn.commit();
+        } catch (err) {
+            await conn.rollback();
+            throw err;
+        } finally {
+            conn.release();
+        }
+
+        const ledger = await getRecentLedger(userId, 30);
+
+        socketBroadcast.emitPaperEvent("paper:wallet_updated", {
+            userId: Number(userId),
+            balance: Number(updatedWallet.balance),
+            amount: parsedAmount,
+            note: ledgerNote,
+            timestamp: new Date().toISOString(),
+        });
+
+        res.json({
+            success: true,
+            message: `Successfully ${parsedAmount >= 0 ? "added" : "deducted"} ₹${Math.abs(parsedAmount).toLocaleString("en-IN")} balance`,
+            wallet: {
+                balance: Number(updatedWallet.balance),
+                trialExpiresAt: updatedWallet.trial_expires_at,
+            },
+            ledger,
+        });
+    } catch (err) {
+        console.error("[admin:addUserBalance]", err);
+        res.status(500).json({ error: "Failed to update user wallet balance" });
+    }
+}
+
+async function updateUserPlan(req, res) {
+    try {
+        const userId = req.params.id;
+        const { tier, proExpiresAt, daysToAdd, trialExpiresAt, trialDaysToAdd } = req.body || {};
+
+        const [[user]] = await pool.query("SELECT id, name, email, tier, pro_expires_at FROM users WHERE id = ?", [userId]);
+        if (!user) return res.status(404).json({ error: "User not found" });
+
+        let newTier = user.tier;
+        let newProExpiresAt = user.pro_expires_at;
+
+        if (tier && ["free", "pro"].includes(tier)) {
+            newTier = tier;
+        }
+
+        // If daysToAdd is specified, calculate extension
+        if (daysToAdd !== undefined && daysToAdd !== null && !isNaN(Number(daysToAdd))) {
+            const days = Number(daysToAdd);
+            const now = new Date();
+            const currentExpiry = user.pro_expires_at ? new Date(user.pro_expires_at) : null;
+            const baseDate = currentExpiry && currentExpiry > now ? currentExpiry : now;
+            newProExpiresAt = new Date(baseDate.getTime() + days * 24 * 60 * 60 * 1000);
+            newTier = "pro"; // Extending pro plan promotes/retains pro tier
+        } else if (proExpiresAt !== undefined) {
+            if (proExpiresAt === null || proExpiresAt === "") {
+                newProExpiresAt = null;
+            } else {
+                const parsed = new Date(proExpiresAt);
+                if (isNaN(parsed.getTime())) {
+                    return res.status(400).json({ error: "Invalid pro_expires_at date" });
+                }
+                newProExpiresAt = parsed;
+                newTier = "pro";
+            }
+        }
+
+        // If downgrading to free without explicit expiry date, clear pro_expires_at
+        if (newTier === "free" && proExpiresAt === undefined && daysToAdd === undefined) {
+            newProExpiresAt = null;
+        }
+
+        await pool.query(
+            "UPDATE users SET tier = ?, pro_expires_at = ? WHERE id = ?",
+            [newTier, newProExpiresAt, userId]
+        );
+
+        // If trial extension was also requested
+        let updatedWallet = null;
+        if (trialDaysToAdd !== undefined || trialExpiresAt !== undefined) {
+            const [[wallet]] = await pool.query("SELECT * FROM paper_wallets WHERE user_id = ?", [userId]);
+            if (wallet) {
+                let newTrialExpiry = wallet.trial_expires_at;
+                if (trialDaysToAdd !== undefined && !isNaN(Number(trialDaysToAdd))) {
+                    const now = new Date();
+                    const currentTrial = wallet.trial_expires_at ? new Date(wallet.trial_expires_at) : null;
+                    const baseTrial = currentTrial && currentTrial > now ? currentTrial : now;
+                    newTrialExpiry = new Date(baseTrial.getTime() + Number(trialDaysToAdd) * 24 * 60 * 60 * 1000);
+                } else if (trialExpiresAt !== undefined) {
+                    newTrialExpiry = trialExpiresAt ? new Date(trialExpiresAt) : null;
+                }
+                await pool.query("UPDATE paper_wallets SET trial_expires_at = ? WHERE user_id = ?", [newTrialExpiry, userId]);
+                const [[w]] = await pool.query("SELECT * FROM paper_wallets WHERE user_id = ?", [userId]);
+                updatedWallet = w ? { balance: Number(w.balance), trialExpiresAt: w.trial_expires_at } : null;
+            }
+        }
+
+        const [[updatedUser]] = await pool.query(
+            "SELECT id, name, email, tier, pro_expires_at, role, created_at FROM users WHERE id = ?",
+            [userId]
+        );
+
+        socketBroadcast.emitPaperEvent("paper:wallet_updated", {
+            userId: Number(userId),
+            tier: newTier,
+            proExpiresAt: newProExpiresAt,
+            wallet: updatedWallet,
+            timestamp: new Date().toISOString(),
+        });
+
+        res.json({
+            success: true,
+            message: "User plan updated successfully",
+            user: updatedUser,
+            wallet: updatedWallet,
+        });
+    } catch (err) {
+        console.error("[admin:updateUserPlan]", err);
+        res.status(500).json({ error: "Failed to update user plan" });
+    }
+}
+
 
 // Site-wide aggregate stats for the admin app's Overview page. Every number
 // here is a real COUNT/SUM from the DB — the one exception is "revenue",
@@ -457,4 +618,5 @@ module.exports = {
     listPlansAdmin, createPlanAdmin, updatePlanAdmin, setPlanActiveAdmin, deletePlanAdmin,
     listCoupons, createCoupon, setCouponActive, deleteCoupon,
     listLotSizeHistoryAdmin, addLotSizeHistoryEntry, bulkImportLotSizeHistory, removeLotSizeHistoryEntry,
+    addUserBalance, updateUserPlan,
 };

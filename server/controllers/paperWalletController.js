@@ -12,7 +12,21 @@ async function getWallet(req, res) {
         const status = await paperWalletService.getWalletStatus(req.user.sub, user);
         const instituteAccess = await isInstituteIp(req.ip);
         const ledger = await paperWalletService.getRecentLedger(req.user.sub);
-        res.json({ ...status, instituteAccess, accessAllowed: status.accessAllowed || instituteAccess, ledger });
+        const walletObj = {
+            balance: Number(status.balance),
+            trialActive: status.trialActive,
+            trialExpiresAt: status.trialExpiresAt,
+            isPro: status.isPro,
+            proExpiresAt: status.proExpiresAt,
+            accessAllowed: status.accessAllowed || instituteAccess,
+        };
+        res.json({
+            ...status,
+            wallet: walletObj,
+            instituteAccess,
+            accessAllowed: status.accessAllowed || instituteAccess,
+            ledger,
+        });
     } catch (err) {
         console.error("[paperTrade:getWallet]", err);
         res.status(500).json({ error: "failed to load wallet" });

@@ -5,22 +5,22 @@ import StaleBadge from "../components/strategy/StaleBadge";
 import SlTgModal from "../components/strategy/SlTgModal";
 import SquareOffAlertBanner from "../components/strategy/SquareOffAlertBanner";
 import PortfolioGreeksTable from "../components/strategy/PortfolioGreeksTable";
+import LotsInput, { MAX_LOTS } from "../components/strategy/LotsInput";
 import { fetchOptionChain, fetchSymbolList } from "../services/optionChainApi";
 import { formatPrice, formatPercent } from "../utils/format";
 import {
     computePayoffCurve, computeBreakevens, computeMaxProfitLoss, computeRiskRewardRatio, computeNetGreeks,
-    addMarkToMarketCurve, computeExpectedMove, computePOP, computeEstMargin, evaluationExpiryOf, legMultiplier, otherAction,
+    addMarkToMarketCurve, computeExpectedMove, computePOP, computeEstMargin, computeMarginDetails, evaluationExpiryOf, legMultiplier, otherAction,
 } from "../utils/payoff";
 import { yearsToExpiry, daysUntilExpiry, bsPrice } from "../utils/blackScholes";
 import PayoffChart from "../components/PayoffChart";
-import LiveIntradayChart from "../components/LiveIntradayChart";
+import StrategyTradingViewChart from "../components/StrategyTradingViewChart";
 import PresetStrategies from "../components/PresetStrategies";
 import SaveButton from "../components/SaveButton";
 import SavedStrategiesModal from "../components/SavedStrategiesModal";
 import PaperExecuteModal from "../components/strategy/PaperExecuteModal";
 import OiBar from "../components/OiBar";
 import ContractChartModal from "../components/ContractChartModal";
-import Simulator from "./Simulator";
 import { SymbolLogo, getSymbolMeta } from "../utils/symbolIcons";
 import { saveStrategy } from "../services/strategiesApi";
 import { useTheme } from "../context/ThemeContext";
@@ -267,16 +267,6 @@ export default function StrategyBuilder() {
         }),
         [isLive, marketStatus.isOpen, marketStatus.feedConnected, dataLoadedAt, staleNow],
     );
-    // Live = the real option chain (or latest snapshot when the market is
-    // closed). Historical = the full Simulator (calendar + minute scrubber +
-    // Run Simulation replay) embedded right here, following this same symbol.
-    const [mode, setMode] = useState(() => {
-        try { return localStorage.getItem("bazaarSync.strategyBuilder.mode") === "historical" ? "historical" : "live"; }
-        catch { return "live"; }
-    });
-    useEffect(() => {
-        try { localStorage.setItem("bazaarSync.strategyBuilder.mode", mode); } catch { /* ignore */ }
-    }, [mode]);
 
     const [legs, setLegs] = useState(() => loadSavedLegs("NIFTY")); // useOptionChain defaults to NIFTY
     // Persist legs per symbol on every change (see SB_LEGS_KEY_PREFIX).
@@ -429,7 +419,7 @@ export default function StrategyBuilder() {
     }
 
     function updateQty(id, qty) {
-        setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, qty: Math.max(1, qty) } : l)));
+        setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, qty: Math.min(MAX_LOTS, Math.max(1, Math.floor(qty) || 1)) } : l)));
     }
 
     // Chain-row inline position display: which leg (if any) matches this
@@ -489,7 +479,11 @@ export default function StrategyBuilder() {
     // Scales EVERY leg's lot count by the same delta at once (min 1) —
     // "lots multiplier stepper (+/-) that scales every leg at once".
     function bulkAdjustLots(delta) {
-        setLegs((prev) => prev.map((l) => ({ ...l, qty: Math.max(1, l.qty + delta) })));
+        setLegs((prev) => prev.map((l) => ({ ...l, qty: Math.min(MAX_LOTS, Math.max(1, l.qty + delta)) })));
+    }
+    // Typed multiplier: sets every leg to the same lot count.
+    function setAllLots(n) {
+        setLegs((prev) => prev.map((l) => ({ ...l, qty: n })));
     }
     const commonLots = legs.length && legs.every((l) => l.qty === legs[0].qty) ? legs[0].qty : null;
     const totalLots = legs.reduce((sum, l) => sum + l.qty, 0);
@@ -729,9 +723,9 @@ export default function StrategyBuilder() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [legs, rowByStrike]);
 
-    const { curve, breakevens, maxProfit, maxLoss, netGreeks, pop, expectedMove, estMargin, riskReward, yearsRemaining } = useMemo(() => {
+    const { curve, breakevens, maxProfit, maxLoss, netGreeks, pop, expectedMove, estMargin, fundsRequired, marginBenefit, isHedged, riskReward, yearsRemaining } = useMemo(() => {
         if (!activeLegs.length || !data || !data.spotPrice) {
-            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, pop: null, expectedMove: null, estMargin: null, riskReward: null, yearsRemaining: 0 };
+            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, pop: null, expectedMove: null, estMargin: null, fundsRequired: null, marginBenefit: 0, isHedged: false, riskReward: null, yearsRemaining: 0 };
         }
 
         try {
@@ -758,12 +752,26 @@ export default function StrategyBuilder() {
             curveData = (atmIv && typeof addMarkToMarketCurve === "function") ? addMarkToMarketCurve(curveData, activeLegs, yearsRem, evalTimestamp) : curveData;
             const expMv = (atmIv && typeof computeExpectedMove === "function") ? computeExpectedMove(data.spotPrice, atmIv, yearsRem) : null;
             const popVal = (atmIv && typeof computePOP === "function") ? computePOP(curveData, data.spotPrice, atmIv, yearsRem) : null;
-            const marginVal = computeEstMargin(activeLegs, data.spotPrice, symbol);
+            const marginDetails = computeMarginDetails(activeLegs, data.spotPrice, symbol);
 
-            return { curve: curveData, breakevens: breakEvs, maxProfit: mxProf, maxLoss: mxLoss, netGreeks: netGrks, pop: popVal, expectedMove: expMv, estMargin: marginVal, riskReward: rReward, yearsRemaining: yearsRem };
+            return {
+                curve: curveData,
+                breakevens: breakEvs,
+                maxProfit: mxProf,
+                maxLoss: mxLoss,
+                netGreeks: netGrks,
+                pop: popVal,
+                expectedMove: expMv,
+                estMargin: marginDetails.estMargin,
+                fundsRequired: marginDetails.fundsRequired,
+                marginBenefit: marginDetails.marginBenefit,
+                isHedged: marginDetails.isHedged,
+                riskReward: rReward,
+                yearsRemaining: yearsRem,
+            };
         } catch (err) {
             console.error(err);
-            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, pop: null, expectedMove: null, estMargin: null, riskReward: null, yearsRemaining: 0 };
+            return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, pop: null, expectedMove: null, estMargin: null, fundsRequired: null, marginBenefit: 0, isHedged: false, riskReward: null, yearsRemaining: 0 };
         }
     }, [activeLegs, data, symbol, dataLoadedAt, staleNow]);
 
@@ -815,7 +823,7 @@ export default function StrategyBuilder() {
         >
             {/* Minimal & Compact Top Control Bar */}
             <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5 sm:gap-2">
-                {/* Left: Symbol Picker + Expiry + Quick Actions + Live/Historical */}
+                {/* Left: Symbol Picker + Expiry + Quick Actions */}
                 <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                     {/* Unified Symbol Pill Container (StockMojo style) */}
                     <div className="flex items-center h-8 rounded-lg border border-gray-300 dark:border-white/10 bg-white dark:bg-[#0b1420] px-1.5 shadow-xs relative">
@@ -927,47 +935,6 @@ export default function StrategyBuilder() {
                         <span>Reset/New{legs.length > 0 ? ` (${legs.length})` : ""}</span>
                     </button>
 
-                    <button
-                        onClick={() => {
-                            setTab("presets");
-                            if (mobileView === "chain" || mobileView === "positions") setMobileView("payoff");
-                        }}
-                        className={`h-8 rounded-lg border px-2.5 text-xs font-bold shadow-xs transition flex items-center gap-1.5 cursor-pointer ${
-                            tab === "presets" || legs.length === 0
-                                ? "border-[#1677ff] bg-[#1677ff] text-white"
-                                : "border-blue-200 dark:border-blue-900/40 text-[#1677ff] dark:text-blue-400 bg-blue-50/50 dark:bg-blue-950/20 hover:bg-blue-100/60"
-                        }`}
-                        title="Browse Ready-Made Strategies"
-                    >
-                        <FiZap size={12} />
-                        <span>Ready-Made</span>
-                    </button>
-
-                    {legs.length > 0 && (
-                        <button
-                            onClick={() => setPaperExecuteOpen(true)}
-                            className="h-8 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-2.5 text-xs font-bold text-white shadow-xs transition flex items-center gap-1.5 cursor-pointer"
-                            title="Execute this strategy basket into your virtual Paper Trading portfolio"
-                        >
-                            <span>⚡ Trade Basket</span>
-                        </button>
-                    )}
-
-                    {/* Mode Toggle */}
-                    <div className="inline-flex rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-0.5 text-xs font-bold shadow-xs">
-                        <button
-                            onClick={() => setMode("live")}
-                            className={mode === "live" ? "rounded-md bg-[#1677ff] px-2 py-0.5 text-white shadow-xs cursor-pointer text-xs" : "px-2 py-0.5 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white cursor-pointer text-xs"}
-                        >
-                            Live
-                        </button>
-                        <button
-                            onClick={() => setMode("historical")}
-                            className={mode === "historical" ? "rounded-md bg-[#1677ff] px-2 py-0.5 text-white shadow-xs cursor-pointer text-xs" : "px-2 py-0.5 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white cursor-pointer text-xs"}
-                        >
-                            Historical
-                        </button>
-                    </div>
                 </div>
 
                 {/* Right: Clock, feed status & Full Screen (SPOT / VIX / FUT live in the chain panel) */}
@@ -979,7 +946,7 @@ export default function StrategyBuilder() {
                         </span>
                     </div>
 
-                    {mode === "live" && (
+                    {(
                         isLive && marketStatus?.isOpen ? (
                             <span className="flex items-center gap-1 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/40 px-2.5 text-[10.5px] font-extrabold text-emerald-700 dark:text-emerald-300">
                                 <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
@@ -1005,9 +972,7 @@ export default function StrategyBuilder() {
                 </div>
             </div>
 
-            {mode === "historical" ? (
-                <Simulator key={symbol} embeddedSymbol={symbol} hideChrome />
-            ) : (
+            {(
             <div>
                 {/* Mobile View Segmented Controller (< lg) */}
                 <div className="lg:hidden flex items-center gap-1.5 overflow-x-auto pb-2 mb-2 scrollbar-none">
@@ -1335,24 +1300,12 @@ export default function StrategyBuilder() {
                                                                 </div>
                                                             </div>
                                                             <div className="flex items-center justify-center mt-0.5 mr-0.5">
-                                                                <div className="flex items-center rounded border border-gray-300 dark:border-white/10 bg-white dark:bg-[#0b1420] text-[10px] font-bold px-1.5 py-0.2 shadow-xs">
-                                                                    <button
-                                                                        onClick={() => {
-                                                                            if (ceLeg.qty <= 1) removeLeg(ceLeg.id);
-                                                                            else updateQty(ceLeg.id, ceLeg.qty - 1);
-                                                                        }}
-                                                                        className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 pr-1 cursor-pointer"
-                                                                    >
-                                                                        −
-                                                                    </button>
-                                                                    <span className="tabular-nums px-0.5">{ceLeg.qty}</span>
-                                                                    <button
-                                                                        onClick={() => updateQty(ceLeg.id, ceLeg.qty + 1)}
-                                                                        className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 pl-1 cursor-pointer"
-                                                                    >
-                                                                        +
-                                                                    </button>
-                                                                </div>
+                                                                <LotsInput
+                                                                    size="xs"
+                                                                    value={ceLeg.qty}
+                                                                    onChange={(n) => updateQty(ceLeg.id, n)}
+                                                                    onDecrementAtMin={() => removeLeg(ceLeg.id)}
+                                                                />
                                                             </div>
                                                         </div>
                                                     ) : (
@@ -1444,24 +1397,12 @@ export default function StrategyBuilder() {
                                                                 </span>
                                                             </div>
                                                             <div className="flex items-center justify-center mt-0.5 ml-0.5">
-                                                                <div className="flex items-center rounded border border-gray-300 dark:border-white/10 bg-white dark:bg-[#0b1420] text-[10px] font-bold px-1.5 py-0.2 shadow-xs">
-                                                                    <button
-                                                                        onClick={() => {
-                                                                            if (peLeg.qty <= 1) removeLeg(peLeg.id);
-                                                                            else updateQty(peLeg.id, peLeg.qty - 1);
-                                                                        }}
-                                                                        className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 pr-1 cursor-pointer"
-                                                                    >
-                                                                        −
-                                                                    </button>
-                                                                    <span className="tabular-nums px-0.5">{peLeg.qty}</span>
-                                                                    <button
-                                                                        onClick={() => updateQty(peLeg.id, peLeg.qty + 1)}
-                                                                        className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 pl-1 cursor-pointer"
-                                                                    >
-                                                                        +
-                                                                    </button>
-                                                                </div>
+                                                                <LotsInput
+                                                                    size="xs"
+                                                                    value={peLeg.qty}
+                                                                    onChange={(n) => updateQty(peLeg.id, n)}
+                                                                    onDecrementAtMin={() => removeLeg(peLeg.id)}
+                                                                />
                                                             </div>
                                                         </div>
                                                     ) : (
@@ -1641,17 +1582,35 @@ export default function StrategyBuilder() {
                                                         ? "bg-[#f6ffed] text-[#52c41a] border border-[#b7eb8f] dark:bg-emerald-950/40 dark:border-emerald-800"
                                                         : "bg-[#fff1f0] text-[#ff4d4f] border border-[#ffccc7] dark:bg-rose-950/40 dark:border-rose-800"
                                                 }`}>
-                                                    {totalLivePnl != null && estMargin > 0 ? `(${((totalLivePnl / estMargin) * 100).toFixed(2)}%)` : "(0.00%)"}
+                                                    {totalLivePnl != null && (fundsRequired > 0 || estMargin > 0) ? `(${((totalLivePnl / (fundsRequired || estMargin)) * 100).toFixed(2)}%)` : "(0.00%)"}
                                                 </span>
                                             </div>
                                         </div>
 
-                                        {/* Box 2: Est. Margin */}
-                                        <div className="pb-2.5 border-b border-gray-100 dark:border-white/10">
-                                            <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">Est. Margin</div>
-                                            <div className="text-sm font-bold text-gray-900 dark:text-white tabular-nums">
-                                                {estMargin == null ? "—" : estMargin === 0 ? "Not required" : estMargin >= 100000 ? `${(estMargin / 100000).toFixed(2)}L` : formatPrice(estMargin)}
+                                        {/* Box 2: Funds Required & Est. Margin */}
+                                        <div className="pb-2.5 border-b border-gray-100 dark:border-white/10 space-y-1.5">
+                                            <div className="flex items-start justify-between gap-2">
+                                                <div>
+                                                    <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">Funds Required</div>
+                                                    <div className="text-sm font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                                                        {fundsRequired == null ? "—" : fundsRequired >= 100000 ? `${(fundsRequired / 100000).toFixed(2)}L` : formatPrice(fundsRequired)}
+                                                    </div>
+                                                </div>
+                                                <div className="text-right">
+                                                    <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">Est. Margin</div>
+                                                    <div className="text-sm font-bold text-gray-900 dark:text-white tabular-nums">
+                                                        {estMargin == null ? "—" : estMargin === 0 ? "Not required" : estMargin >= 100000 ? `${(estMargin / 100000).toFixed(2)}L` : formatPrice(estMargin)}
+                                                    </div>
+                                                </div>
                                             </div>
+                                            {marginBenefit > 0 && (
+                                                <div className="flex items-center justify-between text-[11px] bg-emerald-50 dark:bg-emerald-950/40 px-2 py-1 rounded-lg border border-emerald-200 dark:border-emerald-800">
+                                                    <span className="text-emerald-700 dark:text-emerald-300 font-semibold">Hedge Benefit:</span>
+                                                    <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono">
+                                                        Saved {marginBenefit >= 100000 ? `${(marginBenefit / 100000).toFixed(2)}L` : formatPrice(marginBenefit)}
+                                                    </span>
+                                                </div>
+                                            )}
                                         </div>
 
                                         {/* Box 3: POP & Risk : Reward */}
@@ -1685,9 +1644,9 @@ export default function StrategyBuilder() {
                                                 {maxProfit == null ? "—" : typeof maxProfit === "number" ? (
                                                     <>
                                                         {maxProfit >= 0 ? "+" : ""}{formatPrice(maxProfit)}
-                                                        {estMargin > 0 && (
+                                                        {(fundsRequired > 0 || estMargin > 0) && (
                                                             <span className="text-[11px] font-normal text-emerald-600/80 dark:text-emerald-400/80 ml-1">
-                                                                ({((maxProfit / estMargin) * 100).toFixed(2)}%)
+                                                                ({((maxProfit / (fundsRequired || estMargin)) * 100).toFixed(2)}%)
                                                             </span>
                                                         )}
                                                     </>
@@ -1704,9 +1663,9 @@ export default function StrategyBuilder() {
                                                 {maxLoss == null ? "—" : typeof maxLoss === "number" ? (
                                                     <>
                                                         {formatPrice(maxLoss)}
-                                                        {estMargin > 0 && (
+                                                        {(fundsRequired > 0 || estMargin > 0) && (
                                                             <span className="text-[11px] font-normal text-rose-600/80 dark:text-rose-400/80 ml-1">
-                                                                ({((Math.abs(maxLoss) / estMargin) * 100).toFixed(2)}%)
+                                                                ({((Math.abs(maxLoss) / (fundsRequired || estMargin)) * 100).toFixed(2)}%)
                                                             </span>
                                                         )}
                                                     </>
@@ -1757,15 +1716,10 @@ export default function StrategyBuilder() {
                                 </div>
                             ) : (
                                 <div className="p-4 flex flex-col justify-center">
-                                    {chartTab === "strategy" && (
-                                        <LiveIntradayChart symbol={symbol} mode="strategy" legs={legs} selectedExpiry={data?.selectedExpiry} />
-                                    )}
-                                    {chartTab === "nifty" && (
-                                        <LiveIntradayChart symbol={symbol} mode="nifty" legs={legs} selectedExpiry={data?.selectedExpiry} />
-                                    )}
-                                    {chartTab === "combined" && (
-                                        <LiveIntradayChart symbol={symbol} mode="combined" legs={legs} selectedExpiry={data?.selectedExpiry} height={380} />
-                                    )}
+                                    {/* Local TradingView Charting Library on every chart tab (full toolset). */}
+                                    {chartTab === "strategy" && <StrategyTradingViewChart symbol={symbol} mode="strategy" legs={legs} />}
+                                    {chartTab === "nifty" && <StrategyTradingViewChart symbol={symbol} mode="nifty" legs={legs} />}
+                                    {chartTab === "combined" && <StrategyTradingViewChart symbol={symbol} mode="combined" legs={legs} />}
                                 </div>
                             )}
                         </div>
@@ -1783,7 +1737,7 @@ export default function StrategyBuilder() {
                                                 : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
                                         }`}
                                     >
-                                        Positions
+                                        Positions{legs.length > 0 ? ` (${legs.length})` : ""}
                                     </button>
                                     <button
                                         onClick={() => setTab("greeks")}
@@ -1794,6 +1748,17 @@ export default function StrategyBuilder() {
                                         }`}
                                     >
                                         Greeks
+                                    </button>
+                                    <button
+                                        onClick={() => setTab("presets")}
+                                        className={`py-2 text-xs font-bold transition-colors cursor-pointer border-b-2 flex items-center gap-1 ${
+                                            tab === "presets"
+                                                ? "border-[#1677ff] text-[#1677ff]"
+                                                : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+                                        }`}
+                                    >
+                                        <FiZap size={11} />
+                                        <span>Ready-Made</span>
                                     </button>
                                 </div>
                                 <button
@@ -1826,10 +1791,18 @@ export default function StrategyBuilder() {
                                             </button>
                                             <div className="flex items-center gap-1.5 text-gray-600 dark:text-gray-300">
                                                 <span className="font-medium text-[11.5px]">Multiplier:</span>
-                                                <div className="flex items-center rounded border border-gray-300 dark:border-white/10 bg-white dark:bg-[#070e17] overflow-hidden">
-                                                    <button onClick={() => bulkAdjustLots(-1)} className="px-1.5 py-0.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 font-bold cursor-pointer">−</button>
-                                                    <span className="w-6 text-center font-bold text-xs tabular-nums text-gray-900 dark:text-white">{commonLots ?? 1}</span>
-                                                    <button onClick={() => bulkAdjustLots(1)} className="px-1.5 py-0.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 font-bold cursor-pointer">+</button>
+                                                <div className={commonLots ? "flex items-center" : "flex items-center rounded border border-gray-300 dark:border-white/10 bg-white dark:bg-[#070e17] overflow-hidden"}>
+                                                    {commonLots ? (
+                                                        <LotsInput value={commonLots} onChange={setAllLots} title="Lots for every leg" />
+                                                    ) : (
+                                                        // Legs have different lot counts — typing one number would
+                                                        // flatten them, so only the relative ± step is offered.
+                                                        <>
+                                                            <button onClick={() => bulkAdjustLots(-1)} className="px-1.5 py-0.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 font-bold cursor-pointer" title="−1 lot on every leg">−</button>
+                                                            <span className="px-1 text-center font-bold text-label text-fg-subtle" title="Legs have different lot counts">mixed</span>
+                                                            <button onClick={() => bulkAdjustLots(1)} className="px-1.5 py-0.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 font-bold cursor-pointer" title="+1 lot on every leg">+</button>
+                                                        </>
+                                                    )}
                                                 </div>
                                             </div>
                                             <div className="text-[11.5px] font-semibold text-gray-700 dark:text-gray-300">
@@ -1840,7 +1813,7 @@ export default function StrategyBuilder() {
                                             <span className="text-sm">🎯</span>
                                             <span className="font-semibold text-gray-600 dark:text-gray-400">Total P&L: </span>
                                             <span className={`font-bold tabular-nums ${totalLivePnl != null && totalLivePnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
-                                                {totalLivePnl != null ? `${totalLivePnl >= 0 ? "+" : ""}${Math.round(totalLivePnl).toLocaleString("en-IN")}(${estMargin > 0 ? ((totalLivePnl / estMargin) * 100).toFixed(2) : "0.00"}%)` : "+0(0.00%)"}
+                                                {totalLivePnl != null ? `${totalLivePnl >= 0 ? "+" : ""}${Math.round(totalLivePnl).toLocaleString("en-IN")}(${(fundsRequired || estMargin) > 0 ? ((totalLivePnl / (fundsRequired || estMargin)) * 100).toFixed(2) : "0.00"}%)` : "+0(0.00%)"}
                                             </span>
                                         </div>
                                     </div>
@@ -1895,9 +1868,7 @@ export default function StrategyBuilder() {
                                                                 </button>
                                                             </td>
                                                             <td className="px-3 sm:px-4 py-2 sm:py-2.5 text-center">
-                                                                <span className="font-bold tabular-nums text-gray-800 dark:text-gray-200">
-                                                                    {leg.qty}
-                                                                </span>
+                                                                <LotsInput value={leg.qty} onChange={(n) => updateQty(leg.id, n)} />
                                                             </td>
                                                             <td className="px-3 sm:px-4 py-2 sm:py-2.5">
                                                                 <select
@@ -2016,7 +1987,7 @@ export default function StrategyBuilder() {
             </div>
             )}
 
-            {mode === "live" && slTgEditId != null && (
+            {slTgEditId != null && (
                 <SlTgModal
                     leg={legs.find((l) => l.id === slTgEditId)}
                     symbol={symbol}
@@ -2045,6 +2016,8 @@ export default function StrategyBuilder() {
                     symbol={symbol}
                     legs={legs}
                     lotSize={data?.lotSize}
+                    requiredFunds={fundsRequired}
+                    requiredMargin={estMargin}
                 />
             )}
         </div>
