@@ -1,5 +1,6 @@
 const { pool } = require("../config/db");
 const lotSizeHistoryService = require("./lotSizeHistoryService");
+const duckdbService = require("./duckdbService");
 
 // Reads ONLY from MySQL (option_chain_history + ohlcv_data) — never a live
 // broker API, per project hard rule. `option_chain_history.underlying_price`
@@ -176,7 +177,43 @@ function computeStats(trades) {
 // legs: [{ action: 'buy'|'sell', type: 'CE'|'PE', strikeOffset: int, qty: int }]
 // strikeOffset is in multiples of that day's strike gap from ATM (0 = ATM).
 // startDate/endDate/entryTime are plain strings: 'YYYY-MM-DD' / 'HH:MM:SS'.
-async function runBacktest({ symbol, expiryType, startDate, endDate, legs, entryTime, dte, stopLossPct, targetPct }) {
+async function runBacktest({ symbol, expiryType, startDate, endDate, legs, entryTime = "09:20:00", dte, stopLossPct, targetPct }) {
+    // 1. High-speed DuckDB execution if Parquet dataset is available
+    if (duckdbService.findParquetPattern(symbol)) {
+        try {
+            const duckRes = await duckdbService.runVectorizedBacktest({
+                symbol,
+                startDate,
+                endDate,
+                legs,
+                entryTime,
+                stopLossPct,
+                targetPct,
+            });
+            if (duckRes && duckRes.trades && duckRes.trades.length) {
+                const stdTrades = duckRes.trades.map((t) => ({
+                    entryDate: t.date,
+                    expiry: t.expiry,
+                    entryTime: t.entryTime,
+                    exitTime: t.exitTime,
+                    lotSize: 50,
+                    entryCost: 0,
+                    pnl: t.pnl,
+                    exitReason: t.exitReason,
+                }));
+                return {
+                    trades: stdTrades,
+                    skipped: [],
+                    ...computeStats(stdTrades),
+                    engine: duckRes.engine,
+                    performance: duckRes.performance,
+                };
+            }
+        } catch (duckErr) {
+            console.warn(`[Backtest] DuckDB execution failed, falling back to MySQL: ${duckErr.message}`);
+        }
+    }
+
     const tradingDays = await getTradingDays(symbol, startDate, endDate);
     const expiries = await getExpiries(symbol, startDate);
     if (!expiries.length) {

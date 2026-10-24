@@ -1,6 +1,7 @@
 import React from "react";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useOptionChain, contractStaleness } from "../hooks/useOptionChain";
+import { useSpanMargin, spanSourceLabel } from "../hooks/useSpanMargin";
 import StaleBadge from "../components/strategy/StaleBadge";
 import SlTgModal from "../components/strategy/SlTgModal";
 import SquareOffAlertBanner from "../components/strategy/SquareOffAlertBanner";
@@ -252,6 +253,13 @@ const DEFAULT_COLUMNS = {
     theta: false, vega: false, gamma: false,
 };
 
+const STRIKE_RANGES = [
+    { label: "±10", value: 10 },
+    { label: "±20", value: 20 },
+    { label: "±30", value: 30 },
+    { label: "All", value: null },
+];
+
 export default function StrategyBuilder() {
     const { symbol, setSymbol, data, loading, error, load, marketStatus, isLive, dataLoadedAt, staleNow } = useOptionChain();
 
@@ -300,6 +308,7 @@ export default function StrategyBuilder() {
     const [hideChain, setHideChain] = useState(false);
     const [mobileView, setMobileView] = useState("all"); // 'all' | 'chain' | 'payoff' | 'positions' | 'presets'
     const [strikeAsc, setStrikeAsc] = useState(true);
+    const [strikesAroundAtm, setStrikesAroundAtm] = useState(20);
     const containerRef = useRef(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -601,11 +610,15 @@ export default function StrategyBuilder() {
         ).strike;
     }, [data, effectiveAtmPrice]);
 
-    // Rows in display order — every strike, sorted by strike
+    // Rows in display order — filtered to ±strikesAroundAtm around effectiveAtmStrike
     const displayChainRows = useMemo(() => {
-        if (!data?.rows) return [];
-        return strikeAsc ? data.rows : [...data.rows].reverse();
-    }, [data, strikeAsc]);
+        if (!data?.rows?.length) return [];
+        const baseRows = strikeAsc ? data.rows : [...data.rows].reverse();
+        if (strikesAroundAtm == null || effectiveAtmStrike == null) return baseRows;
+        const atmIdx = baseRows.findIndex((r) => r.strike === effectiveAtmStrike);
+        if (atmIdx === -1) return baseRows;
+        return baseRows.slice(Math.max(0, atmIdx - strikesAroundAtm), atmIdx + strikesAroundAtm + 1);
+    }, [data, strikeAsc, strikesAroundAtm, effectiveAtmStrike]);
 
     const { first3Expiries, remainingExpiries } = useMemo(() => {
         const list = data?.expiries || [];
@@ -689,6 +702,27 @@ export default function StrategyBuilder() {
     // based on ALL legs, same convention as Simulator.jsx.
     const activeLegs = useMemo(() => legs.filter((l) => l.active !== false), [legs]);
 
+    // Exchange margin from NSE's SPAN file (server-side). While a quote is pending or SPAN
+    // can't price the legs, the payoff.js estimate below is shown instead, labelled "Estimate".
+    const spanLegs = useMemo(
+        () => activeLegs.map((l) => ({
+            expiry: l.expiry || data?.selectedExpiry,
+            strike: l.strike,
+            type: l.type,
+            action: l.action,
+            lots: l.qty || 1,
+            lotSize: l.lotSize || data?.lotSize,
+        })),
+        [activeLegs, data?.selectedExpiry, data?.lotSize]
+    );
+    const span = useSpanMargin(symbol, data?.spotPrice, spanLegs);
+    const spanMarginByLegId = useMemo(() => {
+        if (!span?.perLeg) return null;
+        const m = new Map();
+        activeLegs.forEach((l, i) => m.set(l.id, span.perLeg[i]));
+        return m;
+    }, [span, activeLegs]);
+
     // Live SL/TG watch — on every chain update, check each leg's live P&L
     // against ±(threshold% × its own entry notional). First crossing per
     // (leg, thresholds) raises the square-off alert once. The alert setState
@@ -753,6 +787,12 @@ export default function StrategyBuilder() {
             const expMv = (atmIv && typeof computeExpectedMove === "function") ? computeExpectedMove(data.spotPrice, atmIv, yearsRem) : null;
             const popVal = (atmIv && typeof computePOP === "function") ? computePOP(curveData, data.spotPrice, atmIv, yearsRem) : null;
             const marginDetails = computeMarginDetails(activeLegs, data.spotPrice, symbol);
+            if (span) {
+                const debit = Math.max(0, -(marginDetails.netPremium || 0));
+                marginDetails.estMargin = span.margin;
+                marginDetails.fundsRequired = Math.round((span.margin + debit) * 100) / 100;
+                marginDetails.marginBenefit = Math.max(0, Math.round((span.standaloneMargin - span.margin) * 100) / 100);
+            }
 
             return {
                 curve: curveData,
@@ -773,7 +813,7 @@ export default function StrategyBuilder() {
             console.error(err);
             return { curve: [], breakevens: [], maxProfit: null, maxLoss: null, netGreeks: null, pop: null, expectedMove: null, estMargin: null, fundsRequired: null, marginBenefit: 0, isHedged: false, riskReward: null, yearsRemaining: 0 };
         }
-    }, [activeLegs, data, symbol, dataLoadedAt, staleNow]);
+    }, [activeLegs, data, symbol, dataLoadedAt, span]);
 
     // "Payoff setting" what-if readout — reprices every leg via Black-Scholes
     // at the simulated spot/date/IV instead of the real ones, using each
@@ -1099,6 +1139,32 @@ export default function StrategyBuilder() {
                             ) : (
                                 <div className="text-xs font-bold text-gray-700 dark:text-gray-300">Option Chain</div>
                             )}
+
+                            {/* Strikes Around ATM Filter */}
+                            <div className="flex items-center gap-1 shrink-0">
+                                {STRIKE_RANGES.map((rng) => (
+                                    <button
+                                        key={rng.label}
+                                        onClick={() => setStrikesAroundAtm(rng.value)}
+                                        className={`rounded px-1.5 py-0.5 text-[11px] font-bold transition-all cursor-pointer ${
+                                            strikesAroundAtm === rng.value
+                                                ? "bg-[#1677ff] text-white shadow-xs"
+                                                : "bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/10"
+                                        }`}
+                                    >
+                                        {rng.label}
+                                    </button>
+                                ))}
+                                {effectiveAtmStrike != null && (
+                                    <button
+                                        onClick={() => scrollToAtm("smooth")}
+                                        className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-bold text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 transition cursor-pointer"
+                                        title="Scroll to ATM strike"
+                                    >
+                                        🎯 ATM
+                                    </button>
+                                )}
+                            </div>
 
                             <div className="flex items-center gap-1 shrink-0 relative">
                                 <button
@@ -1598,9 +1664,17 @@ export default function StrategyBuilder() {
                                                 </div>
                                                 <div className="text-right">
                                                     <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">Est. Margin</div>
-                                                    <div className="text-sm font-bold text-gray-900 dark:text-white tabular-nums">
+                                                    <div
+                                                        className="text-sm font-bold text-gray-900 dark:text-white tabular-nums"
+                                                        title={span ? `SPAN ${formatPrice(span.scanRisk + span.calendarCharge)} + Exposure ${formatPrice(span.exposure)}${span.expiryDayExposure ? ` + Expiry-day ELM ${formatPrice(span.expiryDayExposure)}` : ""}` : "Approximate — NSE SPAN quote unavailable"}
+                                                    >
                                                         {estMargin == null ? "—" : estMargin === 0 ? "Not required" : estMargin >= 100000 ? `${(estMargin / 100000).toFixed(2)}L` : formatPrice(estMargin)}
                                                     </div>
+                                                    {estMargin > 0 && (
+                                                        <div className={`text-[10px] font-medium whitespace-nowrap ${span ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
+                                                            {spanSourceLabel(span)}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </div>
                                             {marginBenefit > 0 && (
@@ -1924,7 +1998,10 @@ export default function StrategyBuilder() {
                                                             </td>
                                                             <td className="px-3 sm:px-4 py-2 sm:py-2.5 text-right tabular-nums text-gray-700 dark:text-gray-300 text-xs">
                                                                 {leg.action === "sell" && data?.spotPrice
-                                                                    ? (computeEstMargin([leg], data.spotPrice, symbol) >= 100000 ? `${(computeEstMargin([leg], data.spotPrice, symbol) / 100000).toFixed(2)}L` : formatPrice(computeEstMargin([leg], data.spotPrice, symbol)))
+                                                                    ? (() => {
+                                                                        const m = spanMarginByLegId?.get(leg.id) ?? computeEstMargin([leg], data.spotPrice, symbol);
+                                                                        return m >= 100000 ? `${(m / 100000).toFixed(2)}L` : formatPrice(m);
+                                                                    })()
                                                                     : <span className="text-gray-300 dark:text-gray-600">—</span>}
                                                             </td>
                                                             <td className="px-3 sm:px-4 py-2 sm:py-2.5 text-center">

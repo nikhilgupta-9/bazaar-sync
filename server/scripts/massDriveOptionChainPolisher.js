@@ -85,15 +85,6 @@ async function getMasterUniverse() {
         console.warn("[Universe] Warn reading live Upstox instruments:", e.message);
     }
 
-    // Also include legacy symbols from breeze-nse-scrip-master if available
-    const scripPath = path.join(DD, "data", "breeze-nse-scrip-master.json");
-    if (fs.existsSync(scripPath)) {
-        try {
-            const scrip = JSON.parse(fs.readFileSync(scripPath, "utf8"));
-            Object.keys(scrip).forEach(s => set.add(s.toUpperCase()));
-        } catch (_) {}
-    }
-
     let list = [...set];
     if (SYMBOL_FILTER) list = list.filter(s => SYMBOL_FILTER.has(s));
     return list.sort((a, b) => {

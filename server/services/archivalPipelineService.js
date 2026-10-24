@@ -116,7 +116,6 @@ async function exportToGzipCsv(dataType, symbol, year) {
                    pe_ltp, pe_oi, pe_oi_change, pe_iv, pe_volume, pe_delta, pe_gamma, pe_theta, pe_vega
             FROM option_chain_history
             WHERE symbol = ? AND trade_date >= ? AND trade_date <= ?
-            ORDER BY trade_date ASC, trade_time ASC
             LIMIT ? OFFSET ?
         `;
         csvHeader = "id,symbol,trade_date,trade_time,expiry,strike,underlying_price,ce_ltp,ce_oi,ce_oi_change,ce_iv,ce_volume,ce_delta,ce_gamma,ce_theta,ce_vega,pe_ltp,pe_oi,pe_oi_change,pe_iv,pe_volume,pe_delta,pe_gamma,pe_theta,pe_vega\n";

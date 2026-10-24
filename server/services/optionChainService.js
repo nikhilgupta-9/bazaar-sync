@@ -475,10 +475,10 @@ class OptionChainService {
         if (tickDate && (!histDate || tickDate >= histDate)) {
             const ageDays = (utcMidnight(today) - utcMidnight(tickDate)) / 86400000;
             if (ageDays <= STORED_EXPIRY_MAX_AGE_DAYS) {
-                const day = await liveDayChain.liveDay(displaySymbol, tickDate, expiry);
-                const lastTime = day.times[day.times.length - 1];
-                const tickRows = lastTime ? day.byMinute.get(lastTime) || [] : [];
-                if (tickRows.length) {
+                const day = await liveDayChain.liveDayLatest(displaySymbol, tickDate, expiry);
+                const lastTime = day.lastTime;
+                const tickRows = day.rows || [];
+                if (tickRows.length && lastTime) {
                     const spotMap = await liveDayChain.liveSpot(displaySymbol, tickDate).catch(() => new Map());
                     const spot = liveDayChain.spotAtOrBefore(spotMap, lastTime);
                     const listed = await instrumentMaster.getExpiries(displaySymbol).catch(() => []);

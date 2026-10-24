@@ -1,18 +1,15 @@
 // components/ContractChartModal.jsx
 //
-// Slide-up chart for one option contract (strike + expiry + CE/PE), opened
-// from the chart icon next to an LTP in Option Chain / Strategy Builder /
+// Full-width chart modal for an option contract (strike + expiry + CE/PE) or spot,
+// opened from the chart icon next to an LTP in Option Chain / Strategy Builder /
 // Simulator. Rendered with the local TradingView Charting Library
-// (client/public/charting_library) so every native tool is available —
-// drawing toolbar, 100+ indicators, chart types, timeframes, compare,
-// screenshot. Bars come from server/routes/tvDatafeed.js, which builds them
-// from the REAL stored ticks/snapshots for the contract (live_option_ticks +
-// option_chain_history) — a contract with nothing stored shows the library's
-// own "no data" state rather than invented candles.
+// (client/public/charting_library) with all native drawing tools, 100+ indicators,
+// multi-timeframe resolution, and real-time bars.
 import { useEffect, useState } from "react";
 import { FiMaximize, FiMinimize, FiX, FiPlus, FiMinus } from "react-icons/fi";
 import TradingViewChart from "./TradingViewChart";
 import { optionTicker } from "../lib/tvDatafeed";
+import { useTheme } from "../context/ThemeContext";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 function formatExpiry(expiry) {
@@ -22,6 +19,7 @@ function formatExpiry(expiry) {
 }
 
 export default function ContractChartModal({ symbol, strike, expiry, right, onClose, onAddLeg = null }) {
+    const { isDark } = useTheme();
     const [open, setOpen] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -52,43 +50,45 @@ export default function ContractChartModal({ symbol, strike, expiry, right, onCl
 
     return (
         <div
-            className={`fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-2xs transition-opacity duration-200 ${
+            className={`fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 dark:bg-black/80 backdrop-blur-sm transition-opacity duration-200 ${
                 open ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
             }`}
             onClick={handleClose}
         >
             <div
-                className={`w-full transition-all duration-300 ease-out rounded-t-2xl sm:rounded-t-3xl bg-surface border-t border-x border-line shadow-2xl flex flex-col overflow-hidden ${
-                    isFullscreen ? "h-[96vh]" : "h-[86vh] sm:h-[84vh] max-h-[92vh]"
+                className={`w-screen max-w-none transition-all duration-300 ease-out flex flex-col overflow-hidden bg-white dark:bg-[#070e17] border-t border-gray-200 dark:border-white/10 shadow-2xl ${
+                    isFullscreen
+                        ? "fixed inset-0 h-screen w-screen rounded-none z-50"
+                        : "h-[90vh] sm:h-[92vh] w-full rounded-t-2xl sm:rounded-t-3xl"
                 } ${open ? "translate-y-0" : "translate-y-full"}`}
                 onClick={(e) => e.stopPropagation()}
             >
-                {/* Drag handle */}
-                <div className="w-12 h-1 rounded-full bg-line mx-auto mt-2 shrink-0" />
+                {/* Drag handle on mobile */}
+                <div className="w-12 h-1 rounded-full bg-gray-300 dark:bg-white/20 mx-auto mt-2 shrink-0 sm:hidden" />
 
                 {/* Header: contract, expiry, mode switch, leg actions, fullscreen, close */}
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface-muted px-3 sm:px-4 py-2">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 dark:border-white/10 bg-gray-50/90 dark:bg-[#0b1420]/90 px-3 sm:px-5 py-2.5">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
                         {/* Segmented Mode Switcher: Option Contract vs Spot Index */}
-                        <div className="flex items-center rounded-xl border border-line bg-surface p-0.5 shadow-xs">
+                        <div className="flex items-center rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] p-0.5 shadow-xs">
                             <button
                                 onClick={() => setChartMode("contract")}
-                                className={`rounded-lg px-2.5 py-1 text-xs font-bold transition-all cursor-pointer ${
+                                className={`rounded-lg px-3 py-1 text-xs font-bold transition-all cursor-pointer ${
                                     chartMode === "contract"
                                         ? isCall
                                             ? "bg-emerald-600 text-white shadow-xs"
                                             : "bg-rose-600 text-white shadow-xs"
-                                        : "text-fg-muted hover:text-fg"
+                                        : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
                                 }`}
                             >
                                 {symbol} {strike} {right}
                             </button>
                             <button
                                 onClick={() => setChartMode("spot")}
-                                className={`rounded-lg px-2.5 py-1 text-xs font-bold transition-all cursor-pointer ${
+                                className={`rounded-lg px-3 py-1 text-xs font-bold transition-all cursor-pointer ${
                                     chartMode === "spot"
-                                        ? "bg-emerald-600 text-white shadow-xs"
-                                        : "text-fg-muted hover:text-fg"
+                                        ? "bg-blue-600 text-white shadow-xs"
+                                        : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
                                 }`}
                             >
                                 {symbol} Spot
@@ -96,12 +96,12 @@ export default function ContractChartModal({ symbol, strike, expiry, right, onCl
                         </div>
 
                         {chartMode === "contract" && (
-                            <span className="rounded-lg bg-surface-raised px-2 py-0.5 text-label font-semibold text-fg-muted">
+                            <span className="rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#121c2b] px-2.5 py-1 text-[11px] font-semibold text-gray-700 dark:text-gray-300 shadow-2xs">
                                 Exp: {formatExpiry(expiry)}
                             </span>
                         )}
-                        <span className="hidden sm:inline text-label text-fg-subtle">
-                            TradingView · Real-time ticks &amp; indicators
+                        <span className="hidden sm:inline text-[11.5px] font-medium text-gray-500 dark:text-gray-400">
+                            TradingView · Real-time ticks &amp; 100+ indicators
                         </span>
                     </div>
 
@@ -126,14 +126,14 @@ export default function ContractChartModal({ symbol, strike, expiry, right, onCl
                         )}
                         <button
                             onClick={() => setIsFullscreen((f) => !f)}
-                            className="rounded-xl border border-line bg-surface p-2 text-fg-muted shadow-xs transition hover:bg-surface-hover hover:text-fg cursor-pointer"
-                            title={isFullscreen ? "Dock Chart" : "Expand"}
+                            className="rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] p-2 text-gray-600 dark:text-gray-300 shadow-xs transition hover:bg-gray-100 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white cursor-pointer"
+                            title={isFullscreen ? "Dock Chart" : "Expand Fullscreen"}
                         >
                             {isFullscreen ? <FiMinimize size={16} /> : <FiMaximize size={16} />}
                         </button>
                         <button
                             onClick={handleClose}
-                            className="rounded-xl border border-line bg-surface p-2 text-fg-muted shadow-xs transition hover:bg-surface-hover hover:text-fg cursor-pointer"
+                            className="rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] p-2 text-gray-600 dark:text-gray-300 shadow-xs transition hover:bg-gray-100 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white cursor-pointer"
                             title="Close Chart"
                         >
                             <FiX size={18} />
@@ -141,9 +141,9 @@ export default function ContractChartModal({ symbol, strike, expiry, right, onCl
                     </div>
                 </div>
 
-                {/* TradingView terminal — full toolset */}
-                <div className="min-h-0 flex-1">
-                    <TradingViewChart key={activeSymbol} symbol={activeSymbol} interval="5" height="100%" />
+                {/* TradingView terminal — full screen width */}
+                <div className="min-h-0 flex-1 w-full bg-white dark:bg-[#0b1420]">
+                    <TradingViewChart key={`${activeSymbol}_${isDark ? "dark" : "light"}`} symbol={activeSymbol} interval="5" height="100%" />
                 </div>
             </div>
         </div>

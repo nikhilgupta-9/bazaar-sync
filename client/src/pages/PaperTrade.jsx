@@ -9,6 +9,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { useSpanMargin, spanSourceLabel } from "../hooks/useSpanMargin";
 import { useOptionChain, contractStaleness } from "../hooks/useOptionChain";
 import {
     fetchWallet,
@@ -585,17 +586,19 @@ export default function PaperTrade() {
     const enabledColumnCount = Object.values(columns).filter(Boolean).length;
     const totalColumnCount = Object.keys(columns).length;
 
-    // Refresh FX Rate
+    // Refresh FX Rate (Cached with timeout & safe fallback)
     useEffect(() => {
         let active = true;
         async function fetchFx() {
             try {
-                const res = await fetch("https://open.er-api.com/v6/latest/USD");
+                const res = await fetch("https://open.er-api.com/v6/latest/USD", { signal: AbortSignal.timeout(3000) });
                 if (res.ok) {
                     const d = await res.json();
                     if (active && d?.rates?.INR) setUsdtInrRate(d.rates.INR);
                 }
-            } catch {}
+            } catch {
+                if (active) setUsdtInrRate(86.50); // Safe local fallback
+            }
         }
         fetchFx();
         return () => { active = false; };
@@ -980,11 +983,7 @@ export default function PaperTrade() {
         return any ? sum : null;
     }, [legs, legLivePnl]);
 
-    // SPAN margin quote from server
-    const [spanQuote, setSpanQuote] = useState(null);
-    const spanReqRef = useRef(0);
-    const spanSpotRef = useRef(spotPrice);
-    spanSpotRef.current = spotPrice;
+    // SPAN margin quote from server (hooks/useSpanMargin.js — shared with Strategy Builder)
     const spanLegs = useMemo(
         () => (isCrypto ? [] : activeLegs.map((l) => ({
             expiry: l.expiry || chainData?.selectedExpiry,
@@ -996,24 +995,7 @@ export default function PaperTrade() {
         }))),
         [isCrypto, activeLegs, chainData?.selectedExpiry, lotSize]
     );
-    const spanKey = useMemo(() => JSON.stringify([activeSymbol, spanLegs]), [activeSymbol, spanLegs]);
-    useEffect(() => {
-        if (!spanLegs.length) return undefined;
-        const id = ++spanReqRef.current;
-        const timer = setTimeout(async () => {
-            let result = { available: false };
-            try {
-                const res = await fetch(`${BACKEND_BASE}/api/margin/calculate`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ symbol: activeSymbol, spot: spanSpotRef.current, legs: spanLegs }),
-                });
-                result = await res.json();
-            } catch {}
-            if (id === spanReqRef.current) setSpanQuote({ key: spanKey, result });
-        }, 300);
-        return () => clearTimeout(timer);
-    }, [spanKey, spanLegs, activeSymbol]);
+    const spanResult = useSpanMargin(activeSymbol, spotPrice, spanLegs);
 
     // Payoff and Greek calculations
     const payoffData = useMemo(() => {
@@ -1075,7 +1057,7 @@ export default function PaperTrade() {
                 pop: popVal,
                 expectedMove: expMv,
                 ...(() => {
-                    const span = spanQuote?.key === spanKey && spanQuote.result?.available ? spanQuote.result : null;
+                    const span = spanResult;
                     if (!span) return { fundsRequired: marginCalc.fundsRequired, estMargin: marginCalc.estMargin, nakedMargin: marginCalc.nakedMargin, marginBenefit: marginCalc.marginBenefit, marginSource: isCrypto ? null : "Estimate", marginDetail: null };
                     const debit = Math.max(0, -marginCalc.netPremium);
                     return {
@@ -1083,7 +1065,7 @@ export default function PaperTrade() {
                         fundsRequired: Math.round((span.margin + debit) * 100) / 100,
                         nakedMargin: span.standaloneMargin,
                         marginBenefit: Math.max(0, Math.round((span.standaloneMargin - span.margin) * 100) / 100),
-                        marginSource: `NSE SPAN · ${span.file?.replace(/^nsccl\./, "") || ""}`,
+                        marginSource: spanSourceLabel(span),
                         marginDetail: span,
                     };
                 })(),
@@ -1110,7 +1092,7 @@ export default function PaperTrade() {
                 yearsRemaining: null,
             };
         }
-    }, [activeLegs, spotPrice, activeSymbol, isCrypto, cryptoLeverage, chainData, effectiveAtmStrike, spanQuote, spanKey, dataLoadedAt, staleNow]);
+    }, [activeLegs, spotPrice, activeSymbol, isCrypto, cryptoLeverage, chainData, effectiveAtmStrike, spanResult, dataLoadedAt, staleNow]);
 
     // What-If Simulation
     const whatIfResult = useMemo(() => {

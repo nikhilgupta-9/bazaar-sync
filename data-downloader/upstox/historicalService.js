@@ -39,32 +39,28 @@ const BASE_URL = process.env.UPSTOX_API_BASE_URL || "https://api.upstox.com/v2";
 // generic failure, since a 429 means "you're inside a rate-limit window
 // right now", not "this one request had a transient problem" — a short
 // retry just trips the same wall again. Both are still env-overridable.
-const REQUEST_GAP_MS = Number(process.env.UPSTOX_REQUEST_GAP_MS || 1200);
-const MAX_ATTEMPTS = Number(process.env.UPSTOX_MAX_ATTEMPTS || 5);
-const RATE_LIMIT_BACKOFF_MS = Number(process.env.UPSTOX_RATE_LIMIT_BACKOFF_MS || 5000);
+const REQUEST_GAP_MS = Number(process.env.UPSTOX_REQUEST_GAP_MS || 950);
+const MAX_ATTEMPTS = Number(process.env.UPSTOX_MAX_ATTEMPTS || 8);
+const RATE_LIMIT_BACKOFF_MS = Number(process.env.UPSTOX_RATE_LIMIT_BACKOFF_MS || 65000);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let lastRequestAt = 0;
-
-// A 429 means Upstox has already put the WHOLE account/token into a
-// rate-limit window server-side — it's not about this one request being
-// unlucky. Without this, backfillUpstox.js's per-strike try/catch loop just
-// moves on to the next strike immediately after giving up on a rate-limited
-// one, which re-triggers the same 429 on the very next call and can extend
-// the penalty window further. `blockedUntil` is shared across every call
-// through this module, so once ANY request sees a 429, every other
-// in-flight/future request (a completely different strike, a different
-// symbol run, etc.) waits out the same cooldown before firing again.
 let blockedUntil = 0;
+let gapChain = Promise.resolve();
 
 async function withGap(fn) {
-    const blockWait = blockedUntil - Date.now();
-    if (blockWait > 0) await sleep(blockWait);
-    const wait = lastRequestAt + REQUEST_GAP_MS - Date.now();
-    if (wait > 0) await sleep(wait);
-    lastRequestAt = Date.now();
-    return fn();
+    const run = async () => {
+        const blockWait = blockedUntil - Date.now();
+        if (blockWait > 0) await sleep(blockWait);
+        const wait = lastRequestAt + REQUEST_GAP_MS - Date.now();
+        if (wait > 0) await sleep(wait);
+        lastRequestAt = Date.now();
+        return fn();
+    };
+    const p = gapChain.then(run, run);
+    gapChain = p.catch(() => {});
+    return p;
 }
 
 async function withRetry(fn, label) {
@@ -72,21 +68,19 @@ async function withRetry(fn, label) {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         try {
             const result = await withGap(fn);
-            blockedUntil = 0; // a clean success proves the cooldown has cleared
+            if (Date.now() >= blockedUntil) blockedUntil = 0;
             return result;
         } catch (err) {
             lastErr = err;
             const isRateLimited = err.httpStatus === 429;
             if (isRateLimited) {
-                // Respect a real Retry-After header when Upstox sends one;
-                // otherwise use our own escalating floor. This sets the
-                // SHARED cooldown every other call also waits on, not just
-                // this request's own retry delay.
-                const cooldownMs = Math.max(RATE_LIMIT_BACKOFF_MS * attempt, (err.retryAfterSec || 0) * 1000);
+                // When 429 occurs, back off at least 65s on attempt 1, 85s on attempt 2, etc.
+                // This allows Upstox's rolling 1-min / 30-min window to completely clear.
+                const cooldownMs = Math.max(RATE_LIMIT_BACKOFF_MS + (attempt - 1) * 20000, (err.retryAfterSec || 0) * 1000);
                 blockedUntil = Math.max(blockedUntil, Date.now() + cooldownMs);
             }
             if (attempt < MAX_ATTEMPTS) {
-                const delay = isRateLimited ? Math.max(0, blockedUntil - Date.now()) : 500 * 2 ** (attempt - 1);
+                const delay = isRateLimited ? Math.max(1000, blockedUntil - Date.now()) : 500 * 2 ** (attempt - 1);
                 dbLogger.warn(`${label} failed (attempt ${attempt}): ${err.message} — retrying in ${delay}ms${isRateLimited ? " (rate limited, shared cooldown)" : ""}`);
                 await sleep(delay);
             }
@@ -121,31 +115,31 @@ function authHeaders() {
 // (2026-07-20) — mirrored here rather than sharing one module, since these
 // are genuinely separate sources with their own auth/base-URL/retry shape.
 const FETCH_TIMEOUT_MS = Number(process.env.UPSTOX_FETCH_TIMEOUT_MS || 25_000);
-async function fetchWithTimeout(url, options = {}) {
+
+async function secureGet(path, label, baseUrl = BASE_URL) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
-        return await fetch(url, { ...options, signal: controller.signal });
+        const res = await fetch(`${baseUrl}${path}`, {
+            headers: authHeaders(),
+            signal: controller.signal,
+        });
+        const body = await res.json().catch(() => null);
+        if (!res.ok || !body || body.status !== "success") {
+            const msg = (body && (body.errors?.[0]?.message || body.message)) || `HTTP ${res.status}`;
+            const err = new Error(`${label} failed: ${msg}`);
+            err.httpStatus = res.status;
+            const retryAfterHeader = res.headers.get("retry-after");
+            if (retryAfterHeader) err.retryAfterSec = Number(retryAfterHeader) || 0;
+            throw err;
+        }
+        return body;
     } catch (err) {
-        if (err.name === "AbortError") throw new Error(`request timed out after ${FETCH_TIMEOUT_MS}ms: ${url}`);
+        if (err.name === "AbortError") throw new Error(`request timed out after ${FETCH_TIMEOUT_MS}ms: ${baseUrl}${path}`);
         throw err;
     } finally {
         clearTimeout(timer);
     }
-}
-
-async function secureGet(path, label, baseUrl = BASE_URL) {
-    const res = await fetchWithTimeout(`${baseUrl}${path}`, { headers: authHeaders() });
-    const body = await res.json().catch(() => null);
-    if (!res.ok || !body || body.status !== "success") {
-        const msg = (body && (body.errors?.[0]?.message || body.message)) || `HTTP ${res.status}`;
-        const err = new Error(`${label} failed: ${msg}`);
-        err.httpStatus = res.status;
-        const retryAfterHeader = res.headers.get("retry-after");
-        if (retryAfterHeader) err.retryAfterSec = Number(retryAfterHeader) || 0;
-        throw err;
-    }
-    return body;
 }
 
 /** All expiries Upstox has on file for an underlying (capped ~6mo back — Upstox's own limit, not ours). */

@@ -502,6 +502,105 @@ async function ensureYearSymbolHierarchy(year, symbol, rootFolderId = null) {
 }
 
 /**
+ * Resumable chunked upload for large files (> 20 MB) to prevent ECONNRESET
+ */
+async function resumableUploadToDrive({ filePath, fileName, mimeType, parentFolderId, checksumSha256, fileSize, drive }) {
+    const authClient = drive.context._options.auth;
+    const tokenInfo = await authClient.getAccessToken();
+    const token = typeof tokenInfo === "string" ? tokenInfo : tokenInfo?.token;
+
+    const metadata = {
+        name: fileName || path.basename(filePath),
+        parents: [parentFolderId],
+        description: `BazaarSync Cloud Archive - SHA256: ${checksumSha256}`,
+    };
+
+    const initRes = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,size,webViewLink,webContentLink,md5Checksum,createdTime", {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Upload-Content-Type": mimeType,
+            "X-Upload-Content-Length": String(fileSize),
+        },
+        body: JSON.stringify(metadata),
+    });
+
+    if (!initRes.ok) {
+        const errText = await initRes.text();
+        throw new Error(`Failed to initiate resumable upload (HTTP ${initRes.status}): ${errText}`);
+    }
+
+    const location = initRes.headers.get("location");
+    if (!location) throw new Error("No upload location returned by Google Drive for resumable upload");
+
+    const CHUNK_SIZE = 16 * 1024 * 1024; // 16 MB chunks
+    const fd = fs.openSync(filePath, "r");
+    let offset = 0;
+    let finalData = null;
+
+    try {
+        while (offset < fileSize) {
+            const end = Math.min(offset + CHUNK_SIZE, fileSize);
+            const chunkSize = end - offset;
+            const buffer = Buffer.alloc(chunkSize);
+            fs.readSync(fd, buffer, 0, chunkSize, offset);
+
+            let chunkSuccess = false;
+            for (let retry = 1; retry <= 5; retry++) {
+                try {
+                    const putRes = await fetch(location, {
+                        method: "PUT",
+                        headers: {
+                            "Content-Range": `bytes ${offset}-${end - 1}/${fileSize}`,
+                            "Content-Length": String(chunkSize),
+                        },
+                        body: buffer,
+                    });
+
+                    if (putRes.status === 200 || putRes.status === 201) {
+                        finalData = await putRes.json();
+                        chunkSuccess = true;
+                        offset = end;
+                        break;
+                    } else if (putRes.status === 308) {
+                        chunkSuccess = true;
+                        offset = end;
+                        const pct = ((offset / fileSize) * 100).toFixed(1);
+                        console.log(`[GoogleDrive] Upload progress for ${fileName}: ${pct}% (${(offset / 1024 / 1024).toFixed(1)} MB / ${(fileSize / 1024 / 1024).toFixed(1)} MB)...`);
+                        break;
+                    } else {
+                        const t = await putRes.text();
+                        console.warn(`[GoogleDrive] Chunk upload failed (HTTP ${putRes.status}): ${t}. Retrying attempt ${retry}...`);
+                        await new Promise(r => setTimeout(r, 2000 * retry));
+                    }
+                } catch (putErr) {
+                    console.warn(`[GoogleDrive] Chunk error (${putErr.message}). Retrying attempt ${retry}...`);
+                    await new Promise(r => setTimeout(r, 2000 * retry));
+                }
+            }
+
+            if (!chunkSuccess) {
+                throw new Error(`Failed to upload chunk ${offset}-${end} after 5 attempts`);
+            }
+        }
+    } finally {
+        fs.closeSync(fd);
+    }
+
+    return {
+        fileId: finalData?.id,
+        fileName: finalData?.name || fileName,
+        sizeBytes: Number(finalData?.size || fileSize),
+        webViewLink: finalData?.webViewLink,
+        webContentLink: finalData?.webContentLink,
+        md5Checksum: finalData?.md5Checksum,
+        checksumSha256,
+        createdTime: finalData?.createdTime,
+    };
+}
+
+/**
  * Upload a local file to Google Drive under a specific folder
  */
 async function uploadFile({ filePath, fileName, mimeType = "application/gzip", parentFolderId }) {
@@ -511,7 +610,6 @@ async function uploadFile({ filePath, fileName, mimeType = "application/gzip", p
 
     const drive = await getDriveClient();
     const fileSize = fs.statSync(filePath).size;
-    const fileStream = fs.createReadStream(filePath);
 
     // Calculate SHA256 checksum safely via stream
     const checksumSha256 = await new Promise((resolve, reject) => {
@@ -522,6 +620,20 @@ async function uploadFile({ filePath, fileName, mimeType = "application/gzip", p
         s.on("error", reject);
     });
 
+    // Use chunked resumable upload for files larger than 20 MB to prevent socket hangup
+    if (fileSize > 20 * 1024 * 1024) {
+        return resumableUploadToDrive({
+            filePath,
+            fileName,
+            mimeType,
+            parentFolderId,
+            checksumSha256,
+            fileSize,
+            drive,
+        });
+    }
+
+    const fileStream = fs.createReadStream(filePath);
     const media = {
         mimeType,
         body: fileStream,

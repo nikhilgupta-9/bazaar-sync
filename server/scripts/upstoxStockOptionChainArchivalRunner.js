@@ -63,7 +63,7 @@ const BSE_CACHE = path.join(DD, "data", "upstox-instruments-bse.csv");
 const FIRST_SYMBOL = "LUPIN";
 const DEFAULT_FROM = "2026-01-01";
 const LOOKBACK_DAYS = 95; // stock contracts list ~3 months before expiry; 95d verified to work in one expired-candle call
-const INSERT_BATCH_SIZE = 500;
+const INSERT_BATCH_SIZE = 3000;
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 const OPTSTK_RE = new RegExp(`^(.+?)(\\d{2})(${MONTHS.join("|")})(\\d+(?:\\.\\d+)?)(CE|PE)$`);
 
@@ -387,7 +387,7 @@ async function listExpiries(symbol, equityKey, from, to) {
     return [...out.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
-async function processSymbol(symbol, from, to, nStrikes, { spotOnly = false } = {}) {
+async function processSymbol(symbol, from, to, nStrikes, { spotOnly = false, forceExpiry = false } = {}) {
     const equityKey = isIndex(symbol) ? INDEX_KEYS[symbol] : await upstoxInstruments.resolveInstrumentKey(symbol);
     if (!equityKey) throw new Error(`no Upstox instrument_key for ${symbol}`);
 
@@ -404,6 +404,24 @@ async function processSymbol(symbol, from, to, nStrikes, { spotOnly = false } = 
     let optionRows = 0;
     const failed = [];
     for (const [expiry, contracts] of expiries) {
+        // Smart expiry check: If this expiry has already been fully captured in local MySQL,
+        // reuse the existing rows and avoid redundant re-downloading!
+        const [[existingCountRow]] = await pool.query(
+            `SELECT COUNT(*) AS cnt FROM option_chain_history WHERE symbol = ? AND expiry = ?`,
+            [symbol, expiry]
+        );
+        const existingCount = Number(existingCountRow?.cnt || 0);
+        const minExpected = isIndex(symbol) ? 50000 : 8000;
+        if (existingCount >= minExpected && !forceExpiry) {
+            console.log(`[${symbol}] ${expiry}: already in local MySQL (${existingCount.toLocaleString()} rows) — skipping`);
+            optionRows += existingCount;
+            continue;
+        }
+        if (existingCount > 0 && existingCount < minExpected) {
+            console.log(`[${symbol}] ${expiry}: partial (${existingCount} rows) — clearing to fetch cleanly`);
+            await pool.query(`DELETE FROM option_chain_history WHERE symbol = ? AND expiry = ?`, [symbol, expiry]);
+        }
+
         const winFrom = maxStr(from, addDays(expiry, -LOOKBACK_DAYS));
         const winTo = minStr(to, expiry);
         const r = spot.range(winFrom, winTo);
@@ -422,8 +440,12 @@ async function processSymbol(symbol, from, to, nStrikes, { spotOnly = false } = 
         let rowsThisExpiry = 0;
         for (const [strike, pair] of [...byStrike.entries()].sort((a, b) => a[0] - b[0])) {
             try {
-                const ce = pair.CE ? enrich(await fetchContractCandles(pair.CE, winFrom, winTo), { strike, right: "call", expiry, spot }) : [];
-                const pe = pair.PE ? enrich(await fetchContractCandles(pair.PE, winFrom, winTo), { strike, right: "put", expiry, spot }) : [];
+                const [rawCe, rawPe] = await Promise.all([
+                    pair.CE ? fetchContractCandles(pair.CE, winFrom, winTo) : Promise.resolve([]),
+                    pair.PE ? fetchContractCandles(pair.PE, winFrom, winTo) : Promise.resolve([]),
+                ]);
+                const ce = pair.CE ? enrich(rawCe, { strike, right: "call", expiry, spot }) : [];
+                const pe = pair.PE ? enrich(rawPe, { strike, right: "put", expiry, spot }) : [];
                 rowsThisExpiry += await storeStrikeRows(symbol, expiry, strike, ce, pe, strikes, nStrikes);
             } catch (err) {
                 failed.push({ expiry, strike, pair, winFrom, winTo, strikes, error: err.message });
@@ -438,8 +460,12 @@ async function processSymbol(symbol, from, to, nStrikes, { spotOnly = false } = 
     const stillFailed = [];
     for (const f of failed) {
         try {
-            const ce = f.pair.CE ? enrich(await fetchContractCandles(f.pair.CE, f.winFrom, f.winTo), { strike: f.strike, right: "call", expiry: f.expiry, spot }) : [];
-            const pe = f.pair.PE ? enrich(await fetchContractCandles(f.pair.PE, f.winFrom, f.winTo), { strike: f.strike, right: "put", expiry: f.expiry, spot }) : [];
+            const [rawCe, rawPe] = await Promise.all([
+                f.pair.CE ? fetchContractCandles(f.pair.CE, f.winFrom, f.winTo) : Promise.resolve([]),
+                f.pair.PE ? fetchContractCandles(f.pair.PE, f.winFrom, f.winTo) : Promise.resolve([]),
+            ]);
+            const ce = f.pair.CE ? enrich(rawCe, { strike: f.strike, right: "call", expiry: f.expiry, spot }) : [];
+            const pe = f.pair.PE ? enrich(rawPe, { strike: f.strike, right: "put", expiry: f.expiry, spot }) : [];
             optionRows += await storeStrikeRows(symbol, f.expiry, f.strike, ce, pe, f.strikes, nStrikes);
         } catch (err) {
             stillFailed.push(`${f.expiry}:${f.strike} ${err.message}`);
@@ -502,7 +528,7 @@ async function main() {
         const started = Date.now();
         archivalLocks.lock(symbol); // keeps services/autoUploadDaemon.js off this symbol until we've uploaded it
         try {
-            const res = await processSymbol(symbol, from, TO, nStrikes, { spotOnly });
+            const res = await processSymbol(symbol, from, TO, nStrikes, { spotOnly, forceExpiry: Boolean(flags["force-expiry"]) });
             if (!spotOnly) {
                 const dups = await duplicateCheck(symbol, from, TO);
                 if (dups) throw new Error(`${dups} duplicate (expiry,strike,date,time) groups found — not uploading`);

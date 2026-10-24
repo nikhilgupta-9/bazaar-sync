@@ -117,6 +117,39 @@ function liveDay(symbol, date, expiry) {
     });
 }
 
+/**
+ * Fast path: returns only the final in-session minute's snapshot { lastTime, rows }
+ * without materializing all 375 minutes into memory.
+ */
+function liveDayLatest(symbol, date, expiry) {
+    return cached(`latest|${symbol}|${date}|${expiry}`, date, async () => {
+        const [ticks] = await pool.query(
+            `SELECT strike, opt_right, tick_time, ltp, volume, oi
+             FROM live_option_ticks
+             WHERE underlying = ? AND tick_date = ? AND expiry = ? AND tick_time BETWEEN ? AND ?
+             ORDER BY tick_time ASC, id ASC`,
+            [symbol, date, expiry, SESSION_START, SESSION_END]
+        );
+        if (!ticks.length) return { lastTime: null, rows: [] };
+
+        const state = new Map();
+        let lastTime = ticks[ticks.length - 1].tick_time;
+        for (const t of ticks) {
+            const strike = Number(t.strike);
+            let row = state.get(strike);
+            if (!row) {
+                row = { strike, underlying_price: null, ce_ltp: null, ce_oi: null, ce_oi_change: null, ce_volume: null, pe_ltp: null, pe_oi: null, pe_oi_change: null, pe_volume: null };
+                state.set(strike, row);
+            }
+            const side = t.opt_right === "CE" ? "ce" : "pe";
+            if (t.ltp != null && Number(t.ltp) > 0) row[`${side}_ltp`] = Number(t.ltp);
+            if (t.oi != null) row[`${side}_oi`] = Number(t.oi);
+            if (t.volume != null) row[`${side}_volume`] = Number(t.volume);
+        }
+        return { lastTime, rows: [...state.values()].sort((a, b) => a.strike - b.strike) };
+    });
+}
+
 /** Map 'HH:MM:00' → real index LTP at that minute (carried forward). */
 function liveSpot(symbol, date) {
     return cached(`spot|${symbol}|${date}`, date, async () => {
@@ -153,4 +186,4 @@ function spotAtOrBefore(spotMap, minute) {
     return best;
 }
 
-module.exports = { liveExpiries, liveDay, liveSpot, spotAtOrBefore, SESSION_START, SESSION_END };
+module.exports = { liveExpiries, liveDay, liveDayLatest, liveSpot, spotAtOrBefore, SESSION_START, SESSION_END };

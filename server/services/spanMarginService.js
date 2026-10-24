@@ -223,12 +223,12 @@ async function calculateMargin({ symbol, spot, legs }) {
             missing.push(`${expiry} ${strike} ${type}`);
             continue;
         }
-        positions.push({ expiry, strike, type, qty: sign * units, units, opt });
+        positions.push({ expiry, strike, type, qty: sign * units, units, opt, index: positions.length });
     }
     if (missing.length) return { available: false, reason: `not in SPAN file: ${missing.join(", ")}`, missing, file: state.file };
 
     const shorts = positions.filter((p) => p.qty < 0);
-    if (!shorts.length) return { available: true, file: state.file, scanRisk: 0, calendarCharge: 0, exposure: 0, expiryDayExposure: 0, margin: 0, standaloneMargin: 0 };
+    if (!shorts.length) return { available: true, file: state.file, scanRisk: 0, calendarCharge: 0, exposure: 0, expiryDayExposure: 0, margin: 0, standaloneMargin: 0, perLeg: positions.map(() => 0) };
 
     // scan risk over the 16 NSE scenarios, whole basket together
     let scanRisk = 0;
@@ -264,13 +264,16 @@ async function calculateMargin({ symbol, spot, legs }) {
         if (isIndex && p.expiry === today) expiryDayExposure += notional * ELM_EXPIRY_DAY_INDEX;
     }
 
-    // what the short legs would block one by one (no hedge offset) — the "hedge benefit" baseline
-    let standaloneScan = 0;
-    for (const p of shorts) {
+    // what each short leg would block on its own (no hedge offset): the per-leg "Margin" column
+    // and the "hedge benefit" baseline. Long legs block nothing.
+    const perLeg = positions.map((p) => {
+        if (p.qty >= 0) return 0;
         let worst = 0;
         for (let s = 0; s < 16; s++) worst = Math.max(worst, p.opt.ra[s] * p.qty);
-        standaloneScan += worst;
-    }
+        const notional = (underlying || p.strike) * p.units;
+        const elm = notional * (isIndex ? ELM_INDEX : ELM_STOCK) + (isIndex && p.expiry === today ? notional * ELM_EXPIRY_DAY_INDEX : 0);
+        return Math.round((worst + elm) * 100) / 100;
+    });
 
     const r = (v) => Math.round(v * 100) / 100;
     return {
@@ -281,7 +284,9 @@ async function calculateMargin({ symbol, spot, legs }) {
         exposure: r(exposure),
         expiryDayExposure: r(expiryDayExposure),
         margin: r(scanRisk + calendarCharge + exposure + expiryDayExposure),
-        standaloneMargin: r(standaloneScan + exposure + expiryDayExposure),
+        standaloneMargin: r(perLeg.reduce((a, b) => a + b, 0)),
+        perLeg, // aligned with the request's legs
+
     };
 }
 
