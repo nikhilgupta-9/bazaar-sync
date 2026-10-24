@@ -87,18 +87,24 @@ export function calculateGreeks({ spot, strike, t, vol, right, r = RISK_FREE_RAT
 // expiry selector. Same manual-parsing approach as yearsToExpiry, so today
 // vs. expiry-day both show "0d" regardless of the time of day.
 export function daysUntilExpiry(expiryStr) {
-    const [year, month, day] = expiryStr.split("-").map(Number);
+    if (!expiryStr) return 0;
+    const cleanStr = String(expiryStr).slice(0, 10);
+    const [year, month, day] = cleanStr.split("-").map(Number);
+    if (!year || !month || !day) return 0;
     const expiryUtcMidnight = Date.UTC(year, month - 1, day);
     const now = new Date();
     const todayUtcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-    return Math.round((expiryUtcMidnight - todayUtcMidnight) / (24 * 60 * 60 * 1000));
+    return Math.max(0, Math.round((expiryUtcMidnight - todayUtcMidnight) / (24 * 60 * 60 * 1000)));
 }
 
 // `fromMs` defaults to the real clock (live Strategy Builder use), but can be
 // passed explicitly to price "as of" a historical instant instead — e.g. the
 // Simulator computing time-to-expiry as of the replayed minute, not now.
 export function yearsToExpiry(expiryStr, fromMs = Date.now()) {
-    const [year, month, day] = expiryStr.split("-").map(Number);
+    if (!expiryStr) return 1 / (365 * 24 * 4);
+    const cleanStr = String(expiryStr).slice(0, 10);
+    const [year, month, day] = cleanStr.split("-").map(Number);
+    if (!year || !month || !day) return 1 / (365 * 24 * 4);
     // IST is UTC+5:30; 15:30 IST = 10:00 UTC. Built via Date.UTC so this
     // doesn't depend on the browser's local timezone.
     const expiryUtcMs = Date.UTC(year, month - 1, day, 10, 0, 0);

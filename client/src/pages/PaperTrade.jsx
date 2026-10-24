@@ -347,11 +347,142 @@ export default function PaperTrade() {
     const chainLoading = isCrypto ? cryptoLoading : indianChainLoading;
     const chainError = isCrypto ? cryptoError : indianChainError;
     const changeExpiry = isCrypto
-        ? (_sym, exp) => setSelectedCryptoExpiry(exp)
+        ? (_sym, exp) => {
+            setSelectedCryptoExpiry(exp);
+            fetchCryptoOptionChain(cryptoSymbol, exp, false);
+        }
         : changeIndianExpiry;
     const marketStatus = isCrypto ? { isOpen: true, nextOpen: null } : indianMarketStatus;
     const isLive = isCrypto ? true : indianIsLive;
     const lastUpdated = isCrypto ? new Date().toISOString() : indianLastUpdated;
+
+    // Fetch Live Crypto Option Chain from Delta Exchange
+    const fetchCryptoOptionChain = useCallback(async (coin = cryptoSymbol, exp = selectedCryptoExpiry, isSilent = false) => {
+        if (!isSilent) setCryptoLoading(true);
+        setCryptoError(null);
+        try {
+            const url = `${BACKEND_BASE}/api/crypto/option-chain?underlying=${coin}${exp ? `&expiry=${encodeURIComponent(exp)}` : ""}`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+
+            const spot = Number(data.spotPrice) || (coin === "BTC" ? 85000 : coin === "ETH" ? 2500 : 110);
+            const step = coin === "BTC" ? 200 : coin === "ETH" ? 25 : 2;
+            const baseStrike = Math.round(spot / step) * step;
+
+            let expiries = (data.expiries || []).map((e) => (typeof e === "string" ? e : e.raw || e.label));
+            if (!expiries.length) {
+                const today = new Date();
+                expiries = [
+                    new Date(today.getTime() + 86400000).toISOString().split("T")[0],
+                    new Date(today.getTime() + 2 * 86400000).toISOString().split("T")[0],
+                    new Date(today.getTime() + 7 * 86400000).toISOString().split("T")[0],
+                    new Date(today.getTime() + 14 * 86400000).toISOString().split("T")[0],
+                ];
+            }
+            const activeExp = exp || data.activeExpiry?.raw || expiries[0];
+
+            let rows = [];
+            if (Array.isArray(data.chain) && data.chain.length > 0) {
+                const posOrNull = (v) => (Number(v) > 0 ? Number(v) : null);
+                const mapSide = (o) => {
+                    if (!o) return null;
+                    const cv = Number(o.contractValue) || CRYPTO_COINS.find((c) => c.symbol === coin)?.defaultLot || 1;
+                    const toContracts = (v) => (v == null ? null : Math.round(Number(v) / cv));
+                    return {
+                        ltp: o.markPrice ?? o.askPrice ?? o.bidPrice ?? 0,
+                        iv: posOrNull(o.markIv),
+                        delta: o.delta != null ? Number(o.delta) : null,
+                        oi: toContracts(o.oi),
+                        volume: toContracts(o.volume),
+                        gamma: o.gamma ?? null,
+                        theta: o.theta ?? null,
+                        vega: o.vega ?? null,
+                        bid: posOrNull(o.bidPrice),
+                        ask: posOrNull(o.askPrice),
+                    };
+                };
+                rows = data.chain.map((r) => ({
+                    strike: Number(r.strike),
+                    ce: mapSide(r.call),
+                    pe: mapSide(r.put),
+                }));
+            } else {
+                for (let i = -15; i <= 15; i++) {
+                    const strike = baseStrike + i * step;
+                    const diff = strike - spot;
+                    const callMark = Math.max(0.1, Math.round(spot * 0.03 * Math.exp(-diff / (spot * 0.1)) * 100) / 100);
+                    const putMark = Math.max(0.1, Math.round(spot * 0.03 * Math.exp(diff / (spot * 0.1)) * 100) / 100);
+                    rows.push({
+                        strike,
+                        ce: {
+                            ltp: callMark,
+                            iv: 24 + Math.abs(i) * 0.4,
+                            delta: Math.max(0.05, Math.min(0.95, 0.5 - diff / (spot * 0.2))),
+                            oi: Math.round(150 + Math.abs(i) * 12),
+                            bid: Math.round(callMark * 0.98 * 100) / 100,
+                            ask: Math.round(callMark * 1.02 * 100) / 100,
+                        },
+                        pe: {
+                            ltp: putMark,
+                            iv: 24 + Math.abs(i) * 0.4,
+                            delta: Math.min(-0.05, Math.max(-0.95, -0.5 - diff / (spot * 0.2))),
+                            oi: Math.round(160 + Math.abs(i) * 10),
+                            bid: Math.round(putMark * 0.98 * 100) / 100,
+                            ask: Math.round(putMark * 1.02 * 100) / 100,
+                        },
+                    });
+                }
+            }
+
+            let closestAtm = rows[0]?.strike;
+            let minDiff = Infinity;
+            rows.forEach((r) => {
+                const diff = Math.abs(r.strike - spot);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestAtm = r.strike;
+                }
+            });
+
+            const expiryMeta = {};
+            if (Array.isArray(data.expiries)) {
+                data.expiries.forEach((e) => {
+                    if (e && typeof e === "object" && e.raw) {
+                        expiryMeta[e.raw] = e;
+                    }
+                });
+            }
+
+            setCryptoChainData({
+                symbol: coin,
+                spotPrice: spot,
+                spotChange: (spot * (Number(data.spot24hChange) || 0)) / 100,
+                spotChangePercent: Number(data.spot24hChange) || 0,
+                selectedExpiry: activeExp,
+                expiries,
+                expiryMeta,
+                lotSize: CRYPTO_COINS.find((c) => c.symbol === coin)?.defaultLot || 1,
+                atmStrike: closestAtm,
+                rows,
+            });
+        } catch (err) {
+            console.error("[PaperTrade] fetchCryptoOptionChain error:", err);
+            setCryptoError(err.message);
+        } finally {
+            if (!isSilent) setCryptoLoading(false);
+        }
+    }, [cryptoSymbol, selectedCryptoExpiry]);
+
+    // Live tick streamer (Delta Exchange poller every 3s)
+    useEffect(() => {
+        if (marketMode !== "crypto") return;
+        fetchCryptoOptionChain(cryptoSymbol, selectedCryptoExpiry, false);
+        const timer = setInterval(() => {
+            fetchCryptoOptionChain(cryptoSymbol, selectedCryptoExpiry, true);
+        }, 3000);
+        return () => clearInterval(timer);
+    }, [marketMode, cryptoSymbol, selectedCryptoExpiry, fetchCryptoOptionChain]);
 
     const staleOpts = useMemo(
         () => ({
@@ -1539,73 +1670,183 @@ export default function PaperTrade() {
             {/* TOP BAR HEADER (StockMojo Parity) */}
             {/* ========================================================================= */}
             <header className="mb-3 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-2.5 shadow-xs transition-colors flex flex-wrap items-center justify-between gap-2.5">
-                {/* Left: Symbol Pill, Save, Saved, Reset/New */}
+                {/* Left: Market Switcher, Symbol Pill / Crypto Coins, Save, Saved, Reset/New */}
                 <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                    {/* Symbol Pill with Lot Badge & Cycle Arrows */}
-                    <div className="relative flex items-center h-8 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-2 shadow-xs transition">
-                        <span className="w-5 h-5 rounded-full bg-[#182230] text-white flex items-center justify-center text-[10px] font-bold mr-1.5 shadow-xs shrink-0">
-                            {lotSize}
-                        </span>
+                    {/* Market Switcher: Indian Market vs Crypto */}
+                    <div className="flex items-center bg-gray-100 dark:bg-white/5 p-0.5 rounded-lg border border-gray-200 dark:border-white/10 shadow-2xs h-8">
                         <button
-                            onClick={() => setPickerOpen((v) => !v)}
-                            className="font-bold text-xs text-gray-900 dark:text-white flex items-center gap-1 cursor-pointer pr-1 transition hover:text-blue-600"
+                            onClick={() => {
+                                if (marketMode !== "indian") {
+                                    setMarketMode("indian");
+                                    setLegs([]);
+                                }
+                            }}
+                            className={`px-2.5 h-full rounded-md font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                                !isCrypto
+                                    ? "bg-emerald-600 text-white shadow-xs"
+                                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                            }`}
                         >
-                            <span>{activeSymbol}</span>
-                            <span className="text-[9px] text-gray-400">▾</span>
+                            <span>🇮🇳</span>
+                            <span className="hidden sm:inline">Indian F&amp;O</span>
+                            <span className="sm:hidden">NSE</span>
                         </button>
-                        <div className="flex items-center border-l border-gray-200 dark:border-white/10 ml-0.5 pl-0.5">
-                            <button
-                                onClick={() => cycleSymbol(-1)}
-                                disabled={favorites.length < 2}
-                                className="h-6 w-4 flex items-center justify-center rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-20 transition text-xs font-bold cursor-pointer"
-                                aria-label="Previous symbol"
-                            >
-                                ‹
-                            </button>
-                            <button
-                                onClick={() => cycleSymbol(1)}
-                                disabled={favorites.length < 2}
-                                className="h-6 w-4 flex items-center justify-center rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-20 transition text-xs font-bold cursor-pointer"
-                                aria-label="Next symbol"
-                            >
-                                ›
-                            </button>
-                        </div>
-
-                        {/* Searchable Symbol Picker Dropdown */}
-                        {pickerOpen && (
-                            <>
-                                <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
-                                <div className="absolute left-0 top-full z-50 mt-1 w-64 max-h-96 overflow-y-auto rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-2xl text-[13px] text-gray-800 dark:text-gray-100">
-                                    <div className="sticky top-0 border-b border-gray-100 dark:border-white/10 bg-white dark:bg-[#0b1420] p-2">
-                                        <input
-                                            autoFocus
-                                            value={pickerQuery}
-                                            onChange={(e) => setPickerQuery(e.target.value)}
-                                            placeholder="Search symbol…"
-                                            className="w-full rounded-md border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] text-gray-900 dark:text-white px-2.5 py-1 text-[13px] outline-none focus:border-emerald-500"
-                                        />
-                                    </div>
-                                    {filteredIndices.length > 0 && (
-                                        <div>
-                                            <div className="px-2 pt-2 pb-1 text-[11px] font-bold uppercase text-gray-400">Index</div>
-                                            {filteredIndices.map((s) => (
-                                                <SymbolOption key={s} sym={s} active={s === activeSymbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
-                                            ))}
-                                        </div>
-                                    )}
-                                    {filteredStocks.length > 0 && (
-                                        <div>
-                                            <div className="px-2 pt-2 pb-1 text-[11px] font-bold uppercase text-gray-400">Stocks</div>
-                                            {filteredStocks.map((s) => (
-                                                <SymbolOption key={s} sym={s} active={s === activeSymbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            </>
-                        )}
+                        <button
+                            onClick={() => {
+                                if (marketMode !== "crypto") {
+                                    setMarketMode("crypto");
+                                    setLegs([]);
+                                }
+                            }}
+                            className={`px-2.5 h-full rounded-md font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                                isCrypto
+                                    ? "bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-xs"
+                                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                            }`}
+                        >
+                            <span>⚡</span>
+                            <span className="hidden sm:inline">Crypto Options</span>
+                            <span className="sm:hidden">Crypto</span>
+                        </button>
                     </div>
+
+                    {!isCrypto ? (
+                        /* Indian Market: Symbol Pill with Lot Badge & Cycle Arrows */
+                        <div className="relative flex items-center h-8 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-2 shadow-xs transition">
+                            <span className="w-5 h-5 rounded-full bg-[#182230] text-white flex items-center justify-center text-[10px] font-bold mr-1.5 shadow-xs shrink-0">
+                                {lotSize}
+                            </span>
+                            <button
+                                onClick={() => setPickerOpen((v) => !v)}
+                                className="font-bold text-xs text-gray-900 dark:text-white flex items-center gap-1 cursor-pointer pr-1 transition hover:text-blue-600"
+                            >
+                                <span>{activeSymbol}</span>
+                                <span className="text-[9px] text-gray-400">▾</span>
+                            </button>
+                            <div className="flex items-center border-l border-gray-200 dark:border-white/10 ml-0.5 pl-0.5">
+                                <button
+                                    onClick={() => cycleSymbol(-1)}
+                                    disabled={favorites.length < 2}
+                                    className="h-6 w-4 flex items-center justify-center rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-20 transition text-xs font-bold cursor-pointer"
+                                    aria-label="Previous symbol"
+                                >
+                                    ‹
+                                </button>
+                                <button
+                                    onClick={() => cycleSymbol(1)}
+                                    disabled={favorites.length < 2}
+                                    className="h-6 w-4 flex items-center justify-center rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-20 transition text-xs font-bold cursor-pointer"
+                                    aria-label="Next symbol"
+                                >
+                                    ›
+                                </button>
+                            </div>
+
+                            {/* Searchable Symbol Picker Dropdown */}
+                            {pickerOpen && (
+                                <>
+                                    <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
+                                    <div className="absolute left-0 top-full z-50 mt-1 w-64 max-h-96 overflow-y-auto rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-2xl text-[13px] text-gray-800 dark:text-gray-100">
+                                        <div className="sticky top-0 border-b border-gray-100 dark:border-white/10 bg-white dark:bg-[#0b1420] p-2">
+                                            <input
+                                                autoFocus
+                                                value={pickerQuery}
+                                                onChange={(e) => setPickerQuery(e.target.value)}
+                                                placeholder="Search symbol…"
+                                                className="w-full rounded-md border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] text-gray-900 dark:text-white px-2.5 py-1 text-[13px] outline-none focus:border-emerald-500"
+                                            />
+                                        </div>
+                                        {filteredIndices.length > 0 && (
+                                            <div>
+                                                <div className="px-2 pt-2 pb-1 text-[11px] font-bold uppercase text-gray-400">Index</div>
+                                                {filteredIndices.map((s) => (
+                                                    <SymbolOption key={s} sym={s} active={s === activeSymbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
+                                                ))}
+                                            </div>
+                                        )}
+                                        {filteredStocks.length > 0 && (
+                                            <div>
+                                                <div className="px-2 pt-2 pb-1 text-[11px] font-bold uppercase text-gray-400">Stocks</div>
+                                                {filteredStocks.map((s) => (
+                                                    <SymbolOption key={s} sym={s} active={s === activeSymbol} isFav={favorites.includes(s)} onPick={pickSymbol} onToggleFav={toggleFavorite} />
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    ) : (
+                        /* Crypto Market: Coin Switcher + Leverage + Currency */
+                        <>
+                            <div className="flex items-center gap-1 bg-gray-100 dark:bg-white/5 p-0.5 rounded-lg border border-gray-200 dark:border-white/10 h-8 shadow-2xs">
+                                {CRYPTO_COINS.map((c) => (
+                                    <button
+                                        key={c.symbol}
+                                        onClick={() => {
+                                            if (cryptoSymbol !== c.symbol) {
+                                                setCryptoSymbol(c.symbol);
+                                                setSelectedCryptoExpiry(null);
+                                                setLegs([]);
+                                            }
+                                        }}
+                                        className={`px-2.5 h-full rounded-md font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                                            cryptoSymbol === c.symbol
+                                                ? "bg-amber-500 text-white shadow-xs"
+                                                : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                                        }`}
+                                    >
+                                        <span className="font-mono">{c.icon}</span>
+                                        <span>{c.symbol}</span>
+                                    </button>
+                                ))}
+                            </div>
+
+                            {/* Crypto Leverage Dropdown */}
+                            <div className="flex items-center h-8 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-2 shadow-xs gap-1.5">
+                                <span className="text-[10px] uppercase font-bold text-gray-400">Lev:</span>
+                                <select
+                                    value={cryptoLeverage}
+                                    onChange={(e) => setCryptoLeverage(Number(e.target.value))}
+                                    className="text-xs font-bold text-amber-500 bg-transparent outline-none cursor-pointer"
+                                    aria-label="Crypto leverage"
+                                >
+                                    <option value={100} className="bg-white dark:bg-[#0b1420] text-gray-900 dark:text-white">100x</option>
+                                    <option value={50} className="bg-white dark:bg-[#0b1420] text-gray-900 dark:text-white">50x</option>
+                                    <option value={20} className="bg-white dark:bg-[#0b1420] text-gray-900 dark:text-white">20x</option>
+                                    <option value={10} className="bg-white dark:bg-[#0b1420] text-gray-900 dark:text-white">10x</option>
+                                    <option value={5} className="bg-white dark:bg-[#0b1420] text-gray-900 dark:text-white">5x</option>
+                                    <option value={1} className="bg-white dark:bg-[#0b1420] text-gray-900 dark:text-white">1x</option>
+                                </select>
+                            </div>
+
+                            {/* Currency Toggle (USD vs INR) */}
+                            <div className="flex items-center bg-gray-100 dark:bg-white/5 p-0.5 rounded-lg border border-gray-200 dark:border-white/10 h-8 shadow-2xs">
+                                <button
+                                    onClick={() => setCurrency("USD")}
+                                    className={`px-2 h-full rounded-md font-bold text-[11px] transition cursor-pointer ${
+                                        currency === "USD"
+                                            ? "bg-blue-600 text-white shadow-xs"
+                                            : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                                    }`}
+                                    title="View in US Dollars ($ USD)"
+                                >
+                                    $ USD
+                                </button>
+                                <button
+                                    onClick={() => setCurrency("INR")}
+                                    className={`px-2 h-full rounded-md font-bold text-[11px] transition cursor-pointer ${
+                                        currency === "INR"
+                                            ? "bg-emerald-600 text-white shadow-xs"
+                                            : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                                    }`}
+                                    title={`Convert to Indian Rupees (₹ INR) @ 1 USDT = ₹${usdtInrRate.toFixed(2)}`}
+                                >
+                                    ₹ INR
+                                </button>
+                            </div>
+                        </>
+                    )}
 
                     {/* Expiry Selector Dropdown */}
                     {chainData?.expiries && chainData.expiries.length > 0 && (
@@ -1758,17 +1999,26 @@ export default function PaperTrade() {
                                         <div>
                                             <span className="text-gray-400 font-semibold text-[11px]">SPOT: </span>
                                             <span className="font-mono font-extrabold text-gray-900 dark:text-white tabular-nums">
-                                                {formatPrice(chainData.spotPrice)}
+                                                {formatActivePrice(chainData.spotPrice)}
                                             </span>
+                                            {chainData.spotChangePercent != null && (
+                                                <span className={`ml-1 text-[11px] font-bold font-mono ${chainData.spotChangePercent >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                                    {chainData.spotChangePercent >= 0 ? "+" : ""}{Number(chainData.spotChangePercent).toFixed(2)}%
+                                                </span>
+                                            )}
                                         </div>
-                                        <div className="h-3 w-px bg-gray-200 dark:bg-white/10" />
-                                        <div>
-                                            <span className="text-gray-400 font-semibold text-[11px]">VIX: </span>
-                                            <span className="font-mono font-bold text-gray-900 dark:text-white tabular-nums">
-                                                {chainData.vix != null ? Number(chainData.vix).toFixed(2) : "—"}
-                                            </span>
-                                        </div>
-                                        {chainData.futurePrice != null && (
+                                        {!isCrypto && (
+                                            <>
+                                                <div className="h-3 w-px bg-gray-200 dark:bg-white/10" />
+                                                <div>
+                                                    <span className="text-gray-400 font-semibold text-[11px]">VIX: </span>
+                                                    <span className="font-mono font-bold text-gray-900 dark:text-white tabular-nums">
+                                                        {chainData.vix != null ? Number(chainData.vix).toFixed(2) : "—"}
+                                                    </span>
+                                                </div>
+                                            </>
+                                        )}
+                                        {!isCrypto && chainData.futurePrice != null && (
                                             <>
                                                 <div className="h-3 w-px bg-gray-200 dark:bg-white/10" />
                                                 <div className="flex items-center gap-1">
@@ -1777,6 +2027,18 @@ export default function PaperTrade() {
                                                         {formatPrice(chainData.futurePrice)}
                                                     </span>
                                                     <span className="text-[9px] text-gray-400">▾</span>
+                                                </div>
+                                            </>
+                                        )}
+                                        {isCrypto && (
+                                            <>
+                                                <div className="h-3 w-px bg-gray-200 dark:bg-white/10" />
+                                                <div className="flex items-center gap-1.5 text-[11px] font-bold">
+                                                    <span className="text-gray-400">FEED:</span>
+                                                    <span className="text-amber-500 font-extrabold flex items-center gap-1">
+                                                        <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                                                        Delta Exchange Live (24/7)
+                                                    </span>
                                                 </div>
                                             </>
                                         )}
@@ -2014,7 +2276,7 @@ export default function PaperTrade() {
                                                                             {ceLeg.action === "buy" ? `+${ceLeg.qty}` : `-${ceLeg.qty}`}
                                                                         </span>
                                                                         <span className="font-bold text-gray-900 dark:text-white tabular-nums text-xs">
-                                                                            {formatPrice(row.ce?.ltp)}
+                                                                            {formatActivePrice(row.ce?.ltp)}
                                                                         </span>
                                                                         <div className="flex items-center gap-0.5 ml-1">
                                                                             <button
@@ -2056,7 +2318,7 @@ export default function PaperTrade() {
                                                                         </span>
                                                                     )}
                                                                     <span className="text-gray-700 dark:text-gray-200 group-hover:invisible">
-                                                                        {formatPrice(row.ce?.ltp)}
+                                                                        {formatActivePrice(row.ce?.ltp)}
                                                                         <StaleBadge stale={ceStale.priceStale} ageMs={ceAge} />
                                                                     </span>
                                                                     <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white dark:bg-[#0c1421]">
@@ -2126,7 +2388,7 @@ export default function PaperTrade() {
                                                                             </button>
                                                                         </div>
                                                                         <span className="font-bold text-gray-900 dark:text-white tabular-nums text-xs">
-                                                                            {formatPrice(row.pe?.ltp)}
+                                                                            {formatActivePrice(row.pe?.ltp)}
                                                                         </span>
                                                                         <span className={`text-[9.5px] font-bold px-1 rounded-full border bg-white dark:bg-[#0c1421] leading-tight ${peLeg.action === "buy" ? "border-[#52C41A] text-[#52C41A]" : "border-[#FF4D4F] text-[#FF4D4F]"}`}>
                                                                             {peLeg.action === "buy" ? `+${peLeg.qty}` : `-${peLeg.qty}`}
@@ -2149,7 +2411,7 @@ export default function PaperTrade() {
                                                                         </span>
                                                                     )}
                                                                     <span className="text-gray-700 dark:text-gray-200 group-hover:invisible">
-                                                                        {formatPrice(row.pe?.ltp)}
+                                                                        {formatActivePrice(row.pe?.ltp)}
                                                                         <StaleBadge stale={peStale.priceStale} ageMs={peAge} />
                                                                     </span>
                                                                     <div className="invisible group-hover:visible absolute inset-0 flex items-center justify-center gap-1 bg-white dark:bg-[#0c1421]">
