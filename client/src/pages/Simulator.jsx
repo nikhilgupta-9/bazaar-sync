@@ -41,6 +41,16 @@ import CandlestickChart from "../components/CandlestickChart";
 import StrategyChart from "../components/StrategyChart";
 import { SlCalender } from "react-icons/sl";
 import { FiSettings, FiTrash2, FiRefreshCw, FiArchive, FiChevronLeft, FiChevronRight, FiChevronsLeft, FiChevronsRight, FiRotateCcw } from "react-icons/fi";
+import { useSpanMargin } from "../hooks/useSpanMargin";
+
+const DEFAULT_INDEX_LOT_SIZES = {
+  NIFTY: 50,
+  BANKNIFTY: 15,
+  FINNIFTY: 25,
+  MIDCPNIFTY: 50,
+  SENSEX: 10,
+  BANKEX: 15,
+};
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -928,12 +938,23 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
   // Legs saved/built while the chain's lot size was unknown carry no
   // lotSize — every ₹ figure (P&L, margin) would silently be per-share
-  // (65x too small for NIFTY). Stamp the real lot size once it's known.
-  const knownLotSize = chainData?.lotSize ?? liveChain?.lotSize ?? null;
+  // (65x too small for NIFTY). Stamp the real lot size once it's known,
+  // falling back to standard index lot sizes (50 for NIFTY, 15 for BANKNIFTY).
+  const knownLotSize = chainData?.lotSize ?? liveChain?.lotSize ?? DEFAULT_INDEX_LOT_SIZES[symbol?.toUpperCase()] ?? 50;
   useEffect(() => {
-    if (!knownLotSize || !legs.some((l) => !l.lotSize)) return;
-    queueMicrotask(() => setLegs((prev) => prev.map((l) => (l.lotSize ? l : { ...l, lotSize: knownLotSize }))));
-  }, [knownLotSize, legs]);
+    if (!knownLotSize) return;
+    setLegs((prev) => {
+      let changed = false;
+      const next = prev.map((l) => {
+        if (!l.lotSize || (l.lotSize <= 1 && DEFAULT_INDEX_LOT_SIZES[symbol?.toUpperCase()])) {
+          changed = true;
+          return { ...l, lotSize: knownLotSize };
+        }
+        return l;
+      });
+      return changed ? next : prev;
+    });
+  }, [knownLotSize, symbol]);
 
   // Legs partitioned by the current simulated minute:
   // - enteredLegs: legs entered at or before currentTime (in-market)
@@ -1015,7 +1036,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
   function addLeg(row, right, action) {
     if (replayData) return; // legs lock once a replay has been run
-    const lotSize = chainData?.lotSize ?? liveChain?.lotSize;
+    const lotSize = knownLotSize;
     setLegs((prev) =>
       prev.length >= 6
         ? prev
@@ -1499,6 +1520,25 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   const displayVixChange = liveChain?.vixChange ?? chainData?.vixChange;
   const displayVixChangePct = liveChain?.vixChangePct ?? chainData?.vixChangePct;
 
+  // Real Exchange SPAN Margin (via server NSE SPAN calculation with local fallback)
+  const span = useSpanMargin(symbol, displaySpot, activeLegs);
+
+  const spanMarginByLegId = useMemo(() => {
+    if (!span?.perLeg || !activeLegs.length) return null;
+    const map = new Map();
+    activeLegs.forEach((leg, i) => {
+      if (span.perLeg[i] != null) map.set(leg.id, span.perLeg[i]);
+    });
+    return map;
+  }, [span, activeLegs]);
+
+  const getLegMargin = useCallback((leg) => {
+    if (leg.action === "buy") return 0;
+    if (spanMarginByLegId?.has(leg.id)) return spanMarginByLegId.get(leg.id);
+    const m = computeEstMargin([leg], displaySpot, symbol);
+    return m || 0;
+  }, [spanMarginByLegId, displaySpot, symbol]);
+
   // Scrolls only the chain table's own container, never the page — native
   // scrollIntoView({block:"center"}) walks up every scrollable ancestor
   // including the window, so on a tall page it was also yanking the whole
@@ -1734,6 +1774,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
         ? computePOP(curveData, displaySpot, atmIv, yearsRemaining)
         : null;
       const marginDet = computeMarginDetails(activeLegs, displaySpot, symbol);
+      if (span && span.margin != null) {
+        const debit = Math.max(0, -(marginDet.netPremium || 0));
+        marginDet.estMargin = span.margin;
+        marginDet.fundsRequired = Math.round((span.margin + debit) * 100) / 100;
+        marginDet.marginBenefit = Math.max(0, Math.round((span.standaloneMargin - span.margin) * 100) / 100);
+      }
       const marginVal = marginDet.fundsRequired || marginDet.estMargin || 0;
 
       return {
@@ -1763,6 +1809,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     currentTime,
     liveChain,
     symbol,
+    span,
   ]);
 
   // "Strategy P&L" must always track the position's real P&L — never the
@@ -2038,11 +2085,16 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                           </div>
                         </div>
                         <div className="mb-1.5 grid grid-cols-7 gap-1 text-center text-micro font-semibold text-gray-400 dark:text-gray-400">
-                          {WEEKDAYS.map((w) => <div key={w}>{w[0]}{w[1]}</div>)}
+                          {WEEKDAYS.map((w, idx) => (
+                            <div key={w} className={idx === 0 || idx === 6 ? "text-rose-500/80 dark:text-rose-400/80 font-bold" : ""}>
+                              {w[0]}{w[1]}
+                            </div>
+                          ))}
                         </div>
                         <div className="grid grid-cols-7 gap-1">
                           {calendarDays.map((cell, i) => {
                             const dateStr = ymdToStr(cell.y, cell.m, cell.day);
+                            const isWeekend = cell.inMonth && (new Date(Date.UTC(cell.y, cell.m - 1, cell.day)).getUTCDay() === 0 || new Date(Date.UTC(cell.y, cell.m - 1, cell.day)).getUTCDay() === 6);
                             const available = cell.inMonth && availableDateSet.has(dateStr);
                             const status = dateStatus[dateStr];
                             const optionOnly = status?.hasOptions && !status?.hasOhlcv;
@@ -2058,42 +2110,67 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 key={i}
                                 disabled={!available}
                                 onClick={() => pickCalendarDay(dateStr)}
-                                title={isSparse ? "Only one stored option snapshot — no minute-level scrubbing on this day" : ohlcvOnly ? "OHLCV minute data exists, but option-chain minute data is missing" : missingOhlcv ? "Option-chain minute data exists, but OHLCV minute data is missing" : undefined}
+                                title={
+                                  isWeekend
+                                    ? "Weekend — Market Closed (Off)"
+                                    : isSparse
+                                      ? "Only one stored option snapshot — no minute-level scrubbing on this day"
+                                      : ohlcvOnly
+                                        ? "OHLCV minute data exists, but option-chain minute data is missing"
+                                        : missingOhlcv
+                                          ? "Option-chain minute data exists, but OHLCV minute data is missing"
+                                          : isHoliday
+                                            ? "Exchange Holiday"
+                                            : undefined
+                                }
                                 className={`relative rounded-lg py-1.5 text-[12px] font-bold transition ${
                                   !cell.inMonth
                                     ? "text-gray-300 dark:text-gray-700 cursor-default"
                                     : isPending
                                       ? `bg-emerald-600 text-white ${isExpiry ? "ring-2 ring-emerald-400 ring-offset-1" : ""}`
                                       : isExpiry
-                                        ? "bg-emerald-500 text-white hover:bg-emerald-600"
-                                        : available
-                                          ? missingOhlcv
-                                            ? "bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 hover:bg-amber-200"
-                                            : "text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5"
-                                          : optionOnly
-                                            ? "bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-400 cursor-not-allowed"
-                                            : ohlcvOnly
-                                              ? "bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-400 cursor-not-allowed"
-                                              : "text-gray-300 dark:text-gray-700 cursor-not-allowed"
+                                        ? "bg-emerald-500 text-white hover:bg-emerald-600 ring-1 ring-emerald-400/60 shadow-2xs"
+                                        : isWeekend
+                                          ? "text-rose-400/60 dark:text-rose-500/50 bg-rose-50/30 dark:bg-rose-950/20 cursor-not-allowed border border-rose-100/50 dark:border-rose-900/20"
+                                          : available
+                                            ? missingOhlcv
+                                              ? "bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 hover:bg-amber-200"
+                                              : "text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5"
+                                            : optionOnly
+                                              ? "bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-400 cursor-not-allowed"
+                                              : ohlcvOnly
+                                                ? "bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-400 cursor-not-allowed"
+                                                : "text-gray-300 dark:text-gray-700 cursor-not-allowed"
                                 }`}
                               >
                                 {cell.day}
-                                {isSparse && !isPending && (
+                                {isWeekend && !isPending && (
+                                  <span className="absolute -top-1 -right-0.5 rounded px-0.5 text-[7px] font-extrabold uppercase text-rose-500/90 dark:text-rose-400/90 bg-rose-100/80 dark:bg-rose-950/80 border border-rose-200/60 dark:border-rose-900/40 leading-none">
+                                    OFF
+                                  </span>
+                                )}
+                                {isExpiry && !isPending && (
+                                  <span className="absolute -top-1 -right-0.5 rounded px-0.5 text-[7px] font-extrabold uppercase text-emerald-800 dark:text-emerald-200 bg-emerald-100 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-800 leading-none shadow-2xs">
+                                    EXP
+                                  </span>
+                                )}
+                                {isSparse && !isPending && !isExpiry && !isWeekend && (
                                   <span className="absolute top-0 right-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />
                                 )}
                                 {missingOhlcv && !isPending && <span className="absolute bottom-0 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-orange-500" />}
                                 {ohlcvOnly && <span className="absolute bottom-0 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-sky-500" />}
-                                {isHoliday && (
+                                {isHoliday && !isWeekend && (
                                   <span className="absolute bottom-0.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-gray-400" />
                                 )}
                               </button>
                             );
                           })}
                         </div>
-                        <div className="mt-3 flex items-center gap-3 text-micro text-gray-500 dark:text-gray-400">
-                          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Expiry</span>
+                        <div className="mt-3 flex flex-wrap items-center gap-3 text-micro text-gray-500 dark:text-gray-400">
+                          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Expiry (EXP)</span>
+                          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-rose-500" /> Weekend Off (OFF)</span>
                           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-gray-400" /> Holiday</span>
-                          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-500" /> EOD</span>
+                          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-500" /> EOD Only</span>
                         </div>
                       </div>
 
@@ -2307,13 +2384,16 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                           <button
                             key={exp}
                             onClick={() => selectExpiry(exp)}
-                            className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold transition-all duration-200 ${
+                            className={`shrink-0 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all duration-200 cursor-pointer ${
                               isSelected
-                                ? "bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md shadow-emerald-600/20 scale-[1.02]"
-                                : "border border-gray-200 dark:border-white/10 bg-surface-muted text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
+                                ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/30 ring-2 ring-emerald-500 ring-offset-1 dark:ring-offset-[#070e17] scale-[1.03]"
+                                : "border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
                             }`}
                           >
-                            {formatExpiryShort(exp)} <span className={`text-micro font-normal ${isSelected ? "text-emerald-100" : "text-gray-400"}`}>({dte}d)</span>
+                            <span>{formatExpiryShort(exp)}</span>{" "}
+                            <span className={`text-[10px] font-semibold ${isSelected ? "text-emerald-100 font-bold" : "text-gray-400 dark:text-gray-500"}`}>
+                              ({dte}d)
+                            </span>
                           </button>
                         );
                       })}
@@ -2322,10 +2402,10 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         <div className="relative">
                           <button
                             onClick={() => setExpiryDropdownOpen((v) => !v)}
-                            className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold transition-all duration-200 ${
+                            className={`shrink-0 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all duration-200 cursor-pointer ${
                               !chainData.expiries.slice(0, 3).includes(chainData.selectedExpiry)
-                                ? "bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md shadow-emerald-600/20"
-                                : "border border-gray-200 dark:border-white/10 bg-surface-muted text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
+                                ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/30 ring-2 ring-emerald-500 ring-offset-1 dark:ring-offset-[#070e17]"
+                                : "border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5"
                             }`}
                           >
                             {!chainData.expiries.slice(0, 3).includes(chainData.selectedExpiry)
@@ -2922,6 +3002,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         expectedMove={expectedMove}
                         atmIv={atmIv}
                         yearsRemaining={yearsRemaining}
+                        oiData={displayRows}
                       />
                     ) : upcomingLegs.length > 0 ? (
                       <div className="py-16 text-center text-xs text-gray-500 dark:text-gray-400">
@@ -3044,7 +3125,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         <span className="ml-1 text-gray-400 dark:text-gray-500">|</span>
                         <span className="ml-1 text-gray-500 dark:text-gray-400 font-medium">Qty:</span>
                         <span className="font-bold tabular-nums text-gray-800 dark:text-gray-200">
-                          {(commonLots ?? 1) * (legs[0]?.lotSize || 65)}
+                          {(commonLots ?? 1) * (legs[0]?.lotSize || knownLotSize)}
                         </span>
                       </div>
                     </div>
@@ -3085,6 +3166,9 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         <th className="px-3 py-2 text-center font-semibold text-label w-14">
                           Lots
                         </th>
+                        <th className="px-3 py-2 text-center font-semibold text-label w-16">
+                          Lot Size
+                        </th>
                         <th className="px-3 py-2 text-left font-semibold text-label">
                           Expiry
                         </th>
@@ -3103,6 +3187,9 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                         <th className="px-3 py-2 text-right font-semibold text-label">
                           P&L
                         </th>
+                        <th className="px-3 py-2 text-right font-semibold text-label">
+                          Margin
+                        </th>
                         <th className="px-3 py-2 text-center font-semibold text-label">
                           SL/TG
                         </th>
@@ -3114,7 +3201,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                     <tbody className="divide-y divide-gray-100 dark:divide-gray-800 font-medium">
                       {orderedLegs.length === 0 ? (
                         <tr>
-                          <td colSpan={11} className="px-4 py-8 text-center text-xs text-gray-400 dark:text-gray-500">
+                          <td colSpan={13} className="px-4 py-8 text-center text-xs text-gray-400 dark:text-gray-500">
                             {upcomingLegs.length > 0 ? (
                               <div className="flex flex-col items-center justify-center gap-2.5">
                                 <p className="font-semibold text-gray-700 dark:text-gray-300">
@@ -3204,6 +3291,9 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 {leg.qty}
                               </span>
                             </td>
+                            <td className="px-3 py-2 text-center font-bold tabular-nums text-gray-700 dark:text-gray-300 font-mono text-xs">
+                              {leg.lotSize || knownLotSize}
+                            </td>
                             <td className="px-3 py-2 text-left">
                               <select
                                 value={leg.expiry || ""}
@@ -3280,6 +3370,14 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                               className={`px-3 py-2 text-right font-bold font-mono tabular-nums ${livePnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}
                             >
                               {livePnl != null ? `${livePnl >= 0 ? "+" : ""}${formatPrice(livePnl)}` : "+0"}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300 font-mono text-xs">
+                              {leg.action === "sell"
+                                ? (() => {
+                                    const m = getLegMargin(leg);
+                                    return m >= 100000 ? `${(m / 100000).toFixed(2)}L` : formatPrice(m);
+                                  })()
+                                : <span className="text-gray-400 dark:text-gray-600">—</span>}
                             </td>
                             <td className="px-3 py-2 text-center relative">
                               {exited ? (

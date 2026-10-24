@@ -535,6 +535,41 @@ export default function PayoffChart({
                     </ComposedChart>
                 </ResponsiveContainer>
             </div>
+
+            {/* Bottom Real-Time Metric Strip (StockMojo style) */}
+            <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2.5 px-3 py-2 rounded-xl bg-gray-50/80 dark:bg-[#070e17]/80 border border-gray-200/80 dark:border-white/5 text-[11px]">
+                <div className="flex items-center gap-3.5">
+                    <span className="flex items-center gap-1.5 font-bold text-gray-700 dark:text-gray-300">
+                        <span className="w-2.5 h-1.5 rounded-xs bg-emerald-500 inline-block" />
+                        Expiry P&amp;L
+                    </span>
+                    {hasToday && (
+                        <span className="flex items-center gap-1.5 font-bold text-blue-600 dark:text-blue-400">
+                            <span className="w-3 border-t-2 border-dashed border-blue-500 inline-block" />
+                            Today P&amp;L
+                        </span>
+                    )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-4 text-xs font-mono font-bold">
+                    {spotExpiryPnl != null && (
+                        <div className="flex items-center gap-1.5">
+                            <span className="text-gray-500 dark:text-gray-400 font-sans font-medium text-[11px]">P&amp;L at spot (Expiry):</span>
+                            <span className={`tabular-nums ${spotExpiryPnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                {spotExpiryPnl >= 0 ? "+" : ""}{formatPrice(spotExpiryPnl)}
+                            </span>
+                        </div>
+                    )}
+                    {spotTodayPnl != null && (
+                        <div className="flex items-center gap-1.5">
+                            <span className="text-gray-500 dark:text-gray-400 font-sans font-medium text-[11px]">P&amp;L at spot (Today):</span>
+                            <span className={`tabular-nums ${spotTodayPnl >= 0 ? "text-blue-600 dark:text-blue-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                {spotTodayPnl >= 0 ? "+" : ""}{formatPrice(spotTodayPnl)}
+                            </span>
+                        </div>
+                    )}
+                </div>
+            </div>
         </div>
     );
 }

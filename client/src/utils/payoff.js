@@ -475,9 +475,9 @@ export function computeMarginDetails(legs, spot, symbol, options = {}) {
     const peTotal = spreadMargins.PE + unhedgedPe;
 
     const crossOverFactor = anyHedgeMatched ? 0.08 : 0.15;
-    const totalEstMargin = (ceTotal > 0 || peTotal > 0)
+    const totalEstMargin = anyHedgeMatched
         ? Math.max(ceTotal, peTotal) + Math.min(ceTotal, peTotal) * crossOverFactor
-        : 0;
+        : totalNakedMargin;
 
     const netPremium = premiumReceived - premiumPaid;
     const marginBenefit = anyHedgeMatched ? Math.max(0, totalNakedMargin - totalEstMargin) : 0;
