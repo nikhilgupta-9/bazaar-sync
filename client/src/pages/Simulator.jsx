@@ -395,36 +395,69 @@ function istWallClockToUtcMs(dateStr, timeStr) {
   return Date.UTC(y, m - 1, d, hh, mm, ss || 0) - 5.5 * 60 * 60 * 1000;
 }
 
-function legFromRow(row, right, action, expiry, lotSize, time) {
+function legFromRow(row, right, action, expiry, lotSize, date, time) {
   const side = right === "CE" ? row.ce : row.pe;
   return {
     id: ++legIdCounter,
     action,
     type: right,
     strike: row.strike,
-    premium: side.ltp,
+    premium: side?.ltp ?? 0,
     qty: 1,
     lotSize,
-    iv: side.iv,
-    delta: side.delta,
-    gamma: side.gamma,
-    theta: side.theta,
-    vega: side.vega,
+    iv: side?.iv,
+    delta: side?.delta,
+    gamma: side?.gamma,
+    theta: side?.theta,
+    vega: side?.vega,
     expiry, // which expiry this leg's premium/greeks came from — see payoff.js
-    time, // the historical trade_time this leg's LTP/Greeks snapshot came from — shown in Upcoming Positions
+    date, // trade_date when entered (e.g. "2026-10-23")
+    time, // trade_time when entered (e.g. "09:15:00")
     active: true, // unchecked in the Positions table = kept but excluded from payoff/metrics
   };
 }
 
-function isLegUpcoming(leg, currTime) {
-  if (!leg || !leg.time || !currTime) return false;
-  return currTime < leg.time;
+export function isLegUpcoming(leg, currDate, currTime) {
+  if (!leg) return false;
+
+  // Support both isLegUpcoming(leg, currDate, currTime) and legacy isLegUpcoming(leg, currTime)
+  let actualDate = currDate;
+  let actualTime = currTime;
+  if (currTime === undefined && typeof currDate === "string" && currDate.includes(":")) {
+    actualDate = null;
+    actualTime = currDate;
+  }
+
+  const legDate = leg.date;
+  const legTime = leg.time;
+
+  // 1. If leg has entry date and current simulator date is set (YYYY-MM-DD format):
+  if (legDate && actualDate && actualDate.length === 10 && legDate.length === 10) {
+    if (actualDate < legDate) {
+      // Current simulator date is before entry date -> Future trade -> UPCOMING!
+      return true;
+    }
+    if (actualDate > legDate) {
+      // Current simulator date is after entry date -> Already entered in past -> NOT upcoming!
+      return false;
+    }
+    // actualDate === legDate: fall through to check time within same day
+  }
+
+  // 2. Same day comparison (or when date comparison is neutral):
+  if (legTime && actualTime) {
+    const cTime = String(actualTime).slice(0, 5);
+    const lTime = String(legTime).slice(0, 5);
+    return cTime < lTime;
+  }
+
+  return false;
 }
 
 // Which SL/TG level (option price, stockmojo-style) this minute's price
 // crosses for a leg, if any. SELL: SL above entry / target below; BUY: the
 // reverse. Returns "stop_loss" | "target" | null.
-function slTgCrossing(leg, ltp) {
+export function slTgCrossing(leg, ltp) {
   if (ltp == null || leg.exit) return null;
   const sell = leg.action === "sell";
   if (leg.slPrice != null && (sell ? ltp >= leg.slPrice : ltp <= leg.slPrice)) return "stop_loss";
@@ -975,16 +1008,32 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     });
   }, [knownLotSize, symbol]);
 
-  // Legs partitioned by the current simulated minute:
-  // - enteredLegs: legs entered at or before currentTime (in-market)
-  // - upcomingLegs: legs scheduled for a time after currentTime (upcoming)
+  // Ensure every leg has an entry date (backfilled with selectedDate if missing from earlier storage)
+  useEffect(() => {
+    if (!selectedDate) return;
+    setLegs((prev) => {
+      let changed = false;
+      const next = prev.map((l) => {
+        if (!l.date) {
+          changed = true;
+          return { ...l, date: selectedDate };
+        }
+        return l;
+      });
+      return changed ? next : prev;
+    });
+  }, [selectedDate]);
+
+  // Legs partitioned by the current simulated date & minute:
+  // - enteredLegs: legs entered at or before (selectedDate, currentTime)
+  // - upcomingLegs: legs scheduled for a date/time in the future (relative to selectedDate, currentTime)
   const enteredLegs = useMemo(
-    () => legs.filter((l) => !isLegUpcoming(l, currentTime)),
-    [legs, currentTime],
+    () => legs.filter((l) => !isLegUpcoming(l, selectedDate, currentTime)),
+    [legs, selectedDate, currentTime],
   );
   const upcomingLegs = useMemo(
-    () => legs.filter((l) => isLegUpcoming(l, currentTime)),
-    [legs, currentTime],
+    () => legs.filter((l) => isLegUpcoming(l, selectedDate, currentTime)),
+    [legs, selectedDate, currentTime],
   );
 
   // Legs the Positions table checkbox has left checked — the payoff curve,
@@ -1059,7 +1108,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     setLegs((prev) =>
       prev.length >= 6
         ? prev
-        : [...prev, legFromRow(row, right, action, chainData?.selectedExpiry, lotSize, currentTime)],
+        : [...prev, legFromRow(row, right, action, chainData?.selectedExpiry, lotSize, selectedDate, currentTime)],
     );
   }
 
@@ -1177,8 +1226,8 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     setSlTgEditId(null);
   }
 
-  function saveSlTgModal(legId, { slPrice, tgPrice, sltgMode }) {
-    updateLeg(legId, { slPrice, tgPrice, sltgMode, slPercent: null, tgPercent: null, sltgAlerted: {} });
+  function saveSlTgModal(legId, { slPrice, tgPrice, sltgMode, slPercent, tgPercent }) {
+    updateLeg(legId, { slPrice, tgPrice, sltgMode, slPercent: slPercent ?? null, tgPercent: tgPercent ?? null, sltgAlerted: {} });
     setSlTgEditId(null);
   }
 
@@ -1210,12 +1259,12 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
 
   function enterLegNow(id) {
     if (!currentTime) return;
-    setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, time: currentTime } : l)));
+    setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, date: selectedDate, time: currentTime } : l)));
   }
 
   function enterAllUpcomingNow() {
     if (!currentTime) return;
-    setLegs((prev) => prev.map((l) => (isLegUpcoming(l, currentTime) ? { ...l, time: currentTime } : l)));
+    setLegs((prev) => prev.map((l) => (isLegUpcoming(l, selectedDate, currentTime) ? { ...l, date: selectedDate, time: currentTime } : l)));
   }
 
   // Chain-row inline position display, same pattern as StrategyBuilder.jsx —
@@ -1283,7 +1332,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   }
 
   function applyPreset(presetLegs) {
-    setLegs(presetLegs.map((l) => ({ active: true, time: currentTime, ...l, id: ++legIdCounter })));
+    setLegs(presetLegs.map((l) => ({ active: true, date: selectedDate, time: currentTime, ...l, id: ++legIdCounter })));
   }
 
   async function runSimulation() {
@@ -1296,7 +1345,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
         expiry: chainData.selectedExpiry,
         // Unchecked (excluded) legs stay in the workspace but don't join the
         // replay, same as they're excluded from the theoretical payoff curve.
-        legs: legs.filter((l) => l.active !== false && !l.exit).map(({ strike, type, action, qty, slPercent, tgPercent, slPrice, tgPrice }) => ({
+        legs: enteredLegs.filter((l) => l.active !== false && !l.exit).map(({ strike, type, action, qty, slPercent, tgPercent, slPrice, tgPrice }) => ({
           strike,
           type,
           action,
@@ -1387,11 +1436,11 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
     if (replayData || !liveChain?.rows?.length || !currentTime) return;
     const hits = [];
     for (const leg of legs) {
-      if (leg.exit || leg.active === false || isLegUpcoming(leg, currentTime)) continue;
+      if (leg.exit || leg.active === false || isLegUpcoming(leg, selectedDate, currentTime)) continue;
       if (leg.slPrice == null && leg.tgPrice == null) continue;
       if (leg.expiry && liveChain.selectedExpiry && leg.expiry !== liveChain.selectedExpiry) continue;
-      // Not on the minute the leg was entered — its own entry price is the reference there.
-      if (leg.time && currentTime <= leg.time) continue;
+      // Not on the minute the leg was entered (if entered today) — its own entry price is the reference there.
+      if (leg.date === selectedDate && leg.time && currentTime <= leg.time) continue;
       const row = liveChain.rows.find((r) => r.strike === leg.strike);
       const ltp = row ? (leg.type === "CE" ? row.ce?.ltp : row.pe?.ltp) : null;
       const reason = slTgCrossing(leg, ltp);
@@ -1425,12 +1474,13 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
           expiry: h.leg.expiry,
           price: h.ltp,
           time: currentTime,
+          date: selectedDate,
         })),
       ]);
     });
     // Only re-check when the minute on screen changes, not on every leg edit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveChain, currentTime, replayData]);
+  }, [liveChain, currentTime, replayData, selectedDate]);
 
   // Playback loop (Autoplay) — Move (step size) and Every (interval) vary independently.
   useEffect(() => {
@@ -3169,20 +3219,27 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                 <div className="py-16 text-center text-xs text-gray-500 dark:text-gray-400">
                   <div className="mb-2 text-3xl">⏳</div>
                   <p className="text-sm font-bold text-gray-800 dark:text-gray-200">
-                    Positions Scheduled for {upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "Later"}
+                    Positions Scheduled for {upcomingLegs[0]?.date && upcomingLegs[0]?.date !== selectedDate ? `${upcomingLegs[0].date} ` : ""}{upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "Later"}
                   </p>
                   <p className="mt-1 text-gray-500 dark:text-gray-400 max-w-sm mx-auto">
-                    Current simulated time is {currentTime}. Step forward to {upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "entry time"} or enter now to view the payoff chart.
+                    Current simulated time is {selectedDate} {currentTime}. Move forward to {upcomingLegs[0]?.date && upcomingLegs[0]?.date !== selectedDate ? `${upcomingLegs[0].date} ` : ""}{upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "entry time"} or enter now to view the payoff chart.
                   </p>
                   <div className="mt-4 flex items-center justify-center gap-2">
-                    {upcomingLegs[0]?.time && (
+                    {upcomingLegs[0]?.date && upcomingLegs[0]?.date !== selectedDate ? (
+                      <button
+                        onClick={() => selectDate(upcomingLegs[0].date, upcomingLegs[0].time)}
+                        className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 transition shadow-xs"
+                      >
+                        ▶ Jump to {upcomingLegs[0].date} {upcomingLegs[0].time ? String(upcomingLegs[0].time).slice(0, 5) : ""}
+                      </button>
+                    ) : upcomingLegs[0]?.time ? (
                       <button
                         onClick={() => scrubToTime(upcomingLegs[0].time)}
                         className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 transition shadow-xs"
                       >
                         ▶ Step to {String(upcomingLegs[0].time).slice(0, 5)}
                       </button>
-                    )}
+                    ) : null}
                     <button
                       onClick={enterAllUpcomingNow}
                       className="rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-xs font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition"
@@ -3379,20 +3436,27 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                             {upcomingLegs.length > 0 ? (
                               <div className="flex flex-col items-center justify-center gap-2.5">
                                 <p className="font-semibold text-gray-700 dark:text-gray-300">
-                                  No active positions at {currentTime}.
+                                  No active positions at {selectedDate} {currentTime}.
                                   <span className="ml-1 text-gray-500 font-normal">
-                                    {upcomingLegs.length} position{upcomingLegs.length > 1 ? "s are" : " is"} scheduled to enter at {upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "a later time"}.
+                                    {upcomingLegs.length} position{upcomingLegs.length > 1 ? "s are" : " is"} scheduled to enter at {upcomingLegs[0]?.date && upcomingLegs[0]?.date !== selectedDate ? `${upcomingLegs[0].date} ` : ""}{upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "a later time"}.
                                   </span>
                                 </p>
                                 <div className="flex flex-wrap items-center justify-center gap-2">
-                                  {upcomingLegs[0]?.time && (
+                                  {upcomingLegs[0]?.date && upcomingLegs[0]?.date !== selectedDate ? (
+                                    <button
+                                      onClick={() => selectDate(upcomingLegs[0].date, upcomingLegs[0].time)}
+                                      className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-bold text-white hover:bg-blue-700 transition shadow-2xs"
+                                    >
+                                      ▶ Jump to {upcomingLegs[0].date} {upcomingLegs[0].time ? String(upcomingLegs[0].time).slice(0, 5) : ""}
+                                    </button>
+                                  ) : upcomingLegs[0]?.time ? (
                                     <button
                                       onClick={() => scrubToTime(upcomingLegs[0].time)}
                                       className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-bold text-white hover:bg-blue-700 transition shadow-2xs"
                                     >
                                       ▶ Step to {String(upcomingLegs[0].time).slice(0, 5)}
                                     </button>
-                                  )}
+                                  ) : null}
                                   <button
                                     onClick={enterAllUpcomingNow}
                                     className="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1 text-xs font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition"
@@ -3568,8 +3632,18 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                   className="rounded px-1 text-left text-label font-semibold leading-tight hover:bg-surface-hover disabled:opacity-50"
                                   title={`${(leg.sltgMode || SLTG_MODES.SQUARE_OFF) === SLTG_MODES.SQUARE_OFF ? "Alert + Square Off" : "Alert Only"} — click to edit`}
                                 >
-                                  {leg.slPrice != null && <div className="text-rose-600 dark:text-rose-400">SL: {leg.slPrice}</div>}
-                                  {leg.tgPrice != null && <div className="text-emerald-600 dark:text-emerald-400">TG: {leg.tgPrice}</div>}
+                                  {leg.slPrice != null && (
+                                    <div className="text-rose-600 dark:text-rose-400 flex items-center gap-1 font-mono font-bold">
+                                      <span>SL: {formatPrice(leg.slPrice)}</span>
+                                      {leg.slPercent != null && <span className="text-micro opacity-80">({leg.slPercent}%)</span>}
+                                    </div>
+                                  )}
+                                  {leg.tgPrice != null && (
+                                    <div className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1 font-mono font-bold">
+                                      <span>TG: {formatPrice(leg.tgPrice)}</span>
+                                      {leg.tgPercent != null && <span className="text-micro opacity-80">({leg.tgPercent}%)</span>}
+                                    </div>
+                                  )}
                                 </button>
                               ) : (
                                 <button
@@ -3638,7 +3712,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                               Scheduled Positions ({upcomingLegs.length})
                             </span>
                             <span className="ml-2 text-gray-500 dark:text-gray-400">
-                              (Will activate at scheduled time. Simulated time: {currentTime})
+                              (Will activate at scheduled date/time. Current: {selectedDate} {currentTime})
                             </span>
                           </div>
                           <div className="flex items-center gap-2">
@@ -3646,7 +3720,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                               onClick={enterAllUpcomingNow}
                               className="rounded-lg bg-blue-600 px-2.5 py-1 text-label font-bold text-white hover:bg-blue-700 transition shadow-2xs"
                             >
-                              Enter All Now @ {currentTime?.slice(0, 5)}
+                              Enter All Now @ {selectedDate} {currentTime?.slice(0, 5)}
                             </button>
                           </div>
                         </div>
@@ -3673,22 +3747,30 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
                                 Entry: {formatPrice(leg.premium)}
                               </span>
                               <span className="rounded-md bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-micro font-bold font-mono tabular-nums">
-                                ⏳ Scheduled @ {leg.time ? String(leg.time).slice(0, 5) : "—"}
+                                ⏳ Scheduled @ {leg.date ? `${leg.date} ` : ""}{leg.time ? String(leg.time).slice(0, 5) : "—"}
                               </span>
                               <div className="ml-auto flex items-center gap-2">
-                                {leg.time && (
+                                {leg.date && leg.date !== selectedDate ? (
+                                  <button
+                                    onClick={() => selectDate(leg.date, leg.time)}
+                                    title={`Jump simulator date to ${leg.date} ${leg.time ? String(leg.time).slice(0, 5) : ""}`}
+                                    className="rounded border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/50 px-2 py-0.5 text-label font-bold text-blue-600 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900 transition flex items-center gap-1"
+                                  >
+                                    ▶ Jump to {leg.date} {leg.time ? String(leg.time).slice(0, 5) : ""}
+                                  </button>
+                                ) : leg.time ? (
                                   <button
                                     onClick={() => scrubToTime(leg.time)}
                                     title={`Step time forward to ${leg.time}`}
-                                    className="rounded border border-gray-200 dark:border-gray-700 px-2 py-0.5 text-label font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition"
+                                    className="rounded border border-gray-200 dark:border-gray-700 px-2 py-0.5 text-label font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition flex items-center gap-1"
                                   >
                                     ▶ Step to {String(leg.time).slice(0, 5)}
                                   </button>
-                                )}
+                                ) : null}
                                 <button
                                   onClick={() => enterLegNow(leg.id)}
-                                  title={`Activate position right now at ${currentTime}`}
-                                  className="rounded bg-blue-600 px-2 py-0.5 text-label font-bold text-white hover:bg-blue-700 transition"
+                                  title={`Activate position right now at ${selectedDate} ${currentTime}`}
+                                  className="rounded bg-emerald-600 px-2 py-0.5 text-label font-bold text-white hover:bg-emerald-700 transition shadow-2xs"
                                 >
                                   Enter Now
                                 </button>
