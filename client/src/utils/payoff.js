@@ -11,7 +11,8 @@
 // — this makes the P&L a raw per-share number in that case, not silently
 // wrong by a hardcoded guess; Greeks fall back the same way.
 export function legMultiplier(leg) {
-    return leg.qty * (leg.lotSize || 1);
+    const q = leg?.qty != null ? leg.qty : (leg?.lots != null ? leg.lots : 1);
+    return q * (leg?.lotSize || 1);
 }
 
 // Flips a leg's side in place ('buy' <-> 'sell') — the single shared rule
@@ -271,7 +272,7 @@ export function computeDensityCurve(curve, spot, atmIvPercent, yearsRemaining) {
 //   • Unhedged short legs block standard SPAN + Exposure margin.
 const INDEX_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"]);
 const HIGH_VOL_INDEX = new Set(["BANKNIFTY", "BANKEX"]);
-const CRYPTO_SYMBOLS = new Set(["BTC", "ETH", "SOL", "BTCUSDT", "ETHUSDT", "SOLUSDT"]);
+const CRYPTO_SYMBOLS = new Set(["BTC", "ETH", "SOL", "BTCUSDT", "ETHUSDT", "SOLUSDT", "XAUT", "XAUTUSDT"]);
 
 export function getSpanExposureBreakdown(leg, symbol) {
     const sym = symbol ? String(symbol).toUpperCase() : "NIFTY";

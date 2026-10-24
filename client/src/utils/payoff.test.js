@@ -274,6 +274,33 @@ describe("Iron Condor (4 legs, fully defined risk)", () => {
         expect(margin.fundsRequired).toBe(1.0);
         expect(margin.netPremium).toBe(0.6);
     });
+
+    it("handles ETH and SOL Delta Exchange contract sizing and lots fallback", () => {
+        // ETH: spot 3500, lotSize 0.01, 10 lots = 0.1 ETH volume. 100x leverage -> 1% IM. Notional = 350. IM = 3.50
+        const ethShort = [leg({ action: "sell", type: "PE", strike: 3400, premium: 80, qty: 10, lots: 10, lotSize: 0.01 })];
+        const ethMargin = computeMarginDetails(ethShort, 3500, "ETH", { isCrypto: true, leverage: 100 });
+        expect(ethMargin.estMargin).toBe(3.5);
+
+        // SOL: spot 150, lotSize 0.1, 5 lots = 0.5 SOL volume. 50x leverage -> 2% IM. Notional = 75. IM = 1.50
+        const solShort = [leg({ action: "sell", type: "CE", strike: 160, premium: 4, qty: 5, lots: 5, lotSize: 0.1 })];
+        const solMargin = computeMarginDetails(solShort, 150, "SOL", { isCrypto: true, leverage: 50 });
+        expect(solMargin.estMargin).toBe(1.5);
+    });
+
+    it("calculates Delta Exchange 4-leg Iron Condor with margin benefit", () => {
+        // BTC Iron Condor at spot 84,000:
+        // Buy 82000 PE, Sell 83000 PE, Sell 85000 CE, Buy 86000 CE. Lot size 0.001
+        const condor = [
+            leg({ action: "buy", type: "PE", strike: 82000, premium: 300, lots: 1, lotSize: 0.001 }),
+            leg({ action: "sell", type: "PE", strike: 83000, premium: 600, lots: 1, lotSize: 0.001 }),
+            leg({ action: "sell", type: "CE", strike: 85000, premium: 600, lots: 1, lotSize: 0.001 }),
+            leg({ action: "buy", type: "CE", strike: 86000, premium: 300, lots: 1, lotSize: 0.001 }),
+        ];
+        const margin = computeMarginDetails(condor, 84000, "BTC", { isCrypto: true, leverage: 20 });
+        expect(margin.isHedged).toBe(true);
+        expect(margin.marginBenefit).toBeGreaterThan(0);
+        expect(margin.fundsRequired).toBeLessThan(margin.nakedMargin);
+    });
 });
 
 describe("computePOP (Probability of Profit)", () => {

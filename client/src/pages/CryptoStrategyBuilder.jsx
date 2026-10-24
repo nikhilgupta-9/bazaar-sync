@@ -61,6 +61,7 @@ import {
     ComposedChart,
 } from "recharts";
 import { bsPrice, calculateGreeks, normCdf } from "../utils/blackScholes";
+import { computeMarginDetails } from "../utils/payoff";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { saveStrategy } from "../services/strategiesApi";
@@ -232,11 +233,36 @@ export default function CryptoStrategyBuilder({ historical = false }) {
     // Historical replay clock (only used when `historical`)
     const [histMeta, setHistMeta] = useState({ minDate: "2024-01-01", maxDate: yesterdayIst() });
     const [histDate, setHistDate] = useState(yesterdayIst());
+    const [showCalendarModal, setShowCalendarModal] = useState(false);
+    const [calYearMonth, setCalYearMonth] = useState(() => {
+        const d = new Date(yesterdayIst());
+        return { year: d.getFullYear(), month: d.getMonth() };
+    });
     const [histMinute, setHistMinute] = useState(9 * 60 + 15); // 09:15 IST
     const [isPlaying, setIsPlaying] = useState(false);
     const [playSpeed, setPlaySpeed] = useState(1); // minutes advanced per second
     const histRequestRef = useRef(0);
     const hasChainRef = useRef(false);
+
+    const calDays = useMemo(() => {
+        const firstDay = new Date(calYearMonth.year, calYearMonth.month, 1);
+        const lastDay = new Date(calYearMonth.year, calYearMonth.month + 1, 0);
+        const startDayIndex = (firstDay.getDay() + 6) % 7; // Monday = 0
+        const totalDays = lastDay.getDate();
+
+        const days = [];
+        for (let i = 0; i < startDayIndex; i++) {
+            days.push(null);
+        }
+        for (let d = 1; d <= totalDays; d++) {
+            const dateStr = `${calYearMonth.year}-${String(calYearMonth.month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+            const dayOfWeek = (startDayIndex + d - 1) % 7;
+            const isWeekend = dayOfWeek === 5 || dayOfWeek === 6;
+            const isExpiry = dayOfWeek === 4;
+            days.push({ day: d, dateStr, isWeekend, isExpiry });
+        }
+        return days;
+    }, [calYearMonth]);
     const isAuthenticated = Boolean(user || token);
     const { theme, toggleTheme, isDark } = useTheme();
     const navigate = useNavigate();
@@ -787,16 +813,33 @@ export default function CryptoStrategyBuilder({ historical = false }) {
         } else if (presetKey === "bear_put_spread") {
             addPresetLeg(getOptionAt(0, "PUT"), "BUY", "PUT");
             addPresetLeg(getOptionAt(-1, "PUT"), "SELL", "PUT");
+        } else if (presetKey === "bull_put_spread") {
+            addPresetLeg(getOptionAt(0, "PUT"), "SELL", "PUT");
+            addPresetLeg(getOptionAt(-1, "PUT"), "BUY", "PUT");
+        } else if (presetKey === "bear_call_spread") {
+            addPresetLeg(getOptionAt(0, "CALL"), "SELL", "CALL");
+            addPresetLeg(getOptionAt(1, "CALL"), "BUY", "CALL");
         } else if (presetKey === "long_straddle") {
             addPresetLeg(getOptionAt(0, "CALL"), "BUY", "CALL");
             addPresetLeg(getOptionAt(0, "PUT"), "BUY", "PUT");
+        } else if (presetKey === "short_straddle") {
+            addPresetLeg(getOptionAt(0, "CALL"), "SELL", "CALL");
+            addPresetLeg(getOptionAt(0, "PUT"), "SELL", "PUT");
         } else if (presetKey === "long_strangle") {
             addPresetLeg(getOptionAt(1, "CALL"), "BUY", "CALL");
             addPresetLeg(getOptionAt(-1, "PUT"), "BUY", "PUT");
+        } else if (presetKey === "short_strangle") {
+            addPresetLeg(getOptionAt(1, "CALL"), "SELL", "CALL");
+            addPresetLeg(getOptionAt(-1, "PUT"), "SELL", "PUT");
         } else if (presetKey === "iron_condor") {
             addPresetLeg(getOptionAt(-2, "PUT"), "BUY", "PUT");
             addPresetLeg(getOptionAt(-1, "PUT"), "SELL", "PUT");
             addPresetLeg(getOptionAt(1, "CALL"), "SELL", "CALL");
+            addPresetLeg(getOptionAt(2, "CALL"), "BUY", "CALL");
+        } else if (presetKey === "iron_butterfly") {
+            addPresetLeg(getOptionAt(-2, "PUT"), "BUY", "PUT");
+            addPresetLeg(getOptionAt(0, "PUT"), "SELL", "PUT");
+            addPresetLeg(getOptionAt(0, "CALL"), "SELL", "CALL");
             addPresetLeg(getOptionAt(2, "CALL"), "BUY", "CALL");
         }
 
@@ -915,7 +958,13 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                 rewardRisk: 0,
                 breakevens: [],
                 orderMargin: 0,
+                fundsRequired: 0,
+                marginBenefit: 0,
+                nakedMargin: 0,
                 totalNetPremium: 0,
+                isHedged: false,
+                spotExpiryPnl: 0,
+                spotTargetPnl: 0,
                 totalNotionalUsd: 0,
                 totalCoins: 0,
                 chartData: [],
@@ -983,28 +1032,49 @@ export default function CryptoStrategyBuilder({ historical = false }) {
         const maxLoss = minP < 0 ? Math.abs(minP) : 0;
         const rewardRisk = maxLoss > 0 ? (maxP / maxLoss).toFixed(2) : "∞";
 
-        // Delta Exchange Initial Margin & Net Premium
-        let totalNetPremium = 0;
-        let totalRequiredMargin = 0;
+        // Delta Exchange Initial Margin & Capital Requirements
+        const mappedLegs = activeSelectedLegs.map((leg) => {
+            const cVal = leg.contractValue || currentCoinConfig.defaultLot || (selectedCoin === "BTC" ? 0.001 : selectedCoin === "ETH" ? 0.01 : 0.1);
+            return {
+                type: leg.type === "CALL" ? "CE" : "PE",
+                action: leg.action?.toLowerCase() === "buy" ? "buy" : "sell",
+                strike: Number(leg.strike),
+                lotSize: cVal,
+                qty: (leg.lots || 1) * globalMultiplier,
+                premium: Number(leg.price || leg.markPrice || 0),
+                expiry: leg.expiry,
+            };
+        });
+
+        const leverageVal = currentCoinConfig.leverage ? parseInt(currentCoinConfig.leverage, 10) : 20;
+        const marginInfo = computeMarginDetails(mappedLegs, spot, selectedCoin, {
+            isCrypto: true,
+            leverage: leverageVal,
+        });
+
         let totalNotionalUsd = 0;
         let totalCoins = 0;
+        let spotExpiryPnl = 0;
+        let spotTargetPnl = 0;
 
         activeSelectedLegs.forEach((leg) => {
             const cVal = leg.contractValue || currentCoinConfig.defaultLot || 0.001;
             const coinVolume = (leg.lots || 1) * cVal * globalMultiplier;
-            const prem = (leg.price || leg.markPrice || 0) * coinVolume;
+            const isBuy = leg.action === "BUY";
+            const isCall = leg.type === "CALL";
+            const k = leg.strike;
+            const premium = leg.price || leg.markPrice || 100;
             const notional = spot * coinVolume;
 
             totalCoins += coinVolume;
             totalNotionalUsd += notional;
 
-            if (leg.action === "BUY") {
-                totalNetPremium -= prem; // Cash outflow
-                totalRequiredMargin += prem; // Max loss is premium paid
-            } else {
-                totalNetPremium += prem; // Cash inflow (credit)
-                totalRequiredMargin += notional * 0.05; // 5% initial margin for short option
-            }
+            const intrinsic = isCall ? Math.max(0, spot - k) : Math.max(0, k - spot);
+            spotExpiryPnl += isBuy ? (intrinsic - premium) * coinVolume : (premium - intrinsic) * coinVolume;
+
+            const tDays = Math.max(0.01, 1 - targetDaysAhead / 30);
+            const bsTheoretical = bsPrice(spot, k, tDays, 0.05, (leg.iv || 22) / 100, isCall ? "call" : "put");
+            spotTargetPnl += isBuy ? (bsTheoretical - premium) * coinVolume : (premium - bsTheoretical) * coinVolume;
         });
 
         return {
@@ -1012,8 +1082,14 @@ export default function CryptoStrategyBuilder({ historical = false }) {
             maxLoss: minP < 0 ? minP : 0,
             rewardRisk,
             breakevens,
-            orderMargin: Math.max(0.5, totalRequiredMargin),
-            totalNetPremium,
+            orderMargin: marginInfo.estMargin,
+            fundsRequired: marginInfo.fundsRequired,
+            marginBenefit: marginInfo.marginBenefit,
+            nakedMargin: marginInfo.nakedMargin,
+            totalNetPremium: marginInfo.netPremium,
+            isHedged: marginInfo.isHedged,
+            spotExpiryPnl: parseFloat(spotExpiryPnl.toFixed(2)),
+            spotTargetPnl: parseFloat(spotTargetPnl.toFixed(2)),
             totalNotionalUsd,
             totalCoins,
             chartData,
@@ -1147,6 +1223,9 @@ export default function CryptoStrategyBuilder({ historical = false }) {
         const newFills = [];
         const newHistory = [];
 
+        const sellLegs = activeSelectedLegs.filter((l) => l.action === "SELL");
+        const sellLegsCount = sellLegs.length || 1;
+
         activeSelectedLegs.forEach((leg, idx) => {
             const posId = `pos-${Date.now()}-${idx}`;
             const soId = `SO-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -1156,7 +1235,7 @@ export default function CryptoStrategyBuilder({ historical = false }) {
             const cVal = leg.contractValue || currentCoinConfig.defaultLot || 0.001;
             const coinQty = (leg.lots || 1) * cVal;
             const sizeStr = `${leg.lots || 1} Ctr (${coinQty.toFixed(3)} ${selectedCoin})`;
-            const legMargin = (payoffMetrics.orderMargin || 100) / (activeSelectedLegs.length || 1);
+            const legMargin = leg.action === "BUY" ? 0 : (payoffMetrics.orderMargin || 0) / sellLegsCount;
 
             // Calculate SL Trigger Description & Price
             let slText = "None";
@@ -1272,14 +1351,15 @@ export default function CryptoStrategyBuilder({ historical = false }) {
         setStopOrders((prev) => [...newStopOrders, ...prev]);
         setFills((prev) => [...newFills, ...prev]);
         setOrderHistory((prev) => [...newHistory, ...prev]);
-        setDemoBalance((prev) => Math.max(0, prev - (payoffMetrics.orderMargin || 100)));
+        const fundsNeeded = payoffMetrics.fundsRequired > 0 ? payoffMetrics.fundsRequired : (payoffMetrics.orderMargin || 10);
+        setDemoBalance((prev) => Math.max(0, prev - fundsNeeded));
 
         // Automatically switch to positions tab so user sees their executed order immediately
         setBottomTab("positions");
         setMobileTab("positions");
 
         setOrderSuccessMsg(
-            `Order Executed! ${activeSelectedLegs.length} position(s) opened in Delta Simulator. Margin Used: $${formatNumber(payoffMetrics.orderMargin || 100)}`
+            `Order Executed! ${activeSelectedLegs.length} position(s) opened in Delta Simulator. Funds Required: $${formatNumber(fundsNeeded)} (Margin: $${formatNumber(payoffMetrics.orderMargin || 0)})`
         );
         setTimeout(() => setOrderSuccessMsg(null), 6000);
 
@@ -1720,23 +1800,135 @@ export default function CryptoStrategyBuilder({ historical = false }) {
             {historical && (
                 <div className="bg-[#0e121b] border-b border-[#1f2433] px-3 lg:px-6 py-2.5 space-y-2">
                     <div className="flex flex-wrap items-center gap-2 text-xs">
-                        <label className="flex items-center gap-1.5 rounded-lg border border-[#2b344a] bg-[#131722] px-2 py-1">
-                            <span className="text-gray-400 font-semibold">Date</span>
-                            <input
-                                type="date"
-                                value={histDate}
-                                min={histMeta.minDate}
-                                max={histMeta.maxDate}
-                                onChange={(e) => {
-                                    if (!e.target.value) return;
-                                    setIsPlaying(false);
-                                    setSelectedExpiry(null);
-                                    hasChainRef.current = false;
-                                    setHistDate(e.target.value);
-                                }}
-                                className="bg-transparent font-mono font-bold text-amber-300 outline-none [color-scheme:dark]"
-                            />
-                        </label>
+                        {/* Interactive Replay Calendar with Weekend OFF and Expiry EXP Badges */}
+                        <div className="relative">
+                            <button
+                                type="button"
+                                onClick={() => setShowCalendarModal((v) => !v)}
+                                className="flex items-center gap-2 rounded-lg border border-[#2b344a] bg-[#131722] hover:bg-[#1a2030] px-3 py-1.5 text-xs font-semibold text-gray-200 transition cursor-pointer shadow-xs"
+                                title="Pick historical date (Saturdays/Sundays marked OFF, Fridays marked EXP)"
+                            >
+                                <FiCalendar className="text-amber-400" size={13} />
+                                <span className="font-mono font-bold text-amber-300">{histDate}</span>
+                                <FiChevronDown size={12} className={`text-gray-400 transition-transform ${showCalendarModal ? "rotate-180 text-amber-400" : ""}`} />
+                            </button>
+
+                            {showCalendarModal && (
+                                <>
+                                    <div className="fixed inset-0 z-40" onClick={() => setShowCalendarModal(false)} />
+                                    <div className="absolute left-0 top-full mt-2 z-50 w-76 rounded-2xl border border-[#2b344a] bg-[#0f1422] p-3 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 font-sans">
+                                        {/* Month Navigation */}
+                                        <div className="flex items-center justify-between pb-2 mb-2 border-b border-[#1f2638]">
+                                            <button
+                                                type="button"
+                                                onClick={() => setCalYearMonth((prev) => {
+                                                    const newMonth = prev.month === 0 ? 11 : prev.month - 1;
+                                                    const newYear = prev.month === 0 ? prev.year - 1 : prev.year;
+                                                    return { year: newYear, month: newMonth };
+                                                })}
+                                                className="p-1 rounded-lg hover:bg-[#1a2133] text-gray-400 hover:text-white cursor-pointer"
+                                            >
+                                                <FiChevronLeft size={14} />
+                                            </button>
+                                            <span className="text-xs font-bold font-mono text-gray-200">
+                                                {new Date(calYearMonth.year, calYearMonth.month).toLocaleDateString("en-US", { month: "short", year: "numeric" })}
+                                            </span>
+                                            <button
+                                                type="button"
+                                                onClick={() => setCalYearMonth((prev) => {
+                                                    const newMonth = prev.month === 11 ? 0 : prev.month + 1;
+                                                    const newYear = prev.month === 11 ? prev.year + 1 : prev.year;
+                                                    return { year: newYear, month: newMonth };
+                                                })}
+                                                className="p-1 rounded-lg hover:bg-[#1a2133] text-gray-400 hover:text-white cursor-pointer"
+                                            >
+                                                <FiChevronRight size={14} />
+                                            </button>
+                                        </div>
+
+                                        {/* Day of week headers */}
+                                        <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-bold text-gray-400 mb-1">
+                                            {["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map((d, i) => (
+                                                <div key={d} className={i >= 5 ? "text-rose-400/80" : ""}>{d}</div>
+                                            ))}
+                                        </div>
+
+                                        {/* Days Grid */}
+                                        <div className="grid grid-cols-7 gap-1 text-xs">
+                                            {calDays.map((cell, idx) => {
+                                                if (!cell) return <div key={`empty-${idx}`} />;
+                                                const isSelected = cell.dateStr === histDate;
+                                                const isPast = cell.dateStr < histMeta.minDate || cell.dateStr > histMeta.maxDate;
+                                                return (
+                                                    <button
+                                                        key={cell.dateStr}
+                                                        type="button"
+                                                        disabled={isPast}
+                                                        onClick={() => {
+                                                            setIsPlaying(false);
+                                                            setSelectedExpiry(null);
+                                                            hasChainRef.current = false;
+                                                            setHistDate(cell.dateStr);
+                                                            setShowCalendarModal(false);
+                                                        }}
+                                                        className={`relative flex items-center justify-center h-8 rounded-lg font-mono text-xs transition cursor-pointer ${
+                                                            isSelected
+                                                                ? "bg-amber-500 text-black font-extrabold ring-2 ring-amber-400 shadow-md"
+                                                                : isPast
+                                                                ? "text-gray-600 cursor-not-allowed"
+                                                                : cell.isWeekend
+                                                                ? "text-rose-400/80 hover:bg-[#1f283d]"
+                                                                : "hover:bg-[#1f283d] text-gray-300 hover:text-white"
+                                                        }`}
+                                                    >
+                                                        <span>{cell.day}</span>
+                                                        {cell.isWeekend && !isSelected && (
+                                                            <span className="absolute -top-1 -right-0.5 rounded px-0.5 text-[7px] font-extrabold uppercase text-rose-400 bg-rose-950/90 border border-rose-900/50 leading-none">
+                                                                OFF
+                                                            </span>
+                                                        )}
+                                                        {cell.isExpiry && !isSelected && !cell.isWeekend && (
+                                                            <span className="absolute -top-1 -right-0.5 rounded px-0.5 text-[7px] font-extrabold uppercase text-emerald-300 bg-emerald-950 border border-emerald-800 leading-none">
+                                                                EXP
+                                                            </span>
+                                                        )}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+
+                                        {/* Legend & Manual Input */}
+                                        <div className="mt-2.5 pt-2 border-t border-[#1f2638] flex items-center justify-between text-[10px] text-gray-400">
+                                            <div className="flex items-center gap-2">
+                                                <span className="flex items-center gap-1">
+                                                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                                                    EXP (Expiry)
+                                                </span>
+                                                <span className="flex items-center gap-1">
+                                                    <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
+                                                    OFF (Weekend)
+                                                </span>
+                                            </div>
+                                            <input
+                                                type="date"
+                                                value={histDate}
+                                                min={histMeta.minDate}
+                                                max={histMeta.maxDate}
+                                                onChange={(e) => {
+                                                    if (!e.target.value) return;
+                                                    setIsPlaying(false);
+                                                    setSelectedExpiry(null);
+                                                    hasChainRef.current = false;
+                                                    setHistDate(e.target.value);
+                                                    setShowCalendarModal(false);
+                                                }}
+                                                className="bg-transparent font-mono text-[10px] text-amber-300 outline-none w-20 [color-scheme:dark]"
+                                            />
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+                        </div>
 
                         <div className="flex items-center gap-1">
                             {[[-60, "-1h"], [-15, "-15m"], [-1, "-1m"]].map(([d, l]) => (
@@ -2387,61 +2579,95 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                     ) : (
                                         <div className="grid grid-cols-2 gap-2">
                                             <button
+                                                type="button"
                                                 onClick={() => handleApplyPresetStrategy("bull_call_spread")}
-                                            className="p-3 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-emerald-500/50 transition-all text-left group cursor-pointer shadow-xs"
-                                        >
-                                            <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-emerald-400">
-                                                <span>Bull Call Spread</span>
-                                                <FiTrendingUp size={13} className="text-emerald-400" />
-                                            </div>
-                                            <div className="text-[10px] text-gray-400 mt-1 font-mono">Buy ATM Call + Sell OTM Call</div>
-                                            <span className="inline-block mt-1.5 text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-400 font-bold">
-                                                Bullish • Defined Risk
-                                            </span>
-                                        </button>
+                                                className="p-2.5 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-emerald-500/50 transition-all text-left group cursor-pointer shadow-xs"
+                                            >
+                                                <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-emerald-400">
+                                                    <span>Bull Call Spread</span>
+                                                    <FiTrendingUp size={13} className="text-emerald-400" />
+                                                </div>
+                                                <div className="text-[10px] text-gray-400 mt-0.5 font-mono">Buy ATM + Sell OTM Call</div>
+                                                <span className="inline-block mt-1 text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-400 font-bold">
+                                                    Bullish • Debit Spread
+                                                </span>
+                                            </button>
 
-                                        <button
-                                            onClick={() => handleApplyPresetStrategy("bear_put_spread")}
-                                            className="p-3 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-rose-500/50 transition-all text-left group cursor-pointer shadow-xs"
-                                        >
-                                            <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-rose-400">
-                                                <span>Bear Put Spread</span>
-                                                <FiTrendingDown size={13} className="text-rose-400" />
-                                            </div>
-                                            <div className="text-[10px] text-gray-400 mt-1 font-mono">Buy ATM Put + Sell OTM Put</div>
-                                            <span className="inline-block mt-1.5 text-[9px] px-1.5 py-0.2 rounded bg-rose-500/15 text-rose-400 font-bold">
-                                                Bearish • Defined Risk
-                                            </span>
-                                        </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => handleApplyPresetStrategy("bear_put_spread")}
+                                                className="p-2.5 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-rose-500/50 transition-all text-left group cursor-pointer shadow-xs"
+                                            >
+                                                <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-rose-400">
+                                                    <span>Bear Put Spread</span>
+                                                    <FiTrendingDown size={13} className="text-rose-400" />
+                                                </div>
+                                                <div className="text-[10px] text-gray-400 mt-0.5 font-mono">Buy ATM + Sell OTM Put</div>
+                                                <span className="inline-block mt-1 text-[9px] px-1.5 py-0.2 rounded bg-rose-500/15 text-rose-400 font-bold">
+                                                    Bearish • Debit Spread
+                                                </span>
+                                            </button>
 
-                                        <button
-                                            onClick={() => handleApplyPresetStrategy("long_straddle")}
-                                            className="p-3 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-amber-500/50 transition-all text-left group cursor-pointer shadow-xs"
-                                        >
-                                            <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-amber-400">
-                                                <span>Long Straddle</span>
-                                                <FiActivity size={13} className="text-amber-400" />
-                                            </div>
-                                            <div className="text-[10px] text-gray-400 mt-1 font-mono">Buy ATM Call + Buy ATM Put</div>
-                                            <span className="inline-block mt-1.5 text-[9px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 font-bold">
-                                                Volatility Breakout
-                                            </span>
-                                        </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => handleApplyPresetStrategy("bull_put_spread")}
+                                                className="p-2.5 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-emerald-500/50 transition-all text-left group cursor-pointer shadow-xs"
+                                            >
+                                                <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-emerald-400">
+                                                    <span>Bull Put Spread</span>
+                                                    <FiShield size={13} className="text-emerald-400" />
+                                                </div>
+                                                <div className="text-[10px] text-gray-400 mt-0.5 font-mono">Sell ATM + Buy OTM Put</div>
+                                                <span className="inline-block mt-1 text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-400 font-bold">
+                                                    Bullish • Credit Spread
+                                                </span>
+                                            </button>
 
-                                        <button
-                                            onClick={() => handleApplyPresetStrategy("iron_condor")}
-                                            className="p-3 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-purple-500/50 transition-all text-left group cursor-pointer shadow-xs"
-                                        >
-                                            <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-purple-400">
-                                                <span>Iron Condor</span>
-                                                <FiShield size={13} className="text-purple-400" />
-                                            </div>
-                                            <div className="text-[10px] text-gray-400 mt-1 font-mono">4-Leg Range Bound Spread</div>
-                                            <span className="inline-block mt-1.5 text-[9px] px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-300 font-bold">
-                                                Neutral • Range Income
-                                            </span>
-                                        </button>
-                                    </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => handleApplyPresetStrategy("bear_call_spread")}
+                                                className="p-2.5 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-rose-500/50 transition-all text-left group cursor-pointer shadow-xs"
+                                            >
+                                                <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-rose-400">
+                                                    <span>Bear Call Spread</span>
+                                                    <FiShield size={13} className="text-rose-400" />
+                                                </div>
+                                                <div className="text-[10px] text-gray-400 mt-0.5 font-mono">Sell ATM + Buy OTM Call</div>
+                                                <span className="inline-block mt-1 text-[9px] px-1.5 py-0.2 rounded bg-rose-500/15 text-rose-400 font-bold">
+                                                    Bearish • Credit Spread
+                                                </span>
+                                            </button>
+
+                                            <button
+                                                type="button"
+                                                onClick={() => handleApplyPresetStrategy("long_straddle")}
+                                                className="p-2.5 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-amber-500/50 transition-all text-left group cursor-pointer shadow-xs"
+                                            >
+                                                <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-amber-400">
+                                                    <span>Long Straddle</span>
+                                                    <FiActivity size={13} className="text-amber-400" />
+                                                </div>
+                                                <div className="text-[10px] text-gray-400 mt-0.5 font-mono">Buy ATM Call + Put</div>
+                                                <span className="inline-block mt-1 text-[9px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 font-bold">
+                                                    Volatility Breakout
+                                                </span>
+                                            </button>
+
+                                            <button
+                                                type="button"
+                                                onClick={() => handleApplyPresetStrategy("iron_condor")}
+                                                className="p-2.5 rounded-xl bg-[#141926] hover:bg-[#1a2133] border border-[#23293d] hover:border-purple-500/50 transition-all text-left group cursor-pointer shadow-xs"
+                                            >
+                                                <div className="flex items-center justify-between text-xs font-bold text-white group-hover:text-purple-400">
+                                                    <span>Iron Condor</span>
+                                                    <FiShield size={13} className="text-purple-400" />
+                                                </div>
+                                                <div className="text-[10px] text-gray-400 mt-0.5 font-mono">4-Leg Range Bound Spread</div>
+                                                <span className="inline-block mt-1 text-[9px] px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-300 font-bold">
+                                                    Neutral • Range Income
+                                                </span>
+                                            </button>
+                                        </div>
                                     )}
                                 </div>
 
@@ -2531,6 +2757,31 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                             +
                                         </button>
                                     </div>
+
+                                    {/* Pre-built Strategy Dropdown */}
+                                    <select
+                                        onChange={(e) => {
+                                            if (e.target.value) {
+                                                handleApplyPresetStrategy(e.target.value);
+                                                e.target.value = "";
+                                            }
+                                        }}
+                                        defaultValue=""
+                                        className="rounded-lg border border-[#2b344a] bg-[#151926] px-2 py-1 text-[10px] font-semibold text-gray-300 outline-none cursor-pointer hover:border-amber-500/50"
+                                        title="Apply Pre-built Strategy"
+                                    >
+                                        <option value="" disabled>Presets ▾</option>
+                                        <option value="bull_call_spread">Bull Call Spread</option>
+                                        <option value="bear_put_spread">Bear Put Spread</option>
+                                        <option value="bull_put_spread">Bull Put Spread (Credit)</option>
+                                        <option value="bear_call_spread">Bear Call Spread (Credit)</option>
+                                        <option value="long_straddle">Long Straddle</option>
+                                        <option value="short_straddle">Short Straddle</option>
+                                        <option value="long_strangle">Long Strangle</option>
+                                        <option value="short_strangle">Short Strangle</option>
+                                        <option value="iron_condor">Iron Condor</option>
+                                        <option value="iron_butterfly">Iron Butterfly</option>
+                                    </select>
 
                                     <button
                                         onClick={handleClearAllLegs}
@@ -2770,75 +3021,108 @@ export default function CryptoStrategyBuilder({ historical = false }) {
 
                             {/* TAB 1: Interactive Recharts Payoff Curve */}
                             {payoffTab === "chart" && (
-                                <div className="h-[185px] w-full bg-[#0a0d14] rounded-lg p-2 relative border border-[#181e2b]">
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <ComposedChart data={payoffMetrics.chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                                            <CartesianGrid stroke="#1c2233" strokeDasharray="3 3" />
-                                            <XAxis dataKey="price" stroke="#4b5563" tick={{ fontSize: 9, fill: "#9ca3af" }} />
-                                            <YAxis stroke="#4b5563" tick={{ fontSize: 9, fill: "#9ca3af" }} />
-                                            <Tooltip
-                                                contentStyle={{ backgroundColor: "#121622", borderColor: "#2b344a", fontSize: "11px", color: "#fff" }}
-                                                formatter={(val) => [formatMoney(val, 1), "Payoff"]}
-                                                labelFormatter={(lbl) => `${selectedCoin} Price: $${lbl}`}
-                                            />
-                                            <ReferenceLine y={0} stroke="#4b5563" strokeWidth={1} />
-                                            <ReferenceLine
-                                                x={chainData.spotPrice}
-                                                stroke="#10b981"
-                                                strokeWidth={2}
-                                                strokeDasharray="4 4"
-                                                label={{
-                                                    value: `ATM Spot $${formatNumber(chainData.spotPrice, 0)}`,
-                                                    fill: "#10b981",
-                                                    fontSize: 10,
-                                                    fontWeight: "bold",
-                                                    position: "top",
-                                                }}
-                                            />
-                                            {/* Stop Loss Marker on Chart */}
-                                            {enableStopLoss && slType === "spot_price" && slValue && (
-                                                <ReferenceLine
-                                                    x={Number(slValue)}
-                                                    stroke="#f43f5e"
-                                                    strokeDasharray="4 4"
-                                                    strokeWidth={1.5}
-                                                    label={{ value: `SL Trigger $${slValue}`, fill: "#f43f5e", fontSize: 9, position: "top" }}
+                                <div className="flex flex-col bg-[#0a0d14] rounded-lg border border-[#181e2b] overflow-hidden">
+                                    <div className="h-[260px] sm:h-[300px] w-full p-2 relative">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <ComposedChart data={payoffMetrics.chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                                                <CartesianGrid stroke="#1c2233" strokeDasharray="3 3" />
+                                                <XAxis dataKey="price" stroke="#4b5563" tick={{ fontSize: 9, fill: "#9ca3af" }} />
+                                                <YAxis stroke="#4b5563" tick={{ fontSize: 9, fill: "#9ca3af" }} />
+                                                <Tooltip
+                                                    contentStyle={{ backgroundColor: "#121622", borderColor: "#2b344a", fontSize: "11px", color: "#fff" }}
+                                                    formatter={(val) => [formatMoney(val, 1), "Payoff"]}
+                                                    labelFormatter={(lbl) => `${selectedCoin} Price: $${lbl}`}
                                                 />
-                                            )}
-                                            {enableStopLoss && slType === "mtm_loss" && slValue && (
+                                                <ReferenceLine y={0} stroke="#4b5563" strokeWidth={1} />
                                                 <ReferenceLine
-                                                    y={-Math.abs(Number(slValue))}
-                                                    stroke="#f43f5e"
-                                                    strokeDasharray="4 4"
-                                                    strokeWidth={1.5}
-                                                    label={{ value: `Max SL -$${slValue}`, fill: "#f43f5e", fontSize: 9, position: "left" }}
-                                                />
-                                            )}
-                                            {/* Take Profit Marker on Chart */}
-                                            {enableTakeProfit && tpType === "spot_price" && tpValue && (
-                                                <ReferenceLine
-                                                    x={Number(tpValue)}
+                                                    x={chainData.spotPrice}
                                                     stroke="#10b981"
+                                                    strokeWidth={2}
                                                     strokeDasharray="4 4"
-                                                    strokeWidth={1.5}
-                                                    label={{ value: `TP Target $${tpValue}`, fill: "#10b981", fontSize: 9, position: "top" }}
+                                                    label={{
+                                                        value: `ATM Spot $${formatNumber(chainData.spotPrice, 0)}`,
+                                                        fill: "#10b981",
+                                                        fontSize: 10,
+                                                        fontWeight: "bold",
+                                                        position: "top",
+                                                    }}
                                                 />
-                                            )}
-                                            {enableTakeProfit && tpType === "mtm_profit" && tpValue && (
-                                                <ReferenceLine
-                                                    y={Math.abs(Number(tpValue))}
-                                                    stroke="#10b981"
-                                                    strokeDasharray="4 4"
-                                                    strokeWidth={1.5}
-                                                    label={{ value: `Target TP +$${tpValue}`, fill: "#10b981", fontSize: 9, position: "left" }}
-                                                />
-                                            )}
-                                            <Area type="monotone" dataKey="profitArea" fill="#10b981" fillOpacity={0.2} stroke="none" />
-                                            <Area type="monotone" dataKey="lossArea" fill="#ef4444" fillOpacity={0.2} stroke="none" />
-                                            <Line type="monotone" dataKey="expiryPnl" stroke="#10b981" strokeWidth={2} dot={false} name="On Expiry" />
-                                            <Line type="monotone" dataKey="targetPnl" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="4 4" dot={false} name="On Target" />
-                                        </ComposedChart>
-                                    </ResponsiveContainer>
+                                                {/* Stop Loss Marker on Chart */}
+                                                {enableStopLoss && slType === "spot_price" && slValue && (
+                                                    <ReferenceLine
+                                                        x={Number(slValue)}
+                                                        stroke="#f43f5e"
+                                                        strokeDasharray="4 4"
+                                                        strokeWidth={1.5}
+                                                        label={{ value: `SL Trigger $${slValue}`, fill: "#f43f5e", fontSize: 9, position: "top" }}
+                                                    />
+                                                )}
+                                                {enableStopLoss && slType === "mtm_loss" && slValue && (
+                                                    <ReferenceLine
+                                                        y={-Math.abs(Number(slValue))}
+                                                        stroke="#f43f5e"
+                                                        strokeDasharray="4 4"
+                                                        strokeWidth={1.5}
+                                                        label={{ value: `Max SL -$${slValue}`, fill: "#f43f5e", fontSize: 9, position: "left" }}
+                                                    />
+                                                )}
+                                                {/* Take Profit Marker on Chart */}
+                                                {enableTakeProfit && tpType === "spot_price" && tpValue && (
+                                                    <ReferenceLine
+                                                        x={Number(tpValue)}
+                                                        stroke="#10b981"
+                                                        strokeDasharray="4 4"
+                                                        strokeWidth={1.5}
+                                                        label={{ value: `TP Target $${tpValue}`, fill: "#10b981", fontSize: 9, position: "top" }}
+                                                    />
+                                                )}
+                                                {enableTakeProfit && tpType === "mtm_profit" && tpValue && (
+                                                    <ReferenceLine
+                                                        y={Math.abs(Number(tpValue))}
+                                                        stroke="#10b981"
+                                                        strokeDasharray="4 4"
+                                                        strokeWidth={1.5}
+                                                        label={{ value: `Target TP +$${tpValue}`, fill: "#10b981", fontSize: 9, position: "left" }}
+                                                    />
+                                                )}
+                                                <Area type="monotone" dataKey="profitArea" fill="#10b981" fillOpacity={0.2} stroke="none" />
+                                                <Area type="monotone" dataKey="lossArea" fill="#ef4444" fillOpacity={0.2} stroke="none" />
+                                                <Line type="monotone" dataKey="expiryPnl" stroke="#10b981" strokeWidth={2} dot={false} name="On Expiry" />
+                                                <Line type="monotone" dataKey="targetPnl" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="4 4" dot={false} name="On Target" />
+                                            </ComposedChart>
+                                        </ResponsiveContainer>
+                                    </div>
+
+                                    {/* StockMojo-style bottom metrics strip */}
+                                    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-[#1f2535] bg-[#0c0f17] px-3.5 py-2 text-xs font-mono">
+                                        <div className="flex flex-wrap items-center gap-3 text-xs font-semibold">
+                                            <span className="flex items-center gap-1.5 text-emerald-400">
+                                                <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 shadow-xs shadow-emerald-500/50" />
+                                                ● Expiry P&L
+                                            </span>
+                                            <span className="flex items-center gap-1.5 text-amber-400">
+                                                <span className="inline-block h-0.5 w-3 border-b-2 border-dashed border-amber-400" />
+                                                - - Target P&L
+                                            </span>
+                                            <span className="flex items-center gap-1 text-gray-400">
+                                                Spot: <strong className="text-white font-bold">${formatNumber(chainData.spotPrice, 2)}</strong>
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-3.5 text-xs font-bold">
+                                            <span>
+                                                <span className="text-gray-400 font-sans font-normal">P&L at spot (Expiry): </span>
+                                                <span className={payoffMetrics.spotExpiryPnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
+                                                    {payoffMetrics.spotExpiryPnl >= 0 ? "+" : ""}{formatMoney(payoffMetrics.spotExpiryPnl, currency === "INR" ? 0 : 2)}
+                                                </span>
+                                            </span>
+                                            <span>
+                                                <span className="text-gray-400 font-sans font-normal">P&L at spot (Target): </span>
+                                                <span className={payoffMetrics.spotTargetPnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
+                                                    {payoffMetrics.spotTargetPnl >= 0 ? "+" : ""}{formatMoney(payoffMetrics.spotTargetPnl, currency === "INR" ? 0 : 2)}
+                                                </span>
+                                            </span>
+                                        </div>
+                                    </div>
                                 </div>
                             )}
 
@@ -2974,14 +3258,24 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                 </div>
                             </div>
 
-                            {/* Order Margin, Stop Loss Quick Badge & Place Order Action Button */}
+                            {/* Order Margin, Funds Required, Margin Benefit & Available Margin */}
                             <div className="pt-2 border-t border-[#1f2535] flex flex-col gap-2.5">
-                                <div className="flex items-center justify-between text-xs text-gray-400 font-mono">
+                                <div className="flex flex-wrap items-center justify-between text-xs text-gray-400 font-mono gap-y-1">
+                                    <div className="flex flex-wrap items-center gap-2.5">
+                                        <span>
+                                            Order Margin: <strong className="text-white">{formatMoney(payoffMetrics.orderMargin, currency === "INR" ? 0 : 2)}</strong>
+                                        </span>
+                                        <span>
+                                            Funds Req: <strong className="text-amber-300">{formatMoney(payoffMetrics.fundsRequired, currency === "INR" ? 0 : 2)}</strong>
+                                        </span>
+                                        {payoffMetrics.marginBenefit > 0 && (
+                                            <span className="text-[10px] font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-1.5 py-0.5 rounded">
+                                                Hedge Save: {formatMoney(payoffMetrics.marginBenefit, currency === "INR" ? 0 : 2)}
+                                            </span>
+                                        )}
+                                    </div>
                                     <span>
-                                        Order Margin: <strong className="text-white">{formatMoney(payoffMetrics.orderMargin, currency === "INR" ? 0 : 2)}</strong>
-                                    </span>
-                                    <span>
-                                        Available Margin: <strong className="text-emerald-400">{formatMoney(demoBalance, 0)}</strong>
+                                        Available: <strong className="text-emerald-400">{formatMoney(demoBalance, 0)}</strong>
                                     </span>
                                 </div>
 

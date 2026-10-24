@@ -70,6 +70,7 @@ import {
     computeBreakevens,
     computeMaxProfitLoss,
     computeRiskRewardRatio,
+    computeMarginDetails,
 } from "../utils/payoff";
 import { useAuth } from "../context/AuthContext";
 
@@ -79,7 +80,7 @@ const CRYPTO_COINS = [
         symbol: "BTC",
         name: "Bitcoin",
         pair: "BTCUSD",
-        lotSize: 1,
+        lotSize: 0.001,
         strikeStep: 200,
         basePrice: 83322.3,
         perpBasis: -42.3,
@@ -91,7 +92,7 @@ const CRYPTO_COINS = [
         symbol: "ETH",
         name: "Ethereum",
         pair: "ETHUSD",
-        lotSize: 1,
+        lotSize: 0.01,
         strikeStep: 25,
         basePrice: 3485.4,
         perpBasis: -2.1,
@@ -103,7 +104,7 @@ const CRYPTO_COINS = [
         symbol: "SOL",
         name: "Solana",
         pair: "SOLUSD",
-        lotSize: 10,
+        lotSize: 0.1,
         strikeStep: 2,
         basePrice: 154.8,
         perpBasis: 0.25,
@@ -716,9 +717,23 @@ export default function CryptoSimulator() {
             pop = Math.round(Math.abs(normCdf(dHigh) - normCdf(dLow)) * 100);
         }
 
-        // Est. Margin (Approx 15% of spot per short leg)
-        const shortLegsCount = legs.filter((l) => l.action === "SELL").length;
-        const estMargin = shortLegsCount * currentSpot * 0.15 + Math.max(0, netDebit);
+        // Est. Margin & Capital details using computeMarginDetails
+        const mappedLegs = legs.map((leg) => ({
+            type: leg.right,
+            action: leg.action.toLowerCase(),
+            strike: leg.strike,
+            lotSize: currentCoin.lotSize || (currentCoin.symbol === "BTC" ? 0.001 : currentCoin.symbol === "ETH" ? 0.01 : 0.1),
+            qty: leg.lots || 1,
+            premium: leg.entryPrice || 0,
+            expiry: leg.expiry,
+        }));
+        const marginInfo = computeMarginDetails(mappedLegs, currentSpot, currentCoin.symbol, {
+            isCrypto: true,
+            leverage: 20,
+        });
+        const estMargin = marginInfo.estMargin;
+        const fundsRequired = marginInfo.fundsRequired;
+        const marginBenefit = marginInfo.marginBenefit;
 
         return {
             netPnL,
@@ -732,6 +747,8 @@ export default function CryptoSimulator() {
             pop: Math.min(99, Math.max(1, pop)),
             netDebit,
             estMargin,
+            fundsRequired,
+            marginBenefit,
             curve,
         };
     }, [legs, optionChainRows, currentSpot, currentExpiry, targetDaysAhead, ivShockPct]);
