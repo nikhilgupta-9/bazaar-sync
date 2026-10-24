@@ -60,7 +60,7 @@ import {
     ReferenceLine,
     ComposedChart,
 } from "recharts";
-import { bsPrice, calculateGreeks, normCdf } from "../utils/blackScholes";
+import { bsPrice, calculateGreeks, normCdf, calculatePOP } from "../utils/blackScholes";
 import { computeMarginDetails } from "../utils/payoff";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -68,6 +68,11 @@ import { saveStrategy } from "../services/strategiesApi";
 import TradingViewChart from "../components/TradingViewChart";
 
 const BACKEND_BASE = import.meta.env.VITE_API_URL || "http://localhost:5001";
+
+// Central Paper Trade local storage keys
+const GUEST_POSITIONS_KEY = "bazaar_sync_guest_positions";
+const GUEST_CRYPTO_WALLET_KEY = "bazaar_sync_guest_crypto_wallet";
+const GUEST_ORDERS_KEY = "bazaar_sync_guest_orders";
 
 const CRYPTO_COINS = [
     { symbol: "BTC", name: "Bitcoin", icon: "₿", defaultLot: 0.001, leverage: "200x", color: "text-amber-400" },
@@ -415,6 +420,7 @@ export default function CryptoStrategyBuilder({ historical = false }) {
     // Target Price Slider State
     const [targetPrice, setTargetPrice] = useState(83025.0);
     const [targetDaysAhead, setTargetDaysAhead] = useState(0); // 0 = today/now, max = expiry
+    const [targetIvShift, setTargetIvShift] = useState(0); // Volatility Shift % (-30 to +30)
 
     // -------------------------------------------------------------
     // STOP LOSS & TAKE PROFIT (RISK MANAGEMENT ENGINE)
@@ -677,13 +683,15 @@ export default function CryptoStrategyBuilder({ historical = false }) {
     // -------------------------------------------------------------
     // 2. STRATEGY LEGS INTERACTION (HOVER BUY/SELL & ADD/REMOVE)
     // -------------------------------------------------------------
-    const handleAddLeg = (option, action = "BUY") => {
+    const handleAddLeg = (option, action = "BUY", priceSource = "MARK") => {
         if (!option) return;
         const act = action.toUpperCase();
         const contractVal = option.contractValue || currentCoinConfig.defaultLot || 0.001;
 
-        // Delta Exchange Live Mark Price
-        const markP = option.markPrice && option.markPrice > 0 ? option.markPrice : (option.bidPrice || option.askPrice || 100);
+        // Select price based on source (Ask for buy, Bid for sell, or Mark)
+        let legPrice = option.markPrice && option.markPrice > 0 ? option.markPrice : (option.bidPrice || option.askPrice || 100);
+        if (priceSource === "BID" && option.bidPrice > 0) legPrice = option.bidPrice;
+        else if (priceSource === "ASK" && option.askPrice > 0) legPrice = option.askPrice;
 
         // Check if this strike & type already exists in legs
         const existingIdx = strategyLegs.findIndex(
@@ -716,10 +724,11 @@ export default function CryptoStrategyBuilder({ historical = false }) {
             expiry: chainData.activeExpiry?.label || "11 Oct 26",
             lots: 1, // Number of contracts
             contractValue: contractVal, // e.g. 0.001 for BTC
-            price: markP, // Live Mark Price
-            markPrice: markP,
+            price: legPrice, // Entry Price
+            markPrice: option.markPrice || legPrice,
             bidPrice: option.bidPrice || 0,
             askPrice: option.askPrice || 0,
+            priceSource: priceSource.toUpperCase(),
             iv: option.markIv || 22.0,
             delta: option.delta != null ? Number(option.delta) : (option.contractType === "call" ? 0.5 : -0.5),
             gamma: option.gamma != null ? Number(option.gamma) : 0.0002,
@@ -733,6 +742,21 @@ export default function CryptoStrategyBuilder({ historical = false }) {
         };
         setStrategyLegs((prev) => [...prev, newLeg]);
         if (!isStrategyBuilderOpen) setIsStrategyBuilderOpen(true);
+    };
+
+    const handleSetLegPriceSource = (id, source) => {
+        setStrategyLegs((prev) =>
+            prev.map((l) => {
+                if (l.id === id) {
+                    const s = source.toUpperCase();
+                    let p = l.markPrice;
+                    if (s === "BID" && l.bidPrice > 0) p = l.bidPrice;
+                    else if (s === "ASK" && l.askPrice > 0) p = l.askPrice;
+                    return { ...l, priceSource: s, price: p };
+                }
+                return l;
+            })
+        );
     };
 
     const handleRemoveLeg = (id) => {
@@ -957,6 +981,9 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                 maxLoss: 0,
                 rewardRisk: 0,
                 breakevens: [],
+                pop: null,
+                isMaxProfitUnlimited: false,
+                isMaxLossUnlimited: false,
                 orderMargin: 0,
                 fundsRequired: 0,
                 marginBenefit: 0,
@@ -974,7 +1001,7 @@ export default function CryptoStrategyBuilder({ historical = false }) {
         const spot = chainData.spotPrice || 83025.0;
         const minPrice = spot * 0.75;
         const maxPrice = spot * 1.25;
-        const steps = 80;
+        const steps = 100;
         const priceStep = (maxPrice - minPrice) / steps;
 
         const chartData = [];
@@ -982,6 +1009,22 @@ export default function CryptoStrategyBuilder({ historical = false }) {
         let minP = Infinity;
         let breakevens = [];
         let prevPnl = null;
+        let netCallVol = 0;
+        let netPutVol = 0;
+        let totalIvSum = 0;
+
+        activeSelectedLegs.forEach((leg) => {
+            const cVal = leg.contractValue || currentCoinConfig.defaultLot || 0.001;
+            const vol = (leg.lots || 1) * cVal * globalMultiplier;
+            const dir = leg.action === "BUY" ? 1 : -1;
+            if (leg.type === "CALL") netCallVol += dir * vol;
+            else netPutVol += dir * vol;
+            totalIvSum += (leg.iv || 22);
+        });
+
+        // Detect unlimited profit / loss on wings
+        const isMaxProfitUnlimited = netCallVol > 0.0001 || netPutVol > 0.0001;
+        const isMaxLossUnlimited = netCallVol < -0.0001 || netPutVol < -0.0001;
 
         for (let p = minPrice; p <= maxPrice; p += priceStep) {
             let expiryPnl = 0;
@@ -1004,9 +1047,16 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                 const legExpiryPnl = isBuy ? (intrinsic - premium) * coinVolume : (premium - intrinsic) * coinVolume;
                 expiryPnl += legExpiryPnl;
 
-                // Target Date Projected Payoff (Black-Scholes dynamic MTM curve)
-                const tDays = Math.max(0.01, 1 - targetDaysAhead / 30);
-                const bsTheoretical = bsPrice(p, k, tDays, 0.05, (leg.iv || 22) / 100, isCall ? "call" : "put");
+                // Target Date Projected Payoff (Black-Scholes dynamic MTM curve with IV Shift)
+                const tYears = Math.max(0.002, (1 - targetDaysAhead / 30) * (3 / 365));
+                const effectiveVol = Math.max(0.05, ((leg.iv || 22) + targetIvShift) / 100);
+                const bsTheoretical = bsPrice({
+                    spot: p,
+                    strike: k,
+                    t: tYears,
+                    vol: effectiveVol,
+                    right: isCall ? "CE" : "PE",
+                });
                 const legTargetPnl = isBuy ? (bsTheoretical - premium) * coinVolume : (premium - bsTheoretical) * coinVolume;
                 targetPnl += legTargetPnl;
             });
@@ -1014,9 +1064,10 @@ export default function CryptoStrategyBuilder({ historical = false }) {
             if (expiryPnl > maxP) maxP = expiryPnl;
             if (expiryPnl < minP) minP = expiryPnl;
 
-            // Detect breakevens
+            // Linear interpolation on zero crossings for exact breakevens
             if (prevPnl !== null && ((prevPnl < 0 && expiryPnl >= 0) || (prevPnl > 0 && expiryPnl <= 0))) {
-                breakevens.push(Math.round(p));
+                const zeroP = (p - priceStep) + (-prevPnl / (expiryPnl - prevPnl)) * priceStep;
+                breakevens.push(Math.round(zeroP));
             }
             prevPnl = expiryPnl;
 
@@ -1030,7 +1081,22 @@ export default function CryptoStrategyBuilder({ historical = false }) {
         }
 
         const maxLoss = minP < 0 ? Math.abs(minP) : 0;
-        const rewardRisk = maxLoss > 0 ? (maxP / maxLoss).toFixed(2) : "∞";
+        const rewardRisk = isMaxProfitUnlimited
+            ? "Unlimited"
+            : isMaxLossUnlimited
+            ? "N/A"
+            : maxLoss > 0
+            ? (maxP / maxLoss).toFixed(2)
+            : "Unlimited";
+
+        // Calculate Probability of Profit (POP)
+        const avgIv = (totalIvSum / Math.max(1, activeSelectedLegs.length)) / 100;
+        const pop = calculatePOP({
+            chartData,
+            spot,
+            tYears: Math.max(1 / 365, 3 / 365),
+            avgIv,
+        });
 
         // Delta Exchange Initial Margin & Capital Requirements
         const mappedLegs = activeSelectedLegs.map((leg) => {
@@ -1072,8 +1138,15 @@ export default function CryptoStrategyBuilder({ historical = false }) {
             const intrinsic = isCall ? Math.max(0, spot - k) : Math.max(0, k - spot);
             spotExpiryPnl += isBuy ? (intrinsic - premium) * coinVolume : (premium - intrinsic) * coinVolume;
 
-            const tDays = Math.max(0.01, 1 - targetDaysAhead / 30);
-            const bsTheoretical = bsPrice(spot, k, tDays, 0.05, (leg.iv || 22) / 100, isCall ? "call" : "put");
+            const tYears = Math.max(0.002, (1 - targetDaysAhead / 30) * (3 / 365));
+            const effectiveVol = Math.max(0.05, ((leg.iv || 22) + targetIvShift) / 100);
+            const bsTheoretical = bsPrice({
+                spot,
+                strike: k,
+                t: tYears,
+                vol: effectiveVol,
+                right: isCall ? "CE" : "PE",
+            });
             spotTargetPnl += isBuy ? (bsTheoretical - premium) * coinVolume : (premium - bsTheoretical) * coinVolume;
         });
 
@@ -1082,6 +1155,9 @@ export default function CryptoStrategyBuilder({ historical = false }) {
             maxLoss: minP < 0 ? minP : 0,
             rewardRisk,
             breakevens,
+            pop,
+            isMaxProfitUnlimited,
+            isMaxLossUnlimited,
             orderMargin: marginInfo.estMargin,
             fundsRequired: marginInfo.fundsRequired,
             marginBenefit: marginInfo.marginBenefit,
@@ -1094,7 +1170,7 @@ export default function CryptoStrategyBuilder({ historical = false }) {
             totalCoins,
             chartData,
         };
-    }, [activeSelectedLegs, globalMultiplier, chainData.spotPrice, targetDaysAhead, currentCoinConfig]);
+    }, [activeSelectedLegs, globalMultiplier, chainData.spotPrice, targetDaysAhead, targetIvShift, currentCoinConfig]);
 
     // Strategy Portfolio Greeks calculation (Delta, Gamma, Theta, Vega)
     const strategyGreeks = useMemo(() => {
@@ -1242,13 +1318,13 @@ export default function CryptoStrategyBuilder({ historical = false }) {
             let slPrice = null;
             if (enableStopLoss) {
                 if (slType === "mtm_loss") {
-                    slText = `-$${slValue} MTM`;
+                    slText = `-${formatMoney(slValue, 0)} MTM`;
                     slPrice = leg.action === "BUY" ? Math.max(1, entryPrice * 0.7) : entryPrice * 1.3;
                 } else if (slType === "pct_loss") {
                     slText = `-${slValue}% Loss`;
                     slPrice = leg.action === "BUY" ? entryPrice * (1 - slValue / 100) : entryPrice * (1 + slValue / 100);
                 } else {
-                    slText = `Spot @ $${Number(slValue).toLocaleString()}`;
+                    slText = `Spot @ ${formatMoney(slValue, 0)}`;
                     slPrice = leg.action === "BUY" ? entryPrice * 0.8 : entryPrice * 1.2;
                 }
 
@@ -1273,13 +1349,13 @@ export default function CryptoStrategyBuilder({ historical = false }) {
             let tpPrice = null;
             if (enableTakeProfit) {
                 if (tpType === "mtm_profit") {
-                    tpText = `+$${tpValue} MTM`;
+                    tpText = `+${formatMoney(tpValue, 0)} MTM`;
                     tpPrice = leg.action === "BUY" ? entryPrice * 1.5 : Math.max(1, entryPrice * 0.5);
                 } else if (tpType === "pct_profit") {
                     tpText = `+${tpValue}% Gain`;
                     tpPrice = leg.action === "BUY" ? entryPrice * (1 + tpValue / 100) : Math.max(1, entryPrice * (1 - tpValue / 100));
                 } else {
-                    tpText = `Spot @ $${Number(tpValue).toLocaleString()}`;
+                    tpText = `Spot @ ${formatMoney(tpValue, 0)}`;
                     tpPrice = leg.action === "BUY" ? entryPrice * 1.3 : Math.max(1, entryPrice * 0.7);
                 }
 
@@ -1319,6 +1395,8 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                 pnlPct: 0.0,
                 slTrigger: slText,
                 tpTrigger: tpText,
+                slAmountUsd: enableStopLoss && slType === "mtm_loss" ? Number(slValue) : null,
+                tpAmountUsd: enableTakeProfit && tpType === "mtm_profit" ? Number(tpValue) : null,
                 stopOrderId: soId,
                 status: "OPEN",
                 createdAt: dateStr,
@@ -1347,6 +1425,70 @@ export default function CryptoStrategyBuilder({ historical = false }) {
             });
         });
 
+        // Central Paper Trade Sync to bazaar_sync_guest_positions and crypto wallet
+        try {
+            const rawPaperPositions = localStorage.getItem(GUEST_POSITIONS_KEY);
+            const currentPaperPositions = rawPaperPositions ? JSON.parse(rawPaperPositions) : [];
+            const rawCryptoWallet = localStorage.getItem(GUEST_CRYPTO_WALLET_KEY);
+            const currentCryptoWallet = rawCryptoWallet ? JSON.parse(rawCryptoWallet) : { balance: 10000, margin_utilized: 0 };
+
+            const paperTradeEntries = activeSelectedLegs.map((leg, idx) => {
+                const cVal = leg.contractValue || currentCoinConfig.defaultLot || 0.001;
+                const totalShares = (leg.lots || 1) * cVal;
+                const entryPrice = leg.price || leg.markPrice || 100;
+                const isBuy = leg.action === "BUY";
+                const allocatedMargin = isBuy
+                    ? entryPrice * totalShares
+                    : ((payoffMetrics.orderMargin || 10) / sellLegsCount);
+
+                let slPrice = null;
+                if (enableStopLoss) {
+                    if (slType === "mtm_loss") slPrice = isBuy ? Math.max(1, entryPrice * 0.7) : entryPrice * 1.3;
+                    else if (slType === "pct_loss") slPrice = isBuy ? entryPrice * (1 - slValue / 100) : entryPrice * (1 + slValue / 100);
+                    else slPrice = Number(slValue);
+                }
+
+                let tpPrice = null;
+                if (enableTakeProfit) {
+                    if (tpType === "mtm_profit") tpPrice = isBuy ? entryPrice * 1.5 : Math.max(1, entryPrice * 0.5);
+                    else if (tpType === "pct_profit") tpPrice = isBuy ? entryPrice * (1 + tpValue / 100) : Math.max(1, entryPrice * (1 - tpValue / 100));
+                    else tpPrice = Number(tpValue);
+                }
+
+                return {
+                    id: Date.now() + idx,
+                    symbol: selectedCoin,
+                    market: "crypto",
+                    expiry: leg.expiry || chainData.activeExpiry?.label || "11 Oct 26",
+                    strategy_name: `${selectedCoin} Strategy (${activeSelectedLegs.length} Legs)`,
+                    option_type: leg.type === "CALL" ? "CE" : "PE",
+                    strike: Number(leg.strike),
+                    side: isBuy ? "long" : "short",
+                    lots: leg.lots || 1,
+                    lot_size: cVal,
+                    entry_price: entryPrice,
+                    current_price: entryPrice,
+                    unrealizedPnl: 0,
+                    margin_blocked: allocatedMargin,
+                    stop_loss_price: slPrice,
+                    target_price: tpPrice,
+                    created_at: new Date().toISOString(),
+                };
+            });
+
+            const updatedPaperPositions = [...currentPaperPositions, ...paperTradeEntries];
+            localStorage.setItem(GUEST_POSITIONS_KEY, JSON.stringify(updatedPaperPositions));
+
+            const totalBlocked = paperTradeEntries.reduce((s, p) => s + (p.margin_blocked || 0), 0);
+            const updatedCryptoWallet = {
+                balance: Math.max(0, (currentCryptoWallet.balance || 10000) - fundsNeeded),
+                margin_utilized: (currentCryptoWallet.margin_utilized || 0) + totalBlocked,
+            };
+            localStorage.setItem(GUEST_CRYPTO_WALLET_KEY, JSON.stringify(updatedCryptoWallet));
+        } catch (syncErr) {
+            console.warn("Paper trade sync warning:", syncErr.message);
+        }
+
         setPositions((prev) => [...newPositions, ...prev]);
         setStopOrders((prev) => [...newStopOrders, ...prev]);
         setFills((prev) => [...newFills, ...prev]);
@@ -1359,9 +1501,9 @@ export default function CryptoStrategyBuilder({ historical = false }) {
         setMobileTab("positions");
 
         setOrderSuccessMsg(
-            `Order Executed! ${activeSelectedLegs.length} position(s) opened in Delta Simulator. Funds Required: $${formatNumber(fundsNeeded)} (Margin: $${formatNumber(payoffMetrics.orderMargin || 0)})`
+            `Order Executed! ${activeSelectedLegs.length} position(s) opened in Delta Simulator & Paper Trade Workstation. Funds Required: ${formatMoney(fundsNeeded)} (Margin: ${formatMoney(payoffMetrics.orderMargin || 0)})`
         );
-        setTimeout(() => setOrderSuccessMsg(null), 6000);
+        setTimeout(() => setOrderSuccessMsg(null), 8000);
 
         // Smooth scroll to positions panel
         setTimeout(() => {
@@ -2302,8 +2444,12 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                             </td>
                                             )}
                                             {!historical && (
-                                            <td className="py-2 px-1 text-emerald-400/90">
-                                                <div>{row.call?.bidPrice ? formatMoney(row.call.bidPrice, currency === "INR" ? 0 : 2) : "—"}</div>
+                                            <td
+                                                onClick={() => row.call?.bidPrice && handleAddLeg(row.call, "SELL", "BID")}
+                                                className="py-2 px-1 text-emerald-400/90 cursor-pointer hover:bg-emerald-500/15 transition-all"
+                                                title="Click to Sell Call at Bid Price"
+                                            >
+                                                <div>{row.call?.bidPrice ? formatMoney(row.call.bidPrice, 2) : "—"}</div>
                                                 <div className="text-[9px] text-gray-500">{row.call?.bidIv ? `${row.call.bidIv.toFixed(1)}%` : "-"}</div>
                                             </td>
                                             )}
@@ -2312,6 +2458,7 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                             <td
                                                 onMouseEnter={() => setHoveredLeg({ strike: row.strike, type: "call" })}
                                                 onMouseLeave={() => setHoveredLeg(null)}
+                                                onClick={() => setHoveredLeg({ strike: row.strike, type: "call" })}
                                                 className={`py-1.5 px-2 relative transition-all ${
                                                     isCallSelected ? "bg-amber-500/20 border-l-2 border-amber-400 ring-1 ring-amber-500/30" : "bg-emerald-500/5 hover:bg-emerald-500/10"
                                                 }`}
@@ -2320,33 +2467,55 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                                     <div className="flex flex-col items-center justify-center gap-0.5 z-10">
                                                         <div className="flex items-center justify-center gap-1">
                                                             <button
-                                                                onClick={(e) => { e.stopPropagation(); handleAddLeg(row.call, "BUY"); }}
-                                                                className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[10px] shadow cursor-pointer hover:scale-105 transition"
+                                                                onClick={(e) => { e.stopPropagation(); handleAddLeg(row.call, "BUY", "MARK"); }}
+                                                                className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[10px] shadow cursor-pointer hover:scale-105 active:scale-95 transition"
                                                             >
                                                                 Buy
                                                             </button>
                                                             <button
-                                                                onClick={(e) => { e.stopPropagation(); handleAddLeg(row.call, "SELL"); }}
-                                                                className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-black text-[10px] shadow cursor-pointer hover:scale-105 transition"
+                                                                onClick={(e) => { e.stopPropagation(); handleAddLeg(row.call, "SELL", "MARK"); }}
+                                                                className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-black text-[10px] shadow cursor-pointer hover:scale-105 active:scale-95 transition"
                                                             >
                                                                 Sell
                                                             </button>
                                                         </div>
                                                         <div className="text-[9px] font-mono font-bold text-emerald-300">
-                                                            {formatMoney(row.call?.markPrice, currency === "INR" ? 0 : 2)}
+                                                            {formatMoney(row.call?.markPrice, 2)}
                                                         </div>
                                                     </div>
                                                 ) : (
-                                                    <div>
-                                                        <div className="font-bold text-white tracking-tight">{row.call?.markPrice ? formatMoney(row.call.markPrice, currency === "INR" ? 0 : 2) : "—"}</div>
-                                                        <div className="text-[9px] text-emerald-400 font-mono">{row.call?.markIv ? `${row.call.markIv.toFixed(1)}%` : "-"}</div>
+                                                    <div className="flex items-center justify-between gap-1">
+                                                        <div className="text-left">
+                                                            <div className="font-bold text-white tracking-tight">{row.call?.markPrice ? formatMoney(row.call.markPrice, 2) : "—"}</div>
+                                                            <div className="text-[9px] text-emerald-400 font-mono">{row.call?.markIv ? `${row.call.markIv.toFixed(1)}%` : "-"}</div>
+                                                        </div>
+                                                        <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition">
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); handleAddLeg(row.call, "BUY", "MARK"); }}
+                                                                className="w-4 h-4 rounded text-[9px] font-black bg-emerald-700/80 hover:bg-emerald-500 text-white flex items-center justify-center cursor-pointer shadow-xs active:scale-90"
+                                                                title="Quick Buy Call"
+                                                            >
+                                                                B
+                                                            </button>
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); handleAddLeg(row.call, "SELL", "MARK"); }}
+                                                                className="w-4 h-4 rounded text-[9px] font-black bg-rose-700/80 hover:bg-rose-500 text-white flex items-center justify-center cursor-pointer shadow-xs active:scale-90"
+                                                                title="Quick Sell Call"
+                                                            >
+                                                                S
+                                                            </button>
+                                                        </div>
                                                     </div>
                                                 )}
                                             </td>
 
                                             {!historical && (
-                                            <td className="py-2 px-1 text-rose-400/90">
-                                                <div>{row.call?.askPrice ? formatMoney(row.call.askPrice, currency === "INR" ? 0 : 2) : "—"}</div>
+                                            <td
+                                                onClick={() => row.call?.askPrice && handleAddLeg(row.call, "BUY", "ASK")}
+                                                className="py-2 px-1 text-rose-400/90 cursor-pointer hover:bg-rose-500/15 transition-all"
+                                                title="Click to Buy Call at Ask Price"
+                                            >
+                                                <div>{row.call?.askPrice ? formatMoney(row.call.askPrice, 2) : "—"}</div>
                                                 <div className="text-[9px] text-gray-500">{row.call?.askIv ? `${row.call.askIv.toFixed(1)}%` : "-"}</div>
                                             </td>
                                             )}
@@ -2407,8 +2576,12 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                             </td>
                                             )}
                                             {!historical && (
-                                            <td className="py-2 px-1 text-emerald-400/90">
-                                                <div>{row.put?.bidPrice ? formatMoney(row.put.bidPrice, currency === "INR" ? 0 : 2) : "—"}</div>
+                                            <td
+                                                onClick={() => row.put?.bidPrice && handleAddLeg(row.put, "SELL", "BID")}
+                                                className="py-2 px-1 text-emerald-400/90 cursor-pointer hover:bg-emerald-500/15 transition-all"
+                                                title="Click to Sell Put at Bid Price"
+                                            >
+                                                <div>{row.put?.bidPrice ? formatMoney(row.put.bidPrice, 2) : "—"}</div>
                                                 <div className="text-[9px] text-gray-500">{row.put?.bidIv ? `${row.put.bidIv.toFixed(1)}%` : "-"}</div>
                                             </td>
                                             )}
@@ -2417,6 +2590,7 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                             <td
                                                 onMouseEnter={() => setHoveredLeg({ strike: row.strike, type: "put" })}
                                                 onMouseLeave={() => setHoveredLeg(null)}
+                                                onClick={() => setHoveredLeg({ strike: row.strike, type: "put" })}
                                                 className={`py-1.5 px-2 relative transition-all ${
                                                     isPutSelected ? "bg-amber-500/20 border-r-2 border-amber-400 ring-1 ring-amber-500/30" : "bg-rose-500/5 hover:bg-rose-500/10"
                                                 }`}
@@ -2425,33 +2599,55 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                                     <div className="flex flex-col items-center justify-center gap-0.5 z-10">
                                                         <div className="flex items-center justify-center gap-1">
                                                             <button
-                                                                onClick={(e) => { e.stopPropagation(); handleAddLeg(row.put, "BUY"); }}
-                                                                className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[10px] shadow cursor-pointer hover:scale-105 transition"
+                                                                onClick={(e) => { e.stopPropagation(); handleAddLeg(row.put, "BUY", "MARK"); }}
+                                                                className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[10px] shadow cursor-pointer hover:scale-105 active:scale-95 transition"
                                                             >
                                                                 Buy
                                                             </button>
                                                             <button
-                                                                onClick={(e) => { e.stopPropagation(); handleAddLeg(row.put, "SELL"); }}
-                                                                className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-black text-[10px] shadow cursor-pointer hover:scale-105 transition"
+                                                                onClick={(e) => { e.stopPropagation(); handleAddLeg(row.put, "SELL", "MARK"); }}
+                                                                className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-black text-[10px] shadow cursor-pointer hover:scale-105 active:scale-95 transition"
                                                             >
                                                                 Sell
                                                             </button>
                                                         </div>
                                                         <div className="text-[9px] font-mono font-bold text-rose-300">
-                                                            {formatMoney(row.put?.markPrice, currency === "INR" ? 0 : 2)}
+                                                            {formatMoney(row.put?.markPrice, 2)}
                                                         </div>
                                                     </div>
                                                 ) : (
-                                                    <div>
-                                                        <div className="font-bold text-white tracking-tight">{row.put?.markPrice ? formatMoney(row.put.markPrice, currency === "INR" ? 0 : 2) : "—"}</div>
-                                                        <div className="text-[9px] text-rose-400 font-mono">{row.put?.markIv ? `${row.put.markIv.toFixed(1)}%` : "-"}</div>
+                                                    <div className="flex items-center justify-between gap-1">
+                                                        <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition">
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); handleAddLeg(row.put, "BUY", "MARK"); }}
+                                                                className="w-4 h-4 rounded text-[9px] font-black bg-emerald-700/80 hover:bg-emerald-500 text-white flex items-center justify-center cursor-pointer shadow-xs active:scale-90"
+                                                                title="Quick Buy Put"
+                                                            >
+                                                                B
+                                                            </button>
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); handleAddLeg(row.put, "SELL", "MARK"); }}
+                                                                className="w-4 h-4 rounded text-[9px] font-black bg-rose-700/80 hover:bg-rose-500 text-white flex items-center justify-center cursor-pointer shadow-xs active:scale-90"
+                                                                title="Quick Sell Put"
+                                                            >
+                                                                S
+                                                            </button>
+                                                        </div>
+                                                        <div className="text-right">
+                                                            <div className="font-bold text-white tracking-tight">{row.put?.markPrice ? formatMoney(row.put.markPrice, 2) : "—"}</div>
+                                                            <div className="text-[9px] text-rose-400 font-mono">{row.put?.markIv ? `${row.put.markIv.toFixed(1)}%` : "-"}</div>
+                                                        </div>
                                                     </div>
                                                 )}
                                             </td>
 
                                             {!historical && (
-                                            <td className="py-2 px-1 text-rose-400/90">
-                                                <div>{row.put?.askPrice ? formatMoney(row.put.askPrice, currency === "INR" ? 0 : 2) : "—"}</div>
+                                            <td
+                                                onClick={() => row.put?.askPrice && handleAddLeg(row.put, "BUY", "ASK")}
+                                                className="py-2 px-1 text-rose-400/90 cursor-pointer hover:bg-rose-500/15 transition-all"
+                                                title="Click to Buy Put at Ask Price"
+                                            >
+                                                <div>{row.put?.askPrice ? formatMoney(row.put.askPrice, 2) : "—"}</div>
                                                 <div className="text-[9px] text-gray-500">{row.put?.askIv ? `${row.put.askIv.toFixed(1)}%` : "-"}</div>
                                             </td>
                                             )}
@@ -2924,16 +3120,56 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                                         </div>
                                                     </div>
 
-                                                    {/* Right: Mark Price & Premium */}
-                                                    <div className="flex items-center gap-3 text-gray-400 text-[10px]">
+                                                    {/* Right: Price Sourcing & Premium */}
+                                                    <div className="flex items-center gap-2 text-gray-400 text-[10px] flex-wrap">
+                                                        <div className="flex items-center bg-[#0d1017] p-0.5 rounded border border-[#23293d]">
+                                                            <button
+                                                                onClick={() => handleSetLegPriceSource(leg.id, "MARK")}
+                                                                className={`px-1.5 py-0.2 rounded text-[9px] font-bold cursor-pointer transition ${
+                                                                    leg.priceSource === "MARK" || !leg.priceSource
+                                                                        ? "bg-amber-500 text-black font-extrabold"
+                                                                        : "text-gray-400 hover:text-white"
+                                                                }`}
+                                                                title="Use Mark Price"
+                                                            >
+                                                                Mark
+                                                            </button>
+                                                            {leg.bidPrice > 0 && (
+                                                                <button
+                                                                    onClick={() => handleSetLegPriceSource(leg.id, "BID")}
+                                                                    className={`px-1.5 py-0.2 rounded text-[9px] font-bold cursor-pointer transition ${
+                                                                        leg.priceSource === "BID"
+                                                                            ? "bg-amber-500 text-black font-extrabold"
+                                                                            : "text-gray-400 hover:text-white"
+                                                                    }`}
+                                                                    title={`Use Bid Price (${formatMoney(leg.bidPrice, 2)})`}
+                                                                >
+                                                                    Bid
+                                                                </button>
+                                                            )}
+                                                            {leg.askPrice > 0 && (
+                                                                <button
+                                                                    onClick={() => handleSetLegPriceSource(leg.id, "ASK")}
+                                                                    className={`px-1.5 py-0.2 rounded text-[9px] font-bold cursor-pointer transition ${
+                                                                        leg.priceSource === "ASK"
+                                                                            ? "bg-amber-500 text-black font-extrabold"
+                                                                            : "text-gray-400 hover:text-white"
+                                                                    }`}
+                                                                    title={`Use Ask Price (${formatMoney(leg.askPrice, 2)})`}
+                                                                >
+                                                                    Ask
+                                                                </button>
+                                                            )}
+                                                        </div>
+
                                                         <div>
-                                                            <span className="text-gray-500">Mark: </span>
-                                                            <strong className="text-white">${formatNumber(leg.markPrice || leg.price, 2)}</strong>
+                                                            <span className="text-gray-500">Price: </span>
+                                                            <strong className="text-white">{formatMoney(leg.price || leg.markPrice, 2)}</strong>
                                                         </div>
                                                         <div>
                                                             <span className="text-gray-500">Prem: </span>
                                                             <strong className={leg.action === "BUY" ? "text-rose-400" : "text-emerald-400"}>
-                                                                {leg.action === "BUY" ? "-" : "+"}${formatNumber(premiumVal, 2)}
+                                                                {leg.action === "BUY" ? "-" : "+"}{formatMoney(premiumVal, 2)}
                                                             </strong>
                                                         </div>
                                                     </div>
@@ -2993,18 +3229,38 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                 </div>
                             </div>
 
-                            {/* Key Stats Bar: Max Profit, Max Loss, Reward/Risk, Breakeven */}
-                            <div className="grid grid-cols-4 gap-2 bg-[#0c0f17] p-2.5 rounded-lg border border-[#1d2334] text-center font-mono text-[11px]">
+                            {/* Key Stats Bar: POP, Max Profit, Max Loss, Reward/Risk, Breakeven */}
+                            <div className="grid grid-cols-5 gap-1.5 bg-[#0c0f17] p-2.5 rounded-lg border border-[#1d2334] text-center font-mono text-[11px]">
+                                <div>
+                                    <span className="text-[10px] text-gray-400 block font-sans">POP</span>
+                                    <strong className="text-emerald-400 font-bold">
+                                        {payoffMetrics.pop != null ? `${payoffMetrics.pop}%` : "—"}
+                                    </strong>
+                                </div>
                                 <div>
                                     <span className="text-[10px] text-gray-400 block font-sans">Max Profit</span>
                                     <strong className="text-emerald-400 font-bold">
-                                        {formatMoney(payoffMetrics.maxProfit, currency === "INR" ? 0 : 2)}
+                                        {payoffMetrics.isMaxProfitUnlimited ? (
+                                            <span className="inline-flex items-center gap-0.5 text-emerald-300">
+                                                <span>Unlimited</span>
+                                                <span className="text-xs font-black">∞</span>
+                                            </span>
+                                        ) : (
+                                            formatMoney(payoffMetrics.maxProfit, 2)
+                                        )}
                                     </strong>
                                 </div>
                                 <div>
                                     <span className="text-[10px] text-gray-400 block font-sans">Max Loss</span>
                                     <strong className="text-rose-400 font-bold">
-                                        {formatMoney(payoffMetrics.maxLoss, currency === "INR" ? 0 : 2)}
+                                        {payoffMetrics.isMaxLossUnlimited ? (
+                                            <span className="inline-flex items-center gap-0.5 text-rose-300">
+                                                <span>Unlimited</span>
+                                                <span className="text-xs font-black">∞</span>
+                                            </span>
+                                        ) : (
+                                            formatMoney(payoffMetrics.maxLoss, 2)
+                                        )}
                                     </strong>
                                 </div>
                                 <div>
@@ -3014,7 +3270,7 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                 <div>
                                     <span className="text-[10px] text-gray-400 block font-sans">Breakeven</span>
                                     <strong className="text-amber-300 font-bold text-[10px]">
-                                        {payoffMetrics.breakevens.length > 0 ? payoffMetrics.breakevens.join(", ") : "N/A"}
+                                        {payoffMetrics.breakevens.length > 0 ? payoffMetrics.breakevens.map((b) => `$${b.toLocaleString()}`).join(", ") : "N/A"}
                                     </strong>
                                 </div>
                             </div>
@@ -3250,10 +3506,45 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                     className="w-full accent-amber-500 cursor-pointer"
                                 />
 
-                                <div className="flex items-center justify-between text-[10px]">
-                                    <span className="text-gray-500">Projected PnL at Target:</span>
+                                <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-[#1b2130]">
+                                    <div>
+                                        <div className="flex items-center justify-between text-[10px] text-gray-400">
+                                            <span>Date: <strong className="text-white font-mono">{targetDaysAhead}d ahead</strong></span>
+                                            <button onClick={() => setTargetDaysAhead(0)} className="text-amber-400 hover:text-amber-300 font-bold cursor-pointer">Today</button>
+                                        </div>
+                                        <input
+                                            type="range"
+                                            min="0"
+                                            max="30"
+                                            step="1"
+                                            value={targetDaysAhead}
+                                            onChange={(e) => setTargetDaysAhead(Number(e.target.value))}
+                                            className="w-full accent-amber-500 cursor-pointer h-1.5"
+                                            title="Simulate time decay days ahead"
+                                        />
+                                    </div>
+                                    <div>
+                                        <div className="flex items-center justify-between text-[10px] text-gray-400">
+                                            <span>IV Shift: <strong className={`font-mono font-bold ${targetIvShift > 0 ? "text-emerald-400" : targetIvShift < 0 ? "text-rose-400" : "text-white"}`}>{targetIvShift >= 0 ? `+${targetIvShift}%` : `${targetIvShift}%`}</strong></span>
+                                            <button onClick={() => setTargetIvShift(0)} className="text-amber-400 hover:text-amber-300 font-bold cursor-pointer">0%</button>
+                                        </div>
+                                        <input
+                                            type="range"
+                                            min="-30"
+                                            max="30"
+                                            step="1"
+                                            value={targetIvShift}
+                                            onChange={(e) => setTargetIvShift(Number(e.target.value))}
+                                            className="w-full accent-amber-500 cursor-pointer h-1.5"
+                                            title="Volatility Shock Simulator (Vega Stress Test)"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center justify-between text-[10px] pt-1">
+                                    <span className="text-gray-400">Projected PnL at Target:</span>
                                     <strong className={targetPricePnl >= 0 ? "text-emerald-400 font-mono" : "text-rose-400 font-mono"}>
-                                        {targetPricePnl >= 0 ? "+" : ""}{formatMoney(targetPricePnl, currency === "INR" ? 0 : 2)}
+                                        {targetPricePnl >= 0 ? "+" : ""}{formatMoney(targetPricePnl, 2)}
                                     </strong>
                                 </div>
                             </div>
@@ -3263,14 +3554,14 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                 <div className="flex flex-wrap items-center justify-between text-xs text-gray-400 font-mono gap-y-1">
                                     <div className="flex flex-wrap items-center gap-2.5">
                                         <span>
-                                            Order Margin: <strong className="text-white">{formatMoney(payoffMetrics.orderMargin, currency === "INR" ? 0 : 2)}</strong>
+                                            Order Margin: <strong className="text-white">{formatMoney(payoffMetrics.orderMargin, 2)}</strong>
                                         </span>
                                         <span>
-                                            Funds Req: <strong className="text-amber-300">{formatMoney(payoffMetrics.fundsRequired, currency === "INR" ? 0 : 2)}</strong>
+                                            Funds Req: <strong className="text-amber-300">{formatMoney(payoffMetrics.fundsRequired, 2)}</strong>
                                         </span>
                                         {payoffMetrics.marginBenefit > 0 && (
                                             <span className="text-[10px] font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-1.5 py-0.5 rounded">
-                                                Hedge Save: {formatMoney(payoffMetrics.marginBenefit, currency === "INR" ? 0 : 2)}
+                                                Hedge Save: {formatMoney(payoffMetrics.marginBenefit, 2)}
                                             </span>
                                         )}
                                     </div>
@@ -3291,16 +3582,16 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                                 <span className={enableStopLoss ? "text-rose-400 font-mono" : "text-gray-500 font-normal"}>
                                                     {enableStopLoss
                                                         ? slType === "mtm_loss"
-                                                            ? `-$${slValue} MTM`
+                                                            ? `-${formatMoney(slValue, 0)} MTM`
                                                             : slType === "pct_loss"
                                                             ? `-${slValue}% Loss`
-                                                            : `Spot $${slValue}`
+                                                            : `Spot ${formatMoney(slValue, 0)}`
                                                         : "Disabled"}
                                                 </span>
                                             </div>
                                             {enableTakeProfit && (
                                                 <div className="text-[10px] text-emerald-400 font-mono">
-                                                    Target: {tpType === "mtm_profit" ? `+$${tpValue} MTM` : tpType === "pct_profit" ? `+${tpValue}%` : `Spot $${tpValue}`}
+                                                    Target: {tpType === "mtm_profit" ? `+${formatMoney(tpValue, 0)} MTM` : tpType === "pct_profit" ? `+${tpValue}%` : `Spot ${formatMoney(tpValue, 0)}`}
                                                 </div>
                                             )}
                                         </div>
@@ -3317,21 +3608,42 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                 </div>
 
                                 {orderSuccessMsg && (
-                                    <div className="p-2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-xs text-center font-bold">
-                                        {orderSuccessMsg}
+                                    <div className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-xs font-bold flex items-center justify-between gap-2 shadow-xs animate-in fade-in">
+                                        <div className="flex items-center gap-2">
+                                            <FiCheckCircle size={14} className="text-emerald-400 shrink-0" />
+                                            <span>{orderSuccessMsg}</span>
+                                        </div>
+                                        <Link
+                                            to="/paper-trade"
+                                            className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold shrink-0 flex items-center gap-1 shadow transition hover:scale-105"
+                                        >
+                                            <span>View in Paper Trade</span>
+                                            <FiExternalLink size={11} />
+                                        </Link>
                                     </div>
                                 )}
 
-                                <button
-                                    onClick={handlePlaceOrder}
-                                    disabled={activeSelectedLegs.length === 0}
-                                    className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:to-orange-400 text-black font-black text-sm shadow-lg shadow-amber-950/40 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer hover:scale-[1.01]"
-                                >
-                                    <span>Execute Strategy with Stop Loss</span>
-                                    <span className="text-xs px-2 py-0.5 rounded bg-black/20 font-mono">
-                                        ({activeSelectedLegs.length} Legs)
-                                    </span>
-                                </button>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        onClick={handlePlaceOrder}
+                                        disabled={activeSelectedLegs.length === 0}
+                                        className="flex-1 py-3 rounded-xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:to-orange-400 text-black font-black text-sm shadow-lg shadow-amber-950/40 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer hover:scale-[1.01]"
+                                    >
+                                        <span>Execute Strategy with Stop Loss</span>
+                                        <span className="text-xs px-2 py-0.5 rounded bg-black/20 font-mono">
+                                            ({activeSelectedLegs.length} Legs)
+                                        </span>
+                                    </button>
+
+                                    <Link
+                                        to="/paper-trade"
+                                        className="px-3 py-3 rounded-xl bg-[#181d2c] hover:bg-[#22293d] border border-emerald-500/40 text-emerald-300 font-bold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs shrink-0"
+                                        title="Open Central Paper Trade Workstation"
+                                    >
+                                        <FiExternalLink size={14} />
+                                        <span className="hidden sm:inline">Paper Trade</span>
+                                    </Link>
+                                </div>
                             </div>
                         </div>
                             </>
@@ -3527,13 +3839,13 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                                 </span>
                                             </td>
                                             <td className="py-2.5 px-3 whitespace-nowrap text-gray-300 font-semibold">{pos.size}</td>
-                                            <td className="py-2.5 px-3 whitespace-nowrap text-gray-300">{formatMoney(pos.entryPrice, currency === "INR" ? 0 : 2)}</td>
+                                            <td className="py-2.5 px-3 whitespace-nowrap text-gray-300">{formatMoney(pos.entryPrice, 2)}</td>
                                             <td className="py-2.5 px-3 whitespace-nowrap text-white font-bold">
-                                                {formatMoney(pos.markPrice, currency === "INR" ? 0 : 2)}
+                                                {formatMoney(pos.markPrice, 2)}
                                             </td>
                                             <td className="py-2.5 px-3 whitespace-nowrap">
                                                 <div className={`font-bold ${pos.unrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                                                    <span>{pos.unrealizedPnl >= 0 ? "+" : ""}{formatMoney(pos.unrealizedPnl, currency === "INR" ? 0 : 2)}</span>
+                                                    <span>{pos.unrealizedPnl >= 0 ? "+" : ""}{formatMoney(pos.unrealizedPnl, 2)}</span>
                                                     <span className="text-[10px] ml-1 opacity-80">
                                                         ({pos.pnlPct >= 0 ? "+" : ""}{pos.pnlPct.toFixed(1)}%)
                                                     </span>
@@ -3542,13 +3854,13 @@ export default function CryptoStrategyBuilder({ historical = false }) {
                                             <td className="py-2.5 px-3 whitespace-nowrap">
                                                 <span className="px-2 py-0.5 rounded bg-rose-900/30 text-rose-300 border border-rose-700/40 text-[11px] font-bold inline-flex items-center gap-1">
                                                     <FiShield size={10} className="text-rose-400" />
-                                                    <span>{pos.slTrigger || "None"}</span>
+                                                    <span>{pos.slAmountUsd ? `-${formatMoney(pos.slAmountUsd, 0)} MTM` : pos.slTrigger || "None"}</span>
                                                 </span>
                                             </td>
                                             <td className="py-2.5 px-3 whitespace-nowrap">
                                                 <span className="px-2 py-0.5 rounded bg-emerald-900/30 text-emerald-300 border border-emerald-700/40 text-[11px] font-bold inline-flex items-center gap-1">
                                                     <FiTarget size={10} className="text-emerald-400" />
-                                                    <span>{pos.tpTrigger || "None"}</span>
+                                                    <span>{pos.tpAmountUsd ? `+${formatMoney(pos.tpAmountUsd, 0)} MTM` : pos.tpTrigger || "None"}</span>
                                                 </span>
                                             </td>
                                             <td className="py-2.5 px-3 whitespace-nowrap text-right space-x-1.5">

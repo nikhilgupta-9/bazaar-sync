@@ -24,8 +24,19 @@ export function normPdf(x) {
     return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
 }
 
-export function bsPrice({ spot, strike, t, vol, right, r = RISK_FREE_RATE }) {
-    const isCall = right === "CE" || right === "call";
+export function bsPrice(arg1, strike, t, vol, right, r = RISK_FREE_RATE) {
+    let spot;
+    if (typeof arg1 === "object" && arg1 !== null) {
+        spot = arg1.spot;
+        strike = arg1.strike;
+        t = arg1.t;
+        vol = arg1.vol;
+        right = arg1.right;
+        r = arg1.r ?? RISK_FREE_RATE;
+    } else {
+        spot = arg1;
+    }
+    const isCall = right === "CE" || right === "call" || right === "CALL";
     if (vol <= 0 || t <= 0) return Math.max(0, isCall ? spot - strike : strike - spot);
     const d1 = (Math.log(spot / strike) + (r + 0.5 * vol * vol) * t) / (vol * Math.sqrt(t));
     const d2 = d1 - vol * Math.sqrt(t);
@@ -34,7 +45,18 @@ export function bsPrice({ spot, strike, t, vol, right, r = RISK_FREE_RATE }) {
         : strike * Math.exp(-r * t) * normCdf(-d2) - spot * normCdf(-d1);
 }
 
-export function impliedVolatility({ marketPrice, spot, strike, t, right, r = RISK_FREE_RATE }) {
+export function impliedVolatility(arg1, strike, t, right, r = RISK_FREE_RATE) {
+    let marketPrice, spot;
+    if (typeof arg1 === "object" && arg1 !== null) {
+        marketPrice = arg1.marketPrice;
+        spot = arg1.spot;
+        strike = arg1.strike;
+        t = arg1.t;
+        right = arg1.right;
+        r = arg1.r ?? RISK_FREE_RATE;
+    } else {
+        marketPrice = arg1;
+    }
     if (!marketPrice || marketPrice <= 0 || t <= 0) return null;
     let lo = 0.001, hi = 5.0;
     for (let i = 0; i < 80; i++) {
@@ -54,8 +76,19 @@ function clampFinite(value, cap) {
     return value;
 }
 
-export function calculateGreeks({ spot, strike, t, vol, right, r = RISK_FREE_RATE }) {
-    const isCall = right === "CE" || right === "call";
+export function calculateGreeks(arg1, strike, t, vol, right, r = RISK_FREE_RATE) {
+    let spot;
+    if (typeof arg1 === "object" && arg1 !== null) {
+        spot = arg1.spot;
+        strike = arg1.strike;
+        t = arg1.t;
+        vol = arg1.vol;
+        right = arg1.right;
+        r = arg1.r ?? RISK_FREE_RATE;
+    } else {
+        spot = arg1;
+    }
+    const isCall = right === "CE" || right === "call" || right === "CALL";
     if (!vol || vol <= 0 || t <= 0) {
         return { delta: isCall ? (spot > strike ? 1 : 0) : (spot < strike ? -1 : 0), gamma: 0, theta: 0, vega: 0 };
     }
@@ -111,4 +144,38 @@ export function yearsToExpiry(expiryStr, fromMs = Date.now()) {
     const ms = expiryUtcMs - fromMs;
     return Math.max(ms / (365 * 24 * 60 * 60 * 1000), 1 / (365 * 24 * 4));
 }
+
+// Probability of Profit (POP) calculator based on lognormal price distribution at expiry
+export function calculatePOP({ chartData, spot, tYears = 0.05, avgIv = 0.50, r = RISK_FREE_RATE }) {
+    if (!chartData || chartData.length < 2 || !spot || spot <= 0) return 50.0;
+    const vol = Math.max(0.05, avgIv);
+    const t = Math.max(1 / 365, tYears);
+    const drift = (r - 0.5 * vol * vol) * t;
+    const volSqrtT = vol * Math.sqrt(t);
+
+    let probSum = 0;
+    let totalProb = 0;
+
+    for (let i = 0; i < chartData.length; i++) {
+        const pt = chartData[i];
+        const prevPrice = i > 0 ? (chartData[i - 1].price + pt.price) / 2 : pt.price * 0.99;
+        const nextPrice = i < chartData.length - 1 ? (chartData[i + 1].price + pt.price) / 2 : pt.price * 1.01;
+        const pDelta = Math.max(0.1, nextPrice - prevPrice);
+
+        const logRatio = Math.log(pt.price / spot);
+        const z = (logRatio - drift) / volSqrtT;
+        const pdf = normPdf(z) / (pt.price * volSqrtT);
+        const pSlice = pdf * pDelta;
+
+        totalProb += pSlice;
+        if (pt.expiryPnl > 0) {
+            probSum += pSlice;
+        }
+    }
+
+    if (totalProb <= 0) return 50.0;
+    const pop = (probSum / totalProb) * 100;
+    return Math.min(99.0, Math.max(1.0, parseFloat(pop.toFixed(1))));
+}
+
 
