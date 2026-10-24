@@ -27,7 +27,7 @@ import {
   legMultiplier,
   otherAction,
 } from "../utils/payoff";
-import { yearsToExpiry } from "../utils/blackScholes";
+import { yearsToExpiry, daysUntilExpiry, bsPrice } from "../utils/blackScholes";
 import OiBar from "../components/OiBar";
 import StaleBadge from "../components/strategy/StaleBadge";
 import PriceSlTgModal from "../components/strategy/PriceSlTgModal";
@@ -95,6 +95,20 @@ const CHART_TABS = [
   ["nifty", "NIFTY Chart"],
   ["combined", "Strategy Chart + NIFTY Chart"],
 ];
+
+function formatRiskReward(profit, loss, rewardRiskMode) {
+  if (profit == null || loss == null) return "—";
+  if (loss === "Unlimited") return rewardRiskMode ? "0.00 : 1" : "1 : ∞";
+  if (profit === "Unlimited") return rewardRiskMode ? "∞ : 1" : "1 : 0.00";
+  if (typeof profit !== "number" || typeof loss !== "number") return "—";
+  const p = Math.abs(profit);
+  const l = Math.abs(loss);
+  if (p === 0 || l === 0) return "—";
+  if (rewardRiskMode) {
+    return `${(p / l).toFixed(2)} : 1`;
+  }
+  return `1 : ${(l / p).toFixed(2)}`;
+}
 
 let legIdCounter = 0;
 
@@ -475,6 +489,11 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   }, [symbol, upcomingPositions]);
   const [tab, setTab] = useState("positions"); // 'positions' | 'greeks' | 'upcoming'
   const [chartTab, setChartTab] = useState("payoff"); // 'payoff' | 'strategy' | 'nifty' | 'combined'
+  const [payoffSettingsOpen, setPayoffSettingsOpen] = useState(false);
+  const [whatIfSpotPct, setWhatIfSpotPct] = useState(0); // -10..+10 (%)
+  const [whatIfDaysForward, setWhatIfDaysForward] = useState(0); // 0..daysToExpiry
+  const [whatIfIvShift, setWhatIfIvShift] = useState(0); // -20..+20 (vol points)
+  const [rewardRiskOrder, setRewardRiskOrder] = useState(false);
   // Underlying lightweight-charts instances, exposed via forwardRef, so the
   // "combined" tab can sync crosshair + pan/zoom between the two separate
   // chart instances (StrategyChart's candles aren't a pane inside
@@ -1774,7 +1793,7 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
         ? computePOP(curveData, displaySpot, atmIv, yearsRemaining)
         : null;
       const marginDet = computeMarginDetails(activeLegs, displaySpot, symbol);
-      if (span && span.margin != null) {
+      if (span && span.margin != null && marginDet.isHedged) {
         const debit = Math.max(0, -(marginDet.netPremium || 0));
         marginDet.estMargin = span.margin;
         marginDet.fundsRequired = Math.round((span.margin + debit) * 100) / 100;
@@ -1822,6 +1841,34 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
   const strategyPnl = replayData
     ? (replayData.series[cursor]?.pnl ?? null)
     : totalLivePnl;
+
+  const daysToExpiry = chainData?.selectedExpiry ? Math.max(1, daysUntilExpiry(chainData.selectedExpiry)) : 30;
+
+  const whatIfResult = useMemo(() => {
+    if (!payoffSettingsOpen || !activeLegs.length || !displaySpot) return null;
+    const evaluationExpiry = evaluationExpiryOf(activeLegs) || chainData?.selectedExpiry;
+    const simSpot = displaySpot * (1 + whatIfSpotPct / 100);
+    const baseMs = currentTime && selectedDate ? new Date(`${selectedDate}T${currentTime}:00+05:30`).getTime() : Date.now();
+    const simMs = baseMs + whatIfDaysForward * 24 * 60 * 60 * 1000;
+
+    let pnl = 0;
+    for (const leg of activeLegs) {
+      const t = Math.max(
+        yearsToExpiry(leg.expiry || evaluationExpiry, simMs),
+        1 / (365 * 24 * 4)
+      );
+      let theoPrice;
+      const legIv = leg.iv ?? atmIv;
+      if (legIv != null) {
+        const vol = Math.max(0.01, (legIv + whatIfIvShift) / 100);
+        theoPrice = bsPrice({ spot: simSpot, strike: leg.strike, t, vol, right: leg.type });
+      } else {
+        theoPrice = Math.max(0, leg.type === "CE" ? simSpot - leg.strike : leg.strike - simSpot);
+      }
+      pnl += (leg.action === "buy" ? theoPrice - leg.premium : leg.premium - theoPrice) * legMultiplier(leg);
+    }
+    return { simSpot, pnl };
+  }, [payoffSettingsOpen, activeLegs, displaySpot, whatIfSpotPct, whatIfDaysForward, whatIfIvShift, selectedDate, currentTime, chainData?.selectedExpiry, atmIv]);
 
 
 
@@ -2833,254 +2880,381 @@ export default function Simulator({ embeddedSymbol, hideChrome = false } = {}) {
             context="replay"
           />
 
-          <div className="mb-4 flex flex-col gap-4 items-stretch md:flex-row">
-            {legs.length > 0 && (
-              <div className="w-full shrink-0 flex flex-col justify-between rounded-2xl border border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 p-4 shadow-xs space-y-3 md:w-64 backdrop-blur-md">
-                {/* P&L Card with StockMojo Badge */}
-                <div className="border-b border-gray-100 dark:border-gray-800/80 pb-3">
-                  <div className="text-label font-bold text-gray-500 dark:text-gray-400">
-                    P&L
-                  </div>
-                  <div className="mt-1 flex items-center gap-2">
+          {/* Main Chart & Payoff Card (StockMojo Unified Structure) */}
+          <div className="mb-4 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden flex flex-col transition-colors">
+            {/* Card Header: Dynamic Tabs on Left, Payoff Setting Toggle on Right */}
+            <div className="flex items-center justify-between border-b border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-3 sm:px-4 pt-1">
+              <div className="flex gap-1 sm:gap-4 overflow-x-auto">
+                {[
+                  ["payoff", "Payoff"],
+                  ["strategy", "Strategy Chart"],
+                  ["nifty", `${symbol} Chart`],
+                  ["combined", `Strategy Chart + ${symbol} Chart`],
+                ].map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setChartTab(key)}
+                    className={`py-2 text-xs font-bold transition-colors cursor-pointer border-b-2 whitespace-nowrap ${
+                      chartTab === key
+                        ? "border-[#1677ff] text-[#1677ff] dark:text-blue-400"
+                        : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {chartTab === "payoff" && (
+                <div className="flex items-center gap-2 py-1">
+                  <button
+                    type="button"
+                    onClick={() => setPayoffSettingsOpen((v) => !v)}
+                    className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] px-2.5 py-0.5 text-[11px] font-semibold text-gray-600 dark:text-gray-300 shadow-xs hover:border-[#1677ff] transition"
+                  >
+                    <span>Payoff setting</span>
                     <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold font-mono tabular-nums ${
-                        (strategyPnl ?? 0) >= 0
-                          ? "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-800/40"
-                          : "bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border border-rose-200/60 dark:border-rose-800/40"
+                      role="switch"
+                      aria-checked={payoffSettingsOpen}
+                      className={`relative inline-block h-4 w-7 rounded-full transition-colors ${
+                        payoffSettingsOpen ? "bg-[#1677ff]" : "bg-gray-300 dark:bg-gray-700"
                       }`}
                     >
-                      {(strategyPnl ?? 0) >= 0 ? "+" : ""}{formatPrice(strategyPnl ?? 0)} ({((marginDetails?.fundsRequired || estMargin) ? (((strategyPnl ?? 0) / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2) : "0.00")}%)
+                      <span
+                        className={`inline-block h-3 w-3 rounded-full bg-white transition-transform ${
+                          payoffSettingsOpen ? "translate-x-3.5" : "translate-x-0.5"
+                        }`}
+                      />
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* What-If Simulation Sliders Bar (StockMojo style) */}
+            {chartTab === "payoff" && payoffSettingsOpen && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 border-b border-gray-100 dark:border-white/10 bg-gray-50/60 dark:bg-[#070e17]/60 px-4 py-3 text-[11px]">
+                <div>
+                  <div className="mb-1 flex justify-between font-semibold text-gray-600 dark:text-gray-400">
+                    <span>Underlying</span>
+                    <span className="tabular-nums text-[#1677ff] font-bold">
+                      {whatIfResult ? formatPrice(whatIfResult.simSpot) : "—"} ({whatIfSpotPct > 0 ? "+" : ""}{whatIfSpotPct}%)
                     </span>
                   </div>
+                  <input
+                    type="range"
+                    min={-10}
+                    max={10}
+                    step={0.5}
+                    value={whatIfSpotPct}
+                    onChange={(e) => setWhatIfSpotPct(Number(e.target.value))}
+                    className="w-full accent-[#1677ff]"
+                  />
                 </div>
-
-                {/* Est Margin */}
-                <div title="Estimated margin required by exchange/broker" className="border-b border-gray-100 dark:border-gray-800/80 pb-2.5">
-                  <div className="flex items-center justify-between text-label font-semibold text-gray-400 dark:text-gray-400">
-                    <span>Est. Margin</span>
-                    {marginDetails?.isHedged && (
-                      <span className="text-micro font-bold text-emerald-600 dark:text-emerald-400">Hedged</span>
-                    )}
+                <div>
+                  <div className="mb-1 flex justify-between font-semibold text-gray-600 dark:text-gray-400">
+                    <span>Date/Time</span>
+                    <span className="tabular-nums text-[#1677ff] font-bold">+{whatIfDaysForward}d</span>
                   </div>
-                  <div className="text-sm font-bold font-mono tabular-nums text-gray-900 dark:text-gray-100 mt-0.5">
-                    {formatMarginCompact(marginDetails?.fundsRequired || estMargin || 0)}
-                  </div>
-                  {marginDetails?.isHedged && marginDetails?.marginBenefit > 0 && (
-                    <div className="mt-1 inline-flex items-center gap-1 rounded bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.2 text-micro font-medium text-emerald-700 dark:text-emerald-300">
-                      <span>✓ Saved</span>
-                      <span className="font-bold">{formatPrice(marginDetails.marginBenefit)}</span>
-                    </div>
-                  )}
+                  <input
+                    type="range"
+                    min={0}
+                    max={daysToExpiry}
+                    step={1}
+                    value={whatIfDaysForward}
+                    onChange={(e) => setWhatIfDaysForward(Number(e.target.value))}
+                    className="w-full accent-[#1677ff]"
+                  />
                 </div>
-
-                {/* POP & Reward : Risk */}
-                <div className="grid grid-cols-2 gap-2 border-b border-gray-100 dark:border-gray-800/80 pb-2.5">
-                  <div>
-                    <div className="text-label font-semibold text-gray-400">POP</div>
-                    <div className="mt-0.5 text-xs font-bold font-mono tabular-nums text-gray-800 dark:text-gray-200">
-                      {pop != null ? `${pop.toFixed(0)}%` : "—"}
-                    </div>
+                <div>
+                  <div className="mb-1 flex justify-between font-semibold text-gray-600 dark:text-gray-400">
+                    <span>IV</span>
+                    <span className="tabular-nums text-[#1677ff] font-bold">{whatIfIvShift > 0 ? "+" : ""}{whatIfIvShift}pt</span>
                   </div>
-                  <div>
-                    <div className="text-label font-semibold text-gray-400">Reward : Risk</div>
-                    <div className="mt-0.5 text-xs font-bold font-mono tabular-nums text-gray-800 dark:text-gray-200">
-                      {riskRewardRatio && riskRewardRatio.startsWith("1 : ")
-                        ? riskRewardRatio.replace("1 : ", "")
-                        : (riskRewardRatio || "—")}
-                    </div>
-                  </div>
+                  <input
+                    type="range"
+                    min={-20}
+                    max={20}
+                    step={1}
+                    value={whatIfIvShift}
+                    onChange={(e) => setWhatIfIvShift(Number(e.target.value))}
+                    className="w-full accent-[#1677ff]"
+                  />
                 </div>
-
-                {/* Max Profit & Max Loss */}
-                <div className="space-y-2 border-b border-gray-100 dark:border-gray-800/80 pb-2.5 text-xs font-mono tabular-nums">
-                  <div>
-                    <div className="text-label font-semibold text-gray-400 font-sans">Max Profit</div>
-                    <div className="text-xs font-bold tabular-nums text-emerald-600 dark:text-emerald-400 mt-0.5">
-                      {activeLegs.length === 0
-                        ? "—"
-                        : typeof maxProfit === "number"
-                        ? `+${formatPrice(maxProfit)} (${((marginDetails?.fundsRequired || estMargin) ? ((maxProfit / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2) : "0.00")}%)`
-                        : (maxProfit || "Unlimited")}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-label font-semibold text-gray-400 font-sans">Max Loss</div>
-                    <div className="text-xs font-bold tabular-nums text-rose-600 dark:text-rose-400 mt-0.5">
-                      {activeLegs.length === 0
-                        ? "—"
-                        : typeof maxLoss === "number"
-                        ? `${formatPrice(maxLoss)} (${((marginDetails?.fundsRequired || estMargin) ? ((maxLoss / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2) : "0.00")}%)`
-                        : (maxLoss || "Unlimited")}
-                    </div>
-                  </div>
+                <div className="sm:col-span-3 flex items-center justify-between rounded-xl border border-blue-100 dark:border-blue-900/30 bg-blue-50/60 dark:bg-blue-950/20 px-3 py-2">
+                  <span className="font-semibold text-gray-700 dark:text-gray-300">Simulated P&L at these settings</span>
+                  <span className={`text-sm font-black tabular-nums ${whatIfResult && whatIfResult.pnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                    {whatIfResult ? formatPrice(whatIfResult.pnl) : "—"}
+                  </span>
                 </div>
+              </div>
+            )}
 
-                {/* Breakevens */}
-                <div className="border-b border-gray-100 dark:border-gray-800/80 pb-2.5">
-                  <div className="text-label font-semibold text-gray-400 dark:text-gray-400 mb-1">
-                    Breakevens
-                  </div>
-                  {breakevens && breakevens.length ? (
-                    <div className="space-y-1 font-mono tabular-nums text-xs">
-                      {breakevens.map((be, i) => {
-                        const pctFromSpot = displaySpot ? ((be - displaySpot) / displaySpot) * 100 : null;
-                        return (
-                          <div key={i} className="flex items-center justify-between font-bold tabular-nums text-gray-800 dark:text-gray-200">
-                            <span>{Math.round(be)}</span>
-                            {pctFromSpot != null && (
-                              <span
-                                className={`text-micro font-semibold ${
-                                  pctFromSpot >= 0
-                                    ? "text-emerald-600 dark:text-emerald-400"
-                                    : "text-rose-600 dark:text-rose-400"
-                                }`}
-                              >
-                                ({pctFromSpot >= 0 ? "+" : ""}{pctFromSpot.toFixed(2)}%)
+            {/* Card Body */}
+            {chartTab === "payoff" ? (
+              legs.length > 0 && curve.length > 0 ? (
+                <div className="flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-gray-200 dark:divide-white/10 bg-white dark:bg-[#0b1420]">
+                  {/* Left Column: 6 Summary Metrics Stacked Vertically (StockMojo style) */}
+                  <div className="w-full md:w-[230px] lg:w-[245px] shrink-0 p-3 space-y-3 bg-white dark:bg-[#0b1420] text-xs">
+                    {/* Box 1: P&L */}
+                    <div className="pb-2.5 border-b border-gray-100 dark:border-white/10">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">P&L</div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-sm font-black tabular-nums ${(strategyPnl ?? 0) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                          {(strategyPnl ?? 0) >= 0 ? "+" : ""}{Math.round(strategyPnl ?? 0).toLocaleString("en-IN")}
+                        </span>
+                        <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold ${
+                          (strategyPnl ?? 0) >= 0
+                            ? "bg-[#f6ffed] text-[#52c41a] border border-[#b7eb8f] dark:bg-emerald-950/40 dark:border-emerald-800"
+                            : "bg-[#fff1f0] text-[#ff4d4f] border border-[#ffccc7] dark:bg-rose-950/40 dark:border-rose-800"
+                        }`}>
+                          {((marginDetails?.fundsRequired || estMargin) ? (((strategyPnl ?? 0) / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2) : "0.00")}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Box 2: Funds Required & Est. Margin */}
+                    <div className="pb-2.5 border-b border-gray-100 dark:border-white/10 space-y-1.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">Funds Required</div>
+                          <div className="text-sm font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                            {formatMarginCompact(marginDetails?.fundsRequired || estMargin || 0)}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">Est. Margin</div>
+                          <div className="text-sm font-bold text-gray-900 dark:text-white tabular-nums">
+                            {formatMarginCompact(marginDetails?.fundsRequired || estMargin || 0)}
+                          </div>
+                        </div>
+                      </div>
+                      {marginDetails?.isHedged && marginDetails?.marginBenefit > 0 && (
+                        <div className="flex items-center justify-between text-[11px] bg-emerald-50 dark:bg-emerald-950/40 px-2 py-1 rounded-lg border border-emerald-200 dark:border-emerald-800">
+                          <span className="text-emerald-700 dark:text-emerald-300 font-semibold">Hedge Benefit:</span>
+                          <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono">
+                            Saved {formatPrice(marginDetails.marginBenefit)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Box 3: POP & Risk : Reward */}
+                    <div className="pb-2.5 border-b border-gray-100 dark:border-white/10 flex items-start justify-between gap-2">
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">POP</div>
+                        <div className="text-sm font-bold text-gray-900 dark:text-white tabular-nums">
+                          {pop != null ? `${pop.toFixed(0)}%` : "—"}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <button
+                          type="button"
+                          onClick={() => setRewardRiskOrder((v) => !v)}
+                          className="flex items-center gap-1 text-[11px] font-semibold text-gray-500 hover:text-[#1677ff] dark:text-gray-400 cursor-pointer ml-auto mb-1 transition-colors"
+                          title="Switch between Risk : Reward and Reward : Risk"
+                        >
+                          <span>{rewardRiskOrder ? "Reward : Risk" : "Risk : Reward"}</span>
+                          <span className="text-[10px]">⇅</span>
+                        </button>
+                        <div className="text-sm font-bold text-gray-900 dark:text-white tabular-nums">
+                          {formatRiskReward(maxProfit, maxLoss, rewardRiskOrder)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Box 4: Max Profit */}
+                    <div className="pb-2.5 border-b border-gray-100 dark:border-white/10">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">Max Profit</div>
+                      <div className="text-sm font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                        {activeLegs.length === 0 ? "—" : typeof maxProfit === "number" ? (
+                          <>
+                            +{formatPrice(maxProfit)}
+                            {(marginDetails?.fundsRequired || estMargin) > 0 && (
+                              <span className="text-[11px] font-normal text-emerald-600/80 dark:text-emerald-400/80 ml-1">
+                                ({((maxProfit / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2)}%)
                               </span>
                             )}
-                          </div>
-                        );
-                      })}
+                          </>
+                        ) : (
+                          maxProfit || "Unlimited"
+                        )}
+                      </div>
                     </div>
-                  ) : (
-                    <div className="text-xs text-gray-400 font-medium">None</div>
-                  )}
-                </div>
 
-                {/* Greeks Grid */}
-                {netGreeks && (
-                  <div className="grid grid-cols-3 gap-1 pt-0.5 text-micro">
-                    <div className="rounded-lg bg-gray-50 dark:bg-gray-800/60 p-1.5 text-center border border-gray-100 dark:border-gray-800">
-                      <div className="text-gray-400 font-bold">Delta (Δ)</div>
-                      <div className={`font-bold tabular-nums text-xs mt-0.5 ${netGreeks.delta > 0 ? "text-emerald-600 dark:text-emerald-400" : netGreeks.delta < 0 ? "text-rose-600 dark:text-rose-400" : "text-gray-700 dark:text-gray-300"}`}>
-                        {netGreeks.delta?.toFixed(2) ?? 0}
+                    {/* Box 5: Max Loss */}
+                    <div className="pb-2.5 border-b border-gray-100 dark:border-white/10">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">Max Loss</div>
+                      <div className="text-sm font-bold text-rose-600 dark:text-rose-400 tabular-nums">
+                        {activeLegs.length === 0 ? "—" : typeof maxLoss === "number" ? (
+                          <>
+                            {formatPrice(maxLoss)}
+                            {(marginDetails?.fundsRequired || estMargin) > 0 && (
+                              <span className="text-[11px] font-normal text-rose-600/80 dark:text-rose-400/80 ml-1">
+                                ({((Math.abs(maxLoss) / (marginDetails?.fundsRequired || estMargin)) * 100).toFixed(2)}%)
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          maxLoss || "Unlimited"
+                        )}
                       </div>
                     </div>
-                    <div className="rounded-lg bg-gray-50 dark:bg-gray-800/60 p-1.5 text-center border border-gray-100 dark:border-gray-800">
-                      <div className="text-gray-400 font-bold">Theta (Θ)</div>
-                      <div className={`font-bold tabular-nums text-xs mt-0.5 ${netGreeks.theta > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-gray-700 dark:text-gray-300"}`}>
-                        {netGreeks.theta?.toFixed(0) ?? 0}/d
+
+                    {/* Box 6: Breakevens */}
+                    <div className="pb-2.5 border-b border-gray-100 dark:border-white/10">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">Breakevens</div>
+                      <div className="text-[11.5px] font-bold text-gray-800 dark:text-gray-200">
+                        {breakevens && breakevens.length > 0 ? (
+                          breakevens.map((be, idx) => {
+                            const pct = displaySpot ? ((be - displaySpot) / displaySpot) * 100 : null;
+                            return (
+                              <span key={idx}>
+                                {idx > 0 && " - "}
+                                <span>{Math.round(be).toLocaleString("en-IN")}</span>
+                                {pct != null && (
+                                  <span className="text-[10.5px] font-normal text-gray-500 dark:text-gray-400 ml-0.5">
+                                    ({pct >= 0 ? "+" : ""}{pct.toFixed(2)}%)
+                                  </span>
+                                )}
+                              </span>
+                            );
+                          })
+                        ) : (
+                          <span className="text-gray-400 font-normal">None</span>
+                        )}
                       </div>
                     </div>
-                    <div className="rounded-lg bg-gray-50 dark:bg-gray-800/60 p-1.5 text-center border border-gray-100 dark:border-gray-800">
-                      <div className="text-gray-400 font-bold">Vega (ν)</div>
-                      <div className="font-bold tabular-nums text-xs mt-0.5 text-gray-700 dark:text-gray-300">
-                        {netGreeks.vega?.toFixed(0) ?? 0}
+
+                    {/* Box 7: Greeks Grid */}
+                    {netGreeks && (
+                      <div className="grid grid-cols-3 gap-1 pt-0.5 text-micro">
+                        <div className="rounded-lg bg-gray-50 dark:bg-gray-800/60 p-1.5 text-center border border-gray-100 dark:border-gray-800">
+                          <div className="text-gray-400 font-bold">Delta (Δ)</div>
+                          <div className={`font-bold tabular-nums text-xs mt-0.5 ${netGreeks.delta > 0 ? "text-emerald-600 dark:text-emerald-400" : netGreeks.delta < 0 ? "text-rose-600 dark:text-rose-400" : "text-gray-700 dark:text-gray-300"}`}>
+                            {netGreeks.delta?.toFixed(2) ?? 0}
+                          </div>
+                        </div>
+                        <div className="rounded-lg bg-gray-50 dark:bg-gray-800/60 p-1.5 text-center border border-gray-100 dark:border-gray-800">
+                          <div className="text-gray-400 font-bold">Theta (Θ)</div>
+                          <div className={`font-bold tabular-nums text-xs mt-0.5 ${netGreeks.theta > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-gray-700 dark:text-gray-300"}`}>
+                            {netGreeks.theta?.toFixed(0) ?? 0}/d
+                          </div>
+                        </div>
+                        <div className="rounded-lg bg-gray-50 dark:bg-gray-800/60 p-1.5 text-center border border-gray-100 dark:border-gray-800">
+                          <div className="text-gray-400 font-bold">Vega (ν)</div>
+                          <div className="font-bold tabular-nums text-xs mt-0.5 text-gray-700 dark:text-gray-300">
+                            {netGreeks.vega?.toFixed(0) ?? 0}
+                          </div>
+                        </div>
                       </div>
-                    </div>
+                    )}
+                  </div>
+
+                  {/* Right Payoff Chart Area */}
+                  <div className="flex-1 min-w-0 p-2 sm:p-3 flex flex-col justify-center">
+                    <PayoffChart
+                      curve={curve}
+                      spotPrice={displaySpot}
+                      breakevens={breakevens}
+                      expectedMove={expectedMove}
+                      atmIv={atmIv}
+                      yearsRemaining={yearsRemaining}
+                      oiData={displayRows}
+                      height={340}
+                    />
+                  </div>
+                </div>
+              ) : upcomingLegs.length > 0 ? (
+                <div className="py-16 text-center text-xs text-gray-500 dark:text-gray-400">
+                  <div className="mb-2 text-3xl">⏳</div>
+                  <p className="text-sm font-bold text-gray-800 dark:text-gray-200">
+                    Positions Scheduled for {upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "Later"}
+                  </p>
+                  <p className="mt-1 text-gray-500 dark:text-gray-400 max-w-sm mx-auto">
+                    Current simulated time is {currentTime}. Step forward to {upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "entry time"} or enter now to view the payoff chart.
+                  </p>
+                  <div className="mt-4 flex items-center justify-center gap-2">
+                    {upcomingLegs[0]?.time && (
+                      <button
+                        onClick={() => scrubToTime(upcomingLegs[0].time)}
+                        className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 transition shadow-xs"
+                      >
+                        ▶ Step to {String(upcomingLegs[0].time).slice(0, 5)}
+                      </button>
+                    )}
+                    <button
+                      onClick={enterAllUpcomingNow}
+                      className="rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-xs font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition"
+                    >
+                      Enter All Now @ {currentTime?.slice(0, 5)}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4">
+                  <PresetStrategies
+                    data={liveChain || chainData}
+                    onApply={applyPreset}
+                    fetchExpiryRows={fetchExpiryRows}
+                  />
+                </div>
+              )
+            ) : null}
+
+            {chartTab === "strategy" && (
+              <div className="p-4">{renderStrategyChart(280)}</div>
+            )}
+
+            {chartTab === "nifty" && (
+              <div className="p-4"><CandlestickChart ref={niftyChartRef} symbol={symbol} date={selectedDate} /></div>
+            )}
+
+            {chartTab === "combined" && (
+              <div className="p-4 space-y-4">
+                <div>{renderStrategyChart(220)}</div>
+                <div className="border-t border-gray-100 dark:border-gray-800 pt-4">
+                  <CandlestickChart ref={niftyChartRef} symbol={symbol} date={selectedDate} compact />
+                </div>
+                {legs.length > 0 && (
+                  <div className="text-label text-gray-400 dark:text-gray-400 text-center">
+                    Crosshair is synced between the two charts above — move it on either one.
                   </div>
                 )}
               </div>
             )}
-
-            <div className="flex-1 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 shadow-xs overflow-hidden flex flex-col backdrop-blur-md">
-              <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/60 px-3 pt-2.5 overflow-x-auto">
-                <div className="flex gap-1">
-                  {CHART_TABS.map(([key, label]) => (
-                    <button
-                      key={key}
-                      onClick={() => setChartTab(key)}
-                      className={`shrink-0 rounded-t-xl px-3.5 py-2 text-xs font-bold transition-all ${
-                        chartTab === key
-                          ? "bg-white dark:bg-gray-900 text-blue-600 dark:text-blue-400 border border-b-0 border-gray-200 dark:border-gray-800 shadow-2xs"
-                          : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex-1 p-4">
-                {chartTab === "payoff" && (
-                  <div className="space-y-4">
-                    {legs.length > 0 && curve.length > 0 ? (
-                      <PayoffChart
-                        curve={curve}
-                        spotPrice={displaySpot}
-                        breakevens={breakevens}
-                        expectedMove={expectedMove}
-                        atmIv={atmIv}
-                        yearsRemaining={yearsRemaining}
-                        oiData={displayRows}
-                      />
-                    ) : upcomingLegs.length > 0 ? (
-                      <div className="py-16 text-center text-xs text-gray-500 dark:text-gray-400">
-                        <div className="mb-2 text-3xl">⏳</div>
-                        <p className="text-sm font-bold text-gray-800 dark:text-gray-200">
-                          Positions Scheduled for {upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "Later"}
-                        </p>
-                        <p className="mt-1 text-gray-500 dark:text-gray-400 max-w-sm mx-auto">
-                          Current simulated time is {currentTime}. Step forward to {upcomingLegs[0]?.time ? String(upcomingLegs[0].time).slice(0, 5) : "entry time"} or enter now to view the payoff chart.
-                        </p>
-                        <div className="mt-4 flex items-center justify-center gap-2">
-                          {upcomingLegs[0]?.time && (
-                            <button
-                              onClick={() => scrubToTime(upcomingLegs[0].time)}
-                              className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 transition shadow-xs"
-                            >
-                              ▶ Step to {String(upcomingLegs[0].time).slice(0, 5)}
-                            </button>
-                          )}
-                          <button
-                            onClick={enterAllUpcomingNow}
-                            className="rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-xs font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition"
-                          >
-                            Enter All Now @ {currentTime?.slice(0, 5)}
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <PresetStrategies
-                        data={liveChain || chainData}
-                        onApply={applyPreset}
-                        fetchExpiryRows={fetchExpiryRows}
-                      />
-                    )}
-                  </div>
-                )}
-
-                {chartTab === "strategy" && renderStrategyChart(280)}
-
-                {chartTab === "nifty" && (
-                  <CandlestickChart ref={niftyChartRef} symbol={symbol} date={selectedDate} />
-                )}
-
-                {chartTab === "combined" && (
-                  <div className="space-y-4">
-                    <div>{renderStrategyChart(220)}</div>
-                    <div className="border-t border-gray-100 dark:border-gray-800 pt-4">
-                      <CandlestickChart ref={niftyChartRef} symbol={symbol} date={selectedDate} compact />
-                    </div>
-                    {legs.length > 0 && (
-                      <div className="text-label text-gray-400 dark:text-gray-400 text-center">
-                        Crosshair is synced between the two charts above — move it on either one.
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
           </div>
 
           {(legs.length > 0 || upcomingPositions.length > 0) && (
-            <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 shadow-xs overflow-hidden backdrop-blur-md">
-              <div className="flex overflow-x-auto border-b border-gray-100 dark:border-gray-800 text-xs font-bold bg-gray-50/50 dark:bg-gray-800/60">
+            <div className="rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden backdrop-blur-md transition-colors">
+              <div className="flex overflow-x-auto border-b border-gray-200 dark:border-white/10 text-xs font-bold bg-white dark:bg-[#0b1420] px-4 pt-1 gap-2 sm:gap-4">
                 <button
                   onClick={() => setTab("positions")}
-                  className={`shrink-0 px-4 sm:px-6 py-3 transition-colors ${tab === "positions" ? "border-b-2 border-emerald-600 text-emerald-600 dark:text-emerald-400 bg-white dark:bg-gray-900" : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"}`}
+                  className={`py-2 text-xs font-bold transition-colors cursor-pointer border-b-2 ${
+                    tab === "positions"
+                      ? "border-[#1677ff] text-[#1677ff] dark:text-blue-400"
+                      : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+                  }`}
                 >
                   Positions{enteredLegs.length > 0 ? ` (${enteredLegs.length})` : ""}
                 </button>
                 <button
                   onClick={() => setTab("greeks")}
-                  className={`shrink-0 px-4 sm:px-6 py-3 transition-colors ${tab === "greeks" ? "border-b-2 border-emerald-600 text-emerald-600 dark:text-emerald-400 bg-white dark:bg-gray-900" : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"}`}
+                  className={`py-2 text-xs font-bold transition-colors cursor-pointer border-b-2 ${
+                    tab === "greeks"
+                      ? "border-[#1677ff] text-[#1677ff] dark:text-blue-400"
+                      : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+                  }`}
                 >
                   Portfolio Greeks
                 </button>
                 <button
                   onClick={() => setTab("upcoming")}
-                  className={`shrink-0 px-4 sm:px-6 py-3 transition-colors ${tab === "upcoming" ? "border-b-2 border-emerald-600 text-emerald-600 dark:text-emerald-400 bg-white dark:bg-gray-900" : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"}`}
+                  className={`py-2 text-xs font-bold transition-colors cursor-pointer border-b-2 ${
+                    tab === "upcoming"
+                      ? "border-[#1677ff] text-[#1677ff] dark:text-blue-400"
+                      : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+                  }`}
                 >
                   Upcoming Positions{(upcomingLegs.length + upcomingPositions.length) > 0 ? ` (${upcomingLegs.length + upcomingPositions.length})` : ""}
                 </button>

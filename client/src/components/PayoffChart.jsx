@@ -265,39 +265,14 @@ export default function PayoffChart({
 
     return (
         <div className="w-full flex flex-col">
-            {/* Top Ribbon: SD levels + Spot Indicator (StockMojo style) */}
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl bg-gray-50/80 dark:bg-[#070e17]/80 border border-gray-200/80 dark:border-white/5 text-[10px] font-semibold text-gray-500 dark:text-gray-400">
-                <div className="flex items-center gap-2 sm:gap-3">
-                    <span className="hidden sm:inline tabular-nums">
-                        −2SD {sd2Down ? <span className="font-mono text-gray-700 dark:text-gray-300">({Math.round(sd2Down).toLocaleString("en-IN")})</span> : ""}
-                    </span>
-                    <span className="tabular-nums">
-                        −1SD {sd1Down ? <span className="font-mono text-gray-700 dark:text-gray-300">({Math.round(sd1Down).toLocaleString("en-IN")})</span> : ""}
-                    </span>
-                </div>
-
-                <div className="flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 font-bold shadow-2xs">
-                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-                    <span>Spot: {spotPrice ? formatPrice(spotPrice) : "—"}</span>
-                </div>
-
-                <div className="flex items-center gap-2 sm:gap-3">
-                    <span className="tabular-nums">
-                        +1SD {sd1Up ? <span className="font-mono text-gray-700 dark:text-gray-300">({Math.round(sd1Up).toLocaleString("en-IN")})</span> : ""}
-                    </span>
-                    <span className="hidden sm:inline tabular-nums">
-                        +2SD {sd2Up ? <span className="font-mono text-gray-700 dark:text-gray-300">({Math.round(sd2Up).toLocaleString("en-IN")})</span> : ""}
-                    </span>
-                </div>
-            </div>
-
-            {/* Interactive Legend / Controls Toolbar (StockMojo style) */}
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px]">
-                <div className="flex flex-wrap items-center gap-1.5">
+            {/* Unified Top Ribbon: Legend + Spot + Standard Deviations (StockMojo style) */}
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-gray-50/80 dark:bg-[#070e17]/80 border border-gray-200/80 dark:border-white/5 text-[11px]">
+                {/* Left: Legend & Curve Toggles */}
+                <div className="flex items-center gap-1.5 flex-wrap">
                     <button
                         type="button"
                         onClick={() => setShowExpiry((v) => !v)}
-                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-bold transition cursor-pointer border ${
+                        className={`flex items-center gap-1 px-2 py-0.5 rounded-md font-bold transition cursor-pointer border ${
                             showExpiry
                                 ? "bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800 shadow-2xs"
                                 : "bg-gray-100 text-gray-400 border-transparent dark:bg-white/5 dark:text-gray-500 opacity-60"
@@ -312,14 +287,14 @@ export default function PayoffChart({
                         <button
                             type="button"
                             onClick={() => setShowToday((v) => !v)}
-                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-bold transition cursor-pointer border ${
+                            className={`flex items-center gap-1 px-2 py-0.5 rounded-md font-bold transition cursor-pointer border ${
                                 showToday
                                     ? "bg-blue-50 text-blue-700 border-blue-300 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800 shadow-2xs"
                                     : "bg-gray-100 text-gray-400 border-transparent dark:bg-white/5 dark:text-gray-500 opacity-60"
                             }`}
                             title="Toggle Today (T+0) Curve"
                         >
-                            <span className="w-3 border-t-2 border-dashed border-blue-500" />
+                            <span className="w-2.5 border-t-2 border-dashed border-blue-500" />
                             <span>Today (T+0)</span>
                         </button>
                     )}
@@ -328,18 +303,18 @@ export default function PayoffChart({
                         <button
                             type="button"
                             onClick={() => setShowOi((v) => !v)}
-                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-bold transition cursor-pointer border ${
+                            className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md font-bold transition cursor-pointer border ${
                                 showOi
                                     ? "bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 shadow-2xs"
                                     : "bg-gray-100 text-gray-400 border-transparent dark:bg-white/5 dark:text-gray-500 opacity-60"
                             }`}
                             title="Toggle Open Interest (OI) Bars"
                         >
-                            <span className="flex items-end gap-0.5 h-3">
-                                <span className="w-1 h-2 bg-emerald-500 rounded-2xs" />
-                                <span className="w-1 h-3 bg-rose-500 rounded-2xs" />
+                            <span className="flex items-end gap-0.5 h-2.5">
+                                <span className="w-1 h-1.5 bg-emerald-500 rounded-2xs" />
+                                <span className="w-1 h-2.5 bg-rose-500 rounded-2xs" />
                             </span>
-                            <span>OI Bars</span>
+                            <span>OI</span>
                         </button>
                     )}
 
@@ -347,47 +322,40 @@ export default function PayoffChart({
                         <button
                             type="button"
                             onClick={() => setShowBreakevens((v) => !v)}
-                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-bold transition cursor-pointer border ${
+                            className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md font-bold transition cursor-pointer border ${
                                 showBreakevens
                                     ? "bg-purple-50 text-purple-700 border-purple-300 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800 shadow-2xs"
                                     : "bg-gray-100 text-gray-400 border-transparent dark:bg-white/5 dark:text-gray-500 opacity-60"
                             }`}
                             title="Toggle Breakeven Lines"
                         >
-                            <span className="w-3 border-t-2 border-dashed border-purple-500" />
-                            <span>Breakevens</span>
-                        </button>
-                    )}
-
-                    {expectedMove && (
-                        <button
-                            type="button"
-                            onClick={() => setShowSd((v) => !v)}
-                            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg font-bold transition cursor-pointer border ${
-                                showSd
-                                    ? "bg-gray-200/90 text-gray-800 border-gray-300 dark:bg-white/10 dark:text-gray-200 dark:border-white/15 shadow-2xs"
-                                    : "bg-gray-100 text-gray-400 border-transparent dark:bg-white/5 dark:text-gray-500 opacity-60"
-                            }`}
-                            title="Toggle Standard Deviation Lines"
-                        >
-                            <span>± SD</span>
+                            <span className="w-2 border-t-2 border-dashed border-purple-500" />
+                            <span>BE</span>
                         </button>
                     )}
                 </div>
 
-                {/* Sub-Legend for OI bars when visible */}
-                {showOi && visibleOiData.length > 0 && (
-                    <div className="hidden sm:flex items-center gap-3 text-[10px] text-gray-500 dark:text-gray-400 font-semibold">
-                        <span className="flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-xs bg-emerald-500" />
-                            Call OI
-                        </span>
-                        <span className="flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-xs bg-rose-500" />
-                            Put OI
-                        </span>
-                    </div>
-                )}
+                {/* Center: Spot Price Indicator */}
+                <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 font-bold shadow-2xs">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                    <span>Spot: {spotPrice ? formatPrice(spotPrice) : "—"}</span>
+                </div>
+
+                {/* Right: Standard Deviation Markers */}
+                <div className="flex items-center gap-2 sm:gap-2.5 text-[10px] font-semibold text-gray-500 dark:text-gray-400">
+                    <span className="hidden xl:inline tabular-nums">
+                        −2SD {sd2Down ? <span className="font-mono text-gray-700 dark:text-gray-300">({Math.round(sd2Down).toLocaleString("en-IN")})</span> : ""}
+                    </span>
+                    <span className="tabular-nums">
+                        −1SD {sd1Down ? <span className="font-mono text-gray-700 dark:text-gray-300">({Math.round(sd1Down).toLocaleString("en-IN")})</span> : ""}
+                    </span>
+                    <span className="tabular-nums">
+                        +1SD {sd1Up ? <span className="font-mono text-gray-700 dark:text-gray-300">({Math.round(sd1Up).toLocaleString("en-IN")})</span> : ""}
+                    </span>
+                    <span className="hidden xl:inline tabular-nums">
+                        +2SD {sd2Up ? <span className="font-mono text-gray-700 dark:text-gray-300">({Math.round(sd2Up).toLocaleString("en-IN")})</span> : ""}
+                    </span>
+                </div>
             </div>
 
             {/* Payoff Chart Canvas */}
@@ -537,8 +505,8 @@ export default function PayoffChart({
             </div>
 
             {/* Bottom Real-Time Metric Strip (StockMojo style) */}
-            <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2.5 px-3 py-2 rounded-xl bg-gray-50/80 dark:bg-[#070e17]/80 border border-gray-200/80 dark:border-white/5 text-[11px]">
-                <div className="flex items-center gap-3.5">
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 rounded-xl bg-gray-50/80 dark:bg-[#070e17]/80 border border-gray-200/80 dark:border-white/5 text-[11px]">
+                <div className="flex items-center gap-3">
                     <span className="flex items-center gap-1.5 font-bold text-gray-700 dark:text-gray-300">
                         <span className="w-2.5 h-1.5 rounded-xs bg-emerald-500 inline-block" />
                         Expiry P&amp;L
@@ -551,7 +519,7 @@ export default function PayoffChart({
                     )}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-4 text-xs font-mono font-bold">
+                <div className="flex flex-wrap items-center gap-3.5 text-xs font-mono font-bold whitespace-nowrap">
                     {spotExpiryPnl != null && (
                         <div className="flex items-center gap-1.5">
                             <span className="text-gray-500 dark:text-gray-400 font-sans font-medium text-[11px]">P&amp;L at spot (Expiry):</span>
