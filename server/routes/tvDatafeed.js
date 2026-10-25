@@ -33,6 +33,108 @@ const SUPPORTED_RESOLUTIONS = ["1", "5", "15", "60", "1D", "1W", "1M"];
 const MAX_ROWS = 200000;
 const IST_OFFSET_SEC = 5.5 * 3600;
 
+// High-speed 24/7 Crypto Indices via Delta Exchange (FIU registered, sub-300ms, accessible in India)
+const CRYPTO_COINS = {
+    BTC: { deltaSymbol: ".DEXBTUSD", name: "Bitcoin", scale: 100 },
+    ETH: { deltaSymbol: ".DEETHUSD", name: "Ethereum", scale: 100 },
+    SOL: { deltaSymbol: ".DESOLUSD", name: "Solana", scale: 1000 },
+};
+
+const cryptoHistoryCache = new Map();
+const CRYPTO_CACHE_TTL_MS = 15000; // 15s in-memory cache for ultra-responsive pan/zoom
+
+function mapDeltaResolution(resolution) {
+    const r = String(resolution || "1D").toUpperCase();
+    if (r === "1") return "1m";
+    if (r === "5") return "5m";
+    if (r === "15") return "15m";
+    if (r === "30") return "30m";
+    if (r === "60") return "1h";
+    if (r === "120") return "2h";
+    if (r === "240") return "4h";
+    if (r === "1D" || r === "D") return "1d";
+    if (r === "1W" || r === "W") return "1w";
+    return "1d";
+}
+
+async function getCryptoHistory(symbol, resolution, from, to) {
+    const coin = CRYPTO_COINS[symbol];
+    if (!coin) return { s: "no_data" };
+
+    const cacheKey = `${symbol}_${resolution}_${from}_${to}`;
+    const cached = cryptoHistoryCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < CRYPTO_CACHE_TTL_MS) {
+        return cached.data;
+    }
+
+    const deltaRes = mapDeltaResolution(resolution);
+    const endSec = to > 0 ? to : Math.floor(Date.now() / 1000);
+    const MIN_CRYPTO_START = Math.floor(new Date("2023-10-01").getTime() / 1000);
+    
+    // Bounds check max window per resolution to avoid Delta API limits
+    const maxWindowSec = {
+        "1m": 2 * 86400,
+        "5m": 7 * 86400,
+        "15m": 25 * 86400,
+        "30m": 45 * 86400,
+        "1h": 90 * 86400,
+        "2h": 180 * 86400,
+        "4h": 365 * 86400,
+        "1d": 3 * 365 * 86400,
+        "1w": 3 * 365 * 86400,
+    }[deltaRes] || (365 * 86400);
+
+    const rawFrom = from > 0 ? from : endSec - 180 * 86400;
+    const startSec = Math.max(MIN_CRYPTO_START, Math.max(rawFrom, endSec - maxWindowSec));
+
+    const endpoints = [
+        "https://api.india.delta.exchange",
+        "https://api.delta.exchange",
+    ];
+
+    let candles = [];
+    for (const base of endpoints) {
+        try {
+            const url = `${base}/v2/history/candles?resolution=${deltaRes}&symbol=${coin.deltaSymbol}&start=${startSec}&end=${endSec}`;
+            const res = await fetch(url, {
+                headers: { Accept: "application/json", "User-Agent": "BazaarSync/1.0" },
+                signal: AbortSignal.timeout(4000),
+            });
+            if (!res.ok) continue;
+            const json = await res.json();
+            if (json && Array.isArray(json.result) && json.result.length > 0) {
+                candles = json.result;
+                break;
+            }
+        } catch (_) {}
+    }
+
+    if (!candles.length) {
+        return { s: "no_data" };
+    }
+
+    // Delta returns newest-first; sort ascending (oldest-first) for TradingView Charting Library
+    candles.sort((a, b) => a.time - b.time);
+
+    const payload = {
+        s: "ok",
+        t: candles.map((c) => c.time),
+        o: candles.map((c) => round2(c.open)),
+        h: candles.map((c) => round2(c.high)),
+        l: candles.map((c) => round2(c.low)),
+        c: candles.map((c) => round2(c.close)),
+        v: candles.map((c) => (c.volume != null ? Math.round(c.volume) : 100)),
+    };
+
+    cryptoHistoryCache.set(cacheKey, { at: Date.now(), data: payload });
+    if (cryptoHistoryCache.size > 200) {
+        const oldestKey = cryptoHistoryCache.keys().next().value;
+        cryptoHistoryCache.delete(oldestKey);
+    }
+
+    return payload;
+}
+
 function round2(x) {
     return Math.round(x * 100) / 100;
 }
@@ -57,11 +159,13 @@ router.get("/config", (req, res) => {
         exchanges: [
             { value: "", name: "All", desc: "" },
             { value: "NSE", name: "NSE", desc: "Bazaar Sync stored data" },
+            { value: "CRYPTO", name: "CRYPTO", desc: "Crypto 24/7 Spot Indices" },
         ],
         symbols_types: [
             { name: "All", value: "" },
             { name: "Index", value: "index" },
             { name: "Stock", value: "stock" },
+            { name: "Crypto", value: "crypto" },
         ],
     });
 });
@@ -168,10 +272,13 @@ async function optionMinuteRows(opt, fromDate, toDate) {
 }
 
 function cleanSymbol(raw) {
-    const s = String(raw || "").toUpperCase().replace(/^NSE:/, "").replace(/^BSE:/, "").trim();
+    const s = String(raw || "").toUpperCase().replace(/^NSE:/, "").replace(/^BSE:/, "").replace(/^BINANCE:/, "").replace(/^CRYPTO:/, "").trim();
     if (s === "MIDCAP" || s === "NIFTY MIDCAP" || s === "NIFTY_MID_SELECT") return "MIDCPNIFTY";
     if (s === "NIFTY 50" || s === "NIFTY50") return "NIFTY";
     if (s === "BANK NIFTY" || s === "NIFTY BANK") return "BANKNIFTY";
+    if (s === "BTCUSDT" || s === "BTC/USDT") return "BTC";
+    if (s === "ETHUSDT" || s === "ETH/USDT") return "ETH";
+    if (s === "SOLUSDT" || s === "SOL/USDT") return "SOL";
     return s;
 }
 
@@ -204,6 +311,31 @@ router.get("/symbols", async (req, res) => {
             });
         }
         const name = cleanSymbol(req.query.symbol);
+        const cryptoCoin = CRYPTO_COINS[name];
+        if (cryptoCoin) {
+            return res.json({
+                name,
+                ticker: name,
+                full_name: `CRYPTO:${name}`,
+                description: `${cryptoCoin.name} / USD Index`,
+                "exchange-traded": "CRYPTO",
+                "exchange-listed": "CRYPTO",
+                exchange: "CRYPTO",
+                listed_exchange: "CRYPTO",
+                type: "crypto",
+                session: "24x7",
+                timezone: "Asia/Kolkata",
+                minmov: 1,
+                pricescale: cryptoCoin.scale,
+                has_intraday: true,
+                has_daily: true,
+                has_weekly_and_monthly: true,
+                intraday_multipliers: ["1", "5", "15", "60"],
+                supported_resolutions: SUPPORTED_RESOLUTIONS,
+                volume_precision: 2,
+                data_status: "streaming",
+            });
+        }
         const universe = await symbolUniverse();
         const hit = universe.find((s) => s.symbol === name);
         res.json({
@@ -239,9 +371,16 @@ router.get("/search", async (req, res) => {
         const query = String(req.query.query || "").toUpperCase();
         const type = String(req.query.type || "");
         const limit = Math.min(parseInt(req.query.limit, 10) || 30, 50);
+
+        const cryptoMatches = [
+            { symbol: "BTC", full_name: "CRYPTO:BTC", description: "Bitcoin / USD Index", exchange: "CRYPTO", ticker: "BTC", type: "crypto" },
+            { symbol: "ETH", full_name: "CRYPTO:ETH", description: "Ethereum / USD Index", exchange: "CRYPTO", ticker: "ETH", type: "crypto" },
+            { symbol: "SOL", full_name: "CRYPTO:SOL", description: "Solana / USD Index", exchange: "CRYPTO", ticker: "SOL", type: "crypto" },
+        ].filter((c) => (!query || c.symbol.includes(query) || c.description.toUpperCase().includes(query)) && (!type || type === "crypto"));
+
         const universe = await symbolUniverse();
-        res.json(
-            universe
+        const stockMatches = (!type || type !== "crypto")
+            ? universe
                 .filter((s) => s.symbol.includes(query) && (!type || s.type === type))
                 .slice(0, limit)
                 .map((s) => ({
@@ -252,7 +391,9 @@ router.get("/search", async (req, res) => {
                     ticker: s.symbol,
                     type: s.type,
                 }))
-        );
+            : [];
+
+        res.json([...cryptoMatches, ...stockMatches].slice(0, limit));
     } catch (e) {
         res.status(500).json({ s: "error", errmsg: e.message });
     }
@@ -389,6 +530,13 @@ router.get("/history", async (req, res) => {
         const resolution = String(req.query.resolution || "1D");
         const from = parseInt(req.query.from, 10) || 0;
         const to = parseInt(req.query.to, 10) || Math.floor(Date.now() / 1000);
+
+        // Instant Crypto support via Delta Exchange with in-memory caching
+        if (CRYPTO_COINS[symbol]) {
+            const data = await getCryptoHistory(symbol, resolution, from, to);
+            return res.json(data);
+        }
+
         const intradayMin = INTRADAY_MIN[resolution];
 
         // Date-bounded pull with a buffer so weekly/monthly rollups near the

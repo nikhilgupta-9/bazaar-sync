@@ -15,36 +15,22 @@ async function getJson(path) {
 }
 
 const CRYPTO_MAP = {
-    BTC: "BTCUSDT",
-    ETH: "ETHUSDT",
-    SOL: "SOLUSDT",
-    BTCUSDT: "BTCUSDT",
-    ETHUSDT: "ETHUSDT",
-    SOLUSDT: "SOLUSDT",
-    "BTC/USDT": "BTCUSDT",
-    "ETH/USDT": "ETHUSDT",
-    "SOL/USDT": "SOLUSDT",
+    BTC: "BTC",
+    ETH: "ETH",
+    SOL: "SOL",
+    BTCUSDT: "BTC",
+    ETHUSDT: "ETH",
+    SOLUSDT: "SOL",
+    "BTC/USDT": "BTC",
+    "ETH/USDT": "ETH",
+    "SOL/USDT": "SOL",
 };
 
 function getCryptoPair(name) {
     if (!name) return null;
     const clean = String(name).toUpperCase().replace(/^BINANCE:/, "").replace(/^CRYPTO:/, "").trim();
     if (CRYPTO_MAP[clean]) return CRYPTO_MAP[clean];
-    // Exact coin names only — a prefix match sent NSE stocks like SOLARINDS
-    // (and their option tickers) to Binance.
     return null;
-}
-
-function mapToBinanceInterval(resolution) {
-    const r = String(resolution || "1D").toUpperCase();
-    if (r === "1D" || r === "D") return "1d";
-    if (r === "1W" || r === "W") return "1w";
-    if (r === "1M" || r === "M") return "1M";
-    if (r === "60") return "1h";
-    if (r === "120") return "2h";
-    if (r === "240") return "4h";
-    const num = parseInt(r, 10);
-    return isNaN(num) ? "1d" : `${num}m`;
 }
 
 const configuration = {
@@ -56,7 +42,7 @@ const configuration = {
     supports_time: true,
     exchanges: [
         { value: "NSE", name: "NSE", desc: "Bazaar Sync stored data" },
-        { value: "BINANCE", name: "BINANCE", desc: "Binance Real-Time Crypto" },
+        { value: "CRYPTO", name: "CRYPTO", desc: "Crypto 24/7 Spot Indices" },
     ],
     symbols_types: [
         { name: "All", value: "" },
@@ -182,10 +168,10 @@ export function createBazaarDatafeed() {
         searchSymbols(userInput, exchange, symbolType, onResult) {
             const queryUpper = (userInput || "").toUpperCase();
             const cryptoMatches = [
-                { symbol: "BTC", full_name: "BINANCE:BTCUSDT", description: "Bitcoin / Tether USD", exchange: "BINANCE", ticker: "BTCUSDT", type: "crypto" },
-                { symbol: "ETH", full_name: "BINANCE:ETHUSDT", description: "Ethereum / Tether USD", exchange: "BINANCE", ticker: "ETHUSDT", type: "crypto" },
-                { symbol: "SOL", full_name: "BINANCE:SOLUSDT", description: "Solana / Tether USD", exchange: "BINANCE", ticker: "SOLUSDT", type: "crypto" },
-            ].filter((c) => !userInput || c.symbol.includes(queryUpper) || c.ticker.includes(queryUpper));
+                { symbol: "BTC", full_name: "CRYPTO:BTC", description: "Bitcoin / USD Index", exchange: "CRYPTO", ticker: "BTC", type: "crypto" },
+                { symbol: "ETH", full_name: "CRYPTO:ETH", description: "Ethereum / USD Index", exchange: "CRYPTO", ticker: "ETH", type: "crypto" },
+                { symbol: "SOL", full_name: "CRYPTO:SOL", description: "Solana / USD Index", exchange: "CRYPTO", ticker: "SOL", type: "crypto" },
+            ].filter((c) => !userInput || c.symbol.includes(queryUpper) || c.description.toUpperCase().includes(queryUpper));
 
             const params = new URLSearchParams({ query: userInput || "", type: symbolType || "", limit: "30" });
             getJson(`/search?${params}`)
@@ -227,23 +213,22 @@ export function createBazaarDatafeed() {
                     0
                 );
             }
-            const pair = getCryptoPair(symbolName);
-            if (pair) {
-                const base = pair.replace("USDT", "");
+            const coin = getCryptoPair(symbolName);
+            if (coin) {
                 const symbolInfo = {
-                    name: base,
-                    ticker: pair,
-                    full_name: `BINANCE:${pair}`,
-                    description: `${base} / Tether USD`,
-                    "exchange-traded": "BINANCE",
-                    "exchange-listed": "BINANCE",
-                    exchange: "BINANCE",
-                    listed_exchange: "BINANCE",
+                    name: coin,
+                    ticker: coin,
+                    full_name: `CRYPTO:${coin}`,
+                    description: `${coin} / USD Index`,
+                    "exchange-traded": "CRYPTO",
+                    "exchange-listed": "CRYPTO",
+                    exchange: "CRYPTO",
+                    listed_exchange: "CRYPTO",
                     type: "crypto",
                     session: "24x7",
-                    timezone: "Etc/UTC",
+                    timezone: "Asia/Kolkata",
                     minmov: 1,
-                    pricescale: base === "BTC" ? 100 : base === "ETH" ? 100 : 1000,
+                    pricescale: coin === "SOL" ? 1000 : 100,
                     has_intraday: true,
                     has_daily: true,
                     has_weekly_and_monthly: true,
@@ -271,44 +256,11 @@ export function createBazaarDatafeed() {
                     .catch((err) => onError(err.message || "strategy getBars failed"));
                 return;
             }
-            const pair = getCryptoPair(symbolInfo.ticker || symbolInfo.name);
 
-            // Crypto via Binance public klines
-            if (pair) {
-                const bInterval = mapToBinanceInterval(resolution);
-                const startTime = from * 1000;
-                const endTime = to * 1000;
-                const url = `https://api.binance.com/api/v3/klines?symbol=${pair}&interval=${bInterval}&startTime=${startTime}&endTime=${endTime}&limit=1000`;
-
-                fetch(url)
-                    .then((res) => {
-                        if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
-                        return res.json();
-                    })
-                    .then((data) => {
-                        if (!Array.isArray(data) || data.length === 0) {
-                            return onResult([], { noData: true });
-                        }
-                        const bars = data.map((r) => ({
-                            time: Number(r[0]),
-                            open: parseFloat(r[1]),
-                            high: parseFloat(r[2]),
-                            low: parseFloat(r[3]),
-                            close: parseFloat(r[4]),
-                            volume: parseFloat(r[5]),
-                        }));
-                        onResult(bars, { noData: bars.length === 0 && !firstDataRequest });
-                    })
-                    .catch((err) => {
-                        console.error("[tvDatafeed/crypto]", err);
-                        onError(err.message || "Binance getBars failed");
-                    });
-                return;
-            }
-
-            // Indian Market via Bazaar Sync stored UDF
+            // Both Indian Market & Crypto go through our unified, sub-300ms Bazaar Sync UDF (/api/tv/history)
+            const targetSymbol = getCryptoPair(symbolInfo.ticker || symbolInfo.name) || symbolInfo.ticker || symbolInfo.name;
             const params = new URLSearchParams({
-                symbol: symbolInfo.ticker || symbolInfo.name,
+                symbol: targetSymbol,
                 resolution,
                 from: String(from),
                 to: String(to),
@@ -340,15 +292,16 @@ export function createBazaarDatafeed() {
         subscribeBars(symbolInfo, resolution, onRealtimeCallback, subscriberUID) {
             const tickerName = symbolInfo.ticker || symbolInfo.name;
             const strat = strategyOf(tickerName);
-            // Options, strategies and NSE/BSE indices/stocks: poll the stored
-            // live ticks for the latest bar (intraday resolutions only — a
-            // daily bar of stored data doesn't move).
-            if (strat || isOptionTicker(tickerName) || (!getCryptoPair(tickerName) && INTRADAY_POLL_RESOLUTIONS.has(String(resolution)))) {
+            const isCrypto = !!getCryptoPair(tickerName);
+
+            // Poll stored live ticks or Delta 24/7 endpoint for the latest bar
+            if (strat || isOptionTicker(tickerName) || isCrypto || INTRADAY_POLL_RESOLUTIONS.has(String(resolution))) {
                 const step = RESOLUTION_SECONDS[resolution] || 86400;
+                const pollInterval = isCrypto ? 2500 : OPTION_POLL_MS;
                 let lastTime = 0;
                 const poll = () => {
                     const now = Math.floor(Date.now() / 1000);
-                    const from = now - Math.max(step * 3, 4 * 3600);
+                    const from = now - Math.max(step * 3, isCrypto ? 86400 : 4 * 3600);
                     const load = strat ? strategyBars(strat, resolution, from, now + 60) : fetchHistoryBars(tickerName, resolution, from, now + 60);
                     load
                         .then(({ bars }) => {
@@ -359,39 +312,7 @@ export function createBazaarDatafeed() {
                         })
                         .catch(() => {});
                 };
-                optionPollers.set(subscriberUID, setInterval(poll, OPTION_POLL_MS));
-                return;
-            }
-
-            const pair = getCryptoPair(tickerName);
-            if (!pair) return;
-
-            const bInterval = mapToBinanceInterval(resolution);
-            try {
-                const ws = new WebSocket(
-                    `wss://stream.binance.com:9443/ws/${pair.toLowerCase()}@kline_${bInterval}`
-                );
-                ws.onmessage = (event) => {
-                    try {
-                        const msg = JSON.parse(event.data);
-                        if (msg && msg.k) {
-                            const k = msg.k;
-                            onRealtimeCallback({
-                                time: Number(k.t),
-                                open: parseFloat(k.o),
-                                high: parseFloat(k.h),
-                                low: parseFloat(k.l),
-                                close: parseFloat(k.c),
-                                volume: parseFloat(k.v),
-                            });
-                        }
-                    } catch {
-                        /* ignore parsing err */
-                    }
-                };
-                cryptoSockets.set(subscriberUID, ws);
-            } catch {
-                /* safe ignore if ws unavailable */
+                optionPollers.set(subscriberUID, setInterval(poll, pollInterval));
             }
         },
 
@@ -400,15 +321,6 @@ export function createBazaarDatafeed() {
             if (poller) {
                 clearInterval(poller);
                 optionPollers.delete(subscriberUID);
-            }
-            const ws = cryptoSockets.get(subscriberUID);
-            if (ws) {
-                try {
-                    ws.close();
-                } catch {
-                    /* safe */
-                }
-                cryptoSockets.delete(subscriberUID);
             }
         },
 

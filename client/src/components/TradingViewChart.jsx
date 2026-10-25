@@ -168,11 +168,41 @@ export default function TradingViewChart({
     }, [normalizedInterval]);
 
     // 4. IN-PLACE THEME SWITCHER
+    // changeTheme() alone only swaps the library's built-in colour scheme — it does NOT
+    // revisit custom `overrides` passed at construction (pane background, grid lines), since
+    // those are treated as sticky user overrides. Without reapplying them here, toggling the
+    // app theme after the widget has mounted leaves the chart's background stuck on whichever
+    // theme was active at mount (e.g. still dark after switching the app to light).
     useEffect(() => {
         if (!widgetRef.current || !chartReadyRef.current) return;
         try {
+            const applyPaneOverrides = () => {
+                try {
+                    const chart = typeof widgetRef.current.activeChart === "function"
+                        ? widgetRef.current.activeChart()
+                        : null;
+                    if (chart && typeof chart.applyOverrides === "function") {
+                        chart.applyOverrides({
+                            "paneProperties.background": isDark ? "#0b1420" : "#ffffff",
+                            "paneProperties.backgroundType": "solid",
+                            "paneProperties.vertGridProperties.color": isDark ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.04)",
+                            "paneProperties.horzGridProperties.color": isDark ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.04)",
+                        });
+                    }
+                } catch (e) {
+                    console.warn("[TradingViewChart] applyOverrides error:", e);
+                }
+            };
+
             if (typeof widgetRef.current.changeTheme === "function") {
-                widgetRef.current.changeTheme(isDark ? "dark" : "light");
+                const result = widgetRef.current.changeTheme(isDark ? "dark" : "light");
+                if (result && typeof result.then === "function") {
+                    result.then(applyPaneOverrides).catch(applyPaneOverrides);
+                } else {
+                    applyPaneOverrides();
+                }
+            } else {
+                applyPaneOverrides();
             }
         } catch (e) {
             console.warn("[TradingViewChart] changeTheme error:", e);
@@ -224,11 +254,15 @@ export default function TradingViewChart({
                     enabled_features: [
                         "study_dialog_search_control",
                         "use_localstorage_for_settings",
-                        "save_chart_properties_to_local_storage",
                         "items_favoriting",
                         // keep the full toolset in the library's own fullscreen mode too
                         "header_in_fullscreen_mode",
                         "side_toolbar_in_fullscreen_mode",
+                        // deliberately NOT "save_chart_properties_to_local_storage" — that feature
+                        // persists pane background/grid colors across reloads under the library's
+                        // OWN storage, independent of our theme. A session spent in dark mode would
+                        // get restored (and silently override our `overrides` below) the next time
+                        // the chart mounted, even after switching the app back to light.
                     ],
                     overrides: {
                         "paneProperties.background": isDark ? "#0b1420" : "#ffffff",
@@ -254,11 +288,28 @@ export default function TradingViewChart({
                     chartReadyRef.current = true;
                     try {
                         const chart = widget.activeChart();
+                        // Re-assert our pane colors once more, now that the chart is fully
+                        // ready — a safety net for any users whose browser already restored
+                        // stale pane properties from before "save_chart_properties_to_local_storage"
+                        // was turned off above.
+                        if (chart && typeof chart.applyOverrides === "function") {
+                            chart.applyOverrides({
+                                "paneProperties.background": isDark ? "#0b1420" : "#ffffff",
+                                "paneProperties.backgroundType": "solid",
+                                "paneProperties.vertGridProperties.color": isDark ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.04)",
+                                "paneProperties.horzGridProperties.color": isDark ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.04)",
+                            });
+                        }
                         // Always apply — the library restores the last-used chart
                         // type from localStorage, so a line-style strategy chart
                         // would otherwise turn the next candle chart into a line.
                         if (chart && pendingChartStyleRef.current) {
                             chart.setChartType(Number(pendingChartStyleRef.current));
+                        }
+                        if (pendingSymbolRef.current && pendingSymbolRef.current !== cleanSymbol) {
+                            if (typeof widget.setSymbol === "function") {
+                                widget.setSymbol(pendingSymbolRef.current, pendingIntervalRef.current);
+                            }
                         }
                         if (chart && compareSymbolRef.current) {
                             Promise.resolve(
@@ -274,7 +325,10 @@ export default function TradingViewChart({
                 });
             } else {
                 // FALLBACK CDN WIDGET
-                const tvSymbol = cleanSymbol.startsWith("NSE:") ? cleanSymbol : `NSE:${cleanSymbol}`;
+                const isCrypto = ["BTC", "ETH", "SOL", "BTCUSDT", "ETHUSDT", "SOLUSDT"].includes(cleanSymbol);
+                const tvSymbol = isCrypto
+                    ? `BINANCE:${cleanSymbol.replace("USDT", "")}USDT`
+                    : (cleanSymbol.startsWith("NSE:") ? cleanSymbol : `NSE:${cleanSymbol}`);
                 widget = new window.TradingView.widget({
                     autosize: true,
                     symbol: tvSymbol,
