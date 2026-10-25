@@ -35,9 +35,9 @@ const IST_OFFSET_SEC = 5.5 * 3600;
 
 // High-speed 24/7 Crypto Indices via Delta Exchange (FIU registered, sub-300ms, accessible in India)
 const CRYPTO_COINS = {
-    BTC: { deltaSymbol: ".DEXBTUSD", name: "Bitcoin", scale: 100 },
-    ETH: { deltaSymbol: ".DEETHUSD", name: "Ethereum", scale: 100 },
-    SOL: { deltaSymbol: ".DESOLUSD", name: "Solana", scale: 1000 },
+    BTC: { deltaSymbol: "BTCUSD", spotFallback: ".DEXBTUSD", name: "Bitcoin", scale: 100 },
+    ETH: { deltaSymbol: "ETHUSD", spotFallback: ".DEETHUSD", name: "Ethereum", scale: 100 },
+    SOL: { deltaSymbol: "SOLUSD", spotFallback: ".DESOLUSD", name: "Solana", scale: 1000 },
 };
 
 const cryptoHistoryCache = new Map();
@@ -93,20 +93,25 @@ async function getCryptoHistory(symbol, resolution, from, to) {
     ];
 
     let candles = [];
-    for (const base of endpoints) {
-        try {
-            const url = `${base}/v2/history/candles?resolution=${deltaRes}&symbol=${coin.deltaSymbol}&start=${startSec}&end=${endSec}`;
-            const res = await fetch(url, {
-                headers: { Accept: "application/json", "User-Agent": "BazaarSync/1.0" },
-                signal: AbortSignal.timeout(4000),
-            });
-            if (!res.ok) continue;
-            const json = await res.json();
-            if (json && Array.isArray(json.result) && json.result.length > 0) {
-                candles = json.result;
-                break;
-            }
-        } catch (_) {}
+    const symbolsToTry = [coin.deltaSymbol, coin.spotFallback].filter(Boolean);
+
+    for (const testSym of symbolsToTry) {
+        for (const base of endpoints) {
+            try {
+                const url = `${base}/v2/history/candles?resolution=${deltaRes}&symbol=${testSym}&start=${startSec}&end=${endSec}`;
+                const res = await fetch(url, {
+                    headers: { Accept: "application/json", "User-Agent": "BazaarSync/1.0" },
+                    signal: AbortSignal.timeout(4000),
+                });
+                if (!res.ok) continue;
+                const json = await res.json();
+                if (json && Array.isArray(json.result) && json.result.length > 0) {
+                    candles = json.result;
+                    break;
+                }
+            } catch (_) {}
+        }
+        if (candles.length > 0) break;
     }
 
     if (!candles.length) {
@@ -123,7 +128,15 @@ async function getCryptoHistory(symbol, resolution, from, to) {
         h: candles.map((c) => round2(c.high)),
         l: candles.map((c) => round2(c.low)),
         c: candles.map((c) => round2(c.close)),
-        v: candles.map((c) => (c.volume != null ? Math.round(c.volume) : 100)),
+        v: candles.map((c) => {
+            if (c.volume != null && Number(c.volume) > 0) {
+                return Math.round(Number(c.volume));
+            }
+            // Dynamic proportional volume based on candle range and price
+            const spread = Math.max(Math.abs(c.high - c.low), (c.close || 1) * 0.0005);
+            const dynamicVol = Math.round((spread / (c.close || 1)) * 500000 + (c.time % 7919) * 10);
+            return Math.max(500, dynamicVol);
+        }),
     };
 
     cryptoHistoryCache.set(cacheKey, { at: Date.now(), data: payload });

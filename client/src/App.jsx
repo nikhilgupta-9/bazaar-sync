@@ -27,7 +27,8 @@ function App() {
     const location = useLocation();
     const isChartPage = location.pathname.startsWith("/historical-chart");
     const isStrategyBuilderPage = location.pathname.startsWith("/strategy-builder");
-    const hideFooter = isChartPage || isStrategyBuilderPage;
+    const isOptionChainPage = location.pathname.startsWith("/option-chain");
+    const hideFooter = isChartPage || isStrategyBuilderPage || isOptionChainPage;
 
     return (
         <div className="flex min-h-screen flex-col bg-gray-50 text-gray-900 transition-colors dark:bg-[#0b1420] dark:text-gray-100">

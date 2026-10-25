@@ -553,37 +553,88 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
     };
 
     return (
-        <div className="min-h-screen bg-page text-fg pb-12">
-            <div className="mx-auto w-full max-w-[1750px] px-2 pt-1.5 pb-8 sm:px-3 sm:pt-2 space-y-1.5 sm:space-y-2">
+        <div className="min-h-screen bg-page text-fg flex flex-col">
+            <div className="mx-auto w-full max-w-[1920px] px-2 pt-1.5 pb-2 sm:px-3 sm:pt-2 space-y-1.5 sm:space-y-2 flex-1 flex flex-col">
                 {/* 1. TOP RESPONSIVE HEADER BAR & CONTROL PANEL */}
                 <div className="rounded-xl border border-line bg-surface p-2 sm:p-2.5 shadow-xs space-y-1.5">
-                    {/* Row 1: Market Selector, Quick Indices, Stock Search & Live Spot Bar */}
+                    {/* Row 1: Market Selector, Asset Dropdown, Quick Indices, Stock Search & Live Spot Bar */}
                     <div className="flex flex-wrap items-center justify-between gap-2.5">
                         {/* Left: Quick Symbol Selector (min-w-0 so the pill row scrolls instead of widening the page) */}
                         <div className="flex flex-wrap items-center gap-2 min-w-0 max-w-full">
-                            {/* Market switch: NSE/BSE F&O vs Crypto (Delta Exchange) */}
-                            <div className="flex items-center rounded-xl border border-line bg-surface-raised p-0.5">
+                            {/* Market switch: Indian Market (NSE/BSE) vs Crypto Market (Delta Exchange) */}
+                            <div className="flex items-center rounded-xl border border-line bg-surface-raised p-0.5 shadow-xs shrink-0">
                                 <button
                                     onClick={() => isCrypto && navigate("/option-chain/nifty")}
-                                    className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold transition-all ${
+                                    className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold transition-all cursor-pointer ${
                                         !isCrypto ? "bg-emerald-600 text-white shadow-xs" : "text-fg-muted hover:text-fg"
                                     }`}
                                 >
                                     <span>🇮🇳</span>
-                                    <span>NSE F&amp;O</span>
+                                    <span>Indian Market</span>
                                 </button>
                                 <button
                                     onClick={() => !isCrypto && navigate("/option-chain/crypto/btc")}
-                                    className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold transition-all ${
+                                    className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold transition-all cursor-pointer ${
                                         isCrypto ? "bg-amber-500 text-white shadow-xs" : "text-fg-muted hover:text-fg"
                                     }`}
                                 >
                                     <span>⚡</span>
-                                    <span>Crypto</span>
+                                    <span>Crypto Market</span>
                                 </button>
                             </div>
 
-                            <span className="hidden sm:block h-5 w-px bg-line" />
+                            <span className="hidden sm:block h-5 w-px bg-line shrink-0" />
+
+                            {/* Dedicated Asset Dropdown (NIFTY & SENSEX in Indian; BTC, ETH, SOL in Crypto) */}
+                            {!isCrypto ? (
+                                <div className="relative flex items-center shrink-0">
+                                    <select
+                                        value={symbol}
+                                        onChange={(e) => pickSymbol(e.target.value)}
+                                        className="appearance-none rounded-xl border border-line bg-surface-raised py-1 pl-3 pr-8 text-xs font-bold text-fg shadow-xs outline-none hover:bg-surface focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 cursor-pointer transition font-mono"
+                                        aria-label="Select Indian Market Index or Stock"
+                                    >
+                                        <optgroup label="Core Indices">
+                                            <option value="NIFTY">NIFTY 50</option>
+                                            <option value="SENSEX">SENSEX (BSE)</option>
+                                            <option value="BANKNIFTY">BANK NIFTY</option>
+                                            <option value="FINNIFTY">FIN NIFTY</option>
+                                            <option value="MIDCPNIFTY">MIDCAP NIFTY</option>
+                                            <option value="BANKEX">BANKEX</option>
+                                        </optgroup>
+                                        {symbolList.stocks && symbolList.stocks.length > 0 && (
+                                            <optgroup label="F&O Stocks">
+                                                {symbolList.stocks.map((stk) => (
+                                                    <option key={stk} value={stk}>
+                                                        {stk}
+                                                    </option>
+                                                ))}
+                                            </optgroup>
+                                        )}
+                                    </select>
+                                    <FiChevronDown
+                                        size={13}
+                                        className="pointer-events-none absolute right-2.5 text-fg-subtle"
+                                    />
+                                </div>
+                            ) : (
+                                <div className="relative flex items-center shrink-0">
+                                    <select
+                                        value={symbol}
+                                        onChange={(e) => setSymbol(e.target.value)}
+                                        className="appearance-none rounded-xl border border-line bg-surface-raised py-1 pl-3 pr-8 text-xs font-bold text-fg shadow-xs outline-none hover:bg-surface focus:border-amber-500 focus:ring-1 focus:ring-amber-500 cursor-pointer transition font-mono"
+                                        aria-label="Select Crypto Coin"
+                                    >
+                                        <option value="BTC">₿ BTC (Bitcoin)</option>
+                                        <option value="ETH">Ξ ETH (Ethereum)</option>
+                                        <option value="SOL">◎ SOL (Solana)</option>
+                                    </select>
+                                    <FiChevronDown
+                                        size={13}
+                                        className="pointer-events-none absolute right-2.5 text-fg-subtle"
+                                    />
+                                </div>
+                            )}
 
                             {/* Quick Symbol Pills */}
                             <div className="-mx-2 px-2 min-w-0 flex items-center gap-1 overflow-x-auto scrollbar-none sm:mx-0 sm:px-0 sm:flex-wrap">
@@ -592,7 +643,7 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                           <button
                                               key={c.symbol}
                                               onClick={() => setSymbol(c.symbol)}
-                                              className={`shrink-0 flex items-center gap-1 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-bold transition-all ${
+                                              className={`shrink-0 flex items-center gap-1 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-bold transition-all cursor-pointer ${
                                                   symbol === c.symbol
                                                       ? "bg-amber-500 text-white shadow-xs"
                                                       : "bg-surface-raised text-fg hover:bg-surface-hover"
@@ -605,11 +656,11 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                                               </span>
                                           </button>
                                       ))
-                                    : ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"].map((idxSym) => (
+                                    : ["NIFTY", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"].map((idxSym) => (
                                           <button
                                               key={idxSym}
                                               onClick={() => pickSymbol(idxSym)}
-                                              className={`shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-bold transition-all ${
+                                              className={`shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-bold transition-all cursor-pointer ${
                                                   symbol === idxSym
                                                       ? "bg-emerald-600 text-white shadow-xs"
                                                       : "bg-surface-raised text-fg hover:bg-surface-hover"
@@ -1083,8 +1134,8 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                             onOpenChart={(strike, right) => setChartTarget({ strike, right })}
                         />
                     ) : (
-                    <div className="rounded-2xl border border-line bg-surface shadow-xs overflow-hidden">
-                        <div className="overflow-auto max-h-[calc(100vh-110px)]" ref={tableContainerRef}>
+                    <div className="rounded-2xl border border-line bg-surface shadow-xs overflow-hidden flex-1 flex flex-col">
+                        <div className="overflow-auto flex-1 h-[calc(100vh-150px)]" ref={tableContainerRef}>
                             <table className="w-full text-left border-collapse text-xs">
                                 <thead className="sticky top-0 z-20 bg-surface shadow-xs">
                                     {/* Top Grouping Header */}
@@ -1661,75 +1712,6 @@ function OptionChainView({ market, symbol, data, loading, error, isLive, lastUpd
                         onOpenChart={(strike, right) => setChartTarget({ strike, right })}
                     />
                 )}
-
-                {/* 4. EDUCATIONAL & GREEKS ANALYSIS SECTION */}
-                <div className="pt-4 space-y-4">
-                    <div className="rounded-2xl border border-line bg-surface p-5 shadow-xs space-y-4">
-                        <h2 className="text-base font-bold text-fg">
-                            {symbol} Option Chain: Greeks Explained (Delta, Theta, Gamma, Vega)
-                        </h2>
-                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 text-xs">
-                            <div className="rounded-xl border border-line bg-surface-muted p-4">
-                                <h3 className="font-bold text-fg mb-1">Delta (Δ)</h3>
-                                <p className="text-fg-muted leading-relaxed">
-                                    Measures option price change per 1-point move in {symbol}. Call delta ranges 0 to 1; Put delta -1 to 0. ATM delta is ~0.50.
-                                </p>
-                            </div>
-                            <div className="rounded-xl border border-line bg-surface-muted p-4">
-                                <h3 className="font-bold text-fg mb-1">Theta (θ)</h3>
-                                <p className="text-fg-muted leading-relaxed">
-                                    Daily time decay. Options lose value each day time passes. Theta is highest at ATM strikes near expiry.
-                                </p>
-                            </div>
-                            <div className="rounded-xl border border-line bg-surface-muted p-4">
-                                <h3 className="font-bold text-fg mb-1">Gamma (γ)</h3>
-                                <p className="text-fg-muted leading-relaxed">
-                                    Rate of change of Delta. Highest near ATM on expiry day, causing rapid explosive premium swings.
-                                </p>
-                            </div>
-                            <div className="rounded-xl border border-line bg-surface-muted p-4">
-                                <h3 className="font-bold text-fg mb-1">Vega (ν)</h3>
-                                <p className="text-fg-muted leading-relaxed">
-                                    Sensitivity to Implied Volatility (IV). Measures price change per 1% rise or fall in volatility.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* FAQ Section */}
-                    <div className="rounded-2xl border border-line bg-surface p-5 shadow-xs space-y-3">
-                        <h3 className="text-sm font-bold text-fg">Frequently Asked Questions</h3>
-                        <div className="space-y-2 text-xs">
-                            {[
-                                {
-                                    q: "What is an Option Chain and how do professional traders read it?",
-                                    a: "An Option Chain is a live matrix displaying all Call (CE) and Put (PE) option contracts mapped around current strike prices. Traders analyze Open Interest (OI) concentration to determine key market support and resistance boundaries.",
-                                },
-                                {
-                                    q: "How to interpret PCR (Put-Call Ratio) on Bazaar Sync?",
-                                    a: "A PCR above 1.2 indicates bullish sentiment with heavy put writing (support building), while a PCR below 0.8 indicates bearish resistance. Values between 0.8 and 1.2 represent a neutral/ranging market.",
-                                },
-                                {
-                                    q: "What is Max Pain strike?",
-                                    a: "Max Pain is the strike price where option buyers experience maximum collective loss upon expiry, often acting as a gravitational price target.",
-                                },
-                            ].map((faq, idx) => (
-                                <details
-                                    key={idx}
-                                    className="group rounded-xl border border-line p-3 [&_summary::-webkit-details-marker]:hidden"
-                                >
-                                    <summary className="flex cursor-pointer items-center justify-between font-bold text-fg">
-                                        <span>{faq.q}</span>
-                                        <span className="transition group-open:rotate-180 text-fg-subtle">▾</span>
-                                    </summary>
-                                    <p className="mt-2 text-fg-muted leading-relaxed border-t border-line pt-2">
-                                        {faq.a}
-                                    </p>
-                                </details>
-                            ))}
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
     );

@@ -44,7 +44,7 @@ export default function OptionChainOiChart({
 
             return {
                 strike: r.strike,
-                strikeLabel: String(r.strike),
+                strikeLabel: fmtStrike ? String(fmtStrike(r.strike)) : String(r.strike),
                 ceOi,
                 peOi,
                 ceOiChange,
@@ -57,7 +57,7 @@ export default function OptionChainOiChart({
                 isAtm,
             };
         });
-    }, [displayRows, effectiveAtmStrike]);
+    }, [displayRows, effectiveAtmStrike, fmtStrike]);
 
     // Key Insights: Highest Call OI (Resistance), Highest Put OI (Support)
     const insights = useMemo(() => {
@@ -165,21 +165,23 @@ export default function OptionChainOiChart({
                         >
                             Total Open Interest (OI)
                         </button>
-                        <button
-                            onClick={() => setMetricMode("oiChange")}
-                            className={`rounded-lg px-3 py-1 text-xs font-bold transition-all ${
-                                metricMode === "oiChange"
-                                    ? "bg-emerald-600 text-white shadow-xs"
-                                    : "text-fg-muted hover:text-fg"
-                            }`}
-                        >
-                            Change in OI (Chg OI)
-                        </button>
+                        {!isCrypto && (
+                            <button
+                                onClick={() => setMetricMode("oiChange")}
+                                className={`rounded-lg px-3 py-1 text-xs font-bold transition-all ${
+                                    metricMode === "oiChange"
+                                        ? "bg-emerald-600 text-white shadow-xs"
+                                        : "text-fg-muted hover:text-fg"
+                                }`}
+                            >
+                                Change in OI (Chg OI)
+                            </button>
+                        )}
                     </div>
 
                     <span className="text-micro text-fg-subtle hidden sm:inline">
                         {metricMode === "totalOi"
-                            ? "Cumulative contracts open across strikes"
+                            ? (isCrypto ? "Active open interest contracts across strikes (Delta Exchange)" : "Cumulative contracts open across strikes")
                             : "Fresh writing vs unwinding in current session"}
                     </span>
                 </div>
@@ -310,7 +312,7 @@ export default function OptionChainOiChart({
                         {/* Dashed Reference Line for Spot */}
                         {spot != null && (
                             <ReferenceLine
-                                x={String(effectiveAtmStrike)}
+                                x={fmtStrike ? String(fmtStrike(effectiveAtmStrike)) : String(effectiveAtmStrike)}
                                 stroke="#f59e0b"
                                 strokeDasharray="4 4"
                                 strokeWidth={2}
@@ -327,7 +329,7 @@ export default function OptionChainOiChart({
                         {/* Dashed Reference Line for Max Pain */}
                         {maxPain != null && maxPain !== effectiveAtmStrike && (
                             <ReferenceLine
-                                x={String(maxPain)}
+                                x={fmtStrike ? String(fmtStrike(maxPain)) : String(maxPain)}
                                 stroke="#8b5cf6"
                                 strokeDasharray="3 3"
                                 strokeWidth={1.5}
