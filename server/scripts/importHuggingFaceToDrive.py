@@ -164,10 +164,12 @@ def get_huggingface_tree():
             raise
 
 # ----------------- MAIN PROCESSING -----------------
-def process_symbol_year(symbol="NIFTY", year="2024", max_atm_offset=MAX_ATM_OFFSET, limit=None, do_upload=True):
+def process_symbol_year(symbol="NIFTY", year="2024", max_atm_offset=MAX_ATM_OFFSET, limit=None, do_upload=True, from_month=None, to_month=None):
     print("=" * 80)
     print(f" 🚀 HUGGING FACE ➔ GOOGLE DRIVE PIPELINE: {symbol} - Year {year}")
     print(f" Mode: Full Option Chains (ATM ±{max_atm_offset} strikes) + 1-Min Spot OHLCV")
+    if from_month or to_month:
+        print(f" Month Filter: {from_month or 'start'} to {to_month or 'end'}")
     if limit:
         print(f" Limit: {limit} expiries only")
     print("=" * 80)
@@ -222,6 +224,19 @@ def process_symbol_year(symbol="NIFTY", year="2024", max_atm_offset=MAX_ATM_OFFS
     prefix = f"options/{symbol}/{year}-"
     expiries_files = [f for f in tree if f.startswith(prefix) and f.endswith(".parquet")]
     expiries_files.sort()
+
+    def get_month(f):
+        try:
+            # f is options/SYMBOL/YYYY-MM-DD.parquet
+            return int(os.path.basename(f).split("-")[1])
+        except Exception:
+            return 0
+
+    if from_month:
+        expiries_files = [f for f in expiries_files if get_month(f) >= int(from_month)]
+    if to_month:
+        expiries_files = [f for f in expiries_files if get_month(f) <= int(to_month)]
+
     if limit:
         expiries_files = expiries_files[:limit]
     print(f"[{symbol}] Processing {len(expiries_files)} expiries for {year}:")
@@ -345,6 +360,31 @@ def process_symbol_year(symbol="NIFTY", year="2024", max_atm_offset=MAX_ATM_OFFS
     elapsed = (time.time() - start_time) / 60.0
     print(f"\n[{symbol}] {len(expiries_files)} expiries for {year} loaded: {total_option_rows:,} rows in {elapsed:.1f} min.")
 
+    # Sync coverage summary table so simulator immediately registers all dates
+    if total_option_rows > 0:
+        print(f"\n[{symbol}] Syncing option_chain_coverage_summary for {year}...")
+        try:
+            conn = get_db()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO option_chain_coverage_summary (symbol, expiry_date, trade_date, row_count, minute_rows)
+                    SELECT symbol, expiry, trade_date, COUNT(*), COUNT(DISTINCT trade_time)
+                    FROM option_chain_history
+                    WHERE symbol = %s AND trade_date >= %s AND trade_date <= %s
+                    GROUP BY symbol, expiry, trade_date
+                    ON DUPLICATE KEY UPDATE row_count = VALUES(row_count), minute_rows = VALUES(minute_rows)
+                """, (symbol, f"{year}-01-01", f"{year}-12-31"))
+            conn.close()
+            print(f"[{symbol}] ✅ Coverage summary table synced.")
+
+            # Invalidate simulator dates cache
+            cache_inval = os.path.join(BASE_DIR, "server", "data", "simulator-dates-cache.invalidated")
+            with open(cache_inval, "w") as f:
+                f.write(str(int(time.time())))
+            print(f"[{symbol}] ✅ Simulator dates cache invalidated.")
+        except Exception as e:
+            print(f"[{symbol}] ⚠️ Coverage summary sync notice: {e}")
+
     # 3. Trigger Archival Pipeline to Stream-Merge with Google Drive & Auto-Prune
     if do_upload:
         print("\n[3/3] Triggering Smart Cloud Archival & Google Drive Stream-Merge...")
@@ -369,6 +409,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Import Hugging Face Indian F&O data to Drive")
     parser.add_argument("--symbol", default="NIFTY", help="Symbol (NIFTY, BANKNIFTY, SENSEX)")
     parser.add_argument("--year", default="2024", help="Year (e.g. 2024, 2023)")
+    parser.add_argument("--from-month", type=int, default=None, help="Start month (1-12)")
+    parser.add_argument("--to-month", type=int, default=None, help="End month (1-12)")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of expiries to process")
     parser.add_argument("--max-atm-offset", type=int, default=30, help="ATM ± strike window (default: 30)")
     parser.add_argument("--no-upload", action="store_true", help="Skip Google Drive upload")
@@ -377,6 +419,8 @@ if __name__ == "__main__":
     process_symbol_year(
         symbol=args.symbol,
         year=args.year,
+        from_month=args.from_month,
+        to_month=args.to_month,
         max_atm_offset=args.max_atm_offset,
         limit=args.limit,
         do_upload=not args.no_upload
