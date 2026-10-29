@@ -16,13 +16,23 @@
       (function () {
         try {
           var saved = localStorage.getItem("bazaar_sync_theme");
-          if (saved === "dark") {
+          // "ocean" is a teal-tinted variant of dark mode — it carries the
+          // same `dark` class so every existing dark: Tailwind utility still
+          // applies, plus `data-theme="ocean"` so the --bs-* token overrides
+          // in index.css can retint the token-based surfaces on top of that.
+          if (saved === "dark" || saved === "ocean") {
             document.documentElement.classList.add("dark");
           } else {
             document.documentElement.classList.remove("dark");
           }
+          if (saved === "ocean") {
+            document.documentElement.setAttribute("data-theme", "ocean");
+          } else {
+            document.documentElement.removeAttribute("data-theme");
+          }
         } catch (e) {
           document.documentElement.classList.remove("dark");
+          document.documentElement.removeAttribute("data-theme");
         }
       })();
     </script>

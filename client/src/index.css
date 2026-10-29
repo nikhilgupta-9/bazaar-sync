@@ -34,6 +34,31 @@
   --bs-up: #34d399;              /* emerald-400 */
   --bs-down: #fb7185;            /* rose-400 */
 }
+/* "Ocean" — a teal-tinted variant of dark mode (ThemeContext.jsx applies
+   both `.dark` and this attribute together, never this alone), so every
+   `dark:` Tailwind utility across the app keeps working unchanged. This
+   block only retints the token-based surfaces (bg-surface, text-fg, …) —
+   components still written with literal `dark:bg-[#0b1420]`-style colours
+   instead of the tokens won't pick up the teal tint. That's a known,
+   honest partial: a full reskin would mean migrating every such literal to
+   the token classes first (see .claude/skills/bazaar-ui/rules.md §3).
+   Checked against stockmojo.in's own Ocean theme is NOT something this was
+   screenshot-matched to (no browser tool in this environment) — the teal
+   palette here is our own interpretation of "a cooler dark theme", not a
+   pixel copy. */
+.dark[data-theme="ocean"] {
+  --bs-page: #061a1f;
+  --bs-surface: #071f26;
+  --bs-surface-muted: #04161a;
+  --bs-surface-raised: #0d2a32;
+  --bs-surface-hover: #113640;
+  --bs-line: rgb(94 234 212 / 0.14); /* teal-300 @ low opacity */
+  --bs-fg: #e6fbfa;
+  --bs-fg-muted: #7dd3c7;            /* teal-300ish */
+  --bs-fg-subtle: #4f8f88;
+  --bs-up: #2dd4bf;                  /* teal-400 */
+  --bs-down: #fb7185;                /* rose-400, unchanged — never retint the loss colour */
+}
 @theme inline {
   --color-page: var(--bs-page);
   --color-surface: var(--bs-surface);

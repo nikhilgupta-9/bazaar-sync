@@ -227,27 +227,19 @@ const COLORS = {
 
 const BASELINE_Y = 49;
 
-function smoothPath(points) {
+// Real option payoffs are piecewise STRAIGHT lines between strikes (kinked
+// at every strike, never curved) — straight "L" segments, not a bezier
+// smoother, so a Short Straddle's peak and an Iron Condor's plateau corners
+// render as the actual sharp kinks a real payoff diagram has.
+function linePath(points) {
     if (points.length < 2) return "";
-    let d = `M ${points[0][0]},${points[0][1]}`;
-    for (let i = 0; i < points.length - 1; i++) {
-        const p0 = points[i - 1] || points[i];
-        const p1 = points[i];
-        const p2 = points[i + 1];
-        const p3 = points[i + 2] || p2;
-        const c1x = p1[0] + (p2[0] - p0[0]) / 6;
-        const c1y = p1[1] + (p2[1] - p0[1]) / 6;
-        const c2x = p2[0] - (p3[0] - p1[0]) / 6;
-        const c2y = p2[1] - (p3[1] - p1[1]) / 6;
-        d += ` C ${c1x},${c1y} ${c2x},${c2y} ${p2[0]},${p2[1]}`;
-    }
-    return d;
+    return points.map(([x, y], i) => `${i === 0 ? "M" : "L"} ${x},${y}`).join(" ");
 }
 
 function areaPath(points) {
     const [firstX] = points[0];
     const [lastX] = points[points.length - 1];
-    return `${smoothPath(points)} L ${lastX},${BASELINE_Y} L ${firstX},${BASELINE_Y} Z`;
+    return `${linePath(points)} L ${lastX},${BASELINE_Y} L ${firstX},${BASELINE_Y} Z`;
 }
 
 export default function PayoffIcon({ shape }) {
@@ -282,16 +274,17 @@ export default function PayoffIcon({ shape }) {
                 />
             ))}
 
-            {/* Curve Stroke Lines */}
+            {/* Payoff Lines — straight segments with sharp (miter) joins at
+                each strike kink, matching a real payoff diagram's geometry. */}
             {segments.map((seg, i) => (
                 <path
                     key={`line-${i}`}
-                    d={smoothPath(seg.pts)}
+                    d={linePath(seg.pts)}
                     fill="none"
                     stroke={COLORS[seg.c]}
-                    strokeWidth="2.5"
+                    strokeWidth="2.25"
                     strokeLinecap="round"
-                    strokeLinejoin="round"
+                    strokeLinejoin="miter"
                 />
             ))}
 

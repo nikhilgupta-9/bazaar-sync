@@ -25,7 +25,8 @@ import ContractChartModal from "../components/ContractChartModal";
 import { SymbolLogo, getSymbolMeta } from "../utils/symbolIcons";
 import { saveStrategy } from "../services/strategiesApi";
 import { useTheme } from "../context/ThemeContext";
-import { FiSettings, FiTrash2, FiRefreshCw, FiClock, FiTrendingUp, FiFolder, FiZap, FiMaximize, FiMinimize } from "react-icons/fi";
+import { FiSettings, FiTrash2, FiRefreshCw, FiClock, FiTrendingUp, FiFolder, FiZap, FiGrid, FiBarChart2, FiDollarSign, FiEyeOff, FiEye } from "react-icons/fi";
+import { Link } from "react-router-dom";
 
 
 function formatDelta(value) {
@@ -303,6 +304,7 @@ export default function StrategyBuilder() {
     const [atmBasis, setAtmBasis] = useState("spot"); // 'spot' | 'future' | 'synth'
     const [showAtmDistance, setShowAtmDistance] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [expiryDropdownOpen, setExpiryDropdownOpen] = useState(false);
     const [savedOpen, setSavedOpen] = useState(false);
     const [paperExecuteOpen, setPaperExecuteOpen] = useState(false);
     const [hideChain, setHideChain] = useState(false);
@@ -855,16 +857,19 @@ export default function StrategyBuilder() {
     return (
         <div
             ref={containerRef}
-            className={`w-full max-w-[1920px] mx-auto px-2 sm:px-3 lg:px-4 pt-1.5 pb-3 text-gray-900 dark:text-gray-100 transition-colors flex-1 flex flex-col ${
+            className={`w-full max-w-[1920px] mx-auto px-2 sm:px-3 lg:px-4 pt-1.5 pb-3 text-gray-900 dark:text-gray-100 transition-colors flex-1 flex flex-col overflow-x-hidden ${
                 isFullscreen
                     ? "fixed inset-0 z-50 bg-[#f8fafc] dark:bg-[#070a11] overflow-y-auto p-2 sm:p-3"
                     : "bg-gray-50/40 dark:bg-[#070a11] min-h-screen"
             }`}
         >
-            {/* Minimal & Compact Top Control Bar */}
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5 sm:gap-2">
-                {/* Left: Symbol Picker + Expiry + Quick Actions */}
-                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+            {/* Minimal & Compact Top Control Bar — a 3-column grid on sm+ so
+                Save/Saved/Reset sit centered between the symbol picker and
+                the clock (stockmojo layout), independent of how wide either
+                side is; stacks to plain full-width rows on mobile. */}
+            <div className="mb-2 flex flex-col sm:grid sm:grid-cols-[1fr_auto_1fr] items-stretch sm:items-center gap-1.5 sm:gap-2">
+                {/* Left: Symbol Picker + Expiry */}
+                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 justify-self-start">
                     {/* Unified Symbol Pill Container (StockMojo style) */}
                     <div className="flex items-center h-8 rounded-lg border border-gray-300 dark:border-white/10 bg-white dark:bg-[#0b1420] px-1.5 shadow-xs relative">
                         <span className="w-5 h-5 rounded-full bg-[#182230] text-white flex items-center justify-center text-[10px] font-bold mr-1.5 shadow-xs shrink-0">
@@ -949,21 +954,27 @@ export default function StrategyBuilder() {
                         </select>
                     )}
 
-                    {/* Save Button (StockMojo Green Pill) */}
-                    <SaveButton
-                        itemLabel="strategy"
-                        onSave={(token, name) => saveStrategy(token, { name, underlying: symbol, legs })}
-                        className="h-8 px-3 text-xs bg-[#00b96b] hover:bg-[#00a860] font-bold rounded-lg shadow-xs flex items-center gap-1.5 cursor-pointer"
-                    />
+                </div>
 
-                    {/* Saved Button (White pill with folder) */}
-                    <button
-                        onClick={() => setSavedOpen(true)}
-                        className="flex items-center h-8 px-3 text-xs gap-1.5 whitespace-nowrap transition-colors bg-white dark:bg-[#0b1420] text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5 border border-gray-300 dark:border-white/10 font-bold rounded-lg shadow-xs cursor-pointer"
-                    >
-                        <FiFolder size={13} className="text-gray-400" />
-                        <span>Saved</span>
-                    </button>
+                {/* Center: Save + Saved (kept together as one tight group) + Reset/New — stockmojo centers this trio between the symbol picker and the clock */}
+                <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2 justify-self-center">
+                    <div className="flex items-center gap-1">
+                        {/* Save Button (StockMojo Green Pill) */}
+                        <SaveButton
+                            itemLabel="strategy"
+                            onSave={(token, name) => saveStrategy(token, { name, underlying: symbol, legs })}
+                            className="h-8 px-3 text-xs bg-[#00b96b] hover:bg-[#00a860] font-bold rounded-lg shadow-xs flex items-center gap-1.5 cursor-pointer"
+                        />
+
+                        {/* Saved Button (White pill with folder) */}
+                        <button
+                            onClick={() => setSavedOpen(true)}
+                            className="flex items-center h-8 px-3 text-xs gap-1.5 whitespace-nowrap transition-colors bg-white dark:bg-[#0b1420] text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5 border border-gray-300 dark:border-white/10 font-bold rounded-lg shadow-xs cursor-pointer"
+                        >
+                            <FiFolder size={13} className="text-gray-400" />
+                            <span>Saved</span>
+                        </button>
+                    </div>
 
                     {/* Reset/New Button (Light Red Pill) */}
                     <button
@@ -974,11 +985,10 @@ export default function StrategyBuilder() {
                         <FiTrash2 size={12} />
                         <span>Reset/New{legs.length > 0 ? ` (${legs.length})` : ""}</span>
                     </button>
-
                 </div>
 
                 {/* Right: Clock, feed status & Full Screen (SPOT / VIX / FUT live in the chain panel) */}
-                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 justify-end sm:justify-self-end">
                     <div className="flex items-center gap-1.5 h-8 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-2.5 text-xs font-semibold text-gray-700 dark:text-gray-200 shadow-xs">
                         <FiClock className="text-gray-400" size={13} />
                         <span className="tabular-nums font-mono text-[11.5px]">
@@ -1000,15 +1010,7 @@ export default function StrategyBuilder() {
                         )
                     )}
 
-                    {/* Full Screen Mode Toggle */}
-                    <button
-                        onClick={toggleFullscreen}
-                        className="flex items-center gap-1.5 h-8 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-2.5 text-xs font-semibold text-gray-700 dark:text-gray-200 shadow-xs hover:bg-gray-50 dark:hover:bg-white/5 transition cursor-pointer"
-                        title={isFullscreen ? "Exit Fullscreen (Esc)" : "Enter Fullscreen Mode"}
-                    >
-                        {isFullscreen ? <FiMinimize size={12} className="text-emerald-500" /> : <FiMaximize size={12} className="text-gray-400" />}
-                        <span className="hidden sm:inline">{isFullscreen ? "Exit Fullscreen" : "Full Screen"}</span>
-                    </button>
+                    {/* Full Screen button removed — stockmojo.in's action row doesn't have one. */}
                 </div>
             </div>
 
@@ -1046,10 +1048,16 @@ export default function StrategyBuilder() {
                 {/* Left Column: Option Chain Window */}
                 {!hideChain && (
                 <div className={`w-full lg:w-[480px] xl:w-[540px] shrink-0 flex flex-col ${mobileView !== "all" && mobileView !== "chain" ? "hidden lg:flex" : ""}`}>
-                    {/* Compact Option Chain Control Bar (StockMojo style) */}
-                    <div className="mb-2 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs overflow-hidden flex flex-col">
+                    {/* Compact Option Chain Control Bar (StockMojo style) — no
+                        overflow-hidden here: it was clipping the Settings and
+                        expiry "More ▾" popovers below (they're absolutely
+                        positioned inside this box), so clicking them appeared
+                        to do nothing. Rounded corners instead come from the
+                        border-radius on this div plus rounded-b-xl on the
+                        last row below. */}
+                    <div className="mb-2 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-xs flex flex-col">
                         {/* Row 1: SPOT / VIX / FUT + Hide Chain */}
-                        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-gray-100 dark:border-white/5 text-xs">
+                        <div className="flex items-center justify-between gap-2 rounded-t-xl px-3 py-2 border-b border-gray-100 dark:border-white/5 text-xs">
                             {data ? (
                                 <div className="flex flex-wrap items-center gap-x-2.5 sm:gap-x-3 gap-y-1">
                                     <div>
@@ -1088,83 +1096,91 @@ export default function StrategyBuilder() {
 
                             <button
                                 onClick={() => setHideChain(true)}
-                                className="flex items-center gap-1 rounded-md border border-gray-200 dark:border-white/10 px-2 py-0.5 text-[11px] font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 cursor-pointer shadow-xs transition"
+                                className="flex items-center gap-1 rounded-md border border-[#00b96b]/40 bg-[#00b96b]/10 dark:bg-emerald-950/30 px-2 py-0.5 text-[11px] font-semibold text-[#00b96b] dark:text-emerald-400 hover:bg-[#00b96b]/20 dark:hover:bg-emerald-950/50 cursor-pointer shadow-xs transition"
                                 title="Hide Chain — give the right panel full width"
                             >
-                                <span>👁</span>
+                                <FiEyeOff size={12} />
                                 <span>Hide Chain</span>
                             </button>
                         </div>
 
                         {/* Row 2: First 3 Expiry Pills + Dropdown for remaining + Settings Cog */}
-                        <div className="flex items-center justify-between gap-1.5 px-3 py-1.5 bg-gray-50/50 dark:bg-[#070e17]/50">
+                        <div className="flex items-center justify-between gap-1.5 rounded-b-xl px-3 py-1.5 bg-gray-50/50 dark:bg-[#070e17]/50">
                             {data && data.expiries && data.expiries.length > 0 ? (
-                                <div className="flex items-center gap-1 overflow-x-auto scrollbar-none flex-1 min-w-0">
-                                    {first3Expiries.map((exp) => (
-                                        <button
-                                            key={exp}
-                                            onClick={() => load(symbol, exp)}
-                                            className={`shrink-0 rounded-md px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer ${
-                                                exp === data.selectedExpiry
-                                                    ? "bg-[#1677ff] text-white shadow-xs font-bold"
-                                                    : "bg-white dark:bg-[#0b1420] border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10"
-                                            }`}
-                                        >
-                                            {formatExpiryShort(exp)} ({daysUntilExpiry(exp)}d)
-                                        </button>
-                                    ))}
+                                <div className="flex items-center gap-1 flex-1 min-w-0">
+                                    {/* Only the pills scroll horizontally — the "More" dropdown below is
+                                        a SIBLING of this, not nested inside it, because an overflow-x-auto
+                                        ancestor also clips absolutely-positioned children vertically
+                                        (overflow-y computes to "auto" once overflow-x isn't "visible"),
+                                        which was silently hiding the dropdown panel on open. */}
+                                    <div className="flex items-center gap-1 overflow-x-auto scrollbar-none min-w-0">
+                                        {first3Expiries.map((exp) => (
+                                            <button
+                                                key={exp}
+                                                onClick={() => load(symbol, exp)}
+                                                className={`shrink-0 rounded-md px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer ${
+                                                    exp === data.selectedExpiry
+                                                        ? "bg-[#1677ff] text-white shadow-xs font-bold"
+                                                        : "bg-white dark:bg-[#0b1420] border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10"
+                                                }`}
+                                            >
+                                                {formatExpiryShort(exp)} ({daysUntilExpiry(exp)}d)
+                                            </button>
+                                        ))}
+                                    </div>
                                     {remainingExpiries.length > 0 && (
-                                        <select
-                                            value={remainingExpiries.includes(data.selectedExpiry) ? data.selectedExpiry : ""}
-                                            onChange={(e) => {
-                                                if (e.target.value) load(symbol, e.target.value);
-                                            }}
-                                            className={`shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold border transition cursor-pointer outline-none ${
-                                                remainingExpiries.includes(data.selectedExpiry)
-                                                    ? "bg-[#1677ff] text-white border-[#1677ff] font-bold"
-                                                    : "bg-white dark:bg-[#0b1420] border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:bg-gray-100"
-                                            }`}
-                                        >
-                                            <option value="" disabled hidden>
-                                                {remainingExpiries[0] ? `${formatExpiryShort(remainingExpiries[0])} (${daysUntilExpiry(remainingExpiries[0])}d) ▾` : "More ▾"}
-                                            </option>
-                                            {remainingExpiries.map((exp) => (
-                                                <option key={exp} value={exp} className="bg-white dark:bg-[#0b1420] text-gray-900 dark:text-white">
-                                                    {formatExpiryShort(exp)} ({daysUntilExpiry(exp)}d)
-                                                </option>
-                                            ))}
-                                        </select>
+                                        <div className="relative shrink-0">
+                                            <button
+                                                onClick={() => setExpiryDropdownOpen((v) => !v)}
+                                                className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer ${
+                                                    remainingExpiries.includes(data.selectedExpiry)
+                                                        ? "bg-[#1677ff] text-white shadow-xs font-bold"
+                                                        : "bg-white dark:bg-[#0b1420] border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10"
+                                                }`}
+                                            >
+                                                <span>
+                                                    {remainingExpiries.includes(data.selectedExpiry)
+                                                        ? `${formatExpiryShort(data.selectedExpiry)} (${daysUntilExpiry(data.selectedExpiry)}d)`
+                                                        : "More"}
+                                                </span>
+                                                <span className={`text-[9px] transition-transform ${expiryDropdownOpen ? "rotate-180" : ""}`}>▾</span>
+                                            </button>
+
+                                            {expiryDropdownOpen && (
+                                                <>
+                                                    <div className="fixed inset-0 z-40" onClick={() => setExpiryDropdownOpen(false)} />
+                                                    <div className="absolute left-0 top-full z-50 mt-1 max-h-72 w-48 overflow-y-auto rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-2xl p-1">
+                                                        {remainingExpiries.map((exp) => {
+                                                            const active = exp === data.selectedExpiry;
+                                                            return (
+                                                                <button
+                                                                    key={exp}
+                                                                    onClick={() => {
+                                                                        load(symbol, exp);
+                                                                        setExpiryDropdownOpen(false);
+                                                                    }}
+                                                                    className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12px] font-semibold transition cursor-pointer ${
+                                                                        active
+                                                                            ? "bg-[#1677ff] text-white"
+                                                                            : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10"
+                                                                    }`}
+                                                                >
+                                                                    <span>{formatExpiryShort(exp)}</span>
+                                                                    <span className={active ? "text-blue-100" : "text-gray-400"}>{daysUntilExpiry(exp)}d</span>
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
                                     )}
                                 </div>
                             ) : (
                                 <div className="text-xs font-bold text-gray-700 dark:text-gray-300">Option Chain</div>
                             )}
 
-                            {/* Strikes Around ATM Filter */}
-                            <div className="flex items-center gap-1 shrink-0">
-                                {STRIKE_RANGES.map((rng) => (
-                                    <button
-                                        key={rng.label}
-                                        onClick={() => setStrikesAroundAtm(rng.value)}
-                                        className={`rounded px-1.5 py-0.5 text-[11px] font-bold transition-all cursor-pointer ${
-                                            strikesAroundAtm === rng.value
-                                                ? "bg-[#1677ff] text-white shadow-xs"
-                                                : "bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/10"
-                                        }`}
-                                    >
-                                        {rng.label}
-                                    </button>
-                                ))}
-                                {effectiveAtmStrike != null && (
-                                    <button
-                                        onClick={() => scrollToAtm("smooth")}
-                                        className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-bold text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 transition cursor-pointer"
-                                        title="Scroll to ATM strike"
-                                    >
-                                        🎯 ATM
-                                    </button>
-                                )}
-                            </div>
+                            {/* ATM jump button removed from beside Settings per user request — strikes-around-ATM count already lives in the Settings popup. */}
 
                             <div className="flex items-center gap-1 shrink-0 relative">
                                 <button
@@ -1183,6 +1199,25 @@ export default function StrategyBuilder() {
                                             <div className="mb-3 flex items-center justify-between">
                                                 <span className="font-bold text-gray-800 dark:text-gray-100">Chain Settings</span>
                                                 <span className="text-[11px] text-gray-400">{enabledColumnCount}/{totalColumnCount} columns</span>
+                                            </div>
+
+                                            <div className="mb-3">
+                                                <div className="mb-1.5 font-semibold text-gray-600 dark:text-gray-400">Strikes Around ATM</div>
+                                                <div className="flex flex-wrap gap-1.5">
+                                                    {STRIKE_RANGES.map((rng) => (
+                                                        <button
+                                                            key={rng.label}
+                                                            onClick={() => setStrikesAroundAtm(rng.value)}
+                                                            className={`rounded px-2 py-1 text-[11px] font-bold transition-all cursor-pointer ${
+                                                                strikesAroundAtm === rng.value
+                                                                    ? "bg-[#1677ff] text-white shadow-xs"
+                                                                    : "bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/10"
+                                                            }`}
+                                                        >
+                                                            {rng.label}
+                                                        </button>
+                                                    ))}
+                                                </div>
                                             </div>
 
                                             <div className="mb-3">
@@ -1290,7 +1325,7 @@ export default function StrategyBuilder() {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {displayChainRows.map((row) => {
+                                    {displayChainRows.map((row, rowIdx) => {
                                         const ceItm = row.strike < data.spotPrice;
                                         const peItm = row.strike > data.spotPrice;
                                         const isAtm = row.strike === effectiveAtmStrike;
@@ -1309,15 +1344,26 @@ export default function StrategyBuilder() {
                                         const peAge = staleOpts.now - (row.pe?._tickAt || 0);
                                         const rowStale = ceStale.priceStale || peStale.priceStale;
                                         const hasActiveLeg = ceLeg != null || peLeg != null;
+                                        // In a border-collapse table, a row's border-top loses to the
+                                        // previous row's border-bottom in the conflict resolution — that's
+                                        // why only the ATM row's own bottom edge was showing green. Fixed
+                                        // by giving the row ABOVE the ATM row the green border-bottom
+                                        // instead (the edge that actually wins), so both the top and
+                                        // bottom line around the ATM row render.
+                                        const nextIsAtm = displayChainRows[rowIdx + 1]?.strike === effectiveAtmStrike;
                                         return (
                                             <tr
                                                 key={row.strike}
                                                 ref={isAtm ? atmRowRef : null}
-                                                className={`border-b border-gray-100/70 dark:border-white/5 transition-colors ${
+                                                className={`transition-colors ${
+                                                    isAtm || nextIsAtm
+                                                        ? "border-b border-[#00b96b]"
+                                                        : "border-b border-gray-100/70 dark:border-white/5"
+                                                } ${
                                                     hasActiveLeg
                                                         ? "bg-[#e6f4ff] dark:bg-[#002b4d]/40 font-semibold"
                                                         : isAtm
-                                                        ? "bg-emerald-50/70 dark:bg-emerald-950/40 font-semibold"
+                                                        ? "bg-[#00b96b]/[0.06] dark:bg-[#00b96b]/[0.08] font-semibold"
                                                         : "hover:bg-gray-50/80 dark:hover:bg-white/[0.03]"
                                                 } ${rowStale ? "border-l-2 border-l-amber-300" : ""}`}
                                             >
@@ -1403,8 +1449,17 @@ export default function StrategyBuilder() {
                                                     </td>
                                                 )}
 
-                                                {/* STRIKE PRICE */}
-                                                <td className="py-1.5 text-center font-bold text-gray-900 dark:text-white bg-gray-50/40 dark:bg-[#070e17]/80 border-x border-gray-100 dark:border-white/10 text-[13px] tabular-nums">
+                                                {/* STRIKE PRICE — just a light, plain-background tint at ATM
+                                                    (no pill/badge, no border) — stockmojo's own chain keeps the
+                                                    strike cell a simple bordered box at every row, ATM included,
+                                                    so only the background wash changes, nothing else. */}
+                                                <td className={`py-1.5 text-center font-bold text-gray-900 dark:text-white border-x border-gray-100 dark:border-white/10 text-[13px] tabular-nums ${
+                                                    hasActiveLeg
+                                                        ? "bg-gray-50/40 dark:bg-[#070e17]/80"
+                                                        : isAtm
+                                                        ? "bg-[#00b96b]/10 dark:bg-[#00b96b]/15"
+                                                        : "bg-gray-50/40 dark:bg-[#070e17]/80"
+                                                }`}>
                                                     {hasActiveLeg ? (
                                                         <span className="inline-block px-2.5 py-0.5 rounded-full font-extrabold bg-white dark:bg-[#0c1a2e] border border-blue-200 dark:border-blue-800 text-blue-900 dark:text-blue-100 shadow-xs">
                                                             {row.strike}
@@ -1522,9 +1577,10 @@ export default function StrategyBuilder() {
             {hideChain && (
                 <button
                     onClick={() => setHideChain(false)}
-                    className="fixed left-3 top-20 z-30 rounded-full border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-3 py-1.5 text-[12px] font-semibold text-gray-600 dark:text-gray-300 shadow-md hover:bg-gray-50 dark:hover:bg-white/5"
+                    className="fixed left-3 top-20 z-30 flex items-center gap-1.5 rounded-full border border-[#00b96b]/40 bg-[#00b96b]/10 dark:bg-emerald-950/40 px-3 py-1.5 text-[12px] font-semibold text-[#00b96b] dark:text-emerald-400 shadow-md hover:bg-[#00b96b]/20 dark:hover:bg-emerald-950/60"
                 >
-                    Show Option Chain
+                    <FiEye size={13} />
+                    <span>Show Option Chain</span>
                 </button>
             )}
 
@@ -1551,7 +1607,7 @@ export default function StrategyBuilder() {
 
                 {/* If NO strategy legs are added: Directly render Ready-Made Strategies catalog */}
                 {legs.length === 0 ? (
-                    <div className="rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden transition-colors">
+                    <div className="flex flex-col min-h-[82vh] rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] shadow-sm overflow-hidden transition-colors">
                         <PresetStrategies data={data} onApply={applyPreset} fetchExpiryRows={fetchExpiryRows} bare />
                     </div>
                 ) : (
@@ -1653,29 +1709,23 @@ export default function StrategyBuilder() {
                                             </div>
                                         </div>
 
-                                        {/* Box 2: Funds Required & Est. Margin */}
+                                        {/* Box 2: Est. Margin (stockmojo.in shows only this one figure here —
+                                            fundsRequired still drives the P&L % denominator below, just not
+                                            shown as its own line in this box) */}
                                         <div className="pb-2.5 border-b border-gray-100 dark:border-white/10 space-y-1.5">
-                                            <div className="flex items-start justify-between gap-2">
-                                                <div>
-                                                    <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">Funds Required</div>
-                                                    <div className="text-sm font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
-                                                        {fundsRequired == null ? "—" : fundsRequired >= 100000 ? `${(fundsRequired / 100000).toFixed(2)}L` : formatPrice(fundsRequired)}
-                                                    </div>
+                                            <div>
+                                                <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">Est. Margin</div>
+                                                <div
+                                                    className="text-sm font-bold text-gray-900 dark:text-white tabular-nums"
+                                                    title={span ? `SPAN ${formatPrice(span.scanRisk + span.calendarCharge)} + Exposure ${formatPrice(span.exposure)}${span.expiryDayExposure ? ` + Expiry-day ELM ${formatPrice(span.expiryDayExposure)}` : ""}` : "Approximate — NSE SPAN quote unavailable"}
+                                                >
+                                                    {estMargin == null ? "—" : estMargin === 0 ? "Not required" : estMargin >= 100000 ? `${(estMargin / 100000).toFixed(2)}L` : formatPrice(estMargin)}
                                                 </div>
-                                                <div className="text-right">
-                                                    <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">Est. Margin</div>
-                                                    <div
-                                                        className="text-sm font-bold text-gray-900 dark:text-white tabular-nums"
-                                                        title={span ? `SPAN ${formatPrice(span.scanRisk + span.calendarCharge)} + Exposure ${formatPrice(span.exposure)}${span.expiryDayExposure ? ` + Expiry-day ELM ${formatPrice(span.expiryDayExposure)}` : ""}` : "Approximate — NSE SPAN quote unavailable"}
-                                                    >
-                                                        {estMargin == null ? "—" : estMargin === 0 ? "Not required" : estMargin >= 100000 ? `${(estMargin / 100000).toFixed(2)}L` : formatPrice(estMargin)}
+                                                {estMargin > 0 && (
+                                                    <div className={`text-[10px] font-medium whitespace-nowrap ${span ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
+                                                        {spanSourceLabel(span)}
                                                     </div>
-                                                    {estMargin > 0 && (
-                                                        <div className={`text-[10px] font-medium whitespace-nowrap ${span ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
-                                                            {spanSourceLabel(span)}
-                                                        </div>
-                                                    )}
-                                                </div>
+                                                )}
                                             </div>
                                             {marginBenefit > 0 && (
                                                 <div className="flex items-center justify-between text-[11px] bg-emerald-50 dark:bg-emerald-950/40 px-2 py-1 rounded-lg border border-emerald-200 dark:border-emerald-800">
@@ -2062,6 +2112,69 @@ export default function StrategyBuilder() {
             </div>
             </div>
             </div>
+            )}
+
+            {/* How to Build an Option Strategy — stockmojo.in's builder page
+                ends with this numbered educational guide before its related
+                tools row (confirmed from a real fetch of their page). Numbers
+                reflect our actual product (up to 6 legs, not their 4). */}
+            {!isFullscreen && (
+                <div className="mt-4 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-4 py-3.5 shadow-xs">
+                    <h2 className="text-xs font-bold uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2.5">
+                        How to Build an Option Strategy
+                    </h2>
+                    <p className="text-[11.5px] text-gray-500 dark:text-gray-400 mb-3 leading-relaxed">
+                        The payoff diagram above plots profit/loss across underlying prices at expiry, with max profit/loss zones shaded and breakeven points marked. Est. Margin is an approximation of what a broker would block, based on NSE's SPAN risk file where available.
+                    </p>
+                    <ol className="space-y-1.5 text-[11.5px] text-gray-600 dark:text-gray-300 list-decimal list-inside">
+                        <li>Select a symbol and expiry from the picker above.</li>
+                        <li>Add your first leg — click Buy or Sell on a Call or Put at any strike in the chain.</li>
+                        <li>Build up to 6 legs to construct a multi-leg strategy, or start from a Ready-Made template.</li>
+                        <li>Review the payoff diagram — Max Profit, Max Loss, and Breakevens update live.</li>
+                        <li>Check the Greeks tab for combined Delta, Theta, Vega, and Gamma across every leg.</li>
+                    </ol>
+                </div>
+            )}
+
+            {/* Related Tools — stockmojo.in's builder page ends with a row of
+                cards linking to adjacent tools (Simulator, Option Chain,
+                Straddle Chart, F&O Lot Size). We don't have a Straddle Chart
+                page anymore (removed Phase 8.1) or an F&O Lot Size tool, so
+                this links to real existing routes instead of copying theirs
+                verbatim — same "never link to what isn't there" rule Home.jsx
+                already follows via data/tools.js. Hidden in fullscreen mode. */}
+            {!isFullscreen && (
+                <div className="mt-4">
+                    <h2 className="text-xs font-bold uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2">
+                        Related Tools
+                    </h2>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                        {[
+                            { to: "/simulator", label: "Simulator", desc: "Minute-by-minute tick replay", Icon: FiClock },
+                            { to: "/option-chain", label: "Option Chain", desc: "Live LTP, PCR & Max Pain", Icon: FiGrid },
+                            { to: "/paper-trade", label: "Paper Trade", desc: "Virtual order execution", Icon: FiDollarSign },
+                            { to: "/historical-chart", label: "Historical Chart", desc: "Multi-timeframe candles", Icon: FiBarChart2 },
+                        ].map(({ to, label, desc, Icon }) => (
+                            <Link
+                                key={to}
+                                to={to}
+                                className="group flex items-start gap-2.5 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] px-3 py-2.5 shadow-xs hover:border-[#1677ff] hover:shadow-sm transition"
+                            >
+                                <span className="shrink-0 w-7 h-7 rounded-lg bg-[#e6f4ff] dark:bg-[#002b4d]/60 text-[#1677ff] dark:text-blue-300 flex items-center justify-center">
+                                    <Icon size={14} />
+                                </span>
+                                <span className="flex flex-col min-w-0">
+                                    <span className="text-xs font-bold text-gray-900 dark:text-white group-hover:text-[#1677ff] transition">
+                                        {label}
+                                    </span>
+                                    <span className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                        {desc}
+                                    </span>
+                                </span>
+                            </Link>
+                        ))}
+                    </div>
+                </div>
             )}
 
             {slTgEditId != null && (

@@ -4,7 +4,6 @@
 
 import React, { useMemo, useState } from "react";
 import PayoffIcon from "./PayoffIcon";
-import { FiSearch, FiArrowRight, FiShield, FiTrendingUp, FiTrendingDown, FiActivity } from "react-icons/fi";
 
 const CATEGORIES = ["Bullish", "Bearish", "Neutral", "Other"];
 
@@ -508,34 +507,12 @@ function buildPresets(data) {
 export default function PresetStrategies({ data, onApply, fetchExpiryRows, bare = false }) {
     const presets = useMemo(() => buildPresets(data), [data]);
     const [selectedCategory, setSelectedCategory] = useState("Neutral");
-    const [searchQuery, setSearchQuery] = useState("");
     const [loadingPreset, setLoadingPreset] = useState(null);
 
     const filtered = useMemo(() => {
-        let list = presets;
-        if (selectedCategory !== "All") {
-            list = list.filter((p) => p.bias === selectedCategory);
-        }
-        if (searchQuery.trim()) {
-            const q = searchQuery.toLowerCase();
-            list = list.filter(
-                (p) =>
-                    p.name.toLowerCase().includes(q) ||
-                    p.summary.toLowerCase().includes(q) ||
-                    p.risk.toLowerCase().includes(q) ||
-                    p.bias.toLowerCase().includes(q)
-            );
-        }
-        return list;
-    }, [presets, selectedCategory, searchQuery]);
-
-    const counts = useMemo(() => {
-        const res = { Bullish: 0, Bearish: 0, Neutral: 0, Other: 0 };
-        presets.forEach((p) => {
-            if (res[p.bias] != null) res[p.bias]++;
-        });
-        return res;
-    }, [presets]);
+        if (selectedCategory === "All") return presets;
+        return presets.filter((p) => p.bias === selectedCategory);
+    }, [presets, selectedCategory]);
 
     async function handleApply(p) {
         if (p.legs && p.legs.length) {
@@ -558,60 +535,56 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows, bare 
     // Bare = rendered inside a side panel, so size the grid by the panel's
     // width (container query), not the viewport — a 520px panel on a 1536px
     // screen otherwise got 4 cramped columns with truncated names.
+    // 4 cards per row, matching stockmojo — bare uses a container query
+    // (panel width, not viewport) since it sits in a ~480-540px side panel;
+    // @lg already fits 4 at that width (was requiring @5xl, which the panel
+    // never reaches, so it stalled at 3).
     const gridCols = bare
-        ? "grid grid-cols-2 @2xl:grid-cols-3 @5xl:grid-cols-4 gap-2 sm:gap-3"
+        ? "grid grid-cols-2 @lg:grid-cols-4 content-start gap-2 sm:gap-3 flex-1 overflow-y-auto"
         : "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 sm:gap-3";
 
-    return (
-        <div className={bare ? "@container p-3 sm:p-4" : "rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0b1420] p-3 sm:p-4 shadow-xs transition-colors"}>
-            {/* Header Title & Search Bar */}
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 mb-3.5">
-                <div>
-                    <h2 className="text-sm sm:text-base font-black text-gray-900 dark:text-white flex items-center gap-2">
-                        <span>Ready-Made Strategies</span>
-                        <span className="rounded-full bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800/80 px-2 py-0.2 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
-                            {presets.length} Presets
-                        </span>
-                    </h2>
-                    <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-                        StockMojo preset templates mapped to ATM ({data?.atmStrike ?? "—"}).
-                    </p>
-                </div>
+    // Glassmorphism container: a soft theme-tinted gradient mesh sits behind
+    // everything (ocean = teal blobs, dark = blue/violet blobs, light = a
+    // faint sky/violet wash — no green, just neutral/cool blobs) so the
+    // frosted cards below have something to refract — a backdrop-blur over
+    // flat white/black is invisible, this is what makes the blur read as
+    // "glass".
+    const outerClass = bare
+        ? "@container relative isolate flex flex-1 flex-col overflow-hidden rounded-2xl p-3 sm:p-4"
+        : "relative isolate overflow-hidden rounded-2xl border border-white/20 dark:border-white/10 p-3 sm:p-4 shadow-xs transition-colors";
 
-                {/* Search input */}
-                <div className="relative w-full sm:w-56">
-                    <FiSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500" size={13} />
-                    <input
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search strategy…"
-                        className="w-full rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-[#070e17] py-1.5 pl-7 pr-2.5 text-xs text-gray-900 dark:text-white outline-none focus:border-emerald-500 transition placeholder:text-gray-400"
-                    />
-                </div>
+    return (
+        <div className={outerClass}>
+            {/* Gradient mesh backdrop (theme-aware, pointer-events-none, sits behind the glass content) */}
+            <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 -z-10 bg-gray-50 dark:bg-[#0b1420] [[data-theme=ocean]_&]:bg-[#071f26]"
+            >
+                <div className="absolute -top-16 -left-10 h-56 w-56 rounded-full bg-sky-400/15 dark:bg-blue-500/10 [[data-theme=ocean]_&]:bg-teal-400/20 blur-3xl" />
+                <div className="absolute top-10 right-0 h-48 w-48 rounded-full bg-violet-400/15 dark:bg-violet-500/10 [[data-theme=ocean]_&]:bg-cyan-400/15 blur-3xl" />
+                <div className="absolute bottom-0 left-1/3 h-40 w-64 rounded-full bg-indigo-400/10 dark:bg-indigo-500/10 blur-3xl" />
             </div>
 
-            {/* Category Filter Pills (Matching StockMojo 4 Tabs: Bullish | Bearish | Neutral | Other) */}
-            <div className="grid grid-cols-4 sm:flex items-center gap-1 sm:gap-1.5 mb-3 sm:mb-3.5 border-b border-gray-100 dark:border-white/10 pb-2 sm:pb-2.5">
+            {/* Header Title (stockmojo.in has no count badge, subtitle, or search box here) */}
+            <h2 className="text-sm sm:text-base font-black text-gray-900 dark:text-white mb-3.5">
+                Ready-Made Strategies
+            </h2>
+
+            {/* Category Filter Pills — glass pills over the gradient mesh (StockMojo 4 Tabs: Bullish | Bearish | Neutral | Other — plain labels, no count badges) */}
+            <div className="grid grid-cols-4 sm:flex items-center gap-1 sm:gap-1.5 mb-3 sm:mb-3.5 border-b border-white/30 dark:border-white/10 pb-2 sm:pb-2.5">
                 {CATEGORIES.map((c) => {
                     const isActive = selectedCategory === c;
                     return (
                         <button
                             key={c}
                             onClick={() => setSelectedCategory(c)}
-                            className={`flex items-center justify-center gap-1 rounded-lg px-1.5 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold transition-all cursor-pointer truncate ${
+                            className={`flex items-center justify-center rounded-lg px-1.5 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold transition-all cursor-pointer truncate backdrop-blur-md ${
                                 isActive
-                                    ? "bg-emerald-500/15 border border-emerald-500 text-emerald-600 dark:text-emerald-400 shadow-xs"
-                                    : "bg-gray-100 dark:bg-white/5 border border-gray-200/60 dark:border-white/10 text-gray-600 dark:text-gray-400 hover:border-emerald-500/60 hover:text-gray-900 dark:hover:text-white"
+                                    ? "bg-emerald-500/20 dark:bg-emerald-400/15 border border-emerald-500/60 text-emerald-700 dark:text-emerald-300 shadow-xs"
+                                    : "bg-white/30 dark:bg-white/5 border border-white/40 dark:border-white/10 text-gray-600 dark:text-gray-300 hover:border-emerald-500/50 hover:bg-white/50 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white"
                             }`}
                         >
                             <span className="truncate">{c}</span>
-                            <span
-                                className={`rounded-full px-1 py-0.1 text-[9px] sm:text-[9.5px] font-mono ${
-                                    isActive ? "bg-emerald-600 text-white" : "bg-gray-200 dark:bg-white/10 text-gray-500 dark:text-gray-400"
-                                }`}
-                            >
-                                {counts[c] || 0}
-                            </span>
                         </button>
                     );
                 })}
@@ -639,8 +612,8 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows, bare 
                     ))}
                 </div>
             ) : filtered.length === 0 ? (
-                <div className="py-12 text-center text-sm text-gray-400 dark:text-gray-500">
-                    No strategies found matching &quot;{searchQuery}&quot;.
+                <div className="flex flex-1 items-center justify-center py-12 text-center text-sm text-gray-400 dark:text-gray-500">
+                    No strategies in this category.
                 </div>
             ) : (
                 <div className={gridCols}>
@@ -648,72 +621,25 @@ export default function PresetStrategies({ data, onApply, fetchExpiryRows, bare 
                         const legCount = p.legs ? p.legs.length : p.legCount || 0;
                         const isLoading = loadingPreset === p.name;
 
-                        // Bias colors
-                        const biasColor =
-                            p.bias === "Bullish"
-                                ? "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/60"
-                                : p.bias === "Bearish"
-                                ? "bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-800/60"
-                                : p.bias === "Neutral"
-                                ? "bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800/60"
-                                : "bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/60";
-
-                        const riskColor = p.risk.startsWith("Defined")
-                            ? "bg-gray-50 dark:bg-white/5 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-white/10"
-                            : "bg-rose-50/70 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-900/50";
-
                         return (
                             <div
                                 key={p.name}
                                 onClick={() => {
                                     if (legCount && !isLoading) handleApply(p);
                                 }}
-                                className="group relative flex flex-col justify-between rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#070e17] p-2.5 sm:p-3.5 shadow-xs transition-all hover:-translate-y-1 hover:border-emerald-500 dark:hover:border-emerald-500 hover:shadow-md dark:hover:shadow-emerald-950/20 cursor-pointer"
+                                title={p.summary}
+                                className={`group relative flex flex-col items-center overflow-hidden rounded-2xl border border-white/40 dark:border-white/10 bg-white/35 dark:bg-white/[0.04] [[data-theme=ocean]_&]:bg-white/[0.06] backdrop-blur-xl p-2.5 sm:p-3.5 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.08)] dark:shadow-[0_4px_20px_-4px_rgba(0,0,0,0.4)] transition-all hover:-translate-y-1 hover:border-emerald-400/70 hover:bg-white/55 dark:hover:bg-white/[0.08] hover:shadow-lg hover:shadow-emerald-500/10 cursor-pointer ${isLoading ? "opacity-60 pointer-events-none" : ""}`}
                             >
-                                <div>
-                                    {/* Top Metadata Badges */}
-                                    <div className="flex flex-wrap items-center justify-between gap-1 mb-2 sm:mb-2.5">
-                                        <span className={`rounded-lg border px-1.5 sm:px-2 py-0.5 text-micro font-bold whitespace-nowrap ${biasColor}`}>
-                                            {p.bias}
-                                        </span>
-                                        <span className={`rounded-lg border px-1.5 sm:px-2 py-0.5 text-micro font-semibold whitespace-nowrap ${riskColor}`}>
-                                            {p.risk}
-                                        </span>
-                                    </div>
+                                {/* Glass top-edge highlight — the classic glassmorphism "light catching the rim" sheen */}
+                                <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/70 dark:via-white/30 to-transparent" />
 
-                                    {/* Payoff Diagram Visual Box */}
-                                    <div className="rounded-xl border border-gray-100 dark:border-white/10 bg-gray-50/70 dark:bg-[#0b1420] p-1.5 sm:p-2.5 transition group-hover:bg-emerald-50/30 dark:group-hover:bg-emerald-950/20">
-                                        <PayoffIcon shape={p.shape} />
-                                    </div>
-
-                                    {/* Strategy Info */}
-                                    <div className="mt-2 sm:mt-3">
-                                        <div className="flex items-baseline justify-between gap-1">
-                                            <h3 className="min-w-0 text-xs sm:text-sm font-bold leading-snug text-fg group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition line-clamp-2">
-                                                {p.name}
-                                            </h3>
-                                            <span className="shrink-0 text-micro sm:text-label font-bold text-fg-subtle">
-                                                {legCount} {legCount === 1 ? "Leg" : "Legs"}
-                                            </span>
-                                        </div>
-                                        <p className="mt-1 text-micro sm:text-label leading-snug sm:leading-relaxed text-gray-500 dark:text-gray-400 line-clamp-2">
-                                            {p.summary}
-                                        </p>
-                                    </div>
+                                {/* Payoff Diagram Visual Box (stockmojo.in's cards are just icon + title) */}
+                                <div className="w-full rounded-xl border border-white/30 dark:border-white/10 bg-white/25 dark:bg-black/20 backdrop-blur-sm p-1.5 sm:p-2.5 transition group-hover:bg-emerald-50/30 dark:group-hover:bg-emerald-950/20">
+                                    <PayoffIcon shape={p.shape} />
                                 </div>
-
-                                {/* Apply Action Button */}
-                                <button
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleApply(p);
-                                    }}
-                                    disabled={!legCount || isLoading}
-                                    className="mt-2.5 sm:mt-3 flex w-full items-center justify-center gap-1 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 px-2 sm:px-3 py-1.5 text-[11px] sm:text-xs font-bold text-gray-700 dark:text-gray-200 transition group-hover:border-emerald-600 group-hover:bg-emerald-600 group-hover:text-white dark:group-hover:bg-emerald-600 dark:group-hover:border-emerald-600 dark:group-hover:text-white disabled:opacity-40"
-                                >
-                                    <span>{isLoading ? "Building…" : "Build Strategy"}</span>
-                                    {!isLoading && <FiArrowRight size={12} className="transition group-hover:translate-x-0.5" />}
-                                </button>
+                                <h3 className="mt-2 sm:mt-3 min-w-0 text-center text-xs sm:text-sm font-bold leading-snug text-fg group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition line-clamp-2">
+                                    {p.name}
+                                </h3>
                             </div>
                         );
                     })}

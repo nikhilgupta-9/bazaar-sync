@@ -2,43 +2,51 @@ import React, { useState, useEffect, useRef } from "react";
 import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
-import { FiSun, FiMoon, FiMenu, FiX, FiChevronDown } from "react-icons/fi";
+import {
+    FiSun,
+    FiMoon,
+    FiDroplet,
+    FiMenu,
+    FiX,
+    FiChevronDown,
+    FiClock,
+    FiCpu,
+    FiRefreshCw,
+    FiPieChart,
+    FiMap,
+    FiTrendingUp,
+    FiZap,
+    FiActivity,
+} from "react-icons/fi";
 import Logo from "./Logo";
 import MarketTickerBar from "./MarketTickerBar";
 
+// Cycles Light -> Ocean -> Dark -> Light on each click (single-button UX,
+// same as before — not a 3-way picker). Icon + tooltip always name the
+// theme you'll land on next, not the one you're currently in.
+const THEME_NEXT_LABEL = { light: "ocean", ocean: "dark", dark: "light" };
+
 function ThemeToggle() {
-    const { isDark, toggleTheme } = useTheme();
+    const { theme, toggleTheme } = useTheme();
+    const nextLabel = THEME_NEXT_LABEL[theme] || "light";
     return (
         <button
             type="button"
             onClick={toggleTheme}
             className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200 transition cursor-pointer"
-            aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
-            title={isDark ? "Switch to light theme" : "Switch to dark theme"}
+            aria-label={`Switch to ${nextLabel} theme`}
+            title={`Switch to ${nextLabel} theme`}
         >
-            {isDark ? <FiSun size={18} className="text-amber-400" /> : <FiMoon size={18} />}
+            {theme === "light" && <FiMoon size={18} />}
+            {theme === "ocean" && <FiDroplet size={18} className="text-teal-400" />}
+            {theme === "dark" && <FiSun size={18} className="text-amber-400" />}
         </button>
     );
 }
 
 const STRATEGY_BUILDER_LINKS = [
-    {
-        to: "/strategy-builder",
-        label: "Indian Strategy Builder",
-        desc: "NSE Indices & Stocks • Multi-leg Payoff & Greeks",
-        badge: "NSE F&O",
-        badgeColor: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20",
-        icon: "₹",
-        end: true,
-    },
-    {
-        to: "/strategy-builder/crypto",
-        label: "Crypto Strategy Builder",
-        desc: "Delta Exchange • BTC, ETH & SOL 24/7 Options",
-        badge: "DELTA 24/7",
-        badgeColor: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20",
-        icon: "₿",
-    },
+    { to: "/strategy-builder", label: "Indian Strategy Builder", end: true },
+    { to: "/strategy-builder/crypto", label: "Crypto Strategy Builder" },
 ];
 
 const SIMULATOR_LINKS = [
@@ -48,7 +56,7 @@ const SIMULATOR_LINKS = [
         desc: "1-Min Tick Replay • Multi-leg MTM & Greeks",
         badge: "TICK REPLAY",
         badgeColor: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20",
-        icon: "⏱",
+        icon: FiClock,
         end: true,
     },
     {
@@ -57,7 +65,7 @@ const SIMULATOR_LINKS = [
         desc: "Delta Exchange 1-Min Historical Options Replay",
         badge: "CRYPTO REPLAY",
         badgeColor: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20",
-        icon: "Δ",
+        icon: FiCpu,
     },
 ];
 
@@ -68,7 +76,7 @@ const EQUITY_DATA_LINKS = [
         desc: "Relative Rotation Graphs (RRG) across sectors",
         badge: "RRG",
         badgeColor: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20",
-        icon: "🔄",
+        icon: FiRefreshCw,
     },
     {
         to: "/equity-data/sector-performance",
@@ -76,7 +84,7 @@ const EQUITY_DATA_LINKS = [
         desc: "Heatmap & sector relative strength performance",
         badge: "HEATMAP",
         badgeColor: "bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-500/20",
-        icon: "📊",
+        icon: FiPieChart,
     },
     {
         to: "/equity-data/market-map",
@@ -84,7 +92,7 @@ const EQUITY_DATA_LINKS = [
         desc: "Treemap market cap visualization & movements",
         badge: "MAP",
         badgeColor: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400 border-cyan-500/20",
-        icon: "🗺️",
+        icon: FiMap,
     },
     {
         to: "/equity-data/52-week-high-low",
@@ -92,7 +100,7 @@ const EQUITY_DATA_LINKS = [
         desc: "Institutional breakout scans & 52-week levels",
         badge: "BREAKOUT",
         badgeColor: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20",
-        icon: "📈",
+        icon: FiTrendingUp,
     },
     {
         to: "/equity-data/industry-momentum",
@@ -100,7 +108,7 @@ const EQUITY_DATA_LINKS = [
         desc: "Leading momentum stocks grouped by industry",
         badge: "MOMENTUM",
         badgeColor: "bg-orange-500/10 text-orange-700 dark:text-orange-400 border-orange-500/20",
-        icon: "⚡",
+        icon: FiZap,
     },
     {
         to: "/equity-data/most-active",
@@ -108,7 +116,7 @@ const EQUITY_DATA_LINKS = [
         desc: "Most active strikes by volume & open interest",
         badge: "ACTIVE OI",
         badgeColor: "bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-500/20",
-        icon: "🔥",
+        icon: FiActivity,
     },
 ];
 
@@ -202,16 +210,18 @@ function NavDropdown({ label, basePath, items, widthClass = "w-80" }) {
                                 end={link.end}
                                 onClick={() => setOpen(false)}
                                 className={({ isActive: linkActive }) =>
-                                    `group flex items-start gap-3 rounded-xl p-2.5 transition-all ${
+                                    `group flex items-center gap-3 rounded-xl transition-all ${link.icon ? "p-2.5" : "px-3 py-2"} ${
                                         linkActive
                                             ? "bg-emerald-50 text-emerald-900 font-bold dark:bg-emerald-950/60 dark:text-emerald-200 ring-1 ring-emerald-500/30"
                                             : "hover:bg-gray-50 text-gray-700 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-slate-800/70 dark:hover:text-white"
                                     }`
                                 }
                             >
-                                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gray-100 font-mono text-xs font-bold text-gray-700 group-hover:scale-105 group-hover:bg-emerald-100 group-hover:text-emerald-700 dark:bg-slate-800 dark:text-gray-300 dark:group-hover:bg-emerald-900/60 dark:group-hover:text-emerald-300 transition-all">
-                                    {link.icon || "•"}
-                                </span>
+                                {link.icon && (
+                                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-700 group-hover:scale-105 group-hover:bg-emerald-100 group-hover:text-emerald-700 dark:bg-slate-800 dark:text-gray-300 dark:group-hover:bg-emerald-900/60 dark:group-hover:text-emerald-300 transition-all">
+                                        <link.icon size={14} />
+                                    </span>
+                                )}
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center justify-between gap-1.5">
                                         <span className="text-xs font-bold truncate">
@@ -244,7 +254,7 @@ function NavDropdown({ label, basePath, items, widthClass = "w-80" }) {
 }
 
 function StrategyBuilderMenu() {
-    return <NavDropdown label="Strategy Builder" basePath="/strategy-builder" items={STRATEGY_BUILDER_LINKS} widthClass="w-80" />;
+    return <NavDropdown label="Strategy Builder" basePath="/strategy-builder" items={STRATEGY_BUILDER_LINKS} widthClass="w-52" />;
 }
 
 function SimulatorMenu() {
@@ -258,11 +268,16 @@ function EquityDataMenu() {
 export default function TopNav() {
     const { user, isPro, logout, loading } = useAuth();
     const navigate = useNavigate();
+    const topNavLocation = useLocation();
     const [mobileOpen, setMobileOpen] = useState(false);
+
+    // stockmojo.in's Strategy Builder header has no ticker bar — keep it
+    // everywhere else, hide it just on this route to match that page.
+    const hideTicker = topNavLocation.pathname.startsWith("/strategy-builder");
 
     return (
         <header className="sticky top-0 z-50 border-b border-gray-200 bg-white/95 dark:border-gray-800 dark:bg-gray-900/95 backdrop-blur-md">
-            <MarketTickerBar />
+            {!hideTicker && <MarketTickerBar />}
             <div className="flex items-center justify-between px-4 py-3 sm:px-6">
                 <NavLink to="/" onClick={() => setMobileOpen(false)}>
                     <Logo />
@@ -365,17 +380,7 @@ export default function TopNav() {
                                                 }`
                                             }
                                         >
-                                            <span className="flex items-center gap-2.5">
-                                                <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-gray-100 font-mono text-xs dark:bg-gray-800">
-                                                    {sub.icon}
-                                                </span>
-                                                <span>{sub.label}</span>
-                                            </span>
-                                            {sub.badge && (
-                                                <span className={`rounded px-1.5 py-0.5 text-[9px] font-extrabold uppercase border ${sub.badgeColor}`}>
-                                                    {sub.badge}
-                                                </span>
-                                            )}
+                                            <span>{sub.label}</span>
                                         </NavLink>
                                     ))}
                                 </div>
@@ -399,8 +404,8 @@ export default function TopNav() {
                                             }
                                         >
                                             <span className="flex items-center gap-2.5">
-                                                <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-gray-100 font-mono text-xs dark:bg-gray-800">
-                                                    {sub.icon}
+                                                <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                                                    {sub.icon && <sub.icon size={13} />}
                                                 </span>
                                                 <span>{sub.label}</span>
                                             </span>
@@ -447,8 +452,8 @@ export default function TopNav() {
                                     }
                                 >
                                     <span className="flex items-center gap-2.5">
-                                        <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-gray-100 font-mono text-xs dark:bg-gray-800">
-                                            {link.icon}
+                                        <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                                            {link.icon && <link.icon size={13} />}
                                         </span>
                                         <span>{link.label}</span>
                                     </span>
